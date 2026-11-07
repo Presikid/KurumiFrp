@@ -4,14 +4,18 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 )
 
 type Rendered struct {
-	Text    string
-	Env     []string
-	Secrets []string
-	Digest  string
+	Text          string
+	Env           []string
+	Secrets       []string
+	Digest        string
+	AdminPort     int
+	AdminUser     string
+	AdminPassword string
 }
 
 func quote(s string) string {
@@ -90,5 +94,42 @@ func (s *Store) render(id string, preview bool) (Rendered, error) {
 	}
 	r.Text = b.String()
 	r.Digest = fmt.Sprintf("%x", sha256.Sum256([]byte(r.Text+strings.Join(r.Env, "\x00"))))
+	return r, nil
+}
+
+
+// renderRuntime adds a per-process, loopback-only frpc Admin API endpoint.
+// Its ephemeral credentials are intentionally excluded from the draft digest
+// and from the user-facing configuration preview.
+func (s *Store) renderRuntime(id string) (Rendered, error) {
+	r, err := s.render(id, false)
+	if err != nil {
+		return r, err
+	}
+	instance, ok := s.DB.State.Instance(id)
+	if !ok {
+		return Rendered{}, fmt.Errorf("实例不存在")
+	}
+	if instance.Kind != "frpc" {
+		return r, nil
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return Rendered{}, fmt.Errorf("无法分配本机状态接口端口：%w", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		return Rendered{}, fmt.Errorf("无法释放本机状态接口端口：%w", err)
+	}
+	password := randomHex(32)
+	r.Text += fmt.Sprintf(
+		"\n# Private KurumiFRP status endpoint. It is bound to loopback only.\nwebServer.addr = %s\nwebServer.port = %d\nwebServer.user = %s\nwebServer.password = {{ .Envs.KURUMI_ADMIN_PASSWORD }}\n",
+		quote("127.0.0.1"), port, quote("kurumi"),
+	)
+	r.Env = append(r.Env, "KURUMI_ADMIN_PASSWORD="+quote(password))
+	r.Secrets = append(r.Secrets, password)
+	r.AdminPort = port
+	r.AdminUser = "kurumi"
+	r.AdminPassword = password
 	return r, nil
 }

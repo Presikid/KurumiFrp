@@ -30,7 +30,10 @@ type process struct {
 	done   chan struct{}
 	status RuntimeStatus
 	logs   *logBuffer
-	coreID string
+	coreID        string
+	adminPort     int
+	adminUser     string
+	adminPassword string
 }
 type logBuffer struct {
 	mu       sync.Mutex
@@ -81,7 +84,15 @@ func (l *logBuffer) read() []string {
 	defer l.mu.Unlock()
 	return append([]string{}, l.lines...)
 }
-func (p *process) view() RuntimeStatus            { p.mu.Lock(); defer p.mu.Unlock(); return p.status }
+func (p *process) view() RuntimeStatus { p.mu.Lock(); defer p.mu.Unlock(); return p.status }
+func (p *process) adminCredentials() (int, string, string) {
+	if p == nil {
+		return 0, "", ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.adminPort, p.adminUser, p.adminPassword
+}
 func (a *App) binary(kind string) (string, error) { return a.core.Binary(kind) }
 func childEnv(extra []string) []string {
 	out := []string{}
@@ -151,7 +162,10 @@ func (a *App) start(i Instance, r Rendered) error {
 	cmd.Env = childEnv(r.Env)
 	cmd.Dir = runtimeDir
 	cmd.WaitDelay = 2 * time.Second
-	p := &process{cmd: cmd, done: make(chan struct{}), logs: &logBuffer{secrets: r.Secrets}}
+	p := &process{
+		cmd: cmd, done: make(chan struct{}), logs: &logBuffer{secrets: r.Secrets},
+		adminPort: r.AdminPort, adminUser: r.AdminUser, adminPassword: r.AdminPassword,
+	}
 	if a.store.DB.ActiveCore != nil {
 		p.coreID = *a.store.DB.ActiveCore
 	}
@@ -173,6 +187,7 @@ func (a *App) start(i Instance, r Rendered) error {
 		} else {
 			p.status.Exit = "exit 0"
 		}
+		p.adminPassword = ""
 		p.mu.Unlock()
 		close(p.done)
 	}()

@@ -185,6 +185,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.updateAPI(w, r)
 			return
 		}
+		if r.URL.Path == "/api/health" {
+			a.healthAPI(w, r)
+			return
+		}
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		a.api(w, r)
@@ -195,7 +199,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
-	case "/", "/app.js", "/core.js", "/style.css", "/core.css", "/kurumi.webp":
+	case "/", "/app.js", "/core.js", "/health.js", "/style.css", "/core.css", "/health.css", "/kurumi.webp":
 		a.assets.ServeHTTP(w, r)
 	default:
 		http.NotFound(w, r)
@@ -415,7 +419,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		var rendered Rendered
-		rendered, err = a.store.render(i.ID, false)
+		rendered, err = a.store.renderRuntime(i.ID)
 		if err != nil {
 			break
 		}
