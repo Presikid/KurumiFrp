@@ -127,7 +127,7 @@ Release: 1
 Summary: Local frpc and frps management workbench
 License: LicenseRef-KurumiFRP-Unspecified
 URL: https://github.com/Presikid/KurumiFrp
-BuildArch: {rpm_arch}
+ExclusiveArch: x86_64 aarch64
 AutoReqProv: no
 Requires: ca-certificates, systemd, shadow-utils, procps-ng, coreutils
 Requires(pre): shadow-utils, coreutils
@@ -163,7 +163,16 @@ if [ "$1" = 0 ]; then remove_unit_state; purge_state; elif systemd_active; then 
         path = top / 'SPECS/kurumifrp.spec'
         write(path, spec)
         run(['rpmbuild', '-bb', '--define', '_topdir ' + str(top), '--target', rpm_arch, path])
-        for p in (top / 'RPMS').rglob('*.rpm'):
+        # --target determines the binary RPM architecture. A fixed BuildArch
+        # re-enters spec parsing and rejects cross-targets on RPM 4.18 hosts.
+        packages = list((top / 'RPMS').rglob('*.rpm'))
+        if len(packages) != 1:
+            raise SystemExit('Expected exactly one target RPM.')
+        for p in packages:
+            actual = subprocess.check_output(
+                ['rpm', '-qp', '--queryformat', '%{ARCH}', str(p)], text=True).strip()
+            if actual != rpm_arch:
+                raise SystemExit('RPM architecture mismatch: ' + actual)
             shutil.copyfile(p, OUT / p.name)
 
 
