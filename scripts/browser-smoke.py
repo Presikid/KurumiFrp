@@ -36,6 +36,9 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             except OSError:
                 time.sleep(.1)
         token = (root / "access.token").read_text()
+        with urllib.request.urlopen(base + "/kurumi.webp", timeout=5) as response:
+            header = response.read(12)
+            assert header[:4] == b"RIFF" and header[8:12] == b"WEBP", "theme image was not embedded and served"
         with sync_playwright() as p:
             launch = {"headless": True, "args": ["--no-sandbox"]}
             if len(sys.argv) > 2:
@@ -73,6 +76,10 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
                 page.add_script_tag(content=(web / "core.js").read_text())
             load_page()
             page.screenshot(path=str(shots / "login.png"), full_page=True)
+            page.set_viewport_size({"width": 390, "height": 844})
+            assert page.locator('.login-art').is_visible(), 'mobile login lost its theme artwork'
+            assert page.evaluate("() => document.documentElement.scrollWidth <= window.innerWidth")
+            page.set_viewport_size({"width": 1440, "height": 1000})
             page.locator('#login-form input').fill(token)
             page.locator('#login-form button').click()
             page.locator('#app').wait_for(state="visible")
