@@ -65,7 +65,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           docker run --rm -v "$PWD:/src:ro" fedora:43 sh -ec '
-            dnf install -y python3 /src/dist-native/kurumifrp-0.4.0-1.x86_64.rpm
+            dnf install -y python3 util-linux /src/dist-native/kurumifrp-0.4.0-1.x86_64.rpm
             rpm -e kurumifrp
             KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 /src/scripts/native-linux-smoke.py /src/dist-native/kurumifrp-0.4.0-1.x86_64.rpm
           '
