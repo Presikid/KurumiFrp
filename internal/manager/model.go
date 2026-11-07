@@ -16,6 +16,7 @@ type Instance struct {
 	Port      int    `json:"port"`
 	HTTPPort  int    `json:"httpPort"`
 	HTTPSPort int    `json:"httpsPort"`
+	AutoStart bool   `json:"autoStart"`
 	Token     string `json:"token,omitempty"`
 	HasToken  bool   `json:"hasToken,omitempty"`
 }
