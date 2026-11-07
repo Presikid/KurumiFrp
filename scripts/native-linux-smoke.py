@@ -68,6 +68,18 @@ try:
     # Native service account, not root, owns the runtime state.
     uid=int(subprocess.check_output(['id','-u','kurumifrp']))
     assert uid!=0 and (base/'data/state.json').stat().st_uid==uid
+    if Path('/run/systemd/system').exists():
+        run(['systemctl', 'is-active', '--quiet', 'kurumifrp-updater.path'])
+        request_file=base/'update.request'
+        staged=base/'.update-test'
+        staged.write_text('v0.5.0')  # Same version is rejected without downloading or installing.
+        os.chown(staged, uid, -1)
+        os.replace(staged, request_file)
+        for _ in range(200):
+            if not request_file.exists(): break
+            time.sleep(.1)
+        assert not request_file.exists(), 'systemd did not process update request'
+        assert api('state')['version']=='0.5.0', 'rejected update changed the running version'
     fixture=base/'cores/frps'
     fixture.write_text('#!/bin/sh\nif [ "$1" = verify ]; then exit 0; fi\nprintf %s "$TMPDIR" > "$TMPDIR/frp-temp-probe"\nexec sleep 600\n')
     fixture.chmod(0o755)
