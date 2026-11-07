@@ -122,10 +122,17 @@ func (s *Store) renderRuntime(id string) (Rendered, error) {
 		return Rendered{}, fmt.Errorf("无法释放本机状态接口端口：%w", err)
 	}
 	password := randomHex(32)
-	r.Text += fmt.Sprintf(
+	adminBlock := fmt.Sprintf(
 		"\n# Private KurumiFRP status endpoint. It is bound to loopback only.\nwebServer.addr = %s\nwebServer.port = %d\nwebServer.user = %s\nwebServer.password = {{ .Envs.KURUMI_ADMIN_PASSWORD }}\n",
 		quote("127.0.0.1"), port, quote("kurumi"),
 	)
+	// TOML dotted keys following a [[proxies]]/[[visitors]] declaration
+	// belong to that table. Keep the Admin API configuration at the root.
+	if table := strings.Index(r.Text, "\n[["); table >= 0 {
+		r.Text = r.Text[:table] + adminBlock + r.Text[table:]
+	} else {
+		r.Text += adminBlock
+	}
 	r.Env = append(r.Env, "KURUMI_ADMIN_PASSWORD="+quote(password))
 	r.Secrets = append(r.Secrets, password)
 	r.AdminPort = port
