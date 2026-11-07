@@ -25,11 +25,11 @@ type RuntimeStatus struct {
 	Pending bool   `json:"pending"`
 }
 type process struct {
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	done   chan struct{}
-	status RuntimeStatus
-	logs   *logBuffer
+	mu            sync.Mutex
+	cmd           *exec.Cmd
+	done          chan struct{}
+	status        RuntimeStatus
+	logs          *logBuffer
 	coreID        string
 	adminPort     int
 	adminUser     string
