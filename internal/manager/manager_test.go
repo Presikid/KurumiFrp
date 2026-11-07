@@ -112,6 +112,17 @@ func TestHostAndCrossSite(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 }
+
+func TestThemeArtworkIsServed(t *testing.T) {
+	a := testApp(t)
+	a.assets = http.FileServer(http.FS(fstest.MapFS{
+		"kurumi.webp": &fstest.MapFile{Data: []byte("artwork")},
+	}))
+	w := request(a, "GET", "/kurumi.webp", nil, "", "")
+	if w.Code != http.StatusOK || w.Body.String() != "artwork" {
+		t.Fatalf("theme artwork not served: %d", w.Code)
+	}
+}
 func TestLoginRateLimit(t *testing.T) {
 	a := testApp(t)
 	for j := 0; j < 10; j++ {

@@ -23,6 +23,9 @@ ArchitecturesAllowed=x64compatible or arm64
 ArchitecturesInstallIn64BitMode=x64compatible or arm64
 MinVersion=10.0
 WizardStyle=modern
+WizardImageFile=wizard.bmp
+WizardSmallImageFile=wizard-small.bmp
+SetupIconFile=kurumi.ico
 DisableDirPage=no
 DisableProgramGroupPage=yes
 OutputDir={#OutputPath}
@@ -30,31 +33,53 @@ OutputBaseFilename=KurumiFRP-{#AppVersion}-Setup
 Compression=lzma2
 SolidCompression=yes
 UninstallDisplayName=KurumiFRP
-UninstallDisplayIcon={app}\kurumi.exe
+UninstallDisplayIcon={app}\kurumi.ico
 CloseApplications=no
 RestartApplications=no
 SetupLogging=no
 VersionInfoDescription=KurumiFRP graphical installer
 VersionInfoProductName=KurumiFRP
 
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
+
+[CustomMessages]
+english.ShortcutGroup=Shortcuts:
+english.StartupGroup=Startup:
+english.CleanupGroup=Installer cleanup:
+english.DesktopTask=Create a desktop shortcut
+english.AutostartTask=Start a private workbench when each user signs in
+english.CleanupTask=Delete this Setup file after successful installation
+english.OpenApp=Open KurumiFRP
+chinesesimplified.ShortcutGroup=快捷方式：
+chinesesimplified.StartupGroup=启动选项：
+chinesesimplified.CleanupGroup=安装包清理：
+chinesesimplified.DesktopTask=创建桌面快捷方式
+chinesesimplified.AutostartTask=用户登录时启动各自的工作台
+chinesesimplified.CleanupTask=安装成功后删除本次安装程序
+chinesesimplified.OpenApp=打开 KurumiFRP
+
 [Tasks]
-Name: desktopicon; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
-Name: autostart; Description: "Run a private workbench for each user when they sign in"; GroupDescription: "Startup:"; Flags: unchecked
-Name: cleanup; Description: "Delete this Setup.exe after successful installation"; GroupDescription: "Installer cleanup:"
+Name: desktopicon; Description: "{cm:DesktopTask}"; GroupDescription: "{cm:ShortcutGroup}"
+Name: autostart; Description: "{cm:AutostartTask}"; GroupDescription: "{cm:StartupGroup}"; Flags: unchecked
+Name: cleanup; Description: "{cm:CleanupTask}"; GroupDescription: "{cm:CleanupGroup}"
 
 [Files]
 Source: "{#PayloadDir}\amd64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: not IsArm64
 Source: "{#PayloadDir}\arm64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: IsArm64
 Source: "{#PayloadDir}\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "kurumi.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "ChineseSimplified-LICENSE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\KurumiFRP"; Filename: "{app}\kurumi.exe"; Parameters: "--open"; WorkingDir: "{app}"
+Name: "{group}\KurumiFRP"; Filename: "{app}\kurumi.exe"; Parameters: "--open"; WorkingDir: "{app}"; IconFilename: "{app}\kurumi.ico"
 Name: "{group}\Uninstall KurumiFRP"; Filename: "{uninstallexe}"
-Name: "{commondesktop}\KurumiFRP"; Filename: "{app}\kurumi.exe"; Parameters: "--open"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{commondesktop}\KurumiFRP"; Filename: "{app}\kurumi.exe"; Parameters: "--open"; WorkingDir: "{app}"; IconFilename: "{app}\kurumi.ico"; Tasks: desktopicon
 Name: "{commonstartup}\KurumiFRP"; Filename: "{app}\kurumi.exe"; WorkingDir: "{app}"; Tasks: autostart
 
 [Run]
-Filename: "{app}\kurumi.exe"; Parameters: "--open"; Description: "Open KurumiFRP"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\kurumi.exe"; Parameters: "--open"; Description: "{cm:OpenApp}"; Flags: postinstall nowait skipifsilent
 
 [UninstallDelete]
 Type: files; Name: "{app}\native-install.json"
