@@ -85,12 +85,18 @@ func TestDistributionPaths(t *testing.T) {
 	old := distribution
 	defer func() { distribution = old }()
 	distribution = "linux-system"
-	data, cores, listen := defaultPaths()
+	data, cores, listen, err := defaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if data != "/var/lib/kurumifrp/data" || cores != "/var/lib/kurumifrp/cores" || listen != "auto" {
 		t.Fatal("incorrect system package paths")
 	}
 	distribution = "source"
-	data, _, _ = defaultPaths()
+	data, _, _, err = defaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if data != "./data" {
 		t.Fatal("source CLI changed")
 	}

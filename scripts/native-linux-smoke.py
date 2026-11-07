@@ -53,7 +53,7 @@ try:
     run(install)
     ensure_running()
     before=keys()
-    assert api('state')['version']=='0.4.0'
+    assert api('state')['version']=='0.5.0'
     run(['dpkg','--verify','kurumifrp'] if is_deb else ['rpm','-V','kurumifrp'])
     # Reinstall/upgrade path must stop and restart the owned manager, never purge data.
     run(install)
@@ -69,7 +69,7 @@ try:
     uid=int(subprocess.check_output(['id','-u','kurumifrp']))
     assert uid!=0 and (base/'data/master.key').stat().st_uid==uid
     fixture=base/'cores/frps'
-    fixture.write_text('#!/bin/sh\nif [ "$1" = verify ]; then exit 0; fi\nexec sleep 600\n')
+    fixture.write_text('#!/bin/sh\nif [ "$1" = verify ]; then exit 0; fi\nprintf %s "$TMPDIR" > "$TMPDIR/frp-temp-probe"\nexec sleep 600\n')
     fixture.chmod(0o755)
     state=api('state')
     api('save',{'revision':state['revision'],'kind':'instance','value':{'name':'native-uninstall-child','kind':'frps','host':'127.0.0.1','port':17070,'token':'synthetic-test-token','httpPort':0,'httpsPort':0}})
@@ -77,6 +77,14 @@ try:
     api('control',{'revision':state['revision'],'id':iid,'action':'start'})
     child=api('state')['runtime'][iid]['pid']
     assert child>0
+    temproot=Path('/run/kurumifrp') if Path('/run/systemd/system').exists() else base/'tmp'
+    for _ in range(50):
+        probes=list(temproot.glob('session-*/frp-temp-probe'))
+        if probes: break
+        time.sleep(.1)
+    assert probes and probes[0].read_text()==str(probes[0].parent), 'frp escaped managed temporary path'
+    assert not Path('/root/.config/kurumifrp').exists()
+    assert not Path('/root/.cache/kurumifrp').exists()
     with tempfile.TemporaryDirectory(prefix='kurumi-external-') as temp:
         outside=Path(temp)/'keep'; outside.write_text('unrelated data')
         (base/'cores/linked').symlink_to(temp,target_is_directory=True)
@@ -91,6 +99,7 @@ try:
         pass
     for p in (base,meta,exe,Path('/usr/lib/systemd/system/kurumifrp.service'),Path('/usr/share/doc/kurumifrp')):
         assert not p.exists(), 'managed path remains: '+str(p)
+    if Path('/run/systemd/system').exists(): assert not Path('/run/kurumifrp').exists()
     assert subprocess.run(['getent','passwd','kurumifrp'],stdout=subprocess.DEVNULL).returncode!=0
     print('PASS: real native package install, upgrade/reinstall, authenticated readiness, state preservation, complete purge and external-file protection.')
 finally:

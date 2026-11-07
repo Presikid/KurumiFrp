@@ -170,7 +170,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			}
 			_, ec := a.binary("frpc")
 			_, es := a.binary("frps")
-			reply(w, 200, map[string]any{"version": "0.4.0", "revision": a.store.DB.Revision, "state": a.store.DB.State.public(), "runtime": a.statuses(), "history": history, "events": a.store.DB.Events, "binaries": map[string]bool{"frpc": ec == nil, "frps": es == nil}})
+			reply(w, 200, map[string]any{"version": "0.5.0", "revision": a.store.DB.Revision, "state": a.store.DB.State.public(), "runtime": a.statuses(), "history": history, "events": a.store.DB.Events, "binaries": map[string]bool{"frpc": ec == nil, "frps": es == nil}})
 			return
 		case "/api/config":
 			v, e := a.store.render(r.URL.Query().Get("id"), true)

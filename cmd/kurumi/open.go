@@ -16,6 +16,9 @@ import (
 	"time"
 )
 
+// Do not redirect an external browser's temporary files into our managed session.
+var browserEnvironment = os.Environ()
+
 func openBrowser(address string) error {
 	u, err := url.Parse(address)
 	if err != nil || u.Scheme != "http" || (u.Hostname() != "127.0.0.1" && u.Hostname() != "::1") {
@@ -30,6 +33,7 @@ func openBrowser(address string) error {
 	default:
 		cmd = exec.Command("xdg-open", address)
 	}
+	cmd.Env = browserEnvironment
 	if err = cmd.Start(); err != nil {
 		return err
 	}

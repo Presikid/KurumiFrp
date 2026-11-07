@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -24,10 +25,14 @@ func main() {
 	}
 }
 func run() error {
-	defaultData, defaultCore, defaultListen := defaultPaths()
+	defaultData, defaultCore, defaultListen, pathErr := defaultPaths()
+	if pathErr != nil {
+		return pathErr
+	}
 	dir := flag.String("data", defaultData, "private persistent data directory")
 	bin := flag.String("frp-dir", defaultCore, "directory with trusted frpc/frps binaries")
 	addr := flag.String("listen", defaultListen, "loopback management listener, or auto for ports 9000..9010")
+	paths := flag.Bool("paths", false, "show resolved native program, data, core and temporary paths")
 	open := flag.Bool("open", false, "open local WebUI with a one-time login ticket")
 	version := flag.Bool("version", false, "print version and exit")
 	stop := flag.Bool("stop", false, "stop this data directory's manager and wait for owned frp processes")
@@ -44,18 +49,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		root, err := nativeRoot(exe)
-		if err != nil {
-			return err
-		}
-		switch *native {
-		case "init":
-			return initNative(root)
-		case "purge":
-			return purgeNative(root)
-		default:
-			return fmt.Errorf("invalid native operation")
-		}
+		return installedOperation(exe, *native)
 	}
 	if *setup != "" {
 		exe, err := os.Executable()
@@ -72,8 +66,33 @@ func run() error {
 		return cleanPackage(*cleanup, exe, *archive)
 	}
 	if *version {
-		fmt.Println("0.4.0")
+		fmt.Println("0.5.0")
 		return nil
+	}
+	if *paths {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]string{"program": filepath.Dir(exe), "data": defaultData, "cores": defaultCore, "temporary": temporaryRoot(defaultData), "distribution": distribution})
+	}
+	if distribution == "windows-installed" {
+		if *dir != defaultData || *bin != defaultCore {
+			return fmt.Errorf("installed builds keep state in ProgramData; use a source build for custom paths")
+		}
+		// Setup starts the unelevated manager asynchronously. Its read-only
+		// readiness probe may arrive before that account creates its profile.
+		until := time.Now().Add(20 * time.Second)
+		for {
+			err := prepareInstalled(!*stop && !*check && !*token)
+			if err == nil {
+				break
+			}
+			if !*check || !os.IsNotExist(err) || time.Now().After(until) {
+				return err
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 	abs, e := filepath.Abs(*dir)
 	if e != nil {
@@ -132,6 +151,11 @@ func run() error {
 	if err := rejectUninstall(abs); err != nil {
 		return err
 	}
+	cleanTemp, e := prepareTemporary(abs)
+	if e != nil {
+		return e
+	}
+	defer cleanTemp()
 	app, e := manager.New(abs, *bin, *addr, web.Files)
 	if e != nil {
 		return e
@@ -156,7 +180,7 @@ func run() error {
 	defer signal.Stop(stopped)
 	errs := make(chan error, 1)
 	go func() { errs <- server.Serve(listener) }()
-	fmt.Printf("KurumiFRP 0.4.0\nOpen http://%s\nGet local token in another terminal: kurumi --data %q --show-token\n", *addr, abs)
+	fmt.Printf("KurumiFRP 0.5.0\nOpen http://%s\nGet local token in another terminal: kurumi --data %q --show-token\n", *addr, abs)
 	if *open {
 		if e := openBrowser(app.BrowserURL()); e != nil {
 			log.Print("Browser could not be opened; use the printed local URL and --show-token.")

@@ -14,9 +14,11 @@ AppName=KurumiFRP
 AppVersion={#AppVersion}
 AppPublisher=Presikid
 AppPublisherURL=https://github.com/Presikid/KurumiFrp
-DefaultDirName={localappdata}\Programs\KurumiFRP
+DefaultDirName={commonpf}\KurumiFRP
+UsePreviousAppDir=no
+SetupMutex=Global\KurumiFRPSetupMachine
 DefaultGroupName=KurumiFRP
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible or arm64
 ArchitecturesInstallIn64BitMode=x64compatible or arm64
 MinVersion=10.0
@@ -37,7 +39,7 @@ VersionInfoProductName=KurumiFRP
 
 [Tasks]
 Name: desktopicon; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
-Name: autostart; Description: "Run the workbench when I sign in"; GroupDescription: "Startup:"; Flags: unchecked
+Name: autostart; Description: "Run a private workbench for each user when they sign in"; GroupDescription: "Startup:"; Flags: unchecked
 Name: cleanup; Description: "Delete this Setup.exe after successful installation"; GroupDescription: "Installer cleanup:"
 
 [Files]
@@ -48,8 +50,8 @@ Source: "{#PayloadDir}\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{group}\KurumiFRP"; Filename: "{app}\kurumi.exe"; Parameters: "--open"; WorkingDir: "{app}"
 Name: "{group}\Uninstall KurumiFRP"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\KurumiFRP"; Filename: "{app}\kurumi.exe"; Parameters: "--open"; WorkingDir: "{app}"; Tasks: desktopicon
-Name: "{userstartup}\KurumiFRP"; Filename: "{app}\kurumi.exe"; WorkingDir: "{app}"; Tasks: autostart
+Name: "{commondesktop}\KurumiFRP"; Filename: "{app}\kurumi.exe"; Parameters: "--open"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{commonstartup}\KurumiFRP"; Filename: "{app}\kurumi.exe"; WorkingDir: "{app}"; Tasks: autostart
 
 [Run]
 Filename: "{app}\kurumi.exe"; Parameters: "--open"; Description: "Open KurumiFRP"; Flags: postinstall nowait skipifsilent
@@ -78,6 +80,12 @@ begin
   end;
 end;
 
+function InitializeSetup(): Boolean;
+begin
+  Result := not RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.Presikid.KurumiFRP_is1');
+  if not Result then MsgBox('A legacy per-user installation is present. Back up its data and cores and remove it before installing the machine-wide edition. No legacy data was changed.', mbError, MB_OK);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var Code: Integer; App, Exe: String;
 begin
@@ -91,7 +99,7 @@ begin
     Result := 'This directory contains an old script installation or unmanaged files. Choose a new directory. See INSTALL.md for migration.'; Exit;
   end;
   if FileExists(Exe) then begin
-    if not Exec(Exe, '--stop', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
+    if not Exec(Exe, '--native-maintenance stop', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
     if Code <> 0 then Result := 'The running workbench could not be stopped safely. Existing data was retained.';
   end;
 end;
@@ -103,8 +111,8 @@ begin
     App := ExpandConstant('{app}'); Exe := App + '\kurumi.exe';
     if not Exec(Exe, '--native-maintenance init', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
     if Code <> 0 then RaiseException('Installation receipt could not be initialized. Setup.exe was retained.');
-    if not Exec(Exe, '', App, SW_HIDE, ewNoWait, Code) then RaiseException('Could not start KurumiFRP.');
-    if not Exec(Exe, '--check-running', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
+    if not ExecAsOriginalUser(Exe, '', App, SW_HIDE, ewNoWait, Code) then RaiseException('Could not start KurumiFRP.');
+    if not ExecAsOriginalUser(Exe, '--check-running', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
     if Code <> 0 then RaiseException('The local API did not become ready. Setup.exe was retained; existing configuration was not deleted.');
     Ready := True;
   end;
@@ -116,7 +124,7 @@ begin
   if Ready and WizardIsTaskSelected('cleanup') then begin
     Source := ExpandConstant('{srcexe}');
     Args := '--cleanup-setup "' + Source + '" --cleanup-sha256 ' + Lowercase(GetSHA256OfFile(Source));
-    if not Exec(ExpandConstant('{app}\kurumi.exe'), Args, ExpandConstant('{app}'), SW_HIDE, ewNoWait, Code) then
+    if not ExecAsOriginalUser(ExpandConstant('{app}\kurumi.exe'), Args, ExpandConstant('{app}'), SW_HIDE, ewNoWait, Code) then
       MsgBox('Setup finished, but its downloaded EXE could not be removed. You may delete that EXE manually.', mbInformation, MB_OK);
   end;
 end;
@@ -124,7 +132,7 @@ end;
 function InitializeUninstall(): Boolean;
 begin
   Result := True;
-  if not UninstallSilent then Result := MsgBox('Uninstall KurumiFRP and permanently delete all configurations, authentication keys, downloaded frp cores and application logs?', mbConfirmation, MB_YESNO) = IDYES;
+  if not UninstallSilent then Result := MsgBox('Uninstall KurumiFRP for all users and permanently delete all accounts configurations, authentication keys, downloaded frp cores and application logs?', mbConfirmation, MB_YESNO) = IDYES;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

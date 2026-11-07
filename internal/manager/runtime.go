@@ -111,6 +111,7 @@ func (a *App) verify(i Instance, r Rendered) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "verify", "-c", f.Name())
+	cmd.Dir = a.store.dir
 	childprocess.Configure(cmd)
 	cmd.Env = childEnv(r.Env)
 	buf := &logBuffer{secrets: r.Secrets}

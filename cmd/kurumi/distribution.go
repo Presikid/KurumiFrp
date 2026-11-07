@@ -1,23 +1,20 @@
 package main
 
-import (
-	"os"
-	"path/filepath"
-)
+import "path/filepath"
 
-// Set by the native package build. Source builds retain the explicit-directory CLI.
+// Set by native packaging. Source builds retain the explicit-directory CLI.
 var distribution = "source"
 
-func defaultPaths() (string, string, string) {
+func defaultPaths() (string, string, string, error) {
 	switch distribution {
 	case "linux-system":
-		return "/var/lib/kurumifrp/data", "/var/lib/kurumifrp/cores", "auto"
+		return "/var/lib/kurumifrp/data", "/var/lib/kurumifrp/cores", "auto", nil
 	case "windows-installed":
-		exe, err := os.Executable()
-		if err == nil {
-			root := filepath.Dir(exe)
-			return filepath.Join(root, "data"), filepath.Join(root, "cores"), "auto"
+		root, err := windowsUserRoot()
+		if err != nil {
+			return "", "", "", err
 		}
+		return filepath.Join(root, "data"), filepath.Join(root, "cores"), "auto", nil
 	}
-	return "./data", "./frp", "127.0.0.1:9000"
+	return "./data", "./frp", "127.0.0.1:9000", nil
 }
