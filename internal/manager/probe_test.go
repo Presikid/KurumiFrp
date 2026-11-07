@@ -170,7 +170,7 @@ func TestProbeDoesNotHoldApplicationMutex(t *testing.T) {
 	state := a.store.DB.State.clone()
 	state.Tunnels = append(state.Tunnels, Tunnel{
 		ID: randomHex(8), InstanceID: instance.ID, Name: "slow-probe",
-		Type: "http", LocalHost: host, LocalPort: port, Enabled: true,
+		Type: "http", LocalHost: host, LocalPort: port, Domains: []string{"slow.example.test"}, Enabled: true,
 	})
 	if err := a.store.commit(state, "slow probe test"); err != nil {
 		t.Fatal(err)
