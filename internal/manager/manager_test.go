@@ -20,7 +20,11 @@ func testApp(t *testing.T) *App {
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(a.Close)
+	t.Cleanup(func() {
+		if err := a.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	return a
 }
 func request(a *App, method, path string, v any, token, origin string) *httptest.ResponseRecorder {

@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -205,13 +206,26 @@ func (a *App) statuses() map[string]RuntimeStatus {
 	}
 	return out
 }
-func (a *App) Close() {
+func (a *App) Close() error {
 	a.core.Close()
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var failures []error
 	for id := range a.procs {
-		_ = a.stop(id)
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			if err := a.stop(id); err != nil {
+				mu.Lock()
+				failures = append(failures, err)
+				mu.Unlock()
+			}
+		}(id)
 	}
+	wg.Wait()
+	return errors.Join(failures...)
 }
 
 // Keeps the scanner-free writer above tested for secret fragments spanning writes.

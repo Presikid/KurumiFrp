@@ -45,7 +45,7 @@ jobs:
           $env:KURUMI_PACKAGE_TARGET = 'windows_amd64'
           python scripts/package.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python scripts/install-smoke.py dist/KurumiFRP_0.2.0_windows_amd64.zip
+          python scripts/install-smoke.py dist/KurumiFRP_0.3.0_windows_amd64.zip
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Real browser UI tests (catalog fixtures only)
         if: runner.os == 'Linux'
@@ -72,7 +72,7 @@ jobs:
       - name: Build all four packages and verify Linux installer
         run: |
           python3 scripts/package.py
-          python3 scripts/install-smoke.py dist/KurumiFRP_0.2.0_linux_amd64.tar.gz
+          python3 scripts/install-smoke.py dist/KurumiFRP_0.3.0_linux_amd64.tar.gz
       - name: Publish versioned preview without replacing existing releases
         env:
           GH_TOKEN: ${{ github.token }}

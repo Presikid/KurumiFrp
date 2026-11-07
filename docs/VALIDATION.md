@@ -35,3 +35,12 @@ branch was used for these tests. Sandbox sample rules are not seeded in the prod
 本地 Linux Go 单测、race、vet，四目标交叉编译，Linux 安装 smoke 已通过。浏览器页面在此沙箱使用离线 DOM + 真实临时 API 桥接；核心目录是测试 fixture，验证选择、错误平台禁装、主题及手机宽度，不声称是实际公网目录。真正浏览器 localhost 测试、Windows 原生安装和官方核心下载/转发由 CI 执行，以对应提交的 Actions 结论为准。
 
 `core-smoke.py` 通过实际认证 API 下载固定官方版本，校验/提取/启用，再调用 frp-smoke.py 验证 TCP 字节往返。只有所有 CI 测试成功，发布 job 才能创建四平台预编译包及 checksums。ARM64 是交叉编译结果，不是 ARM64 原生运行验收。
+
+
+## 0.3 验证
+
+新增 Go 测试覆盖：已知安装文件清理、保留用户额外文件、源文件修改拒绝、恶意清单路径拒绝、自删除源可执行文件拒绝、符号链接拒绝、ZIP/tar.gz 全成员匹配与额外文件拒绝、本机维护认证和失败时保留状态。
+
+升级安装 smoke：在隔离用户目录重复安装；确认原始压缩包及解压载荷删除、个人文件保留、令牌/主密钥不变；人为制造退出认证失败确认安装被保留；启动真实的合成 Go 子进程作为 frps 生命周期 fixture，完整卸载后检查管理器/子进程退出、数据与集成项删除、外部符号链接/junction 目标未受损。
+
+本地已运行 Linux 安装与卸载 smoke、Go 单元测试和各包竞态检测。Linux 在线安装脚本的传输采用受控 fixture，验证临时下载目录清理，不冒充公网下载。Windows 原生安装/卸载与 junction 测试、真实官方 frp 下载与 TCP 转发由提交的 GitHub Actions 执行；结果以对应 run 为准。ARM64 仍为交叉编译，不声称实机验证。
