@@ -189,6 +189,8 @@ func run() error {
 	defer signal.Stop(stopped)
 	errs := make(chan error, 1)
 	go func() { errs <- server.Serve(listener) }()
+	// Restore only instances explicitly opted in; each is verified before spawn.
+	go app.StartAutoInstances()
 	fmt.Printf("KurumiFRP 0.7.0\nOpen http://%s\nGet local token in another terminal: kurumi --data %q --show-token\n", *addr, abs)
 	if *open {
 		if e := openBrowser(app.BrowserURL()); e != nil {
