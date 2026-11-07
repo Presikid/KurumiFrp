@@ -159,4 +159,3 @@ func TestAutoStartFailureIsVisibleAndDoesNotClaimRunning(t *testing.T) {
 		t.Fatal("failed auto-start created a process")
 	}
 }
-
