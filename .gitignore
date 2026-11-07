@@ -1,0 +1,10 @@
+/data/
+/frp/
+/dist/
+/kurumi
+/kurumi.exe
+/kurumi-*
+/frp.tgz
+__pycache__/
+*.test
+*.out

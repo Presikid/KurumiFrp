@@ -1,0 +1,126 @@
+"""Optional real-browser smoke test. Requires playwright and Chromium.
+Run: python scripts/browser-smoke.py /path/to/kurumi [chromium-path]
+No real frp process is launched. All data is disposable.
+"""
+import json
+import http.cookiejar
+import re
+import urllib.error
+import os
+from pathlib import Path
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+from playwright.sync_api import sync_playwright
+
+binary = str(Path(sys.argv[1]).resolve())
+shots = Path(os.environ.get("KURUMI_SCREENSHOTS", tempfile.mkdtemp(prefix="kurumi-shots-")))
+shots.mkdir(parents=True, exist_ok=True)
+with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
+    root = Path(directory)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    base = f"http://127.0.0.1:{port}"
+    server = subprocess.Popen([binary, "--data", str(root), "--frp-dir", str(root / "frp"), "--listen", f"127.0.0.1:{port}"], stdout=subprocess.DEVNULL)
+    try:
+        for _ in range(100):
+            if server.poll() is not None:
+                raise RuntimeError("server exited")
+            try:
+                urllib.request.urlopen(base, timeout=1).close()
+                break
+            except OSError:
+                time.sleep(.1)
+        token = (root / "access.token").read_text()
+        with sync_playwright() as p:
+            launch = {"headless": True, "args": ["--no-sandbox"]}
+            if len(sys.argv) > 2:
+                launch["executable_path"] = sys.argv[2]
+            browser = p.chromium.launch(**launch)
+            page = browser.new_page(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
+            errors = []
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            offline = os.environ.get("KURUMI_OFFLINE_UI") == "1"
+            jar = http.cookiejar.CookieJar()
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar), urllib.request.ProxyHandler({}))
+            def bridge(path, options):
+                if not path.startswith("/api/"):
+                    raise ValueError("test bridge only supports local API")
+                request = urllib.request.Request(base + path, data=options.get("body", "").encode() if options.get("body") else None, headers=options.get("headers", {}), method=options.get("method", "GET"))
+                try:
+                    response = opener.open(request, timeout=20)
+                except urllib.error.HTTPError as error:
+                    response = error
+                return {"status": response.status, "body": response.read().decode()}
+            if offline:
+                page.expose_function("testFetch", bridge)
+            def load_page():
+                if not offline:
+                    page.goto(base)
+                    return
+                # Offline DOM integration harness. No browser network-policy changes.
+                web = Path(__file__).resolve().parents[1] / "web"
+                html = re.sub(r'<link[^>]*>|<script[^>]*></script>', "", (web / "index.html").read_text())
+                page.set_content(html)
+                page.add_style_tag(content=(web / "style.css").read_text())
+                page.add_script_tag(content="window.fetch = async (p, o={}) => { const r = await window.testFetch(p, o); return new Response(r.body, {status:r.status,headers:{'Content-Type':'application/json'}}); };")
+                page.add_script_tag(content=(web / "app.js").read_text())
+            load_page()
+            page.screenshot(path=str(shots / "login.png"), full_page=True)
+            page.locator('#login-form input').fill(token)
+            page.locator('#login-form button').click()
+            page.locator('#app').wait_for(state="visible")
+            page.locator('[data-action="new-instance"]').first.click()
+            page.locator('#editor input[name="name"]').fill("Tokyo entry")
+            page.locator('#editor input[name="host"]').fill("127.0.0.1")
+            page.locator('#editor input[name="token"]').fill("test-passphrase-123")
+            page.locator('#editor button[type="submit"]').click()
+            page.locator('#dialog').wait_for(state="hidden")
+            page.locator('[data-page="tunnels"]').click()
+            page.locator('[data-action="new-tunnel"]').first.click()
+            page.locator('#editor input[name="name"]').fill("desktop-rdp")
+            page.locator('#editor input[name="localPort"]').fill("3389")
+            page.locator('#editor input[name="remotePort"]').fill("13389")
+            page.locator('#editor button[type="submit"]').click()
+            page.locator('#dialog').wait_for(state="hidden")
+            page.locator('[data-action="new-tunnel"]').first.click()
+            page.locator('#editor input[name="name"]').fill("conflict-test")
+            page.locator('#editor input[name="remotePort"]').fill("13389")
+            page.locator('#editor button[type="submit"]').click()
+            page.wait_for_function("document.querySelector('#form-error').textContent.length > 0")
+            page.locator('#cancel').click()
+            page.locator('[data-action="edit-tunnel"]').first.click()
+            page.locator('#editor input[name="localPort"]').fill("3390")
+            page.locator('#editor button[type="submit"]').click()
+            page.locator('#dialog').wait_for(state="hidden")
+            page.locator('[data-page="overview"]').click()
+            page.screenshot(path=str(shots / "overview.png"), full_page=True)
+            page.locator('[data-page="config"]').click()
+            page.wait_for_function("document.querySelector('#config-output').textContent.includes('redacted')")
+            assert "test-passphrase-123" not in page.locator('#config-output').text_content()
+            page.locator('[data-page="instances"]').click()
+            page.locator('[data-action="start"]').first.click()
+            page.locator('#toast').wait_for(state="visible")
+            page.screenshot(path=str(shots / "instances.png"), full_page=True)
+            page.locator('#theme').click()
+            page.screenshot(path=str(shots / "dark.png"), full_page=True)
+            page.locator('#theme').click()
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.locator('[data-page="overview"]').click()
+            page.screenshot(path=str(shots / "mobile.png"), full_page=True)
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            if not offline:
+                page.reload()
+            page.locator('#app').wait_for(state="visible")
+            page.locator('[data-page="tunnels"]').click()
+            assert page.locator('tbody tr').count() == 1
+            assert not errors, errors
+            browser.close()
+            print(("Offline UI harness" if offline else "Browser smoke") + " passed: login, CRUD, conflicts, redaction, saved-state reads, responsive layout; no page errors.")
+    finally:
+        server.terminate()
+        server.wait(timeout=15)
