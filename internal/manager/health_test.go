@@ -125,7 +125,7 @@ func TestHealthAPISeparatesRegistrationAndTargetHealth(t *testing.T) {
 	}
 
 	proc := &process{
-		status: RuntimeStatus{State: "running", PID: 4321, Started: now(), Applied: "test"},
+		status:    RuntimeStatus{State: "running", PID: 4321, Started: now(), Applied: "test"},
 		adminPort: adminPort, adminUser: "kurumi", adminPassword: "private-admin-password",
 		logs: &logBuffer{secrets: []string{"test-secret-1234", "private-admin-password"}},
 	}
