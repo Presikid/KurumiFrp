@@ -30,6 +30,7 @@ jobs:
           unformatted="$(gofmt -l cmd internal web)"
           if [ -n "$unformatted" ]; then
             printf "Go files need gofmt:\n%s\n" "$unformatted"
+            gofmt -d cmd internal web
             exit 1
           fi
           go vet ./...
