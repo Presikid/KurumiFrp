@@ -2,14 +2,13 @@
 const $ = (s) => document.querySelector(s);
 const esc = (v = '') => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const titles = {overview:'网络总览',tunnels:'连接看板',instances:'运行实例',config:'配置中心',logs:'运行记录'};
-let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer, historyWarning = '';
+let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer;
 const dialog = $('#dialog');
-function toast(text) { $('#toast').textContent = text + historyWarning; historyWarning = ''; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 8000); }
+function toast(text) { $('#toast').textContent = text; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 8000); }
 async function api(path, body) {
  const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST',credentials:'same-origin',headers:body === undefined ? {}:{'Content-Type':'application/json'},body:body === undefined ? undefined:JSON.stringify(body)});
  const json = await response.json();
  if (!response.ok) {if(response.status === 401 && path !== 'login') showLogin(); throw new Error(json.error || `HTTP ${response.status}`);}
- if (json.historyPruned) historyWarning = `；因空间限制移除了 ${json.historyPruned} 份最早历史`;
  return json;
 }
 function showLogin() {$('#login').hidden = false; $('#app').hidden = true; data = null; if (dialog.open) dialog.close();}
@@ -47,8 +46,8 @@ function render() {
   `<div class="toolbar"><input id="search" placeholder="搜索规则、地址或实例…" aria-label="搜索规则" value="${esc(filter)}"><select id="protocol" aria-label="按协议筛选"><option value="">所有协议</option>${['tcp','udp','http','https','stcp','stcp-visitor'].map(t=>`<option ${protocol===t?'selected':''}>${t}</option>`).join('')}</select></div><section class="panel" id="tunnel-list">${filteredTable()}</section>`;
  } else if(page==='config') {
   ensureSelected();
-  content.innerHTML=header('配置中心','查看脱敏 TOML、导出草稿和恢复历史；密钥不会被导出。','<button data-action="export-state">导出脱敏草稿</button>')+
-  `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>实例配置预览</h3><button data-action="export-toml">导出 TOML</button></div><div class="panel-content">${picker()}<div class="notice">此预览中的 &lt;redacted&gt; 是占位符，不能直接部署。真实运行时由服务端注入密钥；不向浏览器返回明文。</div><pre id="config-output">${selected?'正在读取…':'先创建一个实例。'}</pre></div></section><section class="panel"><div class="panel-title"><h3>草稿历史</h3><span class="pill">当前 r${data.revision}</span></div><div class="panel-content">${data.history.length?data.history.slice().reverse().map(h=>`<div class="check-row"><div><b>r${h.revision}</b><p class="small-note blank">${esc(h.summary)}<br>${time(h.at)}</p></div><button data-action="restore" data-target="${h.revision}">恢复</button></div>`).join(''):empty('暂无历史版本','修改配置时自动保存前一版本。')}<p class="small-note blank">恢复前须停止全部托管实例。恢复只改变草稿，不会自动重新启动进程。</p></div></section></div>`;
+  content.innerHTML=header('配置中心','预览配置、导出数据和恢复历史快照。')+
+  `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>实例配置预览</h3><button data-action="export-toml">导出脱敏 TOML</button></div><div class="panel-content">${picker()}<div class="notice">此预览中的 &lt;redacted&gt; 是占位符，不能直接部署。</div><pre id="config-output">${selected?'正在读取…':'先创建一个实例。'}</pre></div></section><section class="panel"><div class="panel-title"><h3>历史快照</h3><span class="pill">当前 r${data.revision}</span></div><div class="panel-content"><label>保留数量（0–100）<input id="history-limit" type="number" min="0" max="100" step="1" value="${data.historyLimit}"></label><button data-action="history-settings">保存数量</button><p class="small-note">减少数量时立即删除最早的快照；设为 0 则不保留快照。</p>${data.history.length?data.history.slice().reverse().map(h=>`<div class="check-row"><div><b>r${h.revision}</b><p class="small-note blank">${esc(h.summary)}<br>${time(h.at)}</p></div><button data-action="restore" data-target="${h.revision}">恢复</button></div>`).join(''):empty('暂无历史版本','修改配置时按保留数量保存前一版本。')}<p class="small-note blank">恢复前须停止全部托管实例。恢复只改变草稿，不会自动重新启动进程。</p></div></section></div><section class="panel"><div class="panel-title"><h3>导出配置和快照</h3></div><div class="panel-content"><label>导出范围<select id="export-scope"><option value="all">当前配置和全部快照</option><option value="config">仅当前配置</option><option value="snapshots">仅全部快照</option><option value="snapshot">单个快照</option></select></label><label>单个快照<select id="export-snapshot">${data.history.slice().reverse().map(h=>`<option value="${h.revision}">r${h.revision} · ${esc(h.summary)}</option>`).join('')}</select></label><label class="form-check"><input id="export-secrets" type="checkbox">包含明文令牌和配对密钥</label><p class="small-note">默认导出不含密钥。选择包含密钥时，下载文件不会加密，请妥善保管。JSON 导出用于查看或手动备份，当前版本不支持直接导入恢复。</p><button data-action="export-data">导出 JSON</button></div></section>`;
   if(selected) api('config?id='+encodeURIComponent(selected)).then(v=>{if(serial===n && $('#config-output')) $('#config-output').textContent=v.toml;}).catch(e=>toast(e.message));
  } else if(page==='logs') {
   ensureSelected(); content.innerHTML=header('运行记录','真实子进程输出与配置变更记录。进程日志仅保留当前会话最近 200 行。')+
@@ -110,7 +109,8 @@ $('#content').addEventListener('click',async e=>{
  if(action==='logs'){selected=id;navigate('logs');return;}
  b.disabled=true;
  try{
-  if(action==='export-state'){download('kurumi-redacted-draft.json',JSON.stringify({format:'kurumi-redacted-draft',revision:data.revision,state:data.state},null,2));toast('已导出脱敏草稿；此文件不包含密钥且不支持直接恢复');return;}
+  if(action==='export-data'){const scope=$('#export-scope').value, revision=$('#export-snapshot').value, secrets=$('#export-secrets').checked;if(scope==='snapshot'&&!revision)throw new Error('没有可导出的快照');if(secrets&&!confirm('导出文件将包含明文令牌和配对密钥，文件不会加密。请妥善保管。继续？'))return;const query=new URLSearchParams({scope,secrets:secrets?'1':'0'});if(scope==='snapshot')query.set('revision',revision);const result=await api('export?'+query);download(`kurumi-${scope}${secrets?'-secrets':'-redacted'}.json`,JSON.stringify(result,null,2));toast('导出完成');return;}
+  if(action==='history-settings'){const input=$('#history-limit'), limit=Number(input.value);if(input.value===''||!Number.isInteger(limit)||limit<0||limit>100)throw new Error('快照数量须为 0–100');if(limit<data.history.length&&!confirm(`将删除 ${data.history.length-limit} 份最早快照，继续？`))return;await api('history-settings',{revision:data.revision,historyLimit:limit});toast('快照保留数量已更新');await refresh();return;}
   if(action==='export-toml'){if(!selected)throw new Error('先选择一个实例');const v=await api('config?id='+selected);download('kurumi-redacted.toml',v.toml,'text/plain');return;}
   if(action==='validate'){const v=await api('validate',{revision:data.revision,id});toast('官方 frp 配置校验通过；尚未执行网络探测');return;}
   if(['start','restart','stop'].includes(action)){

@@ -176,7 +176,7 @@ func TestRevisionAndHistory(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	if len(a.store.DB.History) != 30 {
+	if len(a.store.DB.History) != defaultHistoryLimit {
 		t.Fatal("unbounded history")
 	}
 }

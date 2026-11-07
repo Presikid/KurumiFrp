@@ -170,7 +170,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			}
 			_, ec := a.binary("frpc")
 			_, es := a.binary("frps")
-			reply(w, 200, map[string]any{"version": "0.5.0", "revision": a.store.DB.Revision, "state": a.store.DB.State.public(), "runtime": a.statuses(), "history": history, "events": a.store.DB.Events, "binaries": map[string]bool{"frpc": ec == nil, "frps": es == nil}})
+			reply(w, 200, map[string]any{"version": "0.5.0", "revision": a.store.DB.Revision, "state": a.store.DB.State.public(), "runtime": a.statuses(), "history": history, "historyLimit": a.store.DB.HistoryLimit, "events": a.store.DB.Events, "binaries": map[string]bool{"frpc": ec == nil, "frps": es == nil}})
+			return
+		case "/api/export":
+			a.export(w, r)
 			return
 		case "/api/config":
 			v, e := a.store.render(r.URL.Query().Get("id"), true)
@@ -202,6 +205,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		ID       string          `json:"id"`
 		Action   string          `json:"action"`
 		Target   uint64          `json:"target"`
+		HistoryLimit *int        `json:"historyLimit"`
 		Value    json.RawMessage `json:"value"`
 	}
 	if e := decode(w, r, &req); e != nil {
@@ -213,8 +217,9 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var err error
-	a.store.pruned = 0
 	switch r.URL.Path {
+	case "/api/history-settings":
+		if req.HistoryLimit == nil { err = fmt.Errorf("请指定快照保留数量") } else { err = a.store.setHistoryLimit(*req.HistoryLimit) }
 	case "/api/save":
 		st := a.store.DB.State.clone()
 		switch req.Kind {
@@ -389,7 +394,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	reply(w, 200, map[string]any{"ok": true, "revision": a.store.DB.Revision, "historyPruned": a.store.pruned})
+	reply(w, 200, map[string]any{"ok": true, "revision": a.store.DB.Revision})
 }
 
 func (a *App) Done() <-chan struct{} { return a.quit }
