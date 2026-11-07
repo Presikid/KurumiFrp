@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const current = "v0.5.0"
+const current = "v0.6.0"
 const releaseAPI = "https://api.github.com/repos/Presikid/KurumiFrp/releases"
 const maxPackage = 256 << 20
 

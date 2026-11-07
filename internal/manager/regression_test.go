@@ -7,7 +7,27 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
+
+func TestLegacyCoreSelectionMigrates(t *testing.T) {
+	coreDir := t.TempDir()
+	id := "v0.61.0-linux_amd64-0000000000000000"
+	if err := os.WriteFile(filepath.Join(coreDir, "active.json"), []byte(`{"id":"`+id+`"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(t.TempDir(), coreDir, "127.0.0.1:9000", fstest.MapFS{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	if app.store.DB.ActiveCore == nil || *app.store.DB.ActiveCore != id {
+		t.Fatal("core choice was not migrated")
+	}
+	if _, err := os.Stat(filepath.Join(coreDir, "active.json")); !os.IsNotExist(err) {
+		t.Fatal("old selection file retained", err)
+	}
+}
 
 func TestLegacyOversizedHistoryCanBeSavedAndReloaded(t *testing.T) {
 	dir := t.TempDir()

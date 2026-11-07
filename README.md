@@ -1,13 +1,13 @@
-# KurumiFRP 0.5
+# KurumiFRP 0.6
 
 本机 frpc/frps 管理工作台。Go 标准库后端 + 内嵌中文响应式 WebUI，无 Node.js、数据库服务器或 Docker 运行依赖。
 
 ## 正式安装方式
 
-**Windows 10/11**：下载 Releases 的 `KurumiFRP-0.5.0-Setup.exe`，双击图形化安装向导。自动选择 x64/ARM64，支持快捷方式、可选登录启动、应用列表和原生卸载，不需要 PowerShell/Python/Go。默认通过管理员授权安装到 **Program Files**，注册机器级卸载项。配置、密钥、核心和临时文件集中在 **ProgramData\KurumiFRP**，按 Windows 账户隔离；日常运行不向程序目录写入，也不要求持续提权。
+**Windows 10/11**：下载 Releases 的 `KurumiFRP-0.6.0-Setup.exe`，双击图形化安装向导。自动选择 x64/ARM64，支持快捷方式、可选登录启动、应用列表和原生卸载，不需要 PowerShell/Python/Go。默认通过管理员授权安装到 **Program Files**，注册机器级卸载项。配置、密钥、核心和临时文件集中在 **ProgramData\KurumiFRP**，按 Windows 账户隔离；日常运行不向程序目录写入，也不要求持续提权。
 
-**Debian/Ubuntu**：`sudo apt install ./kurumifrp_0.5.0_amd64.deb`。
-**Fedora/RHEL 系**：`sudo dnf install ./kurumifrp-0.5.0-1.x86_64.rpm`。
+**Debian/Ubuntu**：`sudo apt install ./kurumifrp_0.6.0_amd64.deb`。
+**Fedora/RHEL 系**：`sudo dnf install ./kurumifrp-0.6.0-1.x86_64.rpm`。
 ARM64 提供对应原生包。Linux 安装为低权限 systemd 服务，不再是 HOME 目录中的便携包；数据位于 `/var/lib/kurumifrp`，管理端仍只监听回环 9000–9010。
 
 Windows 成功安装后可以自动删除 Setup.exe。Linux 原始 DEB/RPM 由调用者管理，不在包事务里猜测删除；安装成功验证后删除、完整卸载、旧版迁移和服务管理见 [安装说明](docs/INSTALL.md)。包管理器负责的软件不通过自删程序文件卸载。此版本尚无商业代码签名或 APT/YUM 在线仓库。

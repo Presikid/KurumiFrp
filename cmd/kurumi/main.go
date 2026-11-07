@@ -74,7 +74,7 @@ func run() error {
 		return cleanPackage(*cleanup, exe, *archive)
 	}
 	if *version {
-		fmt.Println("0.5.0")
+		fmt.Println("0.6.0")
 		return nil
 	}
 	if *paths {
@@ -189,7 +189,7 @@ func run() error {
 	defer signal.Stop(stopped)
 	errs := make(chan error, 1)
 	go func() { errs <- server.Serve(listener) }()
-	fmt.Printf("KurumiFRP 0.5.0\nOpen http://%s\nGet local token in another terminal: kurumi --data %q --show-token\n", *addr, abs)
+	fmt.Printf("KurumiFRP 0.6.0\nOpen http://%s\nGet local token in another terminal: kurumi --data %q --show-token\n", *addr, abs)
 	if *open {
 		if e := openBrowser(app.BrowserURL()); e != nil {
 			log.Print("Browser could not be opened; use the printed local URL and --show-token.")
