@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
-	"strings"
 	"sync"
 	"testing"
 	"time"
