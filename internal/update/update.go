@@ -13,16 +13,20 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Presikid/KurumiFrp/internal/version"
 )
 
-const current = "v0.7.0"
+const current = "v" + version.Current
 const releaseAPI = "https://api.github.com/repos/Presikid/KurumiFrp/releases"
 const maxPackage = 256 << 20
 
-var tagRE = regexp.MustCompile(`^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$`)
+// Three-part tags remain readable for releases published before the four-part scheme.
+var tagRE = regexp.MustCompile(`^v[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}(\.[0-9]{1,5})?$`)
 var digestRE = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 type Asset struct {
@@ -108,17 +112,33 @@ func (m *Manager) releases(ctx context.Context) ([]release, error) {
 	e = json.Unmarshal(b, &all)
 	return all, e
 }
+func parseVersion(tag string) ([4]int, bool) {
+	var result [4]int
+	if !tagRE.MatchString(tag) {
+		return result, false
+	}
+	for i, part := range strings.Split(strings.TrimPrefix(tag, "v"), ".") {
+		n, err := strconv.Atoi(part)
+		if err != nil || n > 65535 {
+			return result, false
+		}
+		result[i] = n
+	}
+	return result, true
+}
+
 func newer(a, b string) bool {
-	var a1, a2, a3, b1, b2, b3 int
-	fmt.Sscanf(a, "v%d.%d.%d", &a1, &a2, &a3)
-	fmt.Sscanf(b, "v%d.%d.%d", &b1, &b2, &b3)
-	if a1 != b1 {
-		return a1 > b1
+	left, okA := parseVersion(a)
+	right, okB := parseVersion(b)
+	if !okA || !okB {
+		return false
 	}
-	if a2 != b2 {
-		return a2 > b2
+	for i := range left {
+		if left[i] != right[i] {
+			return left[i] > right[i]
+		}
 	}
-	return a3 > b3
+	return false
 }
 func packageName(tag, distribution string) string {
 	version := strings.TrimPrefix(tag, "v")
@@ -151,7 +171,8 @@ func (m *Manager) Versions(ctx context.Context) ([]Version, error) {
 	}
 	out := []Version{}
 	for _, r := range list {
-		if r.Draft || !tagRE.MatchString(r.Tag) {
+		_, valid := parseVersion(r.Tag)
+		if r.Draft || !valid {
 			continue
 		}
 		_, ok := assetFor(r, m.distribution)

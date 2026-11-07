@@ -21,7 +21,7 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 
 ## 下载安装
 
-前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.0、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
+前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.0、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
 
 **Windows 10 / 11**
 
@@ -30,16 +30,18 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 **Debian / Ubuntu**
 
 ```sh
-sudo apt install ./kurumifrp_0.7.0_amd64.deb
+sudo apt install ./kurumifrp_0.7.1.0_amd64.deb
 ```
 
 **Fedora / RHEL 系**
 
 ```sh
-sudo dnf install ./kurumifrp-0.7.0-1.x86_64.rpm
+sudo dnf install ./kurumifrp-0.7.1.0-1.x86_64.rpm
 ```
 
 Linux 安装包会配置 systemd 服务；ARM64 请下载对应架构的包。安装、升级、卸载及旧版迁移的步骤见 [安装说明](docs/INSTALL.md)。目前安装包尚未进行商业代码签名，也没有在线 APT/YUM 软件源。
+
+从 0.6.0 升级到四段版本号的版本时，请下载原生安装包手动升级；旧版内置更新器无法识别新的版本号。
 
 ## 第一次使用
 
@@ -108,5 +110,6 @@ go vet ./...
 - [安装、升级与卸载](docs/INSTALL.md)
 - [架构说明](docs/ARCHITECTURE.md) · [测试说明](docs/VALIDATION.md) · [开发路线](docs/ROADMAP.md)
 - [主题素材说明](docs/ARTWORK.md)
+- [版本约定](docs/VERSIONING.md)
 
 时崎狂三是《约会大作战》中的角色；本项目的主题插画为非官方同人创作，相关角色权利属于各自权利方。项目目前未指定开源许可证。

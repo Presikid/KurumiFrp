@@ -16,6 +16,7 @@ import (
 
 	"github.com/Presikid/KurumiFrp/internal/manager"
 	"github.com/Presikid/KurumiFrp/internal/update"
+	"github.com/Presikid/KurumiFrp/internal/version"
 	"github.com/Presikid/KurumiFrp/web"
 )
 
@@ -35,7 +36,7 @@ func run() error {
 	addr := flag.String("listen", defaultListen, "loopback management listener, or auto for ports 9000..9010")
 	paths := flag.Bool("paths", false, "show resolved native program, data, core and temporary paths")
 	open := flag.Bool("open", false, "open local WebUI with a one-time login ticket")
-	version := flag.Bool("version", false, "print version and exit")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	stop := flag.Bool("stop", false, "stop this data directory's manager and wait for owned frp processes")
 	check := flag.Bool("check-running", false, "verify the installed manager is responding")
 	archive := flag.String("cleanup-archive", "", "explicit original release archive, verified before deletion")
@@ -73,8 +74,8 @@ func run() error {
 		}
 		return cleanPackage(*cleanup, exe, *archive)
 	}
-	if *version {
-		fmt.Println("0.7.0")
+	if *showVersion {
+		fmt.Println(version.Current)
 		return nil
 	}
 	if *paths {
@@ -189,7 +190,7 @@ func run() error {
 	defer signal.Stop(stopped)
 	errs := make(chan error, 1)
 	go func() { errs <- server.Serve(listener) }()
-	fmt.Printf("KurumiFRP 0.7.0\nOpen http://%s\nGet local token in another terminal: kurumi --data %q --show-token\n", *addr, abs)
+	fmt.Printf("KurumiFRP %s\nOpen http://%s\nGet local token in another terminal: kurumi --data %q --show-token\n", version.Current, *addr, abs)
 	if *open {
 		if e := openBrowser(app.BrowserURL()); e != nil {
 			log.Print("Browser could not be opened; use the printed local URL and --show-token.")

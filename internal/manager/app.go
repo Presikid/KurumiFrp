@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/Presikid/KurumiFrp/internal/core"
 	"github.com/Presikid/KurumiFrp/internal/update"
+	"github.com/Presikid/KurumiFrp/internal/version"
 	"io"
 	"io/fs"
 	"net"
@@ -207,7 +208,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			}
 			_, ec := a.binary("frpc")
 			_, es := a.binary("frps")
-			reply(w, 200, map[string]any{"version": "0.7.0", "revision": a.store.DB.Revision, "state": a.store.DB.State.public(), "runtime": a.statuses(), "history": history, "historyLimit": a.store.DB.HistoryLimit, "events": a.store.DB.Events, "binaries": map[string]bool{"frpc": ec == nil, "frps": es == nil}})
+			reply(w, 200, map[string]any{"version": version.Current, "revision": a.store.DB.Revision, "state": a.store.DB.State.public(), "runtime": a.statuses(), "history": history, "historyLimit": a.store.DB.HistoryLimit, "events": a.store.DB.Events, "binaries": map[string]bool{"frpc": ec == nil, "frps": es == nil}})
 			return
 		case "/api/export":
 			a.export(w, r)

@@ -2,7 +2,7 @@
 
 ## Windows：Program Files 正式安装
 
-下载 `KurumiFRP-0.7.0-Setup.exe`，双击并允许 UAC 管理员授权。一个安装文件按系统选择 x64 或 ARM64。默认程序目录是 `C:\Program Files\KurumiFRP`（实际路径使用系统 Program Files 定义），注册到 HKLM 的“已安装的应用”，不是 AppData 内的当前用户安装。安装、打开和卸载均不依赖 PS1/CMD、Python、Go 或 Node.js。
+下载 `KurumiFRP-0.7.1.0-Setup.exe`，双击并允许 UAC 管理员授权。一个安装文件按系统选择 x64 或 ARM64。默认程序目录是 `C:\Program Files\KurumiFRP`（实际路径使用系统 Program Files 定义），注册到 HKLM 的“已安装的应用”，不是 AppData 内的当前用户安装。安装、打开和卸载均不依赖 PS1/CMD、Python、Go 或 Node.js。
 
 程序文件和可变数据分离：
 
@@ -29,11 +29,11 @@
 Debian/Ubuntu 按架构下载 DEB，Fedora/RHEL 系按架构下载 RPM：
 
 ```sh
-sudo apt install ./kurumifrp_0.7.0_amd64.deb
-# ARM64 改为 kurumifrp_0.7.0_arm64.deb
+sudo apt install ./kurumifrp_0.7.1.0_amd64.deb
+# ARM64 改为 kurumifrp_0.7.1.0_arm64.deb
 
-sudo dnf install ./kurumifrp-0.7.0-1.x86_64.rpm
-# ARM64 改为 kurumifrp-0.7.0-1.aarch64.rpm
+sudo dnf install ./kurumifrp-0.7.1.0-1.x86_64.rpm
+# ARM64 改为 kurumifrp-0.7.1.0-1.aarch64.rpm
 ```
 
 升级继续交给 APT/DNF。没有另外部署在线 APT/YUM 软件源，也未提供仓库 GPG 签名；这是上游发布的软件包，不表示已进入发行版官方仓库。附带 SHA-256 是完整性校验，不是独立身份签名。
@@ -73,7 +73,7 @@ sudo dnf remove kurumifrp  # 此 RPM 的最终卸载会清除托管数据；升�
 DEB/RPM 不在包维护脚本里猜测、扫描并删除用户下载文件，不破坏包管理器缓存或事务记录。需要安装验证后删除当前包，可执行：
 
 ```sh
-file=kurumifrp_0.7.0_amd64.deb
+file=kurumifrp_0.7.1.0_amd64.deb
 sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 ```
 
@@ -94,6 +94,8 @@ sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 CI 目标覆盖默认 Program Files 安装、HKLM 登记、真实普通账户使用、账户间密钥隔离、Program Files 写保护、临时路径、升级与完整卸载；Linux 覆盖实际 DEB/systemd 与 Fedora 容器 RPM 生命周期。以对应提交的 CI 结果为准。ARM64 构建不等于原生硬件验证；没有完成全系统文件访问追踪，不承诺操作系统、浏览器或第三方软件完全不产生外部记录。
 
 ## 配置迁移与软件更新
+
+从 0.6.0 升级到四段版本号的版本时，请从 GitHub Releases 下载对应的原生安装包并手动安装；0.6.0 的内置更新器不识别四段版本号。升级前请先备份配置并停止实例。
 
 工作台的当前实例配置、令牌、历史快照和快照数量统一存入 `state.json`。从配置中心导出的单个 JSON 文件可在另一台工作台导入，导入完成后界面自动刷新；已经运行的实例需重启才能应用新配置。配置文件携带解密密钥，应像密码一样保管。工作台本地访问令牌及 frp 核心程序属于本机运行数据，不包含在导出的配置中。旧版状态与密钥会在首次运行时迁移。
 
