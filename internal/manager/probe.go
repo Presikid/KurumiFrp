@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
+	"net/url"
 	"net/http"
 	"strconv"
 	"strings"
@@ -101,9 +102,33 @@ func probeHTTP(t Tunnel, result ProbeResult, roots *x509.CertPool) ProbeResult {
 		hostHeader = "[" + host + "]"
 	}
 
+	path := t.ProbePath
+	if path == "" {
+		path = "/"
+	}
+	method := t.ProbeMethod
+	if method == "" {
+		method = http.MethodHead
+	}
+	if !probePathOK(path) || !probeMethodOK(method) {
+		result.Status = "invalid"
+		result.Message = "HTTP 检测路径或方法无效"
+		return stampProbe(result)
+	}
+	parsedPath, err := url.ParseRequestURI(path)
+	if err != nil {
+		result.Status = "invalid"
+		result.Message = "HTTP 检测路径无效"
+		return stampProbe(result)
+	}
+	probeURL := (&url.URL{
+		Scheme: scheme, Host: "kurumifrp-probe.invalid",
+		Path: parsedPath.Path, RawPath: parsedPath.RawPath, RawQuery: parsedPath.RawQuery,
+	}).String()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodHead, scheme+"://kurumifrp-probe.invalid/", nil)
+	request, err := http.NewRequestWithContext(ctx, method, probeURL, nil)
 	if err != nil {
 		result.Status = "invalid"
 		result.Message = "无法构造 HTTP 探测请求"
