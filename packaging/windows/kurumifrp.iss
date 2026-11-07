@@ -87,7 +87,7 @@ begin
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var Code: Integer; App, Exe: String;
+var Code: Integer; App, Exe, RegisteredDir: String;
 begin
   Result := '';
   App := ExpandConstant('{app}');
@@ -99,6 +99,12 @@ begin
     Result := 'This directory contains an old script installation or unmanaged files. Choose a new directory. See INSTALL.md for migration.'; Exit;
   end;
   if FileExists(Exe) then begin
+    if not RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.Presikid.KurumiFRP_is1', 'InstallLocation', RegisteredDir) then begin
+      Result := 'An executable exists here but no machine installation is registered. Choose a clean directory.'; Exit;
+    end;
+    if CompareText(RemoveBackslash(RegisteredDir), RemoveBackslash(App)) <> 0 then begin
+      Result := 'The existing executable is not in the registered machine installation. No executable was run.'; Exit;
+    end;
     if not Exec(Exe, '--native-maintenance stop', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
     if Code <> 0 then Result := 'The running workbench could not be stopped safely. Existing data was retained.';
   end;

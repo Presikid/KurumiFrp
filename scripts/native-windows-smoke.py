@@ -109,8 +109,12 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
         # Test an actual non-administrator account, not only an elevated runner.
         import secrets
         username='kfrp'+secrets.token_hex(5)
-        password='Kfrp!'+secrets.token_hex(20)
-        subprocess.run(['net.exe','user',username,password,'/add'],check=True,capture_output=True)
+        # net.exe prompts interactively for passwords longer than 14 chars.
+        # Use a complex 14-character ephemeral CI password, never log argv.
+        password='Km1!'+secrets.token_hex(5)
+        created=subprocess.run(['net.exe','user',username,password,'/add'],capture_output=True,text=True)
+        if created.returncode:
+            raise RuntimeError('Temporary test user creation failed: '+(created.stdout+created.stderr).replace(password,'[redacted]'))
         account=username
         original_profiles=set((common/'profiles').iterdir())
         as_standard(username,password,exe)
