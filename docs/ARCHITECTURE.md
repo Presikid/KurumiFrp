@@ -82,7 +82,7 @@ bounds each check so a slow local service does not block unrelated workbench act
 TCP, STCP and STCP Visitor checks only establish a local TCP connection. HTTP and
 HTTPS checks send a configurable `HEAD` or `GET` request to a local diagnostic path (default `/`), using the first configured custom domain as the Host header and TLS server name; the socket is dialed directly to the configured
 local target, environment proxies are disabled, redirects are not followed, and
-normal certificate verification remains enabled. A 2xx response is reported as healthy, a 3xx response other than 304 is reported as a redirect
+normal certificate verification remains enabled. The diagnostic path and method are stored only in KurumiFRP state and are not written into the generated frp TOML. A 2xx response is reported as healthy, a 3xx response other than 304 is reported as a redirect
 without following it, and 304/4xx/5xx responses are reported as responding, not unreachable. UDP is
 explicitly unsupported because a generic UDP datagram cannot reliably prove that
 an application is listening. None of these checks proves frp registration, remote

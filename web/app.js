@@ -106,7 +106,7 @@ function updateFields(){
  const f=$('#editor');
  if(editing.kind==='instance'){document.querySelectorAll('.server-field').forEach(e=>e.hidden=f.elements.kind.value!=='frps');return;}
  const t=f.elements.type.value;const show={'.port-field':['tcp','udp'].includes(t),'.domain-field':['http','https'].includes(t),'.probe-field':['http','https'].includes(t),'.visitor-field':t==='stcp-visitor','.secret-field':t.startsWith('stcp')};
- for(const [q,v] of Object.entries(show)) document.querySelectorAll(q).forEach(el=>{el.hidden=!v;el.querySelectorAll('input').forEach(input=>input.disabled=!v);});
+ for(const [q,v] of Object.entries(show)) document.querySelectorAll(q).forEach(el=>{el.hidden=!v;el.querySelectorAll('input,select').forEach(input=>input.disabled=!v);});
  f.elements.bandwidthKB.disabled=t==='stcp-visitor';
 }
 function navigate(to){if(!titles[to])return;page=to;location.hash=to;render();}
