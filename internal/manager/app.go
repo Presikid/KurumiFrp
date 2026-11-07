@@ -261,7 +261,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/api/probe":
 		t, ok := a.store.DB.State.Tunnel(req.ID)
-		if !ok { fail(w, 404, fmt.Errorf("规则不存在")); return }
+		if !ok {
+			fail(w, 404, fmt.Errorf("规则不存在"))
+			return
+		}
 		reply(w, 200, probeTarget(t))
 		return
 	case "/api/history-settings":
