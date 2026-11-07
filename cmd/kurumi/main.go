@@ -25,9 +25,15 @@ func main() {
 func run() error {
 	dir := flag.String("data", "./data", "private persistent data directory")
 	bin := flag.String("frp-dir", "./frp", "directory with trusted frpc/frps binaries")
-	addr := flag.String("listen", "127.0.0.1:9000", "loopback management listener")
+	addr := flag.String("listen", "127.0.0.1:9000", "loopback management listener, or auto for ports 9000..9010")
+	open := flag.Bool("open", false, "open local WebUI with a one-time login ticket")
+	version := flag.Bool("version", false, "print version and exit")
 	token := flag.Bool("show-token", false, "print existing local access token and exit")
 	flag.Parse()
+	if *version {
+		fmt.Println("0.2.0")
+		return nil
+	}
 	abs, e := filepath.Abs(*dir)
 	if e != nil {
 		return e
@@ -40,12 +46,29 @@ func run() error {
 		fmt.Println(string(b))
 		return nil
 	}
+	if *addr == "auto" {
+		chosen, err := autoListen(abs)
+		if err != nil {
+			return err
+		}
+		*addr = chosen
+	}
 	if e = os.MkdirAll(abs, 0700); e != nil {
 		return e
+	}
+	if st, err := os.Lstat(abs); err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("unsafe data directory")
 	}
 	lock := filepath.Join(abs, "manager.lock")
 	f, e := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if e != nil {
+		if *open {
+			if b, err := os.ReadFile(filepath.Join(abs, "access.token")); err == nil {
+				if err = openExisting(*addr, string(b)); err == nil {
+					return nil
+				}
+			}
+		}
 		return fmt.Errorf("data directory locked; verify no old manager/frp process is alive before removing manager.lock")
 	}
 	fmt.Fprintln(f, os.Getpid())
@@ -61,14 +84,23 @@ func run() error {
 		return e
 	}
 	defer listener.Close()
+	if e = saveListen(abs, *addr); e != nil {
+		return e
+	}
 	server := manager.HTTPServer(*addr, app)
 	stopped := make(chan os.Signal, 1)
 	signal.Notify(stopped, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(stopped)
 	errs := make(chan error, 1)
 	go func() { errs <- server.Serve(listener) }()
-	fmt.Printf("KurumiFRP 0.1.0\nOpen http://%s\nGet local token in another terminal: kurumi --data %q --show-token\n", *addr, abs)
+	fmt.Printf("KurumiFRP 0.2.0\nOpen http://%s\nGet local token in another terminal: kurumi --data %q --show-token\n", *addr, abs)
+	if *open {
+		if e := openBrowser(app.BrowserURL()); e != nil {
+			log.Print("Browser could not be opened; use the printed local URL and --show-token.")
+		}
+	}
 	select {
+	case <-app.Done():
 	case <-stopped:
 	case e = <-errs:
 		if e != nil && e != http.ErrServerClosed {

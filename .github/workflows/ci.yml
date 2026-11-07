@@ -1,11 +1,12 @@
-name: Foundation CI
+name: Test and package
 on:
   push:
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: foundation-${{ github.ref }}
+  group: kurumi-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   test:
@@ -14,7 +15,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -23,29 +24,64 @@ jobs:
         with:
           go-version: stable
           cache: false
-      - name: Format, vet and tests
+      - name: Format, vet and unit tests
         shell: bash
         run: |
           unformatted="$(gofmt -l cmd internal web)"
-          if [ -n "$unformatted" ]; then
-            printf 'Unformatted Go files:\n%s\n' "$unformatted"
-            gofmt -d cmd internal web
-            exit 1
-          fi
+          if [ -n "$unformatted" ]; then printf '%s\n' "$unformatted"; gofmt -d cmd internal web; exit 1; fi
           go vet ./...
-          go test -v ./...
+          go test -count=1 -v ./...
           go build -o kurumi ./cmd/kurumi
-      - name: Race detector and cross-compilation
+      - name: Race detector
+        if: runner.os == 'Linux'
+        run: go test -race ./...
+      - name: Official core download, activation and real frp TCP roundtrip
+        if: runner.os == 'Linux'
+        run: python3 scripts/core-smoke.py ./kurumi
+      - name: Windows package and installer smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:KURUMI_PACKAGE_TARGET = 'windows_amd64'
+          python scripts/package.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/install-smoke.py dist/KurumiFRP_0.2.0_windows_amd64.zip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Real browser UI tests (catalog fixtures only)
         if: runner.os == 'Linux'
         run: |
-          go test -race ./...
-          GOOS=windows GOARCH=amd64 go build -o kurumi-windows.exe ./cmd/kurumi
-          GOOS=linux GOARCH=arm64 go build -o kurumi-arm64 ./cmd/kurumi
-      - name: Real frp integration (pinned official release)
-        if: runner.os == 'Linux'
+          python3 -m pip install playwright==1.57.0
+          python3 -m playwright install --with-deps chromium
+          python3 scripts/browser-smoke.py ./kurumi
+          python3 scripts/core-ui-smoke.py ./kurumi
+  package:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: stable
+          cache: false
+      - name: Build all four packages and verify Linux installer
         run: |
-          curl --fail --location --retry 3 --max-time 120 -o frp.tgz https://github.com/fatedier/frp/releases/download/v0.72.0/frp_0.72.0_linux_amd64.tar.gz
-          echo 'daf719b32ca2778770bb92955e231a07414d754378b9af328aa2642862479804  frp.tgz' | sha256sum --check --strict
-          mkdir -p frp
-          tar -xzf frp.tgz --strip-components=1 -C frp
-          python3 scripts/frp-smoke.py ./kurumi ./frp
+          python3 scripts/package.py
+          python3 scripts/install-smoke.py dist/KurumiFRP_0.2.0_linux_amd64.tar.gz
+      - name: Publish versioned preview without replacing existing releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(cat VERSION)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tag="v$version"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists; kept unchanged. Bump VERSION for another release."
+            exit 0
+          fi
+          gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "KurumiFRP $version preview" --notes-file "docs/RELEASE_$version.md" --prerelease

@@ -23,3 +23,9 @@ Monthly quota and schedules need a durable policy engine and are not frp UI labe
 
 No server deployment, existing MCP installation cleanup, DNS change, production
 service change or license selection is authorized by this repository scaffold.
+
+
+## 0.2 更新
+
+已加入官方核心下载/校验/版本切换、用户级安装器、四平台预编译包、短时浏览器登录票据和本机自动端口选择。
+安装器提供的是工作台自启动入口；frpc/frps 实例的期望状态自动恢复仍未实现。下载进度是真实字节数，不是模拟。

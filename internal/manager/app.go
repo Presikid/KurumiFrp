@@ -3,6 +3,7 @@ package manager
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/Presikid/KurumiFrp/internal/core"
 	"io"
 	"io/fs"
 	"net"
@@ -15,13 +16,16 @@ import (
 )
 
 type App struct {
-	mu     sync.Mutex
-	store  *Store
-	bin    string
-	addr   string
-	auth   auth
-	procs  map[string]*process
-	assets http.Handler
+	quit     chan struct{}
+	quitOnce sync.Once
+	core     *core.Manager
+	mu       sync.Mutex
+	store    *Store
+	bin      string
+	addr     string
+	auth     auth
+	procs    map[string]*process
+	assets   http.Handler
 }
 
 func New(dir, bin, addr string, assets fs.FS) (*App, error) {
@@ -48,7 +52,11 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	if e != nil {
 		return nil, e
 	}
-	return &App{store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets))}, nil
+	cores, e := core.New(bin)
+	if e != nil {
+		return nil, e
+	}
+	return &App{quit: make(chan struct{}), core: cores, store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets))}, nil
 }
 func (a *App) AccessToken() string { return a.auth.token }
 func HTTPServer(addr string, h http.Handler) *http.Server {
@@ -91,6 +99,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, 403, fmt.Errorf("跨站请求被拒绝"))
 		return
 	}
+	if r.URL.Path == "/api/launch-login" && r.Method == "POST" {
+		a.launchLogin(w, r)
+		return
+	}
 	if r.URL.Path == "/api/login" && r.Method == "POST" {
 		var input struct {
 			Token string `json:"token"`
@@ -113,10 +125,23 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, 401, fmt.Errorf("请先登录"))
 			return
 		}
+		if r.URL.Path == "/api/quit" && r.Method == "POST" {
+			a.quitOnce.Do(func() { close(a.quit) })
+			reply(w, 200, map[string]bool{"ok": true})
+			return
+		}
+		if r.URL.Path == "/api/browser-ticket" && r.Method == "POST" {
+			reply(w, 200, map[string]string{"url": a.BrowserURL()})
+			return
+		}
 		if r.URL.Path == "/api/logout" && r.Method == "POST" {
 			a.auth.logout(r)
 			http.SetCookie(w, &http.Cookie{Name: "kurumi_session", Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 			reply(w, 200, map[string]bool{"ok": true})
+			return
+		}
+		if r.URL.Path == "/api/core" || strings.HasPrefix(r.URL.Path, "/api/core/") {
+			a.coreAPI(w, r)
 			return
 		}
 		a.mu.Lock()
@@ -129,7 +154,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
-	case "/", "/app.js", "/style.css":
+	case "/", "/app.js", "/core.js", "/style.css", "/core.css":
 		a.assets.ServeHTTP(w, r)
 	default:
 		http.NotFound(w, r)
@@ -145,7 +170,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			}
 			_, ec := a.binary("frpc")
 			_, es := a.binary("frps")
-			reply(w, 200, map[string]any{"version": "0.1.0", "revision": a.store.DB.Revision, "state": a.store.DB.State.public(), "runtime": a.statuses(), "history": history, "events": a.store.DB.Events, "binaries": map[string]bool{"frpc": ec == nil, "frps": es == nil}})
+			reply(w, 200, map[string]any{"version": "0.2.0", "revision": a.store.DB.Revision, "state": a.store.DB.State.public(), "runtime": a.statuses(), "history": history, "events": a.store.DB.Events, "binaries": map[string]bool{"frpc": ec == nil, "frps": es == nil}})
 			return
 		case "/api/config":
 			v, e := a.store.render(r.URL.Query().Get("id"), true)
@@ -365,3 +390,5 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	reply(w, 200, map[string]any{"ok": true, "revision": a.store.DB.Revision})
 }
+
+func (a *App) Done() <-chan struct{} { return a.quit }

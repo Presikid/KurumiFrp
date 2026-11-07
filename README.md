@@ -1,99 +1,55 @@
-# KurumiFRP
+# KurumiFRP 0.2
 
-A local-first frp workspace: Chinese WebUI, embedded Go server, saved drafts,
-configuration checks, and **real locally owned frpc/frps processes**.
+本机 frpc/frps 管理工作台。Go 标准库后端 + 内嵌中文响应式 WebUI，无 Node.js、数据库服务器或 Docker 运行依赖。
 
-**0.1.0 foundation / preview.** Not the discontinued GitHub MCP hosting project.
-No cloud account, OAuth gateway, Docker, DNS API or new TLS certificate is required.
+## 简单安装
 
-## Run
+**Windows 10/11**：在 Releases 下载与你的机器匹配的 ZIP，解压双击 `Install.cmd`。以当前用户安装，生成桌面/开始菜单快捷方式并打开面板，无需管理员权限。
 
-Build using a supported Go toolchain (language baseline: Go 1.23):
+**Linux**：解压安装包后执行 `bash KurumiFRP/install.sh`。安装到当前用户目录，提供 `~/.local/bin/kurumifrp` 启动入口；有可用的用户 systemd 时自动配置用户服务，否则后台启动。
+
+安装器自动选择 9000–9010 中空闲的 **loopback** 端口，保持现有网站和防火墙不变。快捷方式使用 60 秒一次性票据自动登录，长期管理 Token 不进入 URL。
+
+仓库目前为私有仓库：下载安装包需要登录有权限的 GitHub 账户，匿名 raw URL 不是有效的一键安装入口。预编译包、完整一条安装命令、升级及远程 SSH 使用见 [安装说明](docs/INSTALL.md)。发布是否成功，以 Releases 和 Actions 的实际结果为准。
+
+## WebUI 下载 frp 核心
+
+打开 **核心管理**，选择官方稳定版本和系统/架构，点击 **下载到本机**；校验完成后点击 **启用此版本**。识别的是运行 KurumiFRP 的主机，不是访问网页的手机/电脑。其他平台可获取官方下载链接，但不能误装到本机。
+
+下载任务显示真实字节进度，可取消，不阻塞配置编辑。安装检查官方 SHA-256、体积、归档路径及 ELF/PE/Mach-O 架构；frpc/frps 成对存入独立版本目录。旧核心保留，切换前必须停止全部托管实例；探测失败不改变活动版本，切换不自动启动实例。原先手动放在 `--frp-dir` 的可信二进制仍然可用。
+
+支持自动安装 Linux/Windows/macOS amd64/arm64 的官方核心，管理器预编译安装包发布 Linux/Windows amd64/arm64。frp 最低版本 0.60，实际验证版本见 CI。下载只访问 GitHub 官方端点，可通过进程的 `HTTPS_PROXY` 使用自己的代理；不会静默使用第三方镜像或跳过 TLS 检查。
+
+## 工作台功能
+
+网络总览、连接看板、运行实例、配置中心、核心管理和运行记录；深浅主题及手机布局。
+
+多个本机 frpc/frps；TCP、UDP、HTTP、HTTPS、STCP 和 Visitor；带宽限制；AES-GCM 加密令牌；revision 并发检查；30 份历史草稿恢复；脱敏 TOML/JSON 导出。
+
+保存不等于应用。启动前执行官方 `frp verify`，候选配置校验失败不停止旧进程。状态显示真实 PID/退出信息，不将进程存活冒充隧道连通。管理 API 需要会话或本机 Token，校验 Host/Origin，无任意 shell 接口。
+
+## 从源码运行
+
+需要 Go 1.23+；CI 使用当前稳定 Go。
+
+```sh
+go build -o kurumi ./cmd/kurumi
+./kurumi --data ./data --frp-dir ./frp --listen auto --open
+```
+
+无桌面环境时，通过 SSH 转发输出的本机端口，再执行 `kurumi --data ./data --show-token` 获取备用登录凭据。不要公开管理 Token、`master.key` 或数据目录。
 
 ```sh
 go test ./...
-go build -o kurumi ./cmd/kurumi
-./kurumi --data ./data --frp-dir ./frp --listen 127.0.0.1:9000
-```
-
-In a second terminal, obtain the generated local access token:
-
-```sh
-./kurumi --data ./data --show-token
-```
-
-Open `http://127.0.0.1:9000`, paste the token, create an instance and add rules.
-On Windows use `kurumi.exe`. Never send `access.token`, `master.key` or the data
-directory to a chat or commit them to Git.
-
-The manager runs without frp installed, but validation and start operations fail
-explicitly until you put **trusted official frpc/frps binaries** in `./frp` (use
-`frpc.exe` / `frps.exe` on Windows). The executable paths are operator-selected,
-not supplied by a WebUI request. Do not put arbitrary programs in that directory.
-
-Official frp release downloads: <https://github.com/fatedier/frp/releases>.
-The integration test targets **frp 0.72.0** with a pinned archive SHA-256.
-
-## Implemented
-
-- Overview, connection board, instance management, configuration center, logs;
-  responsive light/dark Chinese UI, no external assets or front-end build step.
-- Multiple local frpc/frps instances. TCP, UDP, HTTP, HTTPS, STCP publisher and
-  STCP visitor forms. Per-proxy bandwidth limits in **KB/s**, not Mbps.
-- Saved drafts with revision conflict checks. Port/name/domain collision checks
-  are conservative and scoped to known endpoints; DNS aliases cannot be proven equal.
-- Official `frpc/frps verify -c` before launch. Restart validates the candidate
-  **before** stopping the old process. No arbitrary shell execution endpoint.
-- Owned child-process start/stop/restart; PID, exit, draft-vs-applied hash and
-  bounded redacted output. No invented throughput or connection status.
-- AES-256-GCM encrypted tokens in the state file; encrypted snapshots (last 30);
-  redacted TOML and workspace exports. Restore requires all managed processes stopped.
-- Loopback-only management, strict Host/Origin checks, HttpOnly SameSite cookies,
-  login throttling, logout revocation, 12-hour sessions, CSP and request limits.
-
-## Important boundaries
-
-A live process is **not** evidence of proxy registration or end-to-end connectivity.
-This UI says so explicitly. Saving/toggling rules changes the draft only; use the
-instance's restart action to apply. Restart interrupts connections. A runtime
-launch failure does not automatically restore the previous process/configuration.
-
-This release deliberately does not implement remote agents, multi-device orchestration,
-Store API/hot reload, monthly traffic quota, scheduling, automatic frp upgrades,
-tray integration, Windows services, or automatic startup of instances. These are
-tracked in [the roadmap](docs/ROADMAP.md), not simulated as functional controls.
-
-The UI's JSON/TOML exports are **redacted documentation**, not restorable backups.
-For recovery, stop the manager and back up the **whole private data directory**, including
-`state.json` and `master.key`; safeguard `access.token` too. A lost encryption key
-cannot be regenerated to decrypt saved secrets. Never edit the state file while running.
-
-Normal manager exit stops owned children. After a crash, `manager.lock` intentionally
-blocks a second manager: inspect surviving processes and stop/reconcile them before
-removing the lock. No PID-only adoption or termination of unrelated processes.
-
-The management listener rejects non-loopback binds. For another machine use an
-SSH local forward, keeping the same port and browser Host. Reverse proxies, TLS
-termination and public deployment are **not** configured automatically. User-data
-file permissions are Unix modes; Windows deployments must additionally restrict
-NTFS directory ACLs. This preview is not a multi-user security boundary.
-
-Read [architecture and security](docs/ARCHITECTURE.md) before deployment.
-No license has been selected by the repository owner; do not assume a distribution license.
-
-## Tests
-
-```sh
-go vet ./...
 go test -race ./...
-python3 scripts/frp-smoke.py ./kurumi ./frp
-# Optional UI check (Playwright + Chromium installed separately):
-python3 scripts/browser-smoke.py ./kurumi
+go vet ./...
+python3 scripts/package.py
 ```
 
-`frp-smoke.py` runs a disposable real TCP roundtrip through frps/frpc on loopback.
-`manager_test.go` and `runtime_test.go` test APIs, encryption, persistence, validation,
-auth and process ownership. The subprocess fixture is explicitly not a real frp test.
-CI checks Linux and Windows, cross-compiles Linux ARM64, and runs the official frp
-integration on Linux. See [validation evidence](docs/VALIDATION.md) for actual results
-and environment limitations; workflow presence is not proof of a passed CI run.
+`--listen 127.0.0.1:9000` 可固定端口。安装器默认的用户目录与原手动部署的 `./data` 不是同一目录，不会擅自搬迁旧数据。完整升级方式见安装说明。
+
+## 当前边界
+
+这是本机管理预览版，不是云端控制器。未实现远程设备 Agent、frp Store 热更新、实例自动开机恢复、配额和定时策略。管理器的用户级启动入口不等于 frp 实例自动启动。脱敏导出不是可恢复的完整备份。管理器崩溃后须确认旧进程状态再处理锁，不能盲目删锁。
+
+架构见 [ARCHITECTURE](docs/ARCHITECTURE.md)，测试边界见 [VALIDATION](docs/VALIDATION.md)，路线见 [ROADMAP](docs/ROADMAP.md)。本项目未指定开源许可证；不要推断为 Apache/MIT。frp 是独立官方程序。

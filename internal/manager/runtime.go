@@ -78,22 +78,8 @@ func (l *logBuffer) read() []string {
 	defer l.mu.Unlock()
 	return append([]string{}, l.lines...)
 }
-func (p *process) view() RuntimeStatus { p.mu.Lock(); defer p.mu.Unlock(); return p.status }
-func (a *App) binary(kind string) (string, error) {
-	if kind != "frpc" && kind != "frps" {
-		return "", fmt.Errorf("invalid executable")
-	}
-	name := kind
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	p := filepath.Join(a.bin, name)
-	st, e := os.Lstat(p)
-	if e != nil || !st.Mode().IsRegular() {
-		return "", fmt.Errorf("请在指定 frp-dir 放置可信的 %s 二进制", name)
-	}
-	return p, nil
-}
+func (p *process) view() RuntimeStatus            { p.mu.Lock(); defer p.mu.Unlock(); return p.status }
+func (a *App) binary(kind string) (string, error) { return a.core.Binary(kind) }
 func childEnv(extra []string) []string {
 	out := []string{}
 	for _, v := range os.Environ() {
@@ -220,6 +206,7 @@ func (a *App) statuses() map[string]RuntimeStatus {
 	return out
 }
 func (a *App) Close() {
+	a.core.Close()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for id := range a.procs {

@@ -8,3 +8,6 @@
 __pycache__/
 *.test
 *.out
+
+/dist/
+__pycache__/

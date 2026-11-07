@@ -21,6 +21,7 @@ type auth struct {
 	mu       sync.Mutex
 	attempts map[string]attempt
 	sessions map[string]time.Time
+	tickets  map[string]time.Time
 }
 
 func (a *auth) valid(r *http.Request) bool {
