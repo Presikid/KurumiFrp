@@ -1,8 +1,8 @@
 package manager
 
 import (
-	"encoding/json"
 	"crypto/x509"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -157,7 +157,6 @@ func TestProbeDoesNotHoldApplicationMutex(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	unblock := func() { releaseOnce.Do(func() { close(release) }) }
-	defer unblock()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		entered <- struct{}{}
@@ -165,6 +164,7 @@ func TestProbeDoesNotHoldApplicationMutex(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
+	defer unblock()
 	host, port := probeAddress(t, server)
 
 	state := a.store.DB.State.clone()
