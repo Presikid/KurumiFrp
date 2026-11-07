@@ -102,6 +102,22 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('[data-page="overview"]').click()
             page.screenshot(path=str(shots / "overview.png"), full_page=True)
             page.locator('[data-page="config"]').click()
+            page.locator('[data-backup-action="export"]').click()
+            page.locator('#backup-form input[name="password"]').fill("backup-passphrase-123")
+            page.locator('#backup-form input[name="confirm"]').fill("backup-passphrase-123")
+            with page.expect_download() as encrypted_export:
+                page.locator('#backup-form button[type="submit"]').click()
+            encrypted_path = str(encrypted_export.value.path())
+            encrypted_json = json.loads(Path(encrypted_path).read_text(encoding="utf-8"))
+            assert encrypted_json["format"] == "kurumifrp-encrypted-backup"
+            assert encrypted_json["version"] == 1 and encrypted_json["ciphertext"]
+            assert "test-passphrase-123" not in json.dumps(encrypted_json)
+            page.locator('[data-backup-action="import"]').click()
+            page.locator('#backup-form input[name="file"]').set_input_files(encrypted_path)
+            page.locator('#backup-form input[name="password"]').fill("backup-passphrase-123")
+            page.locator('#backup-form input[name="confirmRestore"]').check()
+            page.locator('#backup-form button[type="submit"]').click()
+            expect(page.locator('#toast')).to_contain_text("加密备份恢复成功")
             expect(page.locator("#config-output")).to_contain_text("redacted")
             assert "test-passphrase-123" not in page.locator('#config-output').text_content()
             expect(page.locator('#history-limit')).to_have_value('5')
