@@ -19,13 +19,15 @@ import (
 
 func main() {
 	if e := run(); e != nil {
+		reportDesktopError(e)
 		log.Fatal(e)
 	}
 }
 func run() error {
-	dir := flag.String("data", "./data", "private persistent data directory")
-	bin := flag.String("frp-dir", "./frp", "directory with trusted frpc/frps binaries")
-	addr := flag.String("listen", "127.0.0.1:9000", "loopback management listener, or auto for ports 9000..9010")
+	defaultData, defaultCore, defaultListen := defaultPaths()
+	dir := flag.String("data", defaultData, "private persistent data directory")
+	bin := flag.String("frp-dir", defaultCore, "directory with trusted frpc/frps binaries")
+	addr := flag.String("listen", defaultListen, "loopback management listener, or auto for ports 9000..9010")
 	open := flag.Bool("open", false, "open local WebUI with a one-time login ticket")
 	version := flag.Bool("version", false, "print version and exit")
 	stop := flag.Bool("stop", false, "stop this data directory's manager and wait for owned frp processes")
@@ -33,7 +35,35 @@ func run() error {
 	archive := flag.String("cleanup-archive", "", "explicit original release archive, verified before deletion")
 	cleanup := flag.String("cleanup-package", "", "remove a verified extracted release payload after installation")
 	token := flag.Bool("show-token", false, "print existing local access token and exit")
+	native := flag.String("native-maintenance", "", "native installer operation: init or purge")
+	setup := flag.String("cleanup-setup", "", "exact native Setup executable to remove after successful installation")
+	digest := flag.String("cleanup-sha256", "", "expected Setup SHA-256")
 	flag.Parse()
+	if *native != "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		root, err := nativeRoot(exe)
+		if err != nil {
+			return err
+		}
+		switch *native {
+		case "init":
+			return initNative(root)
+		case "purge":
+			return purgeNative(root)
+		default:
+			return fmt.Errorf("invalid native operation")
+		}
+	}
+	if *setup != "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		return removeSetup(*setup, *digest, exe, 90*time.Second)
+	}
 	if *cleanup != "" {
 		exe, err := os.Executable()
 		if err != nil {
@@ -42,7 +72,7 @@ func run() error {
 		return cleanPackage(*cleanup, exe, *archive)
 	}
 	if *version {
-		fmt.Println("0.3.0")
+		fmt.Println("0.4.0")
 		return nil
 	}
 	abs, e := filepath.Abs(*dir)
@@ -126,7 +156,7 @@ func run() error {
 	defer signal.Stop(stopped)
 	errs := make(chan error, 1)
 	go func() { errs <- server.Serve(listener) }()
-	fmt.Printf("KurumiFRP 0.3.0\nOpen http://%s\nGet local token in another terminal: kurumi --data %q --show-token\n", *addr, abs)
+	fmt.Printf("KurumiFRP 0.4.0\nOpen http://%s\nGet local token in another terminal: kurumi --data %q --show-token\n", *addr, abs)
 	if *open {
 		if e := openBrowser(app.BrowserURL()); e != nil {
 			log.Print("Browser could not be opened; use the printed local URL and --show-token.")

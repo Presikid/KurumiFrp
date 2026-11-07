@@ -1,18 +1,16 @@
-# KurumiFRP 0.3
+# KurumiFRP 0.4
 
 本机 frpc/frps 管理工作台。Go 标准库后端 + 内嵌中文响应式 WebUI，无 Node.js、数据库服务器或 Docker 运行依赖。
 
-## 简单安装
+## 正式安装方式
 
-**Windows 10/11**：在 Releases 下载与你的机器匹配的 ZIP，解压双击 `Install.cmd`。以当前用户安装，生成桌面/开始菜单快捷方式并打开面板，无需管理员权限。
+**Windows 10/11**：下载 Releases 的 `KurumiFRP-0.4.0-Setup.exe`，双击图形化安装向导。自动选择 x64/ARM64，支持快捷方式、可选登录启动、应用列表和原生卸载，不需要 PowerShell/Python/Go。默认当前用户安装。
 
-**Linux**：解压安装包后执行 `bash KurumiFRP/install.sh`。安装到当前用户目录，提供 `~/.local/bin/kurumifrp` 启动入口；有可用的用户 systemd 时自动配置用户服务，否则后台启动。
+**Debian/Ubuntu**：`sudo apt install ./kurumifrp_0.4.0_amd64.deb`。
+**Fedora/RHEL 系**：`sudo dnf install ./kurumifrp-0.4.0-1.x86_64.rpm`。
+ARM64 提供对应原生包。Linux 安装为低权限 systemd 服务，不再是 HOME 目录中的便携包；数据位于 `/var/lib/kurumifrp`，管理端仍只监听回环 9000–9010。
 
-安装器自动选择 9000–9010 中空闲的 **loopback** 端口，保持现有网站和防火墙不变。快捷方式使用 60 秒一次性票据自动登录，长期管理 Token 不进入 URL。
-
-仓库已公开，官方下载无需 GitHub Token。支持 Windows/ Linux 在线一条命令安装，详见 [安装、自动清理与卸载](docs/INSTALL.md)。0.3 起，在安装与启动验证成功后自动删除经校验的解压安装文件和可确认的原始压缩包；在线安装会清理本次临时下载目录。无法确定来源的改名/移动手动包不会猜测删除。
-
-**清洁卸载**：Windows 从“设置 → 应用 → KurumiFRP”或安装目录的 `Uninstall.cmd` 卸载；Linux 执行 `~/.local/bin/kurumifrp-uninstall`。确认后停止本安装托管的进程，删除应用数据、密钥、核心、日志、快捷方式、启动项、用户服务和卸载注册项。不会清理系统日志、浏览器历史或用户另存的备份，也不声称取证无痕。
+Windows 成功安装后可以自动删除 Setup.exe。Linux 原始 DEB/RPM 由调用者管理，不在包事务里猜测删除；安装成功验证后删除、完整卸载、旧版迁移和服务管理见 [安装说明](docs/INSTALL.md)。包管理器负责的软件不通过自删程序文件卸载。此版本尚无商业代码签名或 APT/YUM 在线仓库。
 
 ## WebUI 下载 frp 核心
 
@@ -45,13 +43,13 @@ go build -o kurumi ./cmd/kurumi
 go test ./...
 go test -race ./...
 go vet ./...
-python3 scripts/package.py
+python3 scripts/package-native.py linux
 ```
 
 `--listen 127.0.0.1:9000` 可固定端口。安装器默认的用户目录与原手动部署的 `./data` 不是同一目录，不会擅自搬迁旧数据。完整升级方式见安装说明。
 
 ## 当前边界
 
-这是本机管理预览版，不是云端控制器。未实现远程设备 Agent、frp Store 热更新、实例自动开机恢复、配额和定时策略。管理器的用户级启动入口不等于 frp 实例自动启动。脱敏导出不是可恢复的完整备份。管理器崩溃后须确认旧进程状态再处理锁，不能盲目删锁。
+这是本机管理预览版，不是云端控制器。未实现远程设备 Agent、frp Store 热更新、实例自动开机恢复、配额和定时策略。管理器的工作台启动入口不等于 frp 实例自动启动。脱敏导出不是可恢复的完整备份。管理器崩溃后须确认旧进程状态再处理锁，不能盲目删锁。
 
 架构见 [ARCHITECTURE](docs/ARCHITECTURE.md)，测试边界见 [VALIDATION](docs/VALIDATION.md)，路线见 [ROADMAP](docs/ROADMAP.md)。本项目未指定开源许可证；不要推断为 Apache/MIT。frp 是独立官方程序。

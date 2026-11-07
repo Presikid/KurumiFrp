@@ -1,65 +1,88 @@
-# KurumiFRP 0.3 安装与清洁卸载
+# KurumiFRP 0.4 原生安装
 
-程序无需 Go、Python、Node.js 或 Docker。Windows 安装及卸载使用系统 PowerShell；Linux 使用 `/bin/sh` 和常用系统命令。仓库现为公开仓库，官方下载不需要 GitHub Token。
+0.4 不再发行“解压后运行 Install.cmd/install.ps1/install.sh”的便携式安装包。
+Windows 发行真正的 Inno Setup 图形化 EXE；Linux 发行由 dpkg/APT 或 RPM/DNF 管理的系统软件包。Python、Go、Inno Setup、rpmbuild 只用于构建/测试，用户无需安装。Windows 安装、启动和卸载均不再调用 PowerShell/CMD 脚本。Linux 软件包内部的维护脚本由包管理器调用，这是包生命周期机制，不是用户安装器。
 
-## Windows 10/11：在线一条命令
+## Windows 10/11
 
-在 PowerShell 中执行：
+下载 Releases 中的 **KurumiFRP-0.4.0-Setup.exe**，双击进入安装向导。一个安装文件自动选择 x64 或 ARM64 主程序，不需要先解压或运行命令。
 
-```powershell
-& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing 'https://github.com/Presikid/KurumiFrp/releases/download/v0.3.0/install-windows.ps1').Content))
-```
+安装向导提供安装位置、桌面快捷方式、用户登录启动项、成功后删除 Setup.exe 等选项。默认安装到当前用户的 `%LOCALAPPDATA%\Programs\KurumiFRP`，无需管理员权限。属于正式注册的当前用户应用，不是全用户系统服务。快捷方式直接运行原生 `kurumi.exe`；数据与核心位于安装目录的 data/cores 子目录，不依赖当前工作目录。
 
-这条命令执行本仓库的发布脚本；请只使用可信的官方地址。它识别 amd64/arm64，下载对应 ZIP 和 checksums.txt，校验后安装。安装成功且本机 API 验证通过后，删除本次下载的 ZIP、解压文件和临时目录。失败会保留下载目录，并输出位置，不冒充成功。
+安装完成后启动本机工作台并验证认证 API。验证成功才执行安装包清理：关闭安装向导后，已安装程序等待下载的 Setup.exe 解锁，重新核对其 SHA-256，只删除这个准确的文件，不扫描下载目录。文件被其他程序持续占用时会保留，不承诺绕过文件锁。
 
-也可以从 Releases 下载 ZIP、解压后双击 `Install.cmd`。程序安装到 `%LOCALAPPDATA%\KurumiFRP`，创建桌面、开始菜单快捷方式，以及用户登录启动项（`-NoAutostart` 可不新增启动项）。它不是管理员级系统服务，安装包没有商业代码签名，不绕过系统安全拦截。
+原生安装版覆盖升级会先安全停止工作台，保留数据、令牌和主密钥，再替换程序文件。卸载入口是 **Windows 设置 → 应用 → 已安装的应用 → KurumiFRP**，或开始菜单的卸载快捷方式。卸载会明确提示删除全部配置、密钥和核心；先停止托管进程，再清理运行数据，由安装引擎移除文件、快捷方式、注册项和自身。未知目录/未核实的停止结果不会强行清理。
 
-## Linux：在线一条命令
+尚未购买 Authenticode 代码签名证书，安装包可能显示“未知发布者”或 SmartScreen 提示，不应把有 EXE 后缀理解为已签名。
 
-```sh
-curl --fail --show-error --location --proto '=https' --proto-redir '=https' https://github.com/Presikid/KurumiFrp/releases/download/v0.3.0/install-linux.sh | sh
-```
+## Debian / Ubuntu
 
-需要系统已有 `curl`、`tar`、`sha256sum`、`mktemp` 等命令；无需 Python/Go/gh。下载过程会校验安装包，验证工作台启动成功后清理本次下载和解压的临时目录。
-
-离线安装：解压对应平台安装包，执行 `sh KurumiFRP/install.sh`。安装到 `~/.local/share/kurumifrp`，创建 `~/.local/bin/kurumifrp`。有可用的用户级 systemd 时启用用户服务，否则后台运行；不修改系统服务、防火墙或网站，不开启 linger。
-
-## 安装包自动删除的准确范围
-
-0.3 起，安装器只有在复制、配置和本机认证 API 检查成功后才清理来源。`PACKAGE-MANIFEST.json` 记录分发文件及 SHA-256；清理程序验证全部已知文件，再逐个删除，不对解压目录盲目递归删除。放在其中的额外个人文件会保留，非空父目录也保留。
-
-在线安装器准确记录原始 ZIP/tar.gz 路径，因此可完整清理本次临时下载。手动安装会核对解压目录旁的标准名称压缩包，以及 Windows 默认“全部解压”目录上一层的标准名称压缩包。只有压缩包内部所有成员和本次分发清单一致、没有额外文件或链接时才删除；不能仅凭相同文件名删除。
-
-手动移动、改名或另存的压缩包无法保证自动定位；发现多个匹配副本也不会猜测。不会扫描整个 Downloads 或磁盘。需要明确指定来源时，Windows 使用 `install.ps1 -ArchivePath '完整ZIP路径'`；Linux 使用 `KURUMI_INSTALL_ARCHIVE='/完整路径/安装包.tar.gz' sh KurumiFRP/install.sh`。显式指定但不匹配的包会保留并报错。
-
-## 完整卸载
-
-**会永久删除配置、认证令牌、本机主密钥、所有已下载核心及应用日志。需要保留的个人备份请在卸载前另行导出。**
-
-Windows：在 **设置 → 应用 → 已安装的应用 → KurumiFRP → 卸载**，或运行 `%LOCALAPPDATA%\KurumiFRP\Uninstall.cmd`。输入 `UNINSTALL` 确认。安装器注册的是 HKCU 当前用户卸载项，不需要管理员权限。
-
-Linux：
+按架构下载 `kurumifrp_0.4.0_amd64.deb` 或 `kurumifrp_0.4.0_arm64.deb`，使用系统软件安装器打开，或执行：
 
 ```sh
-"$HOME/.local/bin/kurumifrp-uninstall"
+sudo apt install ./kurumifrp_0.4.0_amd64.deb
 ```
 
-输入 `UNINSTALL` 确认；自动化使用 `--yes`。在 HOME 未改变的情况下也可以运行 `sh "$HOME/.local/share/kurumifrp/uninstall.sh"`。
+升级同样使用 `apt install ./新版本.deb`，由包管理器处理升级，而不是手动复制文件。
 
-卸载器确认本次安装的所有权，阻止启动竞争，通过当前安装的本机令牌请求退出，等待工作台和其托管 frp 子进程停止，之后移除程序文件、data、cores、日志、运行配置、快捷方式/启动项、用户 systemd 配置及其启用链接、Windows 当前用户卸载注册项，最后移除自身与安装目录。
+```sh
+sudo apt remove kurumifrp   # 移除程序，保留配置与密钥
+sudo apt purge kurumifrp    # 清除程序及全部托管配置、密钥、核心和服务账户
+```
 
-不会按 `frpc.exe` 等进程名批量强杀，不删除其他安装实例或手动管理的 frp。停止结果无法确认、遇到未知的旧锁、快捷方式被换成其他程序或文件占用时，报告未完成并保留可重试的信息。符号链接/junction 的外部目标不递归删除。
+## Fedora / RHEL 系 RPM 发行版
 
-## “清洁”不等于操作系统取证无痕
+下载 `kurumifrp-0.4.0-1.x86_64.rpm` 或 `kurumifrp-0.4.0-1.aarch64.rpm`：
 
-本功能清理本安装创建并管理的应用文件和集成项，不扫描或擦除 Windows 事件日志、Prefetch、系统崩溃报告、systemd journal、浏览器历史/下载记录、系统还原点、备份或用户另存的导出。也不是安全擦除工具，不能承诺 SSD/文件系统恢复不了数据。
+```sh
+sudo dnf install ./kurumifrp-0.4.0-1.x86_64.rpm
+sudo dnf remove kurumifrp
+```
 
-浏览器中的旧登录 Cookie 和主题偏好属于浏览器存储，外部卸载进程无法可靠清理所有浏览器、配置文件和不同访问地址；可在卸载前退出登录，并在浏览器中清除对应本机站点的数据。不会清除其他 localhost 服务的 Cookie。
+RPM 升级保留数据；最终卸载会清理本安装管理的状态、密钥、核心及专用账户，卸载前需要自行备份。
 
-## 升级与首次使用
+这些是上游独立发行的软件包，不表示已进入 Debian/Fedora 官方仓库。没有配置 APT/YUM 软件源，也没有发行仓库 GPG 签名；不要直接假定 `apt install kurumifrp` 可以联网找到软件。发布文件附 SHA-256，校验不等于独立发行签名。
 
-从 0.2 升级前先在 WebUI 退出程序并停止实例，再安装 0.3。同一默认安装目录保留配置、令牌和主密钥；原来自定义 `--data` 或 `--frp-dir` 的手动部署不被自动接管或清理。不要直接删除未知进程留下的 manager.lock。
+## Linux 文件与服务布局
 
-打开「核心管理」选择官方 frp 版本 → 下载 → 启用，然后创建实例与规则。管理端仍只监听回环地址，自动选择 9000–9010 的空闲端口；无桌面的远端服务器通过 SSH 转发访问。核心下载和卸载都不要求开公网管理端口。
+- `/usr/bin/kurumifrp`：包管理器拥有的原生程序。
+- `/usr/lib/systemd/system/kurumifrp.service`：系统级服务单元。
+- `/var/lib/kurumifrp/data`：配置、令牌、主密钥、历史和运行状态。
+- `/var/lib/kurumifrp/cores`：下载的 frpc/frps。
+- `/var/lib/kurumifrp-package`：root 专属的服务账户所有权记录，完整卸载时删除。
+- `/usr/share/doc/kurumifrp` 与 man 手册：安装文档。
 
-Windows/Linux amd64/arm64 发行包；ARM64 交叉编译不等于原生硬件验收。frp 实例的开机自动恢复仍未实现，工作台用户级启动入口不代表实例自启动。
+服务以专用非 root 账户运行，只监听回环地址 9000–9010，不修改现有网站或防火墙。桌面用户也通过浏览器访问这个本机服务，不会另起一套 HOME 内的便携实例。低权限服务不能直接监听 1024 以下的端口，管理员如需此能力应另行制定最小权限策略。
+
+```sh
+systemctl status kurumifrp
+sudo systemctl start kurumifrp
+sudo systemctl stop kurumifrp
+sudo cat /var/lib/kurumifrp/data/listen.addr
+sudo kurumifrp --show-token
+```
+
+没有活动 systemd 的容器会完成软件包登记，但不会谎称服务已经运行。远端服务器仍需 SSH 转发访问本机管理端口。systemd 启动工作台不等于自动启动保存的 frp 实例；后者仍未实现。
+
+## Linux 安装包清理与标准包事务
+
+DEB/RPM 不在维护脚本里猜测并删除用户下载的包，也不删除 APT/DNF 缓存或事务数据库。原始包路径归调用安装命令的用户管理；需要安装后删除时，可以把标准包命令和“启动验证后删除这个准确文件”合在一次执行中：
+
+```sh
+file=kurumifrp_0.4.0_amd64.deb
+sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
+```
+
+RPM 将其中安装命令改成 `sudo dnf install "./$file"` 并选择对应 `.rpm` 文件即可。安装或启动验证失败时保留原文件。手动双击 DEB/RPM 安装时是否清理原文件由系统安装器决定，不能承诺所有发行版都会自动删除。
+
+## 从 0.3 脚本版迁移
+
+0.4 不会把未知目录或旧用户级脚本安装当作新安装强行清除。Windows 默认安装目录变化；Linux 从 HOME 内用户实例改成 `/var/lib` 下系统服务。旧版本不会自动被接管。
+
+需要迁移数据时，先在旧 WebUI 退出并停止实例，完整备份旧 `data` 和 `cores`（包括 access.token/master.key；脱敏导出不能替代备份），通过旧版卸载器移除旧启动项，再安装原生版。停止新程序，将备份放入新安装的 data/cores 目录；Linux 必须把它们的所有者设为 kurumifrp。不要同时运行两套管理器操作相同数据。
+
+## 清洁卸载的边界
+
+卸载清理本次安装拥有的应用文件、配置、核心和集成项，不清除操作系统审计日志、systemd journal、浏览器历史/站点存储、系统还原点、包管理器历史或用户另存的备份。不承诺取证无痕，也不删除其他 frp 安装。符号链接/junction 外部目标不递归删除。
+
+Windows x64 和 Linux amd64 的原生安装测试由 CI 执行；ARM64 构建不等于 ARM64 硬件验收。Fedora 容器 RPM 测试也不能替代所有 RHEL/SELinux 环境验证。

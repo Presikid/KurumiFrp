@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Presikid/KurumiFrp/internal/childprocess"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -110,6 +111,7 @@ func (a *App) verify(i Instance, r Rendered) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "verify", "-c", f.Name())
+	childprocess.Configure(cmd)
 	cmd.Env = childEnv(r.Env)
 	buf := &logBuffer{secrets: r.Secrets}
 	cmd.Stdout = buf
@@ -143,6 +145,7 @@ func (a *App) start(i Instance, r Rendered) error {
 		return e
 	}
 	cmd := exec.Command(path, "-c", configPath)
+	childprocess.Configure(cmd)
 	cmd.Env = childEnv(r.Env)
 	cmd.Dir = runtimeDir
 	cmd.WaitDelay = 2 * time.Second

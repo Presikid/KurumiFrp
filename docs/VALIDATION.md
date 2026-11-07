@@ -44,3 +44,7 @@ branch was used for these tests. Sandbox sample rules are not seeded in the prod
 升级安装 smoke：在隔离用户目录重复安装；确认原始压缩包及解压载荷删除、个人文件保留、令牌/主密钥不变；人为制造退出认证失败确认安装被保留；启动真实的合成 Go 子进程作为 frps 生命周期 fixture，完整卸载后检查管理器/子进程退出、数据与集成项删除、外部符号链接/junction 目标未受损。
 
 本地已运行 Linux 安装与卸载 smoke、Go 单元测试和各包竞态检测。Linux 在线安装脚本的传输采用受控 fixture，验证临时下载目录清理，不冒充公网下载。Windows 原生安装/卸载与 junction 测试、真实官方 frp 下载与 TCP 转发由提交的 GitHub Actions 执行；结果以对应 run 为准。ARM64 仍为交叉编译，不声称实机验证。
+
+## 0.4 原生安装验证
+
+沙箱已执行 Go 测试、vet、真实 dpkg 构建/安装/重装/remove/purge 与本机认证 API，未使用用户设备。沙箱没有活动 systemd，因此沙箱通过不等于系统启动验证。Windows Setup.exe 由 CI 的 Inno Setup 编译并通过真实安装引擎测试；Linux CI 增加真实 systemd + dpkg 生命周期和 Fedora 容器 RPM 测试。发布 job 只有两个平台全部检查成功后才能上传 Setup.exe、两个 DEB、两个 RPM 和 checksums.txt。以该提交的 Actions 结果为准，不以工作流文件存在代替成功。

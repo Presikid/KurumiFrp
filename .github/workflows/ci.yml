@@ -1,4 +1,4 @@
-name: Test and package
+name: Test and native packages
 on:
   push:
   pull_request:
@@ -27,61 +27,84 @@ jobs:
       - name: Format, vet and unit tests
         shell: bash
         run: |
-          unformatted="$(gofmt -l cmd internal web)"
-          if [ -n "$unformatted" ]; then printf '%s\n' "$unformatted"; gofmt -d cmd internal web; exit 1; fi
+          test -z "$(gofmt -l cmd internal web)"
           go vet ./...
           go test -count=1 -v ./...
           go build -o kurumi ./cmd/kurumi
-      - name: Race detector
+      - name: Race detector and official core TCP test
         if: runner.os == 'Linux'
-        run: go test -race ./...
-      - name: Official core download, activation and real frp TCP roundtrip
-        if: runner.os == 'Linux'
-        run: python3 scripts/core-smoke.py ./kurumi
-      - name: Windows package and installer smoke
-        if: runner.os == 'Windows'
-        shell: pwsh
         run: |
-          $env:KURUMI_PACKAGE_TARGET = 'windows_amd64'
-          python scripts/package.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python scripts/install-smoke.py dist/KurumiFRP_0.3.0_windows_amd64.zip
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Real browser UI tests (catalog fixtures only)
+          go test -race ./...
+          python3 scripts/core-smoke.py ./kurumi
+      - name: Browser regression
         if: runner.os == 'Linux'
         run: |
           python3 -m pip install playwright==1.57.0
           python3 -m playwright install --with-deps chromium
           python3 scripts/browser-smoke.py ./kurumi
           python3 scripts/core-ui-smoke.py ./kurumi
-  package:
+      - name: Build actual universal Setup.exe
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python scripts/package-native.py windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/native-windows-smoke.py dist-native/KurumiFRP-0.4.0-Setup.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build DEB and RPM for amd64 and arm64
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+          python3 scripts/package-native.py linux
+      - name: Native Debian package and systemd lifecycle
+        if: runner.os == 'Linux'
+        run: |
+          sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_0.4.0_amd64.deb
+      - name: Native RPM install and removal on Fedora
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/src:ro" fedora:43 sh -ec '
+            dnf install -y python3 /src/dist-native/kurumifrp-0.4.0-1.x86_64.rpm
+            rpm -e kurumifrp
+            KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 /src/scripts/native-linux-smoke.py /src/dist-native/kurumifrp-0.4.0-1.x86_64.rpm
+          '
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-${{ runner.os }}
+          path: |
+            dist-native/*.exe
+            dist-native/*.deb
+            dist-native/*.rpm
+          if-no-files-found: error
+  release:
     needs: test
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          go-version: stable
-          cache: false
-      - name: Build all four packages and verify Linux installer
-        run: |
-          python3 scripts/package.py
-          python3 scripts/install-smoke.py dist/KurumiFRP_0.3.0_linux_amd64.tar.gz
-      - name: Publish versioned preview without replacing existing releases
+          pattern: native-*
+          path: dist-native
+          merge-multiple: true
+      - name: Verify package set and publish without overwriting a release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="$(cat VERSION)"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          tag="v$version"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $tag already exists; kept unchanged. Bump VERSION for another release."
+          test -f "dist-native/KurumiFRP-${version}-Setup.exe"
+          test "$(find dist-native -maxdepth 1 -name '*.deb' | wc -l)" -eq 2
+          test "$(find dist-native -maxdepth 1 -name '*.rpm' | wc -l)" -eq 2
+          (cd dist-native && sha256sum *.exe *.deb *.rpm > checksums.txt)
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Existing release retained; bump VERSION for another release.'
             exit 0
           fi
-          gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "KurumiFRP $version preview" --notes-file "docs/RELEASE_$version.md" --prerelease
+          gh release create "v$version" dist-native/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "KurumiFRP $version native installers preview" --notes-file "docs/RELEASE_$version.md" --prerelease

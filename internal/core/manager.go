@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/Presikid/KurumiFrp/internal/childprocess"
 	"io"
 	"net/http"
 	"os"
@@ -394,6 +395,7 @@ func (m *Manager) Activate(ctx context.Context, id string) error {
 	for _, kind := range []string{"frpc", "frps"} {
 		ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		cmd := exec.CommandContext(ctx, filepath.Join(m.root, "versions", id, binaryName(kind, Host())), "-v")
+		childprocess.Configure(cmd)
 		// Do not pass GitHub tokens, proxy credentials or manager secrets to the probe.
 		cmd.Env = []string{}
 		for _, key := range []string{"SYSTEMROOT", "WINDIR", "TEMP", "TMP", "HOME"} {

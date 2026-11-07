@@ -1,0 +1,27 @@
+[Unit]
+Description=KurumiFRP local management workbench
+Documentation=https://github.com/Presikid/KurumiFrp
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=kurumifrp
+Group=kurumifrp
+WorkingDirectory=/var/lib/kurumifrp
+ExecStart=/usr/bin/kurumifrp
+ExecStop=/usr/bin/kurumifrp --stop
+KillMode=control-group
+TimeoutStopSec=60
+Restart=no
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/kurumifrp
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

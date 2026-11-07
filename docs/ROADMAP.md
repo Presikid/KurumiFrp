@@ -34,3 +34,7 @@ service change or license selection is authorized by this repository scaffold.
 ## 0.3 更新
 
 已加入分发文件清单、内容验证的安装包自动清理、公开仓库在线安装脚本，以及 Windows/Linux 当前用户清洁卸载。原安装、进程停止及残留检查由 CI 验证。卸载的清理范围是本安装拥有的应用文件和系统集成项，不包含系统或浏览器取证记录。
+
+## 0.4 原生安装
+
+发行目标改为 Windows Setup.exe 和 Linux DEB/RPM；旧脚本/便携式发布流程停止，旧 tag 保留。后续仍需原生 ARM64 验证、签名发行、APT/YUM 软件源和旧版数据迁移向导。
