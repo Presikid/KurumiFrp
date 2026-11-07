@@ -334,7 +334,7 @@ func runHealthTargetProbes(ctx context.Context, tunnels []Tunnel, rows []HealthP
 			continue
 		}
 		if tunnel.Type == "udp" || tunnel.Type == "stcp-visitor" {
-			rows[index].Target = probeTargetContext(ctx, tunnel)
+			rows[index].Target = probeHealthTarget(ctx, tunnel)
 			continue
 		}
 		jobs = append(jobs, index)
@@ -353,7 +353,7 @@ func runHealthTargetProbes(ctx context.Context, tunnels []Tunnel, rows []HealthP
 		go func() {
 			defer wg.Done()
 			for index := range queue {
-				rows[index].Target = probeTargetContext(ctx, tunnels[index])
+				rows[index].Target = probeHealthTarget(ctx, tunnels[index])
 			}
 		}()
 	}
@@ -407,7 +407,7 @@ func summarizeHealth(proxies []HealthProxy) HealthSummary {
 			summary.RegistrationUnknown++
 		}
 		switch proxy.Target.Status {
-		case "reachable", "healthy", "responding":
+		case "reachable", "healthy", "responding", "redirect":
 			summary.TargetsReachable++
 		case "unreachable":
 			summary.TargetsUnreachable++
@@ -433,4 +433,22 @@ func cleanDiagnosticText(value string, secrets []string) string {
 		runes = runes[:240]
 	}
 	return string(runes)
+}
+
+ 
+// The shared target probe already supplies protocol-aware HTTP/HTTPS handling,
+// including operator-configured paths and methods from the parent PR.
+// A visitor bind port is not the actual service behind its STCP connection.
+func probeHealthTarget(ctx context.Context, t Tunnel) ProbeResult {
+	if ctx.Err() != nil {
+		return stampProbe(ProbeResult{Status: "cancelled", Protocol: t.Type, Message: "检测已取消"})
+	}
+	if t.Type == "stcp-visitor" {
+		return stampProbe(ProbeResult{
+			Status: "unsupported", Protocol: t.Type,
+			Address: net.JoinHostPort(t.LocalHost, strconv.Itoa(t.LocalPort)),
+			Message: "Visitor 是本地监听口，不是后端目标，不能按业务服务探测",
+		})
+	}
+	return probeTarget(t)
 }
