@@ -200,13 +200,13 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Revision uint64          `json:"revision"`
-		Kind     string          `json:"kind"`
-		ID       string          `json:"id"`
-		Action   string          `json:"action"`
-		Target   uint64          `json:"target"`
-		HistoryLimit *int        `json:"historyLimit"`
-		Value    json.RawMessage `json:"value"`
+		Revision     uint64          `json:"revision"`
+		Kind         string          `json:"kind"`
+		ID           string          `json:"id"`
+		Action       string          `json:"action"`
+		Target       uint64          `json:"target"`
+		HistoryLimit *int            `json:"historyLimit"`
+		Value        json.RawMessage `json:"value"`
 	}
 	if e := decode(w, r, &req); e != nil {
 		fail(w, 400, e)
@@ -219,7 +219,11 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch r.URL.Path {
 	case "/api/history-settings":
-		if req.HistoryLimit == nil { err = fmt.Errorf("请指定快照保留数量") } else { err = a.store.setHistoryLimit(*req.HistoryLimit) }
+		if req.HistoryLimit == nil {
+			err = fmt.Errorf("请指定快照保留数量")
+		} else {
+			err = a.store.setHistoryLimit(*req.HistoryLimit)
+		}
 	case "/api/save":
 		st := a.store.DB.State.clone()
 		switch req.Kind {

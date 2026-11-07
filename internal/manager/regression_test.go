@@ -17,6 +17,7 @@ func TestLegacyOversizedHistoryCanBeSavedAndReloaded(t *testing.T) {
 	}
 	// Reproduce a file written by the old version, beyond its read limit.
 	s.DB.Format = 1
+	s.DB.Revision = 4
 	for i := 0; i < 3; i++ {
 		s.DB.History = append(s.DB.History, Snapshot{Revision: uint64(i + 1), Summary: strings.Repeat("x", 3<<20), State: s.DB.State.clone()})
 	}
@@ -50,20 +51,40 @@ func TestHistoryLimitAndSeparateSnapshots(t *testing.T) {
 	a := testApp(t)
 	seed(t, a)
 	for j := 0; j < 7; j++ {
-		if err := a.store.commit(a.store.DB.State.clone(), fmt.Sprint(j)); err != nil { t.Fatal(err) }
+		if err := a.store.commit(a.store.DB.State.clone(), fmt.Sprint(j)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if len(a.store.DB.History) != 5 { t.Fatal("default retention", len(a.store.DB.History)) }
+	if len(a.store.DB.History) != 5 {
+		t.Fatal("default retention", len(a.store.DB.History))
+	}
 	entries, err := os.ReadDir(filepath.Join(a.store.dir, "snapshots"))
-	if err != nil || len(entries) != 5 { t.Fatal("snapshot files", len(entries), err) }
-	if err := a.store.setHistoryLimit(2); err != nil { t.Fatal(err) }
+	if err != nil || len(entries) != 5 {
+		t.Fatal("snapshot files", len(entries), err)
+	}
+	if err := a.store.setHistoryLimit(2); err != nil {
+		t.Fatal(err)
+	}
 	entries, err = os.ReadDir(filepath.Join(a.store.dir, "snapshots"))
-	if err != nil || len(entries) != 2 { t.Fatal("old files not removed", len(entries), err) }
+	if err != nil || len(entries) != 2 {
+		t.Fatal("old files not removed", len(entries), err)
+	}
 	s, err := newStore(a.store.dir)
-	if err != nil || s.DB.HistoryLimit != 2 || len(s.DB.History) != 2 { t.Fatal("reload", err) }
-	if err = s.setHistoryLimit(0); err != nil { t.Fatal(err) }
-	if err = s.commit(s.DB.State.clone(), "no snapshots"); err != nil { t.Fatal(err) }
-	if len(s.DB.History) != 0 { t.Fatal("disabled history still records") }
-	if err = s.setHistoryLimit(101); err == nil { t.Fatal("invalid limit accepted") }
+	if err != nil || s.DB.HistoryLimit != 2 || len(s.DB.History) != 2 {
+		t.Fatal("reload", err)
+	}
+	if err = s.setHistoryLimit(0); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.commit(s.DB.State.clone(), "no snapshots"); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.DB.History) != 0 {
+		t.Fatal("disabled history still records")
+	}
+	if err = s.setHistoryLimit(101); err == nil {
+		t.Fatal("invalid limit accepted")
+	}
 }
 
 func TestExportScopesAndSecrets(t *testing.T) {
@@ -71,19 +92,33 @@ func TestExportScopesAndSecrets(t *testing.T) {
 	seed(t, a)
 	for _, scope := range []string{"all", "config", "snapshots", "snapshot"} {
 		path := "/api/export?scope=" + scope
-		if scope == "snapshot" { path += "&revision=1" }
+		if scope == "snapshot" {
+			path += "&revision=1"
+		}
 		w := request(a, "GET", path, nil, a.AccessToken(), "")
-		if w.Code != 200 || strings.Contains(w.Body.String(), "test-secret-1234") { t.Fatal(scope, w.Code, w.Body.String()) }
+		if w.Code != 200 || strings.Contains(w.Body.String(), "test-secret-1234") {
+			t.Fatal(scope, w.Code, w.Body.String())
+		}
 		var result map[string]any
-		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil { t.Fatal(err) }
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
 		_, hasConfig := result["config"]
 		_, hasSnapshots := result["snapshots"]
-		if hasConfig != (scope == "all" || scope == "config") || hasSnapshots != (scope != "config") { t.Fatal(scope, result) }
+		if hasConfig != (scope == "all" || scope == "config") || hasSnapshots != (scope != "config") {
+			t.Fatal(scope, result)
+		}
 	}
 	w := request(a, "GET", "/api/export?scope=config&secrets=1", nil, a.AccessToken(), "")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), "test-secret-1234") { t.Fatal("explicit secret export failed") }
-	if request(a, "GET", "/api/export?scope=all", nil, "", "").Code != 401 { t.Fatal("unauthenticated export") }
-	if request(a, "GET", "/api/export?scope=snapshot&revision=999", nil, a.AccessToken(), "").Code != 404 { t.Fatal("missing snapshot accepted") }
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "test-secret-1234") {
+		t.Fatal("explicit secret export failed")
+	}
+	if request(a, "GET", "/api/export?scope=all", nil, "", "").Code != 401 {
+		t.Fatal("unauthenticated export")
+	}
+	if request(a, "GET", "/api/export?scope=snapshot&revision=999", nil, a.AccessToken(), "").Code != 404 {
+		t.Fatal("missing snapshot accepted")
+	}
 }
 
 func TestOversizedCurrentStateDoesNotReplaceStoredData(t *testing.T) {
