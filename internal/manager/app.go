@@ -22,8 +22,11 @@ type App struct {
 	quitOnce sync.Once
 	core     *core.Manager
 	updater  *update.Manager
-	mu       sync.Mutex
-	store    *Store
+	mu            sync.Mutex
+	closing       bool
+	startupCtx    context.Context
+	startupCancel context.CancelFunc
+	store         *Store
 	bin      string
 	addr     string
 	auth     auth
