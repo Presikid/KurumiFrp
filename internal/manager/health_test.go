@@ -48,6 +48,22 @@ func TestRenderRuntimeAddsPrivateFRPCAdminAPI(t *testing.T) {
 	if runtimeConfig.Digest != baseConfig.Digest {
 		t.Fatal("ephemeral admin credentials changed the draft digest")
 	}
+	next := a.store.DB.State.clone()
+	next.Tunnels = append(next.Tunnels, Tunnel{
+		ID: randomHex(8), InstanceID: i.ID, Name: "health-proxy",
+		Type: "tcp", LocalHost: "127.0.0.1", LocalPort: 8080,
+		RemotePort: 6000, Enabled: true,
+	})
+	if err := a.store.commit(next, "add proxy"); err != nil {
+		t.Fatal(err)
+	}
+	withProxy, err := a.store.renderRuntime(i.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root, proxy := strings.Index(withProxy.Text, "webServer.addr"), strings.Index(withProxy.Text, "[[proxies]]"); root < 0 || proxy < 0 || root >= proxy {
+		t.Fatal("Admin API settings were nested in the last proxy TOML table")
+	}
 	if strings.Contains(preview.Text, "webServer.addr") || strings.Contains(preview.Text, "KURUMI_ADMIN_PASSWORD") {
 		t.Fatal("internal admin endpoint leaked into the user-facing preview")
 	}
