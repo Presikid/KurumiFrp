@@ -54,3 +54,15 @@ branch was used for these tests. Sandbox sample rules are not seeded in the prod
 ## 0.4 原生安装验证
 
 沙箱已执行 Go 测试、vet、真实 dpkg 构建/安装/重装/remove/purge 与本机认证 API，未使用用户设备。沙箱没有活动 systemd，因此沙箱通过不等于系统启动验证。Windows Setup.exe 由 CI 的 Inno Setup 编译并通过真实安装引擎测试；Linux CI 增加真实 systemd + dpkg 生命周期和 Fedora 容器 RPM 测试。发布 job 只有两个平台全部检查成功后才能上传 Setup.exe、两个 DEB、两个 RPM 和 checksums.txt。以该提交的 Actions 结果为准，不以工作流文件存在代替成功。
+
+
+## Local target diagnostic checks
+
+The target diagnostic tests cover TCP reachability, HTTP virtual-host Host handling,
+HTTP application error responses, HTTPS certificate verification, UDP's unsupported
+state, invalid ports, authenticated API access, stale revisions, and proof that a
+slow target check does not hold the manager-wide application mutex. The browser
+smoke test probes the disposable local manager listener and verifies that the
+connection table renders a successful result. These checks validate only the local
+target diagnostic behavior; they do not claim remote frp registration or Internet
+reachability.

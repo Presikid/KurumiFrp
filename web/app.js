@@ -3,6 +3,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (v = '') => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const titles = {overview:'网络总览',tunnels:'连接看板',instances:'运行实例',config:'配置中心',logs:'运行记录',update:'软件更新'};
 let updateChecked = false, releases = [], updateStatus = '';
+let probeResults = Object.create(null), probing = Object.create(null), probeRevision = null;
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer;
 const dialog = $('#dialog');
 function toast(text) { $('#toast').textContent = text; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 8000); }
@@ -14,7 +15,7 @@ async function api(path, body) {
 }
 function showLogin() {updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; data = null; if (dialog.open) dialog.close();}
 async function refresh(silent = false) {
- try { const fresh = await api('state'); data = fresh; $('#login').hidden = true; $('#app').hidden = false; if(!updateChecked){updateChecked=true;checkUpdates(true);}
+ try { const fresh = await api('state'); if (probeRevision !== fresh.revision) { probeResults = Object.create(null); probeRevision = fresh.revision; } data = fresh; $('#login').hidden = true; $('#app').hidden = false; if(!updateChecked){updateChecked=true;checkUpdates(true);}
  $('#revision').textContent = `DRAFT / r${data.revision}`; $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
  if (!dialog.open && !$('#content').contains(document.activeElement)) render(); else if (!silent && !dialog.open) render();
  } catch(e) {if (!silent && data) toast(e.message);}
@@ -25,6 +26,23 @@ function header(title,subtitle,action='') {return `<div class="page-head"><div><
 function empty(title,text,action='') {return `<div class="empty"><span class="empty-symbol">◈</span><strong>${title}</strong><p>${text}</p>${action}</div>`;}
 function time(v) {return new Date(v).toLocaleString('zh-CN',{hour12:false});}
 function recent() {return data.events.length?`<div class="timeline">${data.events.slice(-6).reverse().map(e=>`<div class="event"><p>${esc(e.message)}</p><small>${time(e.at)}</small></div>`).join('')}</div>`:empty('还没有操作记录','保存第一份配置后，变更记录会出现在这里。');}
+function probeCell(t) {
+ if (probing[t.id]) return '<span class="pill warn">检测中</span>';
+ const result = probeResults[t.id];
+ if (!result || result.revision !== data.revision) return '<span class="muted">尚未检测</span>';
+ const labels = {
+  healthy: ['HTTP 正常', 'good'],
+  responding: ['服务已响应', 'warn'],
+  reachable: ['TCP 可连接', 'good'],
+  unreachable: ['不可连接', 'bad'],
+  unsupported: ['不支持', ''],
+  invalid: ['配置无效', 'bad']
+ };
+ const meta = labels[result.status] || labels.unreachable;
+ const detail = result.httpStatus ? 'HTTP ' + result.httpStatus : result.latencyMs + ' ms';
+ const checked = result.checkedAt ? new Date(result.checkedAt).toLocaleTimeString('zh-CN') : '';
+ return '<span class="pill ' + meta[1] + '" title="' + esc(result.message) + '">' + meta[0] + '</span><small class="probe-meta">' + esc(detail + ' · ' + checked) + '</small><small class="probe-message">' + esc(result.message) + '</small>';
+}
 function render() {
  if (!data) return;
  const n = ++serial; $('#page-title').textContent=titles[page]; document.title=titles[page]+' · KurumiFRP';
@@ -43,7 +61,7 @@ function render() {
   `<div class="notice">启动前会调用官方 frp verify。重启应用会中断该实例上的现有连接；本版本没有自动回退和开机自动启动实例。</div>`+
   (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button><button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
  } else if(page==='tunnels') {
-  content.innerHTML=header('连接看板','把需要访问的服务整理成规则；修改后在运行实例中校验并应用。','<button class="primary" data-action="new-tunnel">＋ 新建规则</button>')+
+  content.innerHTML=header('连接看板','管理规则并检测本地目标：TCP 检查端口，HTTP/HTTPS 检查响应；UDP 无法可靠探测。','<button class="primary" data-action="new-tunnel">＋ 新建规则</button>')+
   `<div class="toolbar"><input id="search" placeholder="搜索规则、地址或实例…" aria-label="搜索规则" value="${esc(filter)}"><select id="protocol" aria-label="按协议筛选"><option value="">所有协议</option>${['tcp','udp','http','https','stcp','stcp-visitor'].map(t=>`<option ${protocol===t?'selected':''}>${t}</option>`).join('')}</select></div><section class="panel" id="tunnel-list">${filteredTable()}</section>`;
  } else if(page==='config') {
   ensureSelected();
@@ -65,7 +83,7 @@ function picker(){return `<select class="config-picker" id="instance-picker" ari
 function filteredTable(){return tunnelTable(data.state.tunnels.filter(t=>(!protocol||t.type===protocol)&&`${t.name} ${t.localHost} ${t.remotePort} ${data.state.instances.find(i=>i.id===t.instanceId)?.name}`.toLowerCase().includes(filter.toLowerCase())));}
 function tunnelTable(rows) {
  if(!rows.length)return empty('这里还静悄悄的 ♡','先添加 frpc 实例，再创建 TCP、UDP、Web 或 STCP 规则。','<button data-action="new-tunnel">＋ 添加规则</button>');
- return `<div class="table-wrap"><table><thead><tr><th>服务 / 归属</th><th>协议</th><th>本地目标</th><th>远端 / 配对</th><th>配置意图</th><th>操作</th></tr></thead><tbody>${rows.map(t=>`<tr><td><strong>${esc(t.name)}</strong><small>${esc(data.state.instances.find(i=>i.id===t.instanceId)?.name)}</small></td><td><span class="type-icon">${t.type.toUpperCase()}</span></td><td><code>${esc(t.localHost)}:${t.localPort}</code></td><td><code>${esc(t.type==='stcp-visitor'?t.serverName:t.type==='stcp'?'私密配对':t.type==='http'||t.type==='https'?t.domains.join(', '):t.remotePort)}</code></td><td><span class="pill ${t.enabled?'good':''}">${t.enabled?'期望启用':'期望停用'}</span></td><td><div class="actions"><button data-action="probe" data-id="${t.id}">探测本地目标</button><button data-action="edit-tunnel" data-id="${t.id}">编辑</button><button data-action="toggle" data-id="${t.id}">${t.enabled?'停用':'启用'}</button><button class="danger" data-action="delete-tunnel" data-id="${t.id}">删除</button></div></td></tr>`).join('')}</tbody></table></div>`;
+ return `<div class="table-wrap"><table><thead><tr><th>服务 / 归属</th><th>协议</th><th>本地目标</th><th>远端 / 配对</th><th>配置意图</th><th>检测结果</th><th>操作</th></tr></thead><tbody>${rows.map(t=>`<tr><td><strong>${esc(t.name)}</strong><small>${esc(data.state.instances.find(i=>i.id===t.instanceId)?.name)}</small></td><td><span class="type-icon">${t.type.toUpperCase()}</span></td><td><code>${esc(t.localHost)}:${t.localPort}</code></td><td><code>${esc(t.type==='stcp-visitor'?t.serverName:t.type==='stcp'?'私密配对':t.type==='http'||t.type==='https'?t.domains.join(', '):t.remotePort)}</code></td><td><span class="pill ${t.enabled?'good':''}">${t.enabled?'期望启用':'期望停用'}</span></td><td class="probe-cell">${probeCell(t)}</td><td><div class="actions"><button data-action="probe" data-id="${t.id}" ${probing[t.id]?'disabled':''}>${probing[t.id]?'检测中…':'检测目标'}</button><button data-action="edit-tunnel" data-id="${t.id}">编辑</button><button data-action="toggle" data-id="${t.id}">${t.enabled?'停用':'启用'}</button><button class="danger" data-action="delete-tunnel" data-id="${t.id}">删除</button></div></td></tr>`).join('')}</tbody></table></div>`;
 }
 function field(name,label,value='',type='text',extra=''){return `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;}
 function openEditor(kind,id) {
@@ -120,7 +138,26 @@ $('#content').addEventListener('click',async e=>{
   if(action==='import-data'){const file=$('#import-file').files[0];if(!file)throw new Error('请选择配置文件');if(file.size>128*1024*1024)throw new Error('配置文件超过 128 MiB');if(!confirm('导入将替换当前配置和快照；运行中的实例需要重新应用。继续？'))return;let parsed;try{parsed=JSON.parse(await file.text());}catch(_){throw new Error('配置文件不是有效 JSON');}await api('import?revision='+data.revision,parsed);toast('导入成功，界面已刷新');await refresh();return;}
   if(action==='history-settings'){const input=$('#history-limit'), limit=Number(input.value);if(input.value===''||!Number.isInteger(limit)||limit<0||limit>100)throw new Error('快照数量须为 0–100');if(limit<data.history.length&&!confirm(`将删除 ${data.history.length-limit} 份最早快照，继续？`))return;await api('history-settings',{revision:data.revision,historyLimit:limit});toast('快照保留数量已更新');await refresh();return;}
   if(action==='export-toml'){if(!selected)throw new Error('先选择一个实例');const v=await api('config?id='+selected);download('kurumi-redacted.toml',v.toml,'text/plain');return;}
-  if(action==='probe'){const v=await api('probe',{revision:data.revision,id});toast(v.message);return;}
+  if(action==='probe'){
+   const revision=data.revision;
+   probing[id]=true;
+   render();
+   try {
+    const v=await api('probe',{revision,id});
+    if(data && data.revision===revision) {
+     probeResults[id]={...v,revision};
+     render();
+     toast(v.message);
+    } else {
+     await refresh(true);
+     toast('配置已变化，本次检测结果已丢弃，请重新检测。');
+    }
+   } finally {
+    delete probing[id];
+    if(data) render();
+   }
+   return;
+  }
   if(action==='validate'){const v=await api('validate',{revision:data.revision,id});toast('官方 frp 配置校验通过；尚未执行网络探测');return;}
   if(['start','restart','stop'].includes(action)){
    if(action==='restart'&&!confirm('重启应用将中断该实例的现有连接。配置检查失败时不会停止旧进程；新进程启动失败时不会自动回退。继续？'))return;
