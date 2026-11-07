@@ -80,7 +80,7 @@ func TestDownloadChecksDigestAndSize(t *testing.T) {
 
 func TestReleaseListAndSelection(t *testing.T) {
 	m := New(t.TempDir(), "windows-installed")
-	jsonBody := `[{"tag_name":"v0.7.1.1","prerelease":true,"assets":[{"name":"KurumiFRP-0.7.1.1-Setup.exe","browser_download_url":"https://github.com/Presikid/KurumiFrp/releases/download/v0.7.1.1/KurumiFRP-0.7.1.1-Setup.exe","size":3,"digest":"sha256:` + strings.Repeat("a", 64) + `"}]}]`
+	jsonBody := `[{"tag_name":"v999.0.0.0","prerelease":true,"assets":[{"name":"KurumiFRP-999.0.0.0-Setup.exe","browser_download_url":"https://github.com/Presikid/KurumiFrp/releases/download/v999.0.0.0/KurumiFRP-999.0.0.0-Setup.exe","size":3,"digest":"sha256:` + strings.Repeat("a", 64) + `"}]}]`
 	m.client = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(jsonBody)), Header: make(http.Header)}, nil
 	})}
@@ -88,7 +88,7 @@ func TestReleaseListAndSelection(t *testing.T) {
 	if err != nil || len(versions) != 1 || !versions[0].Available || !versions[0].Newer {
 		t.Fatal(versions, err)
 	}
-	if _, err = m.selectAsset(context.Background(), "v0.7.1.1"); err != nil {
+	if _, err = m.selectAsset(context.Background(), "v999.0.0.0"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = m.selectAsset(context.Background(), "v0.4.0"); err == nil {
