@@ -66,3 +66,8 @@ smoke test probes the disposable local manager listener and verifies that the
 connection table renders a successful result. These checks validate only the local
 target diagnostic behavior; they do not claim remote frp registration or Internet
 reachability.
+
+ 
+## 链路监测验收
+
+新增单元测试覆盖根级 TOML Admin API 配置位置、动态密码不出现在磁盘 TOML 或草稿摘要、进程注册状态与后端目标独立报告、回环监听探测、Visitor 不作为本地业务目标。浏览器回归补充监测页面展示与诊断 JSON 导出，确认测试凭据未进入报告。全部测试是否通过以本 PR 的 GitHub Actions 结果为准。
