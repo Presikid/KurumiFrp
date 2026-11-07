@@ -220,6 +220,17 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			}
 			reply(w, 200, map[string]any{"toml": v.Text, "redacted": true})
 			return
+		case "/api/diff":
+			id := r.URL.Query().Get("id")
+			if _, ok := a.store.DB.State.Instance(id); !ok { fail(w,404,fmt.Errorf("实例不存在")); return }
+			p := a.procs[id]
+			if p == nil || p.view().State != "running" { fail(w,409,fmt.Errorf("只有运行中的实例可以查看差异")); return }
+			draft, err := a.store.render(id,false)
+			if err != nil { fail(w,500,err); return }
+			activeCore := ""
+			if a.store.DB.ActiveCore != nil { activeCore = *a.store.DB.ActiveCore }
+			reply(w,200,buildConfigDiff(p,p.view(),draft,activeCore))
+			return
 		case "/api/logs":
 			lines := []string{}
 			if p := a.procs[r.URL.Query().Get("id")]; p != nil {
