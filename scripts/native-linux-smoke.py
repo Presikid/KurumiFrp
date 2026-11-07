@@ -46,7 +46,7 @@ def api(path, value=None):
 
 
 def keys():
-    return [hashlib.sha256((base/'data'/n).read_bytes()).hexdigest() for n in ('access.token','master.key')]
+    return [(base/'data/access.token').read_text(), json.loads((base/'data/state.json').read_text())['key']]
 
 
 try:
@@ -67,7 +67,7 @@ try:
         assert before==keys(), 'reinstall lost credentials'
     # Native service account, not root, owns the runtime state.
     uid=int(subprocess.check_output(['id','-u','kurumifrp']))
-    assert uid!=0 and (base/'data/master.key').stat().st_uid==uid
+    assert uid!=0 and (base/'data/state.json').stat().st_uid==uid
     fixture=base/'cores/frps'
     fixture.write_text('#!/bin/sh\nif [ "$1" = verify ]; then exit 0; fi\nprintf %s "$TMPDIR" > "$TMPDIR/frp-temp-probe"\nexec sleep 600\n')
     fixture.chmod(0o755)

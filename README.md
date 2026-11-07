@@ -41,7 +41,7 @@ go build -o kurumi ./cmd/kurumi
 ./kurumi --data ./data --frp-dir ./frp --listen auto --open
 ```
 
-无桌面环境时，通过 SSH 转发输出的本机端口，再执行 `kurumi --data ./data --show-token` 获取备用登录凭据。不要公开管理 Token、`master.key` 或数据目录。
+无桌面环境时，通过 SSH 转发输出的本机端口，再执行 `kurumi --data ./data --show-token` 获取备用登录凭据。不要公开管理 Token、配置文件或数据目录。
 
 ```sh
 go test ./...
