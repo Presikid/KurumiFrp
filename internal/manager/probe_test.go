@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -59,10 +60,10 @@ func TestProbeTargetHTTPUsesConfiguredVHost(t *testing.T) {
 }
 
 func TestProbeTargetHTTPDoesNotFollowRedirects(t *testing.T) {
-	var redirected bool
+	redirected := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/next" {
-			redirected = true
+			redirected <- struct{}{}
 		}
 		http.Redirect(w, r, "/next", http.StatusFound)
 	}))
@@ -70,8 +71,13 @@ func TestProbeTargetHTTPDoesNotFollowRedirects(t *testing.T) {
 	host, port := probeAddress(t, server)
 
 	got := probeTarget(Tunnel{Type: "http", LocalHost: host, LocalPort: port, Domains: []string{"redirect.example.test"}})
-	if got.Status != "redirect" || got.HTTPStatus != http.StatusFound || redirected {
-		t.Fatalf("expected an un-followed redirect response, got %#v (followed=%v)", got, redirected)
+	select {
+	case <-redirected:
+		t.Fatal("probe unexpectedly followed the redirect")
+	default:
+	}
+	if got.Status != "redirect" || got.HTTPStatus != http.StatusFound {
+		t.Fatalf("expected an un-followed redirect response, got %#v", got)
 	}
 }
 
@@ -105,6 +111,21 @@ func TestProbeTargetHTTPSVerifiesTLS(t *testing.T) {
 	trusted := probeTargetWithRoots(Tunnel{Type: "https", LocalHost: host, LocalPort: port}, roots)
 	if trusted.Status != "healthy" || trusted.HTTPStatus != http.StatusOK {
 		t.Fatalf("expected HTTPS response with trusted test root, got %#v", trusted)
+	}
+}
+
+func TestProbeTargetSTCPVisitorExplainsLocalListener(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	_, portText, _ := net.SplitHostPort(listener.Addr().String())
+	port, _ := strconv.Atoi(portText)
+
+	got := probeTarget(Tunnel{Type: "stcp-visitor", LocalHost: "127.0.0.1", LocalPort: port})
+	if got.Status != "reachable" || !strings.Contains(got.Message, "Visitor 本地监听端口") {
+		t.Fatalf("expected visitor listener-specific result, got %#v", got)
 	}
 }
 
