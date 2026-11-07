@@ -5,6 +5,7 @@ const titles = {overview:'网络总览',tunnels:'连接看板',instances:'运行
 let updateChecked = false, releases = [], updateStatus = '';
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer;
 const dialog = $('#dialog');
+let backupDialogEl = null;
 function toast(text) { $('#toast').textContent = text; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 8000); }
 async function api(path, body) {
  const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST',credentials:'same-origin',headers:body === undefined ? {}:{'Content-Type':'application/json'},body:body === undefined ? undefined:JSON.stringify(body)});
@@ -12,11 +13,11 @@ async function api(path, body) {
  if (!response.ok) {if(response.status === 401 && path !== 'login') showLogin(); throw new Error(json.error || `HTTP ${response.status}`);}
  return json;
 }
-function showLogin() {updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; data = null; if (dialog.open) dialog.close();}
+function showLogin() {updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; data = null; if (dialog.open) dialog.close(); if (backupDialogEl?.open) backupDialogEl.close();}
 async function refresh(silent = false) {
  try { const fresh = await api('state'); data = fresh; $('#login').hidden = true; $('#app').hidden = false; if(!updateChecked){updateChecked=true;checkUpdates(true);}
  $('#revision').textContent = `DRAFT / r${data.revision}`; $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
- if (!dialog.open && !$('#content').contains(document.activeElement)) render(); else if (!silent && !dialog.open) render();
+ if (!dialog.open && !backupDialogEl?.open && !$('#content').contains(document.activeElement)) render(); else if (!silent && !dialog.open && !backupDialogEl?.open) render();
  } catch(e) {if (!silent && data) toast(e.message);}
 }
 const stateOf = (id) => data.runtime[id] || {state:'stopped'};
@@ -48,7 +49,8 @@ function render() {
  } else if(page==='config') {
   ensureSelected();
   content.innerHTML=header('配置中心','预览配置、导出数据和恢复历史快照。')+
-  `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>实例配置预览</h3><button data-action="export-toml">导出脱敏 TOML</button></div><div class="panel-content">${picker()}<div class="notice">此预览中的 &lt;redacted&gt; 是占位符，不能直接部署。</div><pre id="config-output">${selected?'正在读取…':'先创建一个实例。'}</pre></div></section><section class="panel"><div class="panel-title"><h3>历史快照</h3><span class="pill">当前 r${data.revision}</span></div><div class="panel-content"><label>保留数量（0–100）<input id="history-limit" type="number" min="0" max="100" step="1" value="${data.historyLimit}"></label><button data-action="history-settings">保存数量</button><p class="small-note">减少数量时立即删除最早的快照；设为 0 则不保留快照。</p>${data.history.length?data.history.slice().reverse().map(h=>`<div class="check-row"><div><b>r${h.revision}</b><p class="small-note blank">${esc(h.summary)}<br>${time(h.at)}</p></div><button data-action="restore" data-target="${h.revision}">恢复</button></div>`).join(''):empty('暂无历史版本','修改配置时按保留数量保存前一版本。')}<p class="small-note blank">恢复前须停止全部托管实例。恢复只改变草稿，不会自动重新启动进程。</p></div></section></div><section class="panel"><div class="panel-title"><h3>导出配置和快照</h3></div><div class="panel-content"><label>导出范围<select id="export-scope"><option value="all">当前配置和全部快照</option><option value="config">仅当前配置</option><option value="snapshots">仅全部快照</option><option value="snapshot">单个快照</option></select></label><label>单个快照<select id="export-snapshot">${data.history.slice().reverse().map(h=>`<option value="${h.revision}">r${h.revision} · ${esc(h.summary)}</option>`).join('')}</select></label><p class="small-note">导出的单个配置文件包含密钥和所选快照，可直接导入其他设备。任何持有该文件的人都能访问其中的密钥，请妥善保管。</p><button data-action="export-data">导出配置文件</button><hr><label>选择配置文件<input id="import-file" type="file" accept=".json,application/json"></label><button data-action="import-data">导入并刷新</button><p class="small-note">导入会替换当前配置与历史快照，运行中的实例需重启应用新配置。</p></div></section>`;
+  `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>实例配置预览</h3><button data-action="export-toml">导出脱敏 TOML</button></div><div class="panel-content">${picker()}<div class="notice">此预览中的 &lt;redacted&gt; 是占位符，不能直接部署。</div><pre id="config-output">${selected?'正在读取…':'先创建一个实例。'}</pre></div></section><section class="panel"><div class="panel-title"><h3>历史快照</h3><span class="pill">当前 r${data.revision}</span></div><div class="panel-content"><label>保留数量（0–100）<input id="history-limit" type="number" min="0" max="100" step="1" value="${data.historyLimit}"></label><button data-action="history-settings">保存数量</button><p class="small-note">减少数量时立即删除最早的快照；设为 0 则不保留快照。</p>${data.history.length?data.history.slice().reverse().map(h=>`<div class="check-row"><div><b>r${h.revision}</b><p class="small-note blank">${esc(h.summary)}<br>${time(h.at)}</p></div><button data-action="restore" data-target="${h.revision}">恢复</button></div>`).join(''):empty('暂无历史版本','修改配置时按保留数量保存前一版本。')}<p class="small-note blank">恢复前须停止全部托管实例。恢复只改变草稿，不会自动重新启动进程。</p></div></section></div><section class="panel"><div class="panel-title"><h3>明文配置导出（兼容旧格式）</h3></div><div class="panel-content"><label>导出范围<select id="export-scope"><option value="all">当前配置和全部快照</option><option value="config">仅当前配置</option><option value="snapshots">仅全部快照</option><option value="snapshot">单个快照</option></select></label><label>单个快照<select id="export-snapshot">${data.history.slice().reverse().map(h=>`<option value="${h.revision}">r${h.revision} · ${esc(h.summary)}</option>`).join('')}</select></label><p class="small-note">明文 JSON 包含完整数据密钥，可用于兼容旧版本，但持有文件的人能读取配置令牌。日常备份请优先使用密码加密备份。</p><button data-action="export-data">导出配置文件</button><hr><label>选择配置文件<input id="import-file" type="file" accept=".json,application/json"></label><button data-action="import-data">导入并刷新</button><p class="small-note">导入会替换当前配置与历史快照，运行中的实例需重启应用新配置。</p></div></section>`;
+  content.querySelector('.page-head')?.insertAdjacentHTML('afterend', '<section class="panel"><div class="panel-title"><h3>密码加密备份与恢复</h3><span class="pill good">AES-256-GCM</span></div><div class="panel-content"><p>使用单独密码加密配置、历史快照和数据密钥，适合跨设备迁移。密码不会被工作台保存。</p><div class="actions"><button class="primary" data-backup-action="export">导出加密备份</button><button data-backup-action="import">恢复加密备份</button></div><p class="small-note">建议使用至少 16 个字符的强密码，并与备份文件分开保管。忘记密码无法恢复。备份不包含 frp 核心文件和本机管理令牌。</p></div></section>');
   if(selected) api('config?id='+encodeURIComponent(selected)).then(v=>{if(serial===n && $('#config-output')) $('#config-output').textContent=v.toml;}).catch(e=>toast(e.message));
  } else if(page==='update') {
   content.innerHTML=header('软件更新','从 GitHub 获取官方版本，选择可用的新版本进行更新。')+`<section class="panel"><div class="panel-content"><p>当前版本 ${esc(data.version)}。更新期间工作台和托管连接可能中断；Windows 需要管理员授权。</p><label>选择版本<select id="update-version">${releases.filter(v=>v.newer&&v.available).map(v=>`<option value="${esc(v.tag)}">${esc(v.tag)}${v.prerelease?' · 预览版':''}</option>`).join('')}</select></label><div class="actions"><button data-action="check-update">检查版本</button><button class="primary" data-action="install-update" ${releases.some(v=>v.newer&&v.available)?'':'disabled'}>更新所选版本</button></div><p class="small-note">${esc(updateStatus||'选择版本后将下载并校验官方安装包。')}</p></div></section>`;
@@ -89,6 +91,51 @@ function updateFields(){
  f.elements.bandwidthKB.disabled=t==='stcp-visitor';
 }
 function navigate(to){if(!titles[to])return;page=to;location.hash=to;render();}
+
+function openBackupDialog(mode) {
+ if (!['export','import'].includes(mode)) return;
+ if (!backupDialogEl) {
+  backupDialogEl = document.createElement('dialog');
+  backupDialogEl.id = 'backup-dialog';
+  document.body.appendChild(backupDialogEl);
+  backupDialogEl.addEventListener('click',e=>{if(e.target.closest('[data-backup-cancel]'))backupDialogEl.close();});
+  backupDialogEl.addEventListener('submit',async e=>{
+   if(!e.target.matches('#backup-form'))return;
+   e.preventDefault();
+   const f=e.target,button=f.querySelector('button[type="submit"]'),error=f.querySelector('.error');
+   error.textContent='';button.disabled=true;
+   try{
+    const password=f.elements.password.value;
+    const current=await api('state');
+    if(backupDialogEl.dataset.mode==='export'){
+     if(password!==f.elements.confirm.value)throw new Error('两次输入的密码不一致');
+     const result=await api('backup/export',{revision:current.revision,password});
+     download('kurumi-encrypted-backup-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(result,null,2));
+     backupDialogEl.close();
+     toast('加密备份已导出，请妥善保管密码');
+    }else{
+     const file=f.elements.file.files[0];
+     if(!file)throw new Error('请选择备份文件');
+     if(file.size>180*1024*1024)throw new Error('备份文件超过大小限制');
+     let backup;
+     try{backup=JSON.parse(await file.text());}catch(_){throw new Error('备份文件不是有效 JSON');}
+     if(!f.elements.confirmRestore.checked)throw new Error('请确认恢复操作');
+     await api('backup/import',{revision:current.revision,password,backup});
+     backupDialogEl.close();
+     toast('加密备份恢复成功');
+     await refresh();
+    }
+   }catch(e){error.textContent=e.message||'备份操作失败';}
+   finally{button.disabled=false;}
+  });
+ }
+ backupDialogEl.dataset.mode=mode;
+ backupDialogEl.innerHTML=mode==='export'
+  ? '<form id="backup-form"><h2>导出加密备份</h2><p class="muted">密码不会保存在工作台；遗失密码后无法恢复，请将密码和文件分开保管。</p><div class="form-grid"><label>备份密码<input name="password" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></label><label>确认密码<input name="confirm" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></label></div><div class="dialog-actions"><button type="button" data-backup-cancel>取消</button><button type="submit" class="primary">导出加密文件</button></div><p class="error" role="alert"></p></form>'
+  : '<form id="backup-form"><h2>恢复加密备份</h2><p class="muted">替换当前配置与历史快照，但不会自动重启正在运行的实例。不会恢复 frp 核心程序及本机管理令牌。</p><div class="form-grid"><label class="span-2">备份文件<input name="file" type="file" accept=".json,application/json" required></label><label class="span-2">备份密码<input name="password" type="password" minlength="12" maxlength="1024" autocomplete="current-password" required></label><label class="form-check span-2"><input name="confirmRestore" type="checkbox" required>确认替换当前配置和历史快照</label></div><div class="dialog-actions"><button type="button" data-backup-cancel>取消</button><button type="submit" class="primary">验证并恢复</button></div><p class="error" role="alert"></p></form>';
+ backupDialogEl.showModal();
+}
+
 function download(name,text,type='application/json'){const u=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}
 $('#login-form').addEventListener('submit',async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;try{await api('login',{token:e.target.elements.token.value.trim()});e.target.reset();$('#login-error').textContent='';await refresh();}catch(err){$('#login-error').textContent=err.message;}finally{b.disabled=false;}});
 $('#logout').addEventListener('click',async()=>{try{await api('logout',{});showLogin();}catch(e){toast(e.message);}});
@@ -131,8 +178,9 @@ $('#content').addEventListener('click',async e=>{
   await refresh();
  }catch(err){toast(err.message);}finally{b.disabled=false;}
 });
+$('#content').addEventListener('click',e=>{const b=e.target.closest('[data-backup-action]');if(b)openBackupDialog(b.dataset.backupAction);});
 window.addEventListener('hashchange',()=>{const p=location.hash.slice(1);if(titles[p]&&page!==p){page=p;render();}});
 page=titles[location.hash.slice(1)]?location.hash.slice(1):'overview';
 // core.js consumes a launch ticket before the first authenticated state request.
 if(!/^#launch=([a-f0-9]{64})$/.test(location.hash))refresh(true);
-setInterval(()=>{if(data&&!document.hidden&&!dialog.open)refresh(true);},5000);
+setInterval(()=>{if(data&&!document.hidden&&!dialog.open&&!backupDialogEl?.open)refresh(true);},5000);
