@@ -27,6 +27,7 @@ OutputDir={#OutputPath}
 OutputBaseFilename=KurumiFRP-{#AppVersion}-Setup
 Compression=lzma2
 SolidCompression=yes
+UninstallDisplayName=KurumiFRP
 UninstallDisplayIcon={app}\kurumi.exe
 CloseApplications=no
 RestartApplications=no
