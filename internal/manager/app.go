@@ -90,7 +90,8 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	}); e != nil {
 		return nil, e
 	}
-	return &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets))}, nil
+	startupCtx, startupCancel := context.WithCancel(context.Background())
+	return &App{quit: make(chan struct{}), startupCtx: startupCtx, startupCancel: startupCancel, core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets))}, nil
 }
 func (a *App) SetDistribution(distribution string) {
 	a.updater = update.New(a.store.dir, update.DetectDistribution(distribution))
