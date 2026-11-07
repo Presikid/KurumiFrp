@@ -58,6 +58,8 @@ def linux_tree(stage, binary):
     target.chmod(0o755)
     write(stage / 'usr/lib/systemd/system/kurumifrp.service',
           (ROOT / 'packaging/linux/kurumifrp.service').read_text())
+    for unit in ('kurumifrp-updater.service', 'kurumifrp-updater.path'):
+        write(stage / 'usr/lib/systemd/system' / unit, (ROOT / 'packaging/linux' / unit).read_text())
     docs = stage / 'usr/share/doc/kurumifrp'
     write(docs / 'README.md', (ROOT / 'docs/INSTALL.md').read_text())
     write(docs / 'copyright', 'Upstream: https://github.com/Presikid/KurumiFrp\n'
@@ -156,6 +158,8 @@ if [ "$1" = 0 ]; then remove_unit_state; purge_state; elif systemd_active; then 
 %files
 /usr/bin/kurumifrp
 /usr/lib/systemd/system/kurumifrp.service
+/usr/lib/systemd/system/kurumifrp-updater.service
+/usr/lib/systemd/system/kurumifrp-updater.path
 %dir /usr/share/doc/kurumifrp
 %doc /usr/share/doc/kurumifrp/*
 /usr/share/man/man1/kurumifrp.1.gz

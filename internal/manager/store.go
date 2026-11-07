@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 )
 
@@ -25,17 +26,42 @@ type Event struct {
 	Message string `json:"message"`
 }
 type Database struct {
-	Format   int        `json:"format"`
-	Revision uint64     `json:"revision"`
-	State    State      `json:"state"`
-	History  []Snapshot `json:"history"`
-	Events   []Event    `json:"events"`
+	Format       int        `json:"format"`
+	Revision     uint64     `json:"revision"`
+	State        State      `json:"state"`
+	History      []Snapshot `json:"history"`
+	HistoryLimit int        `json:"historyLimit"`
+	Events       []Event    `json:"events"`
+	Key          string     `json:"key,omitempty"`
+	ActiveCore   *string    `json:"activeCore"`
 }
 type Store struct {
-	dir string
-	key []byte
-	DB  Database
+	dir  string
+	key  []byte
+	DB   Database
+	refs map[uint64]string
 }
+
+const maxStateSize = 128 << 20
+const maxLegacyStateSize = 64 << 20
+const defaultHistoryLimit = 5
+const maxHistoryLimit = 100
+
+type snapshotRef struct {
+	Revision uint64 `json:"revision"`
+	File     string `json:"file"`
+}
+
+type diskState struct {
+	Format       int           `json:"format"`
+	Revision     uint64        `json:"revision"`
+	State        State         `json:"state"`
+	Events       []Event       `json:"events"`
+	HistoryLimit int           `json:"historyLimit"`
+	History      []snapshotRef `json:"history"`
+}
+
+var snapshotName = regexp.MustCompile(`^snapshot-[a-f0-9]{32}\.json$`)
 
 func randomHex(n int) string {
 	b := make([]byte, n)
@@ -46,6 +72,9 @@ func randomHex(n int) string {
 }
 func now() string { return time.Now().UTC().Format(time.RFC3339) }
 func privateFile(path string) ([]byte, error) {
+	return privateFileLimit(path, maxStateSize)
+}
+func privateFileLimit(path string, limit int64) ([]byte, error) {
 	f, e := os.Lstat(path)
 	if e != nil {
 		return nil, e
@@ -53,7 +82,7 @@ func privateFile(path string) ([]byte, error) {
 	if !f.Mode().IsRegular() {
 		return nil, fmt.Errorf("not a regular file: %s", path)
 	}
-	if f.Size() > 8<<20 {
+	if f.Size() > limit {
 		return nil, fmt.Errorf("file too large")
 	}
 	return os.ReadFile(path)
@@ -90,38 +119,96 @@ func newStore(dir string) (*Store, error) {
 	if st, e := os.Lstat(dir); e != nil || st.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("unsafe data directory")
 	}
-	s := &Store{dir: dir}
+	s := &Store{dir: dir, refs: map[uint64]string{}}
 	dbPath := filepath.Join(dir, "state.json")
 	keyPath := filepath.Join(dir, "master.key")
-	s.key, e = privateFile(keyPath)
+	b, e := privateFileLimit(dbPath, maxStateSize)
 	if os.IsNotExist(e) {
-		if _, de := os.Stat(dbPath); !os.IsNotExist(de) {
-			return nil, fmt.Errorf("database exists but encryption key is missing; restore key, do not regenerate")
+		if _, err := os.Lstat(keyPath); err == nil {
+			return nil, fmt.Errorf("state missing; existing master key retained")
+		} else if !os.IsNotExist(err) {
+			return nil, err
 		}
 		s.key = make([]byte, 32)
 		if _, e = rand.Read(s.key); e != nil {
 			return nil, e
 		}
-		e = atomicWrite(keyPath, s.key)
-	}
-	if e != nil {
-		return nil, e
-	}
-	if len(s.key) != 32 {
-		return nil, fmt.Errorf("invalid encryption key")
-	}
-	b, e := privateFile(dbPath)
-	if os.IsNotExist(e) {
-		s.DB = Database{Format: 1, Revision: 1, State: State{Instances: []Instance{}, Tunnels: []Tunnel{}}, History: []Snapshot{}, Events: []Event{}}
+		s.DB = Database{Format: 3, Revision: 1, State: State{Instances: []Instance{}, Tunnels: []Tunnel{}}, History: []Snapshot{}, Events: []Event{}, HistoryLimit: defaultHistoryLimit}
 		return s, s.write(s.DB)
 	}
 	if e != nil {
 		return nil, e
 	}
-	if e = json.Unmarshal(b, &s.DB); e != nil {
+	var header struct {
+		Format int `json:"format"`
+	}
+	if e = json.Unmarshal(b, &header); e != nil {
 		return nil, e
 	}
-	if s.DB.Format != 1 || s.DB.Revision < 1 || len(s.DB.History) > 30 {
+	if header.Format == 3 {
+		if e = json.Unmarshal(b, &s.DB); e != nil {
+			return nil, e
+		}
+		s.key, e = base64.RawStdEncoding.DecodeString(s.DB.Key)
+	} else {
+		s.key, e = privateFile(keyPath)
+	}
+	if e != nil || len(s.key) != 32 {
+		return nil, fmt.Errorf("invalid or missing encryption key")
+	}
+	switch header.Format {
+	case 1:
+		if e = json.Unmarshal(b, &s.DB); e != nil {
+			return nil, e
+		}
+		if len(s.DB.History) > 30 {
+			return nil, fmt.Errorf("unsupported database")
+		}
+		// Preserve all existing snapshots until the user changes the limit.
+		s.DB.HistoryLimit = defaultHistoryLimit
+		if len(s.DB.History) > s.DB.HistoryLimit {
+			s.DB.HistoryLimit = len(s.DB.History)
+		}
+	case 2:
+		var disk diskState
+		if e = json.Unmarshal(b, &disk); e != nil {
+			return nil, e
+		}
+		if disk.HistoryLimit < 0 || disk.HistoryLimit > maxHistoryLimit || len(disk.History) > disk.HistoryLimit {
+			return nil, fmt.Errorf("invalid history limit")
+		}
+		if len(disk.History) > 0 {
+			if e = snapshotDir(dir, false); e != nil {
+				return nil, e
+			}
+		}
+		s.DB = Database{Format: 2, Revision: disk.Revision, State: disk.State, Events: disk.Events, History: []Snapshot{}, HistoryLimit: disk.HistoryLimit}
+		for _, ref := range disk.History {
+			if !snapshotName.MatchString(ref.File) || ref.Revision == 0 || ref.Revision >= disk.Revision || s.refs[ref.Revision] != "" {
+				return nil, fmt.Errorf("invalid snapshot reference")
+			}
+			data, err := privateFileLimit(filepath.Join(dir, "snapshots", ref.File), maxLegacyStateSize)
+			if err != nil {
+				return nil, err
+			}
+			var snap Snapshot
+			if err = json.Unmarshal(data, &snap); err != nil {
+				return nil, err
+			}
+			if snap.Revision != ref.Revision {
+				return nil, fmt.Errorf("snapshot revision mismatch")
+			}
+			s.refs[ref.Revision] = ref.File
+			s.DB.History = append(s.DB.History, snap)
+		}
+	case 3:
+		if s.DB.HistoryLimit < 0 || s.DB.HistoryLimit > maxHistoryLimit || len(s.DB.History) > s.DB.HistoryLimit {
+			return nil, fmt.Errorf("invalid history limit")
+		}
+	default:
+		return nil, fmt.Errorf("unsupported database")
+	}
+	if s.DB.Revision < 1 {
 		return nil, fmt.Errorf("unsupported database")
 	}
 	if e = validate(s.DB.State); e != nil {
@@ -143,6 +230,12 @@ func newStore(dir string) (*Store, error) {
 				}
 			}
 		}
+	}
+	if header.Format != 3 {
+		if e = s.write(s.DB); e != nil {
+			return nil, e
+		}
+		s.DB.Format = 3
 	}
 	return s, nil
 }
@@ -198,21 +291,60 @@ func (s *Store) decrypt(text string) (string, error) {
 	}
 	return string(p), nil
 }
-func (s *Store) write(db Database) error {
-	b, e := json.MarshalIndent(db, "", "  ")
+func snapshotDir(dir string, create bool) error {
+	p := filepath.Join(dir, "snapshots")
+	if create {
+		if e := os.Mkdir(p, 0700); e != nil && !os.IsExist(e) {
+			return e
+		}
+	}
+	st, e := os.Lstat(p)
 	if e != nil {
 		return e
 	}
-	return atomicWrite(filepath.Join(s.dir, "state.json"), b)
+	if !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("unsafe snapshot directory")
+	}
+	return nil
+}
+
+// The complete configuration and its history are committed in one atomic file.
+func (s *Store) write(db Database) error {
+	db.Format = 3
+	db.Key = base64.RawStdEncoding.EncodeToString(s.key)
+	b, err := json.MarshalIndent(db, "", "  ")
+	if err != nil {
+		return err
+	}
+	if len(b) > maxStateSize {
+		return fmt.Errorf("配置文件超过 128 MiB，无法安全保存；请减少快照数量")
+	}
+	if err = atomicWrite(filepath.Join(s.dir, "state.json"), b); err != nil {
+		return err
+	}
+	if s.DB.Format != 3 {
+		for _, name := range s.refs {
+			_ = os.Remove(filepath.Join(s.dir, "snapshots", name))
+		}
+		if len(s.refs) > 0 {
+			_ = os.Remove(filepath.Join(s.dir, "snapshots"))
+		}
+		_ = os.Remove(filepath.Join(s.dir, "master.key"))
+		s.refs = map[uint64]string{}
+	}
+	return nil
 }
 func (s *Store) commit(st State, summary string) error {
 	if e := validate(st); e != nil {
 		return e
 	}
+	if e := validateVisitorListeners(s.DB.State, st); e != nil {
+		return e
+	}
 	db := s.DB
 	db.History = append(append([]Snapshot{}, db.History...), Snapshot{db.Revision, now(), summary, db.State.clone()})
-	if len(db.History) > 30 {
-		db.History = db.History[len(db.History)-30:]
+	if len(db.History) > db.HistoryLimit {
+		db.History = db.History[len(db.History)-db.HistoryLimit:]
 	}
 	db.Revision++
 	db.State = st
@@ -223,6 +355,30 @@ func (s *Store) commit(st State, summary string) error {
 	if e := s.write(db); e != nil {
 		return e
 	}
+	s.DB = db
+	s.DB.Format = 3
+	return nil
+}
+
+func (s *Store) setHistoryLimit(limit int) error {
+	if limit < 0 || limit > maxHistoryLimit {
+		return fmt.Errorf("快照数量须为 0-100")
+	}
+	db := s.DB
+	db.HistoryLimit = limit
+	db.History = append([]Snapshot{}, db.History...)
+	if len(db.History) > limit {
+		db.History = db.History[len(db.History)-limit:]
+	}
+	db.Revision++
+	db.Events = append(append([]Event{}, db.Events...), Event{now(), fmt.Sprintf("快照保留数量设置为 %d", limit)})
+	if len(db.Events) > 200 {
+		db.Events = db.Events[len(db.Events)-200:]
+	}
+	if e := s.write(db); e != nil {
+		return e
+	}
+	db.Format = 3
 	s.DB = db
 	return nil
 }

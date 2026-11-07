@@ -96,9 +96,9 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
             assert not (app/'data').exists() and not (app/'cores').exists(), 'runtime wrote into Program Files'
             assert Path(paths['temporary'])==profile/'tmp'
             subprocess.run([str(exe),'--check-running'],check=True,timeout=25)
-            assert api('state')['version']=='0.5.0'
+            assert api('state')['version']=='0.6.0'
             wait_until(lambda:not source.exists())
-            current=[hashlib.sha256((profile/'data'/n).read_bytes()).hexdigest() for n in ('access.token','master.key')]
+            current=[(profile/'data/access.token').read_text(), json.loads((profile/'data/state.json').read_text())['key']]
             if before is not None: assert before==current, 'reinstall rotated secrets'
             before=current
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,arp,0,access) as key:
@@ -122,7 +122,7 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
         other=(set((common/'profiles').iterdir())-original_profiles).pop()
         wait_until(lambda:(other/'data/access.token').exists() and (other/'data/listen.addr').exists())
         as_standard(username,password,exe,['--check-running'],wait=True)
-        assert (other/'data/master.key').read_bytes()!=(profile/'data/master.key').read_bytes()
+        assert json.loads((other/'data/state.json').read_text())['key']!=json.loads((profile/'data/state.json').read_text())['key']
         assert (other/'data/listen.addr').read_text()!=(profile/'data/listen.addr').read_text()
         probe_source=root/'acl.go'
         probe_source.write_text('package main\nimport("os")\nfunc main(){if f,e:=os.Open(os.Args[1]);e==nil{f.Close();os.Exit(71)};if e:=os.WriteFile(os.Args[2],[]byte("bad"),0600);e==nil{os.Remove(os.Args[2]);os.Exit(72)}}\n')
@@ -134,9 +134,9 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
         token=profile/'data/access.token'; saved=token.read_bytes()
         token.write_text('b'*64)
         failed=subprocess.run([str(app/'unins000.exe'),'/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'],timeout=35)
-        assert failed.returncode!=0 and exe.exists() and (profile/'data/master.key').exists()
+        assert failed.returncode!=0 and exe.exists() and (profile/'data/state.json').exists()
         token.write_bytes(saved)
-        assert api('state')['version']=='0.5.0'
+        assert api('state')['version']=='0.6.0'
         fixture=root/'fixture.go'
         fixture.write_text('package main\nimport("os";"time";"path/filepath")\nfunc main(){if len(os.Args)>1 && os.Args[1]=="verify"{return};os.WriteFile(filepath.Join(os.TempDir(),"frp-temp-probe"),[]byte(os.Getenv("TEMP")),0600);for{time.Sleep(time.Second)}}\n')
         subprocess.run(['go','build','-o',str(profile/'cores/frps.exe'),str(fixture)],check=True,timeout=90)

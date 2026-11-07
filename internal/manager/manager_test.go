@@ -153,12 +153,10 @@ func TestSecretsAndPersistence(t *testing.T) {
 	if a.store.DB.State.Instances[0].Token != i.Token {
 		t.Fatal("blank edit cleared token")
 	}
-	if e = os.Remove(filepath.Join(a.store.dir, "master.key")); e != nil {
-		t.Fatal(e)
+	if _, e = os.Stat(filepath.Join(a.store.dir, "master.key")); !os.IsNotExist(e) {
+		t.Fatal("separate master key was created")
 	}
-	if _, e = newStore(a.store.dir); e == nil {
-		t.Fatal("regenerated a lost master key")
-	}
+
 }
 func TestRevisionAndHistory(t *testing.T) {
 	a := testApp(t)
@@ -176,7 +174,7 @@ func TestRevisionAndHistory(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	if len(a.store.DB.History) != 30 {
+	if len(a.store.DB.History) != defaultHistoryLimit {
 		t.Fatal("unbounded history")
 	}
 }

@@ -66,6 +66,11 @@ with tempfile.TemporaryDirectory(prefix="kurumi-frp-") as tmp, socketserver.Thre
             return api("save", {"revision": api("state")["revision"], "kind": kind, "value": value})
         def control(id, action):
             return api("control", {"revision": api("state")["revision"], "id": id, "action": action})
+        if not api("state")["binaries"]["frpc"]:
+            installed = api("core")["installed"]
+            if len(installed) != 1:
+                raise RuntimeError("select a single installed core for the disposable workspace")
+            api("core/activate", {"id": installed[0]["id"]})
         save("instance", {"name": "smoke-frps", "kind": "frps", "host": "127.0.0.1", "port": bind_port, "token": "smoke-auth-secret-123"})
         save("instance", {"name": "smoke-frpc", "kind": "frpc", "host": "127.0.0.1", "port": bind_port, "token": "smoke-auth-secret-123"})
         state = api("state")

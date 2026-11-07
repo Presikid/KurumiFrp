@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Presikid/KurumiFrp/internal/core"
+	"github.com/Presikid/KurumiFrp/internal/update"
 	"io"
 	"io/fs"
 	"net"
@@ -19,6 +20,7 @@ type App struct {
 	quit     chan struct{}
 	quitOnce sync.Once
 	core     *core.Manager
+	updater  *update.Manager
 	mu       sync.Mutex
 	store    *Store
 	bin      string
@@ -56,7 +58,38 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	if e != nil {
 		return nil, e
 	}
-	return &App{quit: make(chan struct{}), core: cores, store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets))}, nil
+	if s.DB.ActiveCore == nil {
+		status, err := cores.Status()
+		if err != nil {
+			return nil, err
+		}
+		id := status.Active
+		db := s.DB
+		db.ActiveCore = &id
+		if err = s.write(db); err != nil {
+			return nil, err
+		}
+		s.DB = db
+		if err = cores.RemoveLegacyActive(); err != nil {
+			return nil, err
+		}
+	}
+	if e = cores.UseConfigActive(*s.DB.ActiveCore, func(id string) error {
+		db := s.DB
+		db.ActiveCore = &id
+		db.Revision++
+		if err := s.write(db); err != nil {
+			return err
+		}
+		s.DB = db
+		return nil
+	}); e != nil {
+		return nil, e
+	}
+	return &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets))}, nil
+}
+func (a *App) SetDistribution(distribution string) {
+	a.updater = update.New(a.store.dir, update.DetectDistribution(distribution))
 }
 func (a *App) AccessToken() string { return a.auth.token }
 func HTTPServer(addr string, h http.Handler) *http.Server {
@@ -144,6 +177,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.coreAPI(w, r)
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, "/api/update/") {
+			a.updateAPI(w, r)
+			return
+		}
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		a.api(w, r)
@@ -170,7 +207,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			}
 			_, ec := a.binary("frpc")
 			_, es := a.binary("frps")
-			reply(w, 200, map[string]any{"version": "0.5.0", "revision": a.store.DB.Revision, "state": a.store.DB.State.public(), "runtime": a.statuses(), "history": history, "events": a.store.DB.Events, "binaries": map[string]bool{"frpc": ec == nil, "frps": es == nil}})
+			reply(w, 200, map[string]any{"version": "0.6.0", "revision": a.store.DB.Revision, "state": a.store.DB.State.public(), "runtime": a.statuses(), "history": history, "historyLimit": a.store.DB.HistoryLimit, "events": a.store.DB.Events, "binaries": map[string]bool{"frpc": ec == nil, "frps": es == nil}})
+			return
+		case "/api/export":
+			a.export(w, r)
 			return
 		case "/api/config":
 			v, e := a.store.render(r.URL.Query().Get("id"), true)
@@ -196,13 +236,18 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(405)
 		return
 	}
+	if r.URL.Path == "/api/import" {
+		a.importConfig(w, r)
+		return
+	}
 	var req struct {
-		Revision uint64          `json:"revision"`
-		Kind     string          `json:"kind"`
-		ID       string          `json:"id"`
-		Action   string          `json:"action"`
-		Target   uint64          `json:"target"`
-		Value    json.RawMessage `json:"value"`
+		Revision     uint64          `json:"revision"`
+		Kind         string          `json:"kind"`
+		ID           string          `json:"id"`
+		Action       string          `json:"action"`
+		Target       uint64          `json:"target"`
+		HistoryLimit *int            `json:"historyLimit"`
+		Value        json.RawMessage `json:"value"`
 	}
 	if e := decode(w, r, &req); e != nil {
 		fail(w, 400, e)
@@ -214,6 +259,12 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	var err error
 	switch r.URL.Path {
+	case "/api/history-settings":
+		if req.HistoryLimit == nil {
+			err = fmt.Errorf("请指定快照保留数量")
+		} else {
+			err = a.store.setHistoryLimit(*req.HistoryLimit)
+		}
 	case "/api/save":
 		st := a.store.DB.State.clone()
 		switch req.Kind {

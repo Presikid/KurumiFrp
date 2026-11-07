@@ -42,15 +42,17 @@ type Status struct {
 	Job       Job         `json:"job"`
 }
 type Manager struct {
-	root      string
-	client    *http.Client
-	mu        sync.Mutex
-	job       Job
-	cancel    context.CancelFunc
-	done      chan struct{}
-	closed    bool
-	catalog   []Release
-	catalogAt time.Time
+	root           string
+	client         *http.Client
+	mu             sync.Mutex
+	job            Job
+	cancel         context.CancelFunc
+	done           chan struct{}
+	closed         bool
+	activeOverride *string
+	saveActive     func(string) error
+	catalog        []Release
+	catalogAt      time.Time
 }
 
 var idRE = regexp.MustCompile(`^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}-(linux|windows|darwin)_(amd64|arm64)-[a-f0-9]{16}$`)
@@ -139,6 +141,9 @@ func (m *Manager) manifest(id string) (Installed, error) {
 	return v, nil
 }
 func (m *Manager) active() (string, error) {
+	if m.activeOverride != nil {
+		return *m.activeOverride, nil
+	}
 	var v struct {
 		ID string `json:"id"`
 	}
@@ -153,6 +158,26 @@ func (m *Manager) active() (string, error) {
 		return "", fmt.Errorf("invalid active core")
 	}
 	return v.ID, nil
+}
+
+// UseConfigActive moves the selected core into the workbench configuration.
+func (m *Manager) UseConfigActive(id string, save func(string) error) error {
+	if id != "" && !idRE.MatchString(id) {
+		return fmt.Errorf("invalid active core")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.activeOverride = &id
+	m.saveActive = save
+	return nil
+}
+func ValidID(id string) bool { return id == "" || idRE.MatchString(id) }
+func (m *Manager) RemoveLegacyActive() error {
+	err := os.Remove(filepath.Join(m.root, "active.json"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 func (m *Manager) Status() (Status, error) {
 	m.mu.Lock()
@@ -412,6 +437,13 @@ func (m *Manager) Activate(ctx context.Context, id string) error {
 		if err != nil || strings.TrimSpace(output.text) != strings.TrimPrefix(v.Tag, "v") {
 			return fmt.Errorf("%s version probe failed; current core unchanged", kind)
 		}
+	}
+	if m.saveActive != nil {
+		if err := m.saveActive(id); err != nil {
+			return err
+		}
+		*m.activeOverride = id
+		return nil
 	}
 	return writeJSON(filepath.Join(m.root, "active.json"), map[string]string{"id": id})
 }
