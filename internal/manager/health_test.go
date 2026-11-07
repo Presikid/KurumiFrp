@@ -31,10 +31,10 @@ func TestRenderRuntimeAddsPrivateFRPCAdminAPI(t *testing.T) {
 		t.Fatalf("invalid loopback admin port: %d", runtimeConfig.AdminPort)
 	}
 	for _, want := range []string{
-		\`webServer.addr = "127.0.0.1"\`,
+		`webServer.addr = "127.0.0.1"`,
 		"webServer.port = ",
-		\`webServer.user = "kurumi"\`,
-		\`webServer.password = {{ .Envs.KURUMI_ADMIN_PASSWORD }}\`,
+		`webServer.user = "kurumi"`,
+		`webServer.password = {{ .Envs.KURUMI_ADMIN_PASSWORD }}`,
 	} {
 		if !strings.Contains(runtimeConfig.Text, want) {
 			t.Fatalf("runtime config is missing %q", want)
