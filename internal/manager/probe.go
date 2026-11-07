@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -37,15 +38,6 @@ func probeTarget(t Tunnel) ProbeResult {
 // probeTargetWithRoots keeps production TLS verification enabled. The optional
 // root pool exists so tests can trust an ephemeral httptest certificate.
 func probeTargetWithRoots(t Tunnel, roots *x509.CertPool) ProbeResult {
-	return probeTargetWithContext(context.Background(), t, roots)
-}
-
-// probeTargetContext allows a diagnostic request to cancel a batch of probes.
-func probeTargetContext(parent context.Context, t Tunnel) ProbeResult {
-	return probeTargetWithContext(parent, t, nil)
-}
-
-func probeTargetWithContext(parent context.Context, t Tunnel, roots *x509.CertPool) ProbeResult {
 	result := ProbeResult{Protocol: t.Type}
 	if !hostOK(t.LocalHost) || !portOK(t.LocalPort) {
 		result.Status = "invalid"
@@ -59,35 +51,29 @@ func probeTargetWithContext(parent context.Context, t Tunnel, roots *x509.CertPo
 		result.Message = "UDP 没有通用的连接握手；发送探测数据也无法可靠判断服务是否可用"
 		return stampProbe(result)
 	}
-	if t.Type == "stcp-visitor" {
-		result.Status = "unsupported"
-		result.Message = "Visitor 的本地端口是 frpc 监听地址，不是后端目标，不能按本地服务探测"
-		return stampProbe(result)
-	}
 
 	switch t.Type {
-	case "tcp", "stcp":
-		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	case "tcp", "stcp", "stcp-visitor":
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		started := time.Now()
 		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", result.Address)
 		if err != nil {
-			if parent.Err() != nil {
-				result.Status = "cancelled"
-				result.Message = "检测已取消"
-			} else {
-				result.Status = "unreachable"
-				result.Message = fmt.Sprintf("本地 TCP 目标不可连接：%v", err)
-			}
+			result.Status = "unreachable"
+			result.Message = fmt.Sprintf("本地 TCP 目标不可连接：%v", err)
 			return stampProbe(result)
 		}
 		_ = conn.Close()
 		result.Status = "reachable"
 		result.LatencyMS = time.Since(started).Milliseconds()
-		result.Message = "本地 TCP 端口可连接；这不代表 FRP 远端隧道已注册或公网可达"
+		if t.Type == "stcp-visitor" {
+			result.Message = "STCP Visitor 本地监听端口可连接；这不代表远端 STCP 服务或公网隧道可达"
+		} else {
+			result.Message = "本地 TCP 端口可连接；这不代表 FRP 远端隧道已注册或公网可达"
+		}
 		return stampProbe(result)
 	case "http", "https":
-		return probeHTTPWithContext(parent, t, result, roots)
+		return probeHTTP(t, result, roots)
 	default:
 		result.Status = "unsupported"
 		result.Message = "当前协议不支持本地目标探测"
@@ -96,10 +82,6 @@ func probeTargetWithContext(parent context.Context, t Tunnel, roots *x509.CertPo
 }
 
 func probeHTTP(t Tunnel, result ProbeResult, roots *x509.CertPool) ProbeResult {
-	return probeHTTPWithContext(context.Background(), t, result, roots)
-}
-
-func probeHTTPWithContext(parent context.Context, t Tunnel, result ProbeResult, roots *x509.CertPool) ProbeResult {
 	host := t.LocalHost
 	if len(t.Domains) > 0 {
 		host = t.Domains[0]
@@ -120,9 +102,33 @@ func probeHTTPWithContext(parent context.Context, t Tunnel, result ProbeResult, 
 		hostHeader = "[" + host + "]"
 	}
 
-	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	path := t.ProbePath
+	if path == "" {
+		path = "/"
+	}
+	method := t.ProbeMethod
+	if method == "" {
+		method = http.MethodHead
+	}
+	if !probePathOK(path) || !probeMethodOK(method) {
+		result.Status = "invalid"
+		result.Message = "HTTP 检测路径或方法无效"
+		return stampProbe(result)
+	}
+	parsedPath, err := url.ParseRequestURI(path)
+	if err != nil {
+		result.Status = "invalid"
+		result.Message = "HTTP 检测路径无效"
+		return stampProbe(result)
+	}
+	probeURL := (&url.URL{
+		Scheme: scheme, Host: "kurumifrp-probe.invalid",
+		Path: parsedPath.Path, RawPath: parsedPath.RawPath, RawQuery: parsedPath.RawQuery,
+	}).String()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodHead, scheme+"://kurumifrp-probe.invalid/", nil)
+	request, err := http.NewRequestWithContext(ctx, method, probeURL, nil)
 	if err != nil {
 		result.Status = "invalid"
 		result.Message = "无法构造 HTTP 探测请求"
@@ -154,23 +160,22 @@ func probeHTTPWithContext(parent context.Context, t Tunnel, result ProbeResult, 
 	started := time.Now()
 	response, err := client.Do(request)
 	if err != nil {
-		if parent.Err() != nil {
-			result.Status = "cancelled"
-			result.Message = "检测已取消"
-		} else {
-			result.Status = "unreachable"
-			result.Message = fmt.Sprintf("%s 本地服务检测失败：%v", strings.ToUpper(t.Type), err)
-		}
+		result.Status = "unreachable"
+		result.Message = fmt.Sprintf("%s 本地服务检测失败：%v", strings.ToUpper(t.Type), err)
 		return stampProbe(result)
 	}
 	defer response.Body.Close()
 
 	result.LatencyMS = time.Since(started).Milliseconds()
 	result.HTTPStatus = response.StatusCode
-	if response.StatusCode >= 200 && response.StatusCode < 400 {
+	switch {
+	case response.StatusCode >= 200 && response.StatusCode < 300:
 		result.Status = "healthy"
 		result.Message = fmt.Sprintf("%s 本地服务已响应 HTTP %d；仅代表本地服务可响应，不代表 FRP 远端隧道已注册", strings.ToUpper(t.Type), response.StatusCode)
-	} else {
+	case response.StatusCode >= 300 && response.StatusCode < 400 && response.StatusCode != http.StatusNotModified:
+		result.Status = "redirect"
+		result.Message = fmt.Sprintf("%s 本地服务返回重定向 HTTP %d；本次检测不会自动跟随跳转", strings.ToUpper(t.Type), response.StatusCode)
+	default:
 		result.Status = "responding"
 		result.Message = fmt.Sprintf("%s 本地服务已响应 HTTP %d；端口可达，但应用返回非成功状态（也可能不支持 HEAD）", strings.ToUpper(t.Type), response.StatusCode)
 	}

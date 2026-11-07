@@ -80,16 +80,14 @@ The authenticated `POST /api/probe` endpoint snapshots a saved tunnel under the
 application mutex, then releases the mutex before network I/O. A two-second timeout
 bounds each check so a slow local service does not block unrelated workbench actions.
 TCP, STCP and STCP Visitor checks only establish a local TCP connection. HTTP and
-HTTPS checks send a `HEAD /` request using the first configured custom domain as
-the Host header and TLS server name; the socket is dialed directly to the configured
+HTTPS checks send a configurable `HEAD` or `GET` request to a local diagnostic path (default `/`), using the first configured custom domain as the Host header and TLS server name; the socket is dialed directly to the configured
 local target, environment proxies are disabled, redirects are not followed, and
-normal certificate verification remains enabled. A 2xx/3xx response is reported as
-healthy; a 4xx/5xx response is reported as responding, not unreachable. UDP is
+normal certificate verification remains enabled. The diagnostic path and method are stored only in KurumiFRP state and are not written into the generated frp TOML. A 2xx response is reported as healthy, a 3xx response other than 304 is reported as a redirect
+without following it, and 304/4xx/5xx responses are reported as responding, not unreachable. UDP is
 explicitly unsupported because a generic UDP datagram cannot reliably prove that
 an application is listening. None of these checks proves frp registration, remote
 server reachability, or public Internet access.
 
- 
 ## 链路监测与私有状态接口
 
 `GET /api/health?id=<实例 ID>` 受现有登录授权保护。接口先在应用互斥锁内复制配置、进程状态和修订号，再释放锁开展有超时限制的网络检测；单项检测约 2 秒，目标任务最多 32 个并发。它不会自动启停实例、修改配置或打开防火墙。

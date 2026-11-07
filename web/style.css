@@ -26,3 +26,5 @@ footer{align-items:center}.footer-rose{color:#b14a5c}
 @media(max-width:700px){.hero-graphic{background-image:linear-gradient(90deg,#641b35 3%,#641b3588 30%,transparent 70%),url('/kurumi.webp')}}
 
 .probe-cell{min-width:160px;max-width:260px}.probe-meta{display:block;margin-top:5px;font-size:10px}.probe-message{display:block;margin-top:3px;max-width:240px;line-height:1.45;white-space:normal;overflow-wrap:anywhere;color:var(--muted);font-size:10px}.pill.bad{background:#fae9ec;color:#ad3f53}.dark .pill.bad{background:#48232d;color:#f0a3b0}
+
+.pill.redirect{background:#fff2e3;color:#a36b29}.dark .pill.redirect{background:#43311f;color:#ecc189}
