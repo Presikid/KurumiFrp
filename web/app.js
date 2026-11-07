@@ -20,7 +20,7 @@ async function refresh(silent = false) {
  } catch(e) {if (!silent && data) toast(e.message);}
 }
 const stateOf = (id) => data.runtime[id] || {state:'stopped'};
-function badge(id) {const v=stateOf(id);return `<span class="pill ${v.state==='running'?'good':v.state==='exited'?'warn':''}">${({running:'进程运行',stopped:'未启动',exited:'进程已退出'})[v.state] || esc(v.state)}</span>${v.pending?'<span class="pill warn">待应用</span>':''}`;}
+function badge(id) {const v=stateOf(id);const tone=v.state==='running'?'good':['exited','failed'].includes(v.state)?'warn':'';return `<span class="pill ${tone}">${({running:'进程运行',stopped:'未启动',exited:'进程已退出',failed:'自动启动失败'})[v.state] || esc(v.state)}</span>${v.pending?'<span class="pill warn">待应用</span>':''}`;}
 function header(title,subtitle,action='') {return `<div class="page-head"><div><p class="eyebrow">KURUMI / ${esc(page.toUpperCase())}</p><h1>${title}</h1><p>${subtitle}</p></div>${action}</div>`;}
 function empty(title,text,action='') {return `<div class="empty"><span class="empty-symbol">◈</span><strong>${title}</strong><p>${text}</p>${action}</div>`;}
 function time(v) {return new Date(v).toLocaleString('zh-CN',{hour12:false});}
