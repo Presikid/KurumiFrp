@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -186,7 +187,7 @@ func TestLocalBindProbeHost(t *testing.T) {
 }
 
 func TestVisitorTargetIsNotProbedAsAService(t *testing.T) {
-	got := probeTarget(Tunnel{Type: "stcp-visitor", LocalHost: "127.0.0.1", LocalPort: 6000})
+	got := probeHealthTarget(context.Background(), Tunnel{Type: "stcp-visitor", LocalHost: "127.0.0.1", LocalPort: 6000})
 	if got.Status != "unsupported" || !strings.Contains(got.Message, "监听") {
 		t.Fatalf("visitor bind address was treated as a backend target: %#v", got)
 	}
