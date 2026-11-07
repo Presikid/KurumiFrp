@@ -30,6 +30,7 @@ jobs:
           formatting="$(gofmt -l cmd internal web)"
           if [[ -n "$formatting" ]]; then
             printf 'Go files need gofmt:\n%s\n' "$formatting"
+            gofmt -d cmd internal web
             exit 1
           fi
           go vet ./...
