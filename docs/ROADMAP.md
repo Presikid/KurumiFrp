@@ -2,7 +2,8 @@
 
 ## Delivered foundation
 Local instances and rules, encrypted persistence, conservative validation, versioned
-drafts, official verify + owned-process lifecycle, responsive Chinese workbench.
+drafts, official verify + owned-process lifecycle, responsive Chinese workbench,
+password-encrypted portable backups and validated restoration.
 
 ## Next acceptance gates
 1. Complete real frp 0.72 Linux roundtrip CI, Windows native lifecycle and real-host
@@ -18,7 +19,8 @@ drafts, official verify + owned-process lifecycle, responsive Chinese workbench.
 
 ## Later
 Remote enrollment and agent auth; device/instance/proxy/visitor topology; persistent
-traffic accounting and quota enforcement; scheduling; secure complete backup/restore.
+traffic accounting and quota enforcement; scheduling; scheduled or remote backup
+destinations and restore previews.
 Monthly quota and schedules need a durable policy engine and are not frp UI labels.
 
 No server deployment, existing MCP installation cleanup, DNS change, production
