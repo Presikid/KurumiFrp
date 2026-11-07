@@ -80,8 +80,7 @@ The authenticated `POST /api/probe` endpoint snapshots a saved tunnel under the
 application mutex, then releases the mutex before network I/O. A two-second timeout
 bounds each check so a slow local service does not block unrelated workbench actions.
 TCP, STCP and STCP Visitor checks only establish a local TCP connection. HTTP and
-HTTPS checks send a `HEAD /` request using the first configured custom domain as
-the Host header and TLS server name; the socket is dialed directly to the configured
+HTTPS checks send a configurable `HEAD` or `GET` request to a local diagnostic path (default `/`), using the first configured custom domain as the Host header and TLS server name; the socket is dialed directly to the configured
 local target, environment proxies are disabled, redirects are not followed, and
 normal certificate verification remains enabled. A 2xx response is reported as healthy, a 3xx response other than 304 is reported as a redirect
 without following it, and 304/4xx/5xx responses are reported as responding, not unreachable. UDP is

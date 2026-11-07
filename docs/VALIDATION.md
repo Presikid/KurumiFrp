@@ -69,3 +69,5 @@ reachability.
 
 The browser smoke test also exercises the sequential batch action for the currently filtered tunnel list.
 The batch UI reports sequential progress and skips UDP entries without sending datagrams.
+
+HTTP/HTTPS diagnostics also validate the diagnostic-only path and method. Paths must be local origin-form paths (no authority/absolute URL or fragment), and methods are restricted to HEAD/GET; tests cover custom paths, GET, and invalid settings.
