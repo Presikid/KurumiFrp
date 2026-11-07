@@ -173,6 +173,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			reply(w, 200, map[string]bool{"ok": true})
 			return
 		}
+		if r.URL.Path == "/api/probe" && r.Method == "POST" {
+			a.probeAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/core" || strings.HasPrefix(r.URL.Path, "/api/core/") {
 			a.coreAPI(w, r)
 			return
@@ -259,14 +263,6 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	var err error
 	switch r.URL.Path {
-	case "/api/probe":
-		t, ok := a.store.DB.State.Tunnel(req.ID)
-		if !ok {
-			fail(w, 404, fmt.Errorf("规则不存在"))
-			return
-		}
-		reply(w, 200, probeTarget(t))
-		return
 	case "/api/history-settings":
 		if req.HistoryLimit == nil {
 			err = fmt.Errorf("请指定快照保留数量")
