@@ -123,7 +123,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#cancel').click()
             page.locator('[data-action="probe"]').nth(1).click()
             expect(page.locator('.probe-cell .pill.warn').first).to_contain_text("服务已响应")
-            expect(page.locator('.probe-cell .probe-meta').nth(1)).to_contain_text("HTTP 403")
+            expect(page.locator('tbody tr').nth(1).locator('.probe-cell .probe-meta')).to_contain_text("HTTP 403")
             page.locator('[data-action="probe-visible"]').click()
             expect(page.locator('.probe-cell .pill.good').first).to_contain_text("TCP 可连接")
             expect(page.locator('.probe-cell .pill.warn').first).to_contain_text("服务已响应")
