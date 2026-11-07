@@ -263,8 +263,8 @@ func fetchFRPCProxyStatus(ctx context.Context, proc *process) (HealthCheck, []fr
 	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
 	check := HealthCheck{Status: "unavailable"}
 	transport := &http.Transport{
-		Proxy: nil,
-		DialContext: (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
+		Proxy:             nil,
+		DialContext:       (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
 		DisableKeepAlives: true,
 	}
 	defer transport.CloseIdleConnections()
@@ -435,7 +435,6 @@ func cleanDiagnosticText(value string, secrets []string) string {
 	return string(runes)
 }
 
- 
 // The shared target probe already supplies protocol-aware HTTP/HTTPS handling,
 // including operator-configured paths and methods from the parent PR.
 // A visitor bind port is not the actual service behind its STCP connection.
