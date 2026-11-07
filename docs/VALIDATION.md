@@ -59,10 +59,12 @@ branch was used for these tests. Sandbox sample rules are not seeded in the prod
 ## Local target diagnostic checks
 
 The target diagnostic tests cover TCP reachability, HTTP virtual-host Host handling,
-HTTP application error responses, HTTPS certificate verification, UDP's unsupported
+HTTP application error and redirect responses, HTTPS certificate verification, UDP's unsupported
 state, invalid ports, authenticated API access, stale revisions, and proof that a
 slow target check does not hold the manager-wide application mutex. The browser
 smoke test probes the disposable local manager listener and verifies that the
 connection table renders a successful result. These checks validate only the local
 target diagnostic behavior; they do not claim remote frp registration or Internet
 reachability.
+
+The browser smoke test also exercises the sequential batch action for the currently filtered tunnel list.

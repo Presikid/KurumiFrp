@@ -65,7 +65,11 @@ func probeTargetWithRoots(t Tunnel, roots *x509.CertPool) ProbeResult {
 		_ = conn.Close()
 		result.Status = "reachable"
 		result.LatencyMS = time.Since(started).Milliseconds()
-		result.Message = "本地 TCP 端口可连接；这不代表 FRP 远端隧道已注册或公网可达"
+		if t.Type == "stcp-visitor" {
+			result.Message = "STCP Visitor 本地监听端口可连接；这不代表远端 STCP 服务或公网隧道可达"
+		} else {
+			result.Message = "本地 TCP 端口可连接；这不代表 FRP 远端隧道已注册或公网可达"
+		}
 		return stampProbe(result)
 	case "http", "https":
 		return probeHTTP(t, result, roots)
@@ -139,10 +143,14 @@ func probeHTTP(t Tunnel, result ProbeResult, roots *x509.CertPool) ProbeResult {
 
 	result.LatencyMS = time.Since(started).Milliseconds()
 	result.HTTPStatus = response.StatusCode
-	if response.StatusCode >= 200 && response.StatusCode < 400 {
+	switch {
+	case response.StatusCode >= 200 && response.StatusCode < 300:
 		result.Status = "healthy"
 		result.Message = fmt.Sprintf("%s 本地服务已响应 HTTP %d；仅代表本地服务可响应，不代表 FRP 远端隧道已注册", strings.ToUpper(t.Type), response.StatusCode)
-	} else {
+	case response.StatusCode >= 300 && response.StatusCode < 400:
+		result.Status = "redirect"
+		result.Message = fmt.Sprintf("%s 本地服务返回重定向 HTTP %d；本次检测不会自动跟随跳转", strings.ToUpper(t.Type), response.StatusCode)
+	default:
 		result.Status = "responding"
 		result.Message = fmt.Sprintf("%s 本地服务已响应 HTTP %d；端口可达，但应用返回非成功状态（也可能不支持 HEAD）", strings.ToUpper(t.Type), response.StatusCode)
 	}

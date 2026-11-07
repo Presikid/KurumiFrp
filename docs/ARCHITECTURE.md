@@ -83,8 +83,8 @@ TCP, STCP and STCP Visitor checks only establish a local TCP connection. HTTP an
 HTTPS checks send a `HEAD /` request using the first configured custom domain as
 the Host header and TLS server name; the socket is dialed directly to the configured
 local target, environment proxies are disabled, redirects are not followed, and
-normal certificate verification remains enabled. A 2xx/3xx response is reported as
-healthy; a 4xx/5xx response is reported as responding, not unreachable. UDP is
+normal certificate verification remains enabled. A 2xx response is reported as healthy, a 3xx response is reported as a redirect
+without following it, and a 4xx/5xx response is reported as responding, not unreachable. UDP is
 explicitly unsupported because a generic UDP datagram cannot reliably prove that
 an application is listening. None of these checks proves frp registration, remote
 server reachability, or public Internet access.

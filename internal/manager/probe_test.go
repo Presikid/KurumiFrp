@@ -58,6 +58,23 @@ func TestProbeTargetHTTPUsesConfiguredVHost(t *testing.T) {
 	}
 }
 
+func TestProbeTargetHTTPDoesNotFollowRedirects(t *testing.T) {
+	var redirected bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/next" {
+			redirected = true
+		}
+		http.Redirect(w, r, "/next", http.StatusFound)
+	}))
+	defer server.Close()
+	host, port := probeAddress(t, server)
+
+	got := probeTarget(Tunnel{Type: "http", LocalHost: host, LocalPort: port, Domains: []string{"redirect.example.test"}})
+	if got.Status != "redirect" || got.HTTPStatus != http.StatusFound || redirected {
+		t.Fatalf("expected an un-followed redirect response, got %#v (followed=%v)", got, redirected)
+	}
+}
+
 func TestProbeTargetHTTPReportsApplicationStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

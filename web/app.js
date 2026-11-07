@@ -3,7 +3,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (v = '') => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const titles = {overview:'网络总览',tunnels:'连接看板',instances:'运行实例',config:'配置中心',logs:'运行记录',update:'软件更新'};
 let updateChecked = false, releases = [], updateStatus = '';
-let probeResults = Object.create(null), probing = Object.create(null), probeRevision = null;
+let probeResults = Object.create(null), probing = Object.create(null), probeRevision = null, probingAll = false;
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer;
 const dialog = $('#dialog');
 function toast(text) { $('#toast').textContent = text; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 8000); }
@@ -27,12 +27,15 @@ function empty(title,text,action='') {return `<div class="empty"><span class="em
 function time(v) {return new Date(v).toLocaleString('zh-CN',{hour12:false});}
 function recent() {return data.events.length?`<div class="timeline">${data.events.slice(-6).reverse().map(e=>`<div class="event"><p>${esc(e.message)}</p><small>${time(e.at)}</small></div>`).join('')}</div>`:empty('还没有操作记录','保存第一份配置后，变更记录会出现在这里。');}
 function probeCell(t) {
+ if (t.type === 'udp') return '<span class="pill">UDP 不支持</span><small class="probe-message">没有通用且无副作用的 UDP 探测方式</small>';
  if (probing[t.id]) return '<span class="pill warn">检测中</span>';
  const result = probeResults[t.id];
  if (!result || result.revision !== data.revision) return '<span class="muted">尚未检测</span>';
  const labels = {
   healthy: ['HTTP 正常', 'good'],
   responding: ['服务已响应', 'warn'],
+  redirect: ['返回重定向', 'warn'],
+  error: ['检测失败', 'bad'],
   reachable: ['TCP 可连接', 'good'],
   unreachable: ['不可连接', 'bad'],
   unsupported: ['不支持', ''],
@@ -62,7 +65,7 @@ function render() {
   (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button><button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
  } else if(page==='tunnels') {
   content.innerHTML=header('连接看板','管理规则并检测本地目标：TCP 检查端口，HTTP/HTTPS 检查响应；UDP 无法可靠探测。','<button class="primary" data-action="new-tunnel">＋ 新建规则</button>')+
-  `<div class="toolbar"><input id="search" placeholder="搜索规则、地址或实例…" aria-label="搜索规则" value="${esc(filter)}"><select id="protocol" aria-label="按协议筛选"><option value="">所有协议</option>${['tcp','udp','http','https','stcp','stcp-visitor'].map(t=>`<option ${protocol===t?'selected':''}>${t}</option>`).join('')}</select></div><section class="panel" id="tunnel-list">${filteredTable()}</section>`;
+  `<div class="toolbar"><input id="search" placeholder="搜索规则、地址或实例…" aria-label="搜索规则" value="${esc(filter)}"><select id="protocol" aria-label="按协议筛选"><option value="">所有协议</option>${['tcp','udp','http','https','stcp','stcp-visitor'].map(t=>`<option ${protocol===t?'selected':''}>${t}</option>`).join('')}</select><button data-action="probe-visible" ${probingAll?'disabled':''}>${probingAll?'批量检测中…':'检测当前列表'}</button></div><section class="panel" id="tunnel-list">${filteredTable()}</section>`;
  } else if(page==='config') {
   ensureSelected();
   content.innerHTML=header('配置中心','预览配置、导出数据和恢复历史快照。')+
@@ -83,7 +86,7 @@ function picker(){return `<select class="config-picker" id="instance-picker" ari
 function filteredTable(){return tunnelTable(data.state.tunnels.filter(t=>(!protocol||t.type===protocol)&&`${t.name} ${t.localHost} ${t.remotePort} ${data.state.instances.find(i=>i.id===t.instanceId)?.name}`.toLowerCase().includes(filter.toLowerCase())));}
 function tunnelTable(rows) {
  if(!rows.length)return empty('这里还静悄悄的 ♡','先添加 frpc 实例，再创建 TCP、UDP、Web 或 STCP 规则。','<button data-action="new-tunnel">＋ 添加规则</button>');
- return `<div class="table-wrap"><table><thead><tr><th>服务 / 归属</th><th>协议</th><th>本地目标</th><th>远端 / 配对</th><th>配置意图</th><th>检测结果</th><th>操作</th></tr></thead><tbody>${rows.map(t=>`<tr><td><strong>${esc(t.name)}</strong><small>${esc(data.state.instances.find(i=>i.id===t.instanceId)?.name)}</small></td><td><span class="type-icon">${t.type.toUpperCase()}</span></td><td><code>${esc(t.localHost)}:${t.localPort}</code></td><td><code>${esc(t.type==='stcp-visitor'?t.serverName:t.type==='stcp'?'私密配对':t.type==='http'||t.type==='https'?t.domains.join(', '):t.remotePort)}</code></td><td><span class="pill ${t.enabled?'good':''}">${t.enabled?'期望启用':'期望停用'}</span></td><td class="probe-cell">${probeCell(t)}</td><td><div class="actions"><button data-action="probe" data-id="${t.id}" ${probing[t.id]?'disabled':''}>${probing[t.id]?'检测中…':'检测目标'}</button><button data-action="edit-tunnel" data-id="${t.id}">编辑</button><button data-action="toggle" data-id="${t.id}">${t.enabled?'停用':'启用'}</button><button class="danger" data-action="delete-tunnel" data-id="${t.id}">删除</button></div></td></tr>`).join('')}</tbody></table></div>`;
+ return `<div class="table-wrap"><table><thead><tr><th>服务 / 归属</th><th>协议</th><th>本地目标</th><th>远端 / 配对</th><th>配置意图</th><th>检测结果</th><th>操作</th></tr></thead><tbody>${rows.map(t=>`<tr><td><strong>${esc(t.name)}</strong><small>${esc(data.state.instances.find(i=>i.id===t.instanceId)?.name)}</small></td><td><span class="type-icon">${t.type.toUpperCase()}</span></td><td><code>${esc(t.localHost)}:${t.localPort}</code></td><td><code>${esc(t.type==='stcp-visitor'?t.serverName:t.type==='stcp'?'私密配对':t.type==='http'||t.type==='https'?t.domains.join(', '):t.remotePort)}</code></td><td><span class="pill ${t.enabled?'good':''}">${t.enabled?'期望启用':'期望停用'}</span></td><td class="probe-cell">${probeCell(t)}</td><td><div class="actions"><button data-action="probe" data-id="${t.id}" ${t.type==='udp'||probing[t.id]||probingAll?'disabled':''} ${t.type==='udp'?'title="UDP 不支持通用探测"':''}>${t.type==='udp'?'不支持':probing[t.id]?'检测中…':'检测目标'}</button><button data-action="edit-tunnel" data-id="${t.id}">编辑</button><button data-action="toggle" data-id="${t.id}">${t.enabled?'停用':'启用'}</button><button class="danger" data-action="delete-tunnel" data-id="${t.id}">删除</button></div></td></tr>`).join('')}</tbody></table></div>`;
 }
 function field(name,label,value='',type='text',extra=''){return `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;}
 function openEditor(kind,id) {
@@ -138,6 +141,44 @@ $('#content').addEventListener('click',async e=>{
   if(action==='import-data'){const file=$('#import-file').files[0];if(!file)throw new Error('请选择配置文件');if(file.size>128*1024*1024)throw new Error('配置文件超过 128 MiB');if(!confirm('导入将替换当前配置和快照；运行中的实例需要重新应用。继续？'))return;let parsed;try{parsed=JSON.parse(await file.text());}catch(_){throw new Error('配置文件不是有效 JSON');}await api('import?revision='+data.revision,parsed);toast('导入成功，界面已刷新');await refresh();return;}
   if(action==='history-settings'){const input=$('#history-limit'), limit=Number(input.value);if(input.value===''||!Number.isInteger(limit)||limit<0||limit>100)throw new Error('快照数量须为 0–100');if(limit<data.history.length&&!confirm(`将删除 ${data.history.length-limit} 份最早快照，继续？`))return;await api('history-settings',{revision:data.revision,historyLimit:limit});toast('快照保留数量已更新');await refresh();return;}
   if(action==='export-toml'){if(!selected)throw new Error('先选择一个实例');const v=await api('config?id='+selected);download('kurumi-redacted.toml',v.toml,'text/plain');return;}
+  if(action==='probe-visible'){
+   const revision=data.revision;
+   const targets=data.state.tunnels.filter(t=>(!protocol||t.type===protocol)&&`${t.name} ${t.localHost} ${t.remotePort} ${data.state.instances.find(i=>i.id===t.instanceId)?.name}`.toLowerCase().includes(filter.toLowerCase()));
+   const probeable=targets.filter(t=>t.type!=='udp');
+   if(!probeable.length){toast(targets.length?'当前列表中的 UDP 规则不支持通用探测':'当前列表没有规则');return;}
+   probingAll=true;
+   const counts={healthy:0,redirect:0,responding:0,reachable:0,unreachable:0,invalid:0,error:0};
+   let stale=false;
+   render();
+   for(const tunnel of probeable){
+    if(!data||data.revision!==revision){stale=true;break;}
+    probing[tunnel.id]=true;
+    render();
+    try{
+     const result=await api('probe',{revision,id:tunnel.id});
+     if(!data||data.revision!==revision){stale=true;break;}
+     probeResults[tunnel.id]={...result,revision};
+     counts[result.status]=(counts[result.status]||0)+1;
+    }catch(error){
+     if(!data||data.revision!==revision||error.message.includes('配置已在其他窗口更新')){stale=true;break;}
+     probeResults[tunnel.id]={status:'error',message:error.message,revision,checkedAt:new Date().toISOString(),latencyMs:0};
+     counts.error++;
+    }finally{
+     delete probing[tunnel.id];
+     if(data)render();
+    }
+    if(stale)break;
+   }
+   probingAll=false;
+   if(stale){await refresh(true);toast('配置发生变化，已停止批量检测；请刷新后重新检测。');}
+   else{
+    const good=counts.healthy+counts.reachable;
+    const responding=counts.redirect+counts.responding;
+    toast(`检测完成：${probeable.length} 条，正常/可连接 ${good} 条，已响应但需检查 ${responding} 条，不可连接/失败 ${counts.unreachable+counts.invalid+counts.error} 条；UDP ${targets.length-probeable.length} 条未检测。`);
+   }
+   if(data)render();
+   return;
+  }
   if(action==='probe'){
    const revision=data.revision;
    probing[id]=true;
