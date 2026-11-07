@@ -24,7 +24,7 @@ Windows 成功安装后可以自动删除 Setup.exe。Linux 原始 DEB/RPM 由�
 
 网络总览、连接看板、运行实例、配置中心、核心管理和运行记录；深浅主题及手机布局。
 
-多个本机 frpc/frps；TCP、UDP、HTTP、HTTPS、STCP 和 Visitor；带宽限制；AES-GCM 加密令牌；revision 并发检查；30 份历史草稿恢复；脱敏 TOML/JSON 导出。
+多个本机 frpc/frps；TCP、UDP、HTTP、HTTPS、STCP 和 Visitor；带宽限制；AES-GCM 加密令牌；revision 并发检查；最多 30 份历史草稿恢复；脱敏 TOML/JSON 导出。为保持数据文件可读取，空间不足时保存会移除最早的历史并提示；当前配置本身超出 8 MiB 时保存会被拒绝。
 
 保存不等于应用。启动前执行官方 `frp verify`，候选配置校验失败不停止旧进程。状态显示真实 PID/退出信息，不将进程存活冒充隧道连通。管理 API 需要会话或本机 Token，校验 Host/Origin，无任意 shell 接口。
 

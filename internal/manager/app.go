@@ -213,6 +213,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var err error
+	a.store.pruned = 0
 	switch r.URL.Path {
 	case "/api/save":
 		st := a.store.DB.State.clone()
@@ -388,7 +389,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	reply(w, 200, map[string]any{"ok": true, "revision": a.store.DB.Revision})
+	reply(w, 200, map[string]any{"ok": true, "revision": a.store.DB.Revision, "historyPruned": a.store.pruned})
 }
 
 func (a *App) Done() <-chan struct{} { return a.quit }

@@ -32,10 +32,14 @@ type Database struct {
 	Events   []Event    `json:"events"`
 }
 type Store struct {
-	dir string
-	key []byte
-	DB  Database
+	dir    string
+	key    []byte
+	DB     Database
+	pruned int
 }
+
+const maxStateSize = 8 << 20
+const maxLegacyStateSize = 64 << 20
 
 func randomHex(n int) string {
 	b := make([]byte, n)
@@ -46,6 +50,9 @@ func randomHex(n int) string {
 }
 func now() string { return time.Now().UTC().Format(time.RFC3339) }
 func privateFile(path string) ([]byte, error) {
+	return privateFileLimit(path, maxStateSize)
+}
+func privateFileLimit(path string, limit int64) ([]byte, error) {
 	f, e := os.Lstat(path)
 	if e != nil {
 		return nil, e
@@ -53,7 +60,7 @@ func privateFile(path string) ([]byte, error) {
 	if !f.Mode().IsRegular() {
 		return nil, fmt.Errorf("not a regular file: %s", path)
 	}
-	if f.Size() > 8<<20 {
+	if f.Size() > limit {
 		return nil, fmt.Errorf("file too large")
 	}
 	return os.ReadFile(path)
@@ -110,7 +117,8 @@ func newStore(dir string) (*Store, error) {
 	if len(s.key) != 32 {
 		return nil, fmt.Errorf("invalid encryption key")
 	}
-	b, e := privateFile(dbPath)
+	// Older versions could write a state file larger than their read limit.
+	b, e := privateFileLimit(dbPath, maxLegacyStateSize)
 	if os.IsNotExist(e) {
 		s.DB = Database{Format: 1, Revision: 1, State: State{Instances: []Instance{}, Tunnels: []Tunnel{}}, History: []Snapshot{}, Events: []Event{}}
 		return s, s.write(s.DB)
@@ -203,10 +211,16 @@ func (s *Store) write(db Database) error {
 	if e != nil {
 		return e
 	}
+	if len(b) > maxStateSize {
+		return fmt.Errorf("配置数据超过 8 MiB，无法安全保存；请减少配置内容")
+	}
 	return atomicWrite(filepath.Join(s.dir, "state.json"), b)
 }
 func (s *Store) commit(st State, summary string) error {
 	if e := validate(st); e != nil {
+		return e
+	}
+	if e := validateVisitorListeners(s.DB.State, st); e != nil {
 		return e
 	}
 	db := s.DB
@@ -220,9 +234,28 @@ func (s *Store) commit(st State, summary string) error {
 	if len(db.Events) > 200 {
 		db.Events = db.Events[len(db.Events)-200:]
 	}
+	pruned := 0
+	for {
+		if pruned > 0 {
+			db.Events[len(db.Events)-1].Message = summary + fmt.Sprintf("（空间限制移除 %d 份最早历史）", pruned)
+		}
+		b, e := json.MarshalIndent(db, "", "  ")
+		if e != nil {
+			return e
+		}
+		if len(b) <= maxStateSize {
+			break
+		}
+		if len(db.History) == 0 {
+			return fmt.Errorf("当前配置超过 8 MiB，无法安全保存；请减少配置内容")
+		}
+		db.History = db.History[1:]
+		pruned++
+	}
 	if e := s.write(db); e != nil {
 		return e
 	}
 	s.DB = db
+	s.pruned = pruned
 	return nil
 }

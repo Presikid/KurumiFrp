@@ -105,6 +105,67 @@ func labelOK(s string) bool {
 	return true
 }
 func portOK(n int) bool { return n >= 1 && n <= 65535 }
+
+// Hostnames may resolve to different addresses over time, so treat them
+// conservatively. Wildcard listeners can overlap either IP family.
+func listenerHostsOverlap(a, b string) bool {
+	ai, bi := net.ParseIP(a), net.ParseIP(b)
+	if ai == nil || bi == nil {
+		return true
+	}
+	return ai.IsUnspecified() || bi.IsUnspecified() || ai.Equal(bi)
+}
+
+// Collect conflicts without resolving DNS, so validation never depends on the network.
+func visitorListenerConflicts(s State) map[string]string {
+	type listener struct {
+		host string
+		port int
+		name string
+		id   string
+	}
+	var listeners []listener
+	conflicts := map[string]string{}
+	for _, i := range s.Instances {
+		if i.Kind == "frps" {
+			// frps vhost listeners use the default wildcard address.
+			listeners = append(listeners, listener{i.Host, i.Port, i.Name, i.ID})
+			for _, p := range []int{i.HTTPPort, i.HTTPSPort} {
+				if p != 0 {
+					listeners = append(listeners, listener{"0.0.0.0", p, i.Name, i.ID})
+				}
+			}
+		}
+	}
+	for _, t := range s.Tunnels {
+		if !t.Enabled || t.Type != "stcp-visitor" {
+			continue
+		}
+		for _, l := range listeners {
+			if l.port == t.LocalPort && listenerHostsOverlap(l.host, t.LocalHost) {
+				a, b := l.id, t.ID
+				if a > b {
+					a, b = b, a
+				}
+				key := fmt.Sprintf("%s/%s/%d", a, b, l.port)
+				conflicts[key] = fmt.Sprintf("本地 TCP 监听地址或端口冲突：%s / %s", l.name, t.Name)
+			}
+		}
+		listeners = append(listeners, listener{t.LocalHost, t.LocalPort, t.Name, t.ID})
+	}
+	return conflicts
+}
+
+func validateVisitorListeners(old, next State) error {
+	existing := visitorListenerConflicts(old)
+	for key, message := range visitorListenerConflicts(next) {
+		if _, ok := existing[key]; !ok {
+			return fmt.Errorf("%s", message)
+		}
+	}
+	return nil
+}
+
 func validate(s State) error {
 	if len(s.Instances) > 64 || len(s.Tunnels) > 512 {
 		return fmt.Errorf("最多支持 64 个实例、512 条规则")
