@@ -100,7 +100,7 @@ $('#cancel').addEventListener('click',()=>dialog.close());
 $('#editor').addEventListener('change',updateFields);
 $('#editor').addEventListener('submit',async e=>{
  e.preventDefault();const f=e.target,b=f.querySelector('button[type="submit"]');b.disabled=true;const val=n=>f.elements[n].value;let value;
- if(editing.kind==='instance') {const kind=val('kind');value={id:editing.id,name:val('name').trim(),kind,host:val('host').trim(),port:+val('port'),token:val('token'),httpPort:kind==='frps'?+val('httpPort'):0,httpsPort:kind==='frps'?+val('httpsPort'):0};}
+ if(editing.kind==='instance') {const kind=val('kind');value={id:editing.id,name:val('name').trim(),kind,host:val('host').trim(),port:+val('port'),token:val('token'),httpPort:kind==='frps'?+val('httpPort'):0,httpsPort:kind==='frps'?+val('httpsPort'):0,autoStart:f.elements.autoStart.checked};}
  else {const type=val('type');value={id:editing.id,name:val('name').trim(),instanceId:val('instanceId'),type,localHost:val('localHost').trim(),localPort:+val('localPort'),remotePort:['tcp','udp'].includes(type)?+val('remotePort'):0,domains:['http','https'].includes(type)?val('domains').split(',').map(v=>v.trim()).filter(Boolean):[],serverName:type==='stcp-visitor'?val('serverName').trim():'',secret:type.startsWith('stcp')?val('secret'):'',bandwidthKB:type==='stcp-visitor'?0:+val('bandwidthKB'),enabled:f.elements.enabled.checked};}
  try{await api('save',{revision:editRev,kind:editing.kind,value});dialog.close();toast('草稿已保存；运行中的实例未改变');await refresh();}catch(err){$('#form-error').textContent=err.message;}finally{b.disabled=false;}
 });
