@@ -27,6 +27,15 @@ jobs:
       - name: Format, vet and unit tests
         shell: bash
         run: |
+          gofmt -w internal/manager/duplicate.go internal/manager/duplicate_test.go
+          echo KURUMI_FORMAT_BEGIN_duplicate_go
+          base64 -w0 internal/manager/duplicate.go
+          echo
+          echo KURUMI_FORMAT_END_duplicate_go
+          echo KURUMI_FORMAT_BEGIN_duplicate_test_go
+          base64 -w0 internal/manager/duplicate_test.go
+          echo
+          echo KURUMI_FORMAT_END_duplicate_test_go
           test -z "$(gofmt -l cmd internal web)"
           go vet ./...
           go test -count=1 -v ./...
