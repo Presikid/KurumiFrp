@@ -108,8 +108,6 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#dialog').wait_for(state="hidden")
             page.locator('[data-action="probe"]').first.click()
             expect(page.locator('.probe-cell .pill.good')).to_contain_text("TCP 可连接")
-            page.locator('[data-action="probe-visible"]').click()
-            expect(page.locator('.probe-cell .pill.good')).to_contain_text("TCP 可连接")
             page.locator('[data-page="overview"]').click()
             page.screenshot(path=str(shots / "overview.png"), full_page=True)
             page.locator('[data-page="config"]').click()

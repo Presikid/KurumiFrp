@@ -147,7 +147,7 @@ func probeHTTP(t Tunnel, result ProbeResult, roots *x509.CertPool) ProbeResult {
 	case response.StatusCode >= 200 && response.StatusCode < 300:
 		result.Status = "healthy"
 		result.Message = fmt.Sprintf("%s 本地服务已响应 HTTP %d；仅代表本地服务可响应，不代表 FRP 远端隧道已注册", strings.ToUpper(t.Type), response.StatusCode)
-	case response.StatusCode >= 300 && response.StatusCode < 400:
+	case response.StatusCode >= 300 && response.StatusCode < 400 && response.StatusCode != http.StatusNotModified:
 		result.Status = "redirect"
 		result.Message = fmt.Sprintf("%s 本地服务返回重定向 HTTP %d；本次检测不会自动跟随跳转", strings.ToUpper(t.Type), response.StatusCode)
 	default:

@@ -81,6 +81,19 @@ func TestProbeTargetHTTPDoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
+func TestProbeTargetHTTP304IsNotRedirect(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+	host, port := probeAddress(t, server)
+
+	got := probeTarget(Tunnel{Type: "http", LocalHost: host, LocalPort: port})
+	if got.Status != "responding" || got.HTTPStatus != http.StatusNotModified {
+		t.Fatalf("expected HTTP 304 to be reported as responding, got %#v", got)
+	}
+}
+
 func TestProbeTargetHTTPReportsApplicationStatus(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

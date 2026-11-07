@@ -3,7 +3,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (v = '') => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const titles = {overview:'网络总览',tunnels:'连接看板',instances:'运行实例',config:'配置中心',logs:'运行记录',update:'软件更新'};
 let updateChecked = false, releases = [], updateStatus = '';
-let probeResults = Object.create(null), probing = Object.create(null), probeRevision = null, probingAll = false;
+let probeResults = Object.create(null), probing = Object.create(null), probeRevision = null, probingAll = false, probeBatchProgress = null;
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer;
 const dialog = $('#dialog');
 function toast(text) { $('#toast').textContent = text; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 8000); }
@@ -65,7 +65,7 @@ function render() {
   (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button><button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
  } else if(page==='tunnels') {
   content.innerHTML=header('连接看板','管理规则并检测本地目标：TCP 检查端口，HTTP/HTTPS 检查响应；UDP 无法可靠探测。','<button class="primary" data-action="new-tunnel">＋ 新建规则</button>')+
-  `<div class="toolbar"><input id="search" placeholder="搜索规则、地址或实例…" aria-label="搜索规则" value="${esc(filter)}"><select id="protocol" aria-label="按协议筛选"><option value="">所有协议</option>${['tcp','udp','http','https','stcp','stcp-visitor'].map(t=>`<option ${protocol===t?'selected':''}>${t}</option>`).join('')}</select><button data-action="probe-visible" ${probingAll?'disabled':''}>${probingAll?'批量检测中…':'检测当前列表'}</button></div><section class="panel" id="tunnel-list">${filteredTable()}</section>`;
+  `<div class="toolbar"><input id="search" placeholder="搜索规则、地址或实例…" aria-label="搜索规则" value="${esc(filter)}"><select id="protocol" aria-label="按协议筛选"><option value="">所有协议</option>${['tcp','udp','http','https','stcp','stcp-visitor'].map(t=>`<option ${protocol===t?'selected':''}>${t}</option>`).join('')}</select><button data-action="probe-visible" ${probingAll?'disabled':''}>${probingAll?'批量检测 '+(probeBatchProgress?.done||0)+'/'+(probeBatchProgress?.total||0):'检测当前筛选'}</button></div><section class="panel" id="tunnel-list">${filteredTable()}</section>`;
  } else if(page==='config') {
   ensureSelected();
   content.innerHTML=header('配置中心','预览配置、导出数据和恢复历史快照。')+
@@ -147,6 +147,7 @@ $('#content').addEventListener('click',async e=>{
    const probeable=targets.filter(t=>t.type!=='udp');
    if(!probeable.length){toast(targets.length?'当前列表中的 UDP 规则不支持通用探测':'当前列表没有规则');return;}
    probingAll=true;
+   probeBatchProgress={done:0,total:probeable.length};
    const counts={healthy:0,redirect:0,responding:0,reachable:0,unreachable:0,invalid:0,error:0};
    let stale=false;
    render();
@@ -165,11 +166,13 @@ $('#content').addEventListener('click',async e=>{
      counts.error++;
     }finally{
      delete probing[tunnel.id];
+     if(probeBatchProgress)probeBatchProgress.done++;
      if(data)render();
     }
     if(stale)break;
    }
    probingAll=false;
+   probeBatchProgress=null;
    if(stale){await refresh(true);toast('配置发生变化，已停止批量检测；请刷新后重新检测。');}
    else{
     const good=counts.healthy+counts.reachable;
