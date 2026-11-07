@@ -2,6 +2,9 @@
 [CmdletBinding()]
 param([switch]$NoOpen, [switch]$NoAutostart)
 $ErrorActionPreference = 'Stop'
+# A parent pwsh/Python process can pass PS7 modules to Windows PowerShell 5.1.
+# Prefer this host's built-in modules for this process only, never machine settings.
+$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules') + [IO.Path]::PathSeparator + $env:PSModulePath
 Set-StrictMode -Version Latest
 $source = $PSScriptRoot
 $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
@@ -19,8 +22,9 @@ foreach ($p in @($root, (Join-Path $root 'data'), (Join-Path $root 'cores'))) {
  } else { New-Item -ItemType Directory -Path $p -Force | Out-Null }
 }
 # Current user and SYSTEM only. Do not share the local token or encrypted data directory.
-$acl = New-Object Security.AccessControl.DirectorySecurity
+$acl = New-Object Security.AccessControl.DirectorySecurity($root, [Security.AccessControl.AccessControlSections]::Access)
 $acl.SetAccessRuleProtection($true,$false)
+foreach ($rule in @($acl.GetAccessRules($true,$false,[Security.Principal.SecurityIdentifier]))) { [void]$acl.RemoveAccessRuleSpecific($rule) }
 foreach ($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User, (New-Object Security.Principal.SecurityIdentifier('S-1-5-18')))) {
  $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))
 }
@@ -34,6 +38,7 @@ if (!$same) { Copy-Item -LiteralPath $exe -Destination (Join-Path $root 'kurumi-
 $launch = @'
 param([switch]$Background)
 $ErrorActionPreference = 'Stop'
+$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules') + [IO.Path]::PathSeparator + $env:PSModulePath
 $root = $PSScriptRoot
 $arguments = '--data "' + (Join-Path $root 'data') + '" --frp-dir "' + (Join-Path $root 'cores') + '" --listen auto'
 if (!$Background) { $arguments += ' --open' }

@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 import urllib.request
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, expect
 
 binary = str(Path(sys.argv[1]).resolve())
 shots = Path(os.environ.get("KURUMI_SCREENSHOTS", tempfile.mkdtemp(prefix="kurumi-shots-")))
@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#editor input[name="name"]').fill("conflict-test")
             page.locator('#editor input[name="remotePort"]').fill("13389")
             page.locator('#editor button[type="submit"]').click()
-            page.wait_for_function("document.querySelector('#form-error').textContent.length > 0")
+            expect(page.locator("#form-error")).not_to_have_text("")
             page.locator('#cancel').click()
             page.locator('[data-action="edit-tunnel"]').first.click()
             page.locator('#editor input[name="localPort"]').fill("3390")
@@ -102,7 +102,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('[data-page="overview"]').click()
             page.screenshot(path=str(shots / "overview.png"), full_page=True)
             page.locator('[data-page="config"]').click()
-            page.wait_for_function("document.querySelector('#config-output').textContent.includes('redacted')")
+            expect(page.locator("#config-output")).to_contain_text("redacted")
             assert "test-passphrase-123" not in page.locator('#config-output').text_content()
             page.locator('[data-page="instances"]').click()
             page.locator('[data-action="start"]').first.click()
@@ -114,7 +114,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.set_viewport_size({"width": 390, "height": 844})
             page.locator('[data-page="overview"]').click()
             page.screenshot(path=str(shots / "mobile.png"), full_page=True)
-            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            assert page.evaluate("() => document.documentElement.scrollWidth <= window.innerWidth")
             if not offline:
                 page.reload()
             page.locator('#app').wait_for(state="visible")

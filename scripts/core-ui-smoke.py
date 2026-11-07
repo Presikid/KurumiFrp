@@ -13,7 +13,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, expect
 
 binary=str(Path(sys.argv[1]).resolve())
 web=Path(__file__).resolve().parents[1]/'web'
@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory(prefix='core-ui-') as tmp:
                 page.route('**/api/core/**',route);page.goto(base)
             page.locator('#login-form input').fill(token);page.locator('#login-form button').click();page.locator('#app').wait_for(state='visible')
             page.locator('[data-page=core]').click();page.locator('#core-version option[value="v0.72.0"]').wait_for(state='attached')
-            page.wait_for_function("document.querySelector('#core-install').disabled===false")
+            expect(page.locator("#core-install")).to_be_enabled()
             assert page.locator('#core-asset').input_value().endswith('linux_amd64.tar.gz')
             page.screenshot(path=str(shots/'core-desktop.png'),full_page=True)
             page.locator('#core-asset').select_option('frp_0.72.0_windows_amd64.zip')
@@ -73,7 +73,25 @@ with tempfile.TemporaryDirectory(prefix='core-ui-') as tmp:
             assert 'windows_amd64.zip' in page.locator('#core-official').get_attribute('href')
             page.locator('#theme').click();page.screenshot(path=str(shots/'core-dark.png'),full_page=True)
             page.set_viewport_size({'width':390,'height':844});page.screenshot(path=str(shots/'core-mobile.png'),full_page=True)
-            assert page.evaluate('document.documentElement.scrollWidth<=window.innerWidth')
+            assert page.evaluate('() => document.documentElement.scrollWidth<=window.innerWidth')
+            if not offline:
+                # A shortcut must log into a NEW browser session without pasting a token.
+                req=urllib.request.Request(base+'/api/browser-ticket',data=b'{}',headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
+                with opener.open(req,timeout=8) as r: launch_url=json.load(r)['url']
+                context=browser.new_context();auto=context.new_page()
+                auto.route('**/api/core/**',route)
+                auto.on('pageerror',lambda e:errors.append(str(e)))
+                auto.goto(launch_url)
+                auto.locator('#app').wait_for(state='visible')
+                auto.locator('#core-screen').wait_for(state='visible')
+                assert auto.url==base+'/#core'
+                assert token not in auto.url
+                assert auto.request.get(base+'/api/state').status==200
+                context.close()
+                context=browser.new_context();replay=context.new_page();replay.goto(launch_url)
+                expect(replay.locator("#login-error")).not_to_have_text("")
+                assert replay.locator('#app').is_hidden()
+                context.close()
             assert not errors,errors
             browser.close()
         print('PASS: core page, matching default, incompatible install disabled, official link, theme, mobile; catalog is a fixture.')

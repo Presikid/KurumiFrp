@@ -46,7 +46,8 @@ with tempfile.TemporaryDirectory(prefix='kurumi-install-test-') as temp:
     try:
         for iteration in range(2):
             subprocess.run(install,env=env,check=True,timeout=90)
-            if os.name=='nt':child=subprocess.Popen([str(exe),'--data',str(target/'data'),'--frp-dir',str(target/'cores'),'--listen','auto'],env=env,stdout=subprocess.DEVNULL)
+            if os.name=='nt':
+                subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(target/'Launch.ps1'),'-Background'],env=env,check=True,timeout=20)
             for _ in range(100):
                 try:assert api('state')['version']=='0.2.0';break
                 except OSError:time.sleep(.1)

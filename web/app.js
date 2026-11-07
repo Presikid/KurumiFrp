@@ -124,4 +124,6 @@ $('#content').addEventListener('click',async e=>{
 });
 window.addEventListener('hashchange',()=>{const p=location.hash.slice(1);if(titles[p]&&page!==p){page=p;render();}});
 page=titles[location.hash.slice(1)]?location.hash.slice(1):'overview';
-refresh(true);setInterval(()=>{if(data&&!document.hidden&&!dialog.open)refresh(true);},5000);
+// core.js consumes a launch ticket before the first authenticated state request.
+if(!/^#launch=([a-f0-9]{64})$/.test(location.hash))refresh(true);
+setInterval(()=>{if(data&&!document.hidden&&!dialog.open)refresh(true);},5000);
