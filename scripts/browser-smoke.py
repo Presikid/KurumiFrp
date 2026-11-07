@@ -169,7 +169,11 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
                 page.reload()
             page.locator('#app').wait_for(state="visible")
             page.locator('[data-page="tunnels"]').click()
-            assert page.locator('tbody tr').count() == 1
+            assert page.locator('tbody tr').count() == 2
+            page.locator('[data-action="edit-tunnel"]').nth(1).click()
+            expect(page.locator('#editor input[name="probePath"]')).to_have_value("/healthz")
+            expect(page.locator('#editor select[name="probeMethod"]')).to_have_value("GET")
+            page.locator('#cancel').click()
             assert not errors, errors
             browser.close()
             print(("Offline UI harness" if offline else "Browser smoke") + " passed: login, CRUD, conflicts, redaction, saved-state reads, responsive layout; no page errors.")
