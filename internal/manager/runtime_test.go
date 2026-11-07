@@ -88,7 +88,6 @@ func TestOwnedProcessLifecycle(t *testing.T) {
 	}
 }
 
-
 func autoStartFixture(t *testing.T, installBinary bool) *App {
 	t.Helper()
 	dir, bin := t.TempDir(), t.TempDir()
