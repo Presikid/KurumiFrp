@@ -26,7 +26,12 @@ jobs:
       - name: Format, vet and tests
         shell: bash
         run: |
-          test -z "$(gofmt -l cmd internal web)"
+          unformatted="$(gofmt -l cmd internal web)"
+          if [ -n "$unformatted" ]; then
+            printf 'Unformatted Go files:\n%s\n' "$unformatted"
+            gofmt -d cmd internal web
+            exit 1
+          fi
           go vet ./...
           go test -v ./...
           go build -o kurumi ./cmd/kurumi
