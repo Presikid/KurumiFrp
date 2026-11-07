@@ -8,10 +8,11 @@ import (
 )
 
 type Rendered struct {
-	Text    string
-	Env     []string
+	Text string
+	Env []string
 	Secrets []string
-	Digest  string
+	SecretDigest string
+	Digest string
 }
 
 func quote(s string) string {
@@ -89,6 +90,7 @@ func (s *Store) render(id string, preview bool) (Rendered, error) {
 		}
 	}
 	r.Text = b.String()
+	r.SecretDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(r.Env, "\x00"))))
 	r.Digest = fmt.Sprintf("%x", sha256.Sum256([]byte(r.Text+strings.Join(r.Env, "\x00"))))
 	return r, nil
 }

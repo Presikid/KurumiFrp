@@ -6,14 +6,22 @@ let updateChecked = false, releases = [], updateStatus = '';
 let probeResults = Object.create(null), probing = Object.create(null), probeRevision = null;
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer;
 const dialog = $('#dialog');
+const diffDialog = $('#diff-dialog');
 function toast(text) { $('#toast').textContent = text; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 8000); }
+function showDiff(v) {
+ $('#diff-title').textContent = v.instanceName + ' · 配置差异';
+ $('#diff-summary').textContent = '新增 '+v.addedCount+' 行 · 移除 '+v.removedCount+' 行'+(v.secretChanged?' · 敏感凭据已变化':'')+(v.coreChanged?' · 核心已变化':'');
+ const lines=[...v.removed.map(x=>'- '+x),...v.added.map(x=>'+ '+x)];
+ $('#diff-content').textContent=(lines.join('\n')||'没有非敏感配置行变化')+(v.truncated?'\n…差异展示已截断':'');
+ diffDialog.showModal();
+}
 async function api(path, body) {
  const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST',credentials:'same-origin',headers:body === undefined ? {}:{'Content-Type':'application/json'},body:body === undefined ? undefined:JSON.stringify(body)});
  const json = await response.json();
  if (!response.ok) {if(response.status === 401 && path !== 'login') showLogin(); throw new Error(json.error || `HTTP ${response.status}`);}
  return json;
 }
-function showLogin() {updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; data = null; if (dialog.open) dialog.close();}
+function showLogin() {updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; data = null; if (dialog.open) dialog.close(); if (diffDialog.open) diffDialog.close();}
 async function refresh(silent = false) {
  try { const fresh = await api('state'); if (probeRevision !== fresh.revision) { probeResults = Object.create(null); probeRevision = fresh.revision; } data = fresh; $('#login').hidden = true; $('#app').hidden = false; if(!updateChecked){updateChecked=true;checkUpdates(true);}
  $('#revision').textContent = `DRAFT / r${data.revision}`; $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
@@ -58,8 +66,8 @@ function render() {
   `<section class="panel"><div class="panel-title"><h3>最近变更</h3><span class="muted">版本可恢复 · 最多保留 ${data.historyLimit} 份</span></div><div class="panel-content">${recent()}</div></section>`;
  } else if(page==='instances') {
   content.innerHTML=header('运行实例','一个实例对应一个本机 frp 进程；远程服务器地址不代表远程管理权限。','<button class="primary" data-action="new-instance">＋ 新建实例</button>')+
-  `<div class="notice">启动前会调用官方 frp verify。重启应用会中断该实例上的现有连接；本版本没有自动回退和开机自动启动实例。</div>`+
-  (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button><button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
+  `<div class="notice">启动前会调用官方 frp verify。重启会中断现有连接；待应用变更可先查看脱敏差异。</div>`+
+  (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button>${v.pending&&v.applied?`<button data-action="diff" data-id="${i.id}">查看变更</button>`:''}<button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
  } else if(page==='tunnels') {
   content.innerHTML=header('连接看板','管理规则并检测本地目标：TCP 检查端口，HTTP/HTTPS 检查响应；UDP 无法可靠探测。','<button class="primary" data-action="new-tunnel">＋ 新建规则</button>')+
   `<div class="toolbar"><input id="search" placeholder="搜索规则、地址或实例…" aria-label="搜索规则" value="${esc(filter)}"><select id="protocol" aria-label="按协议筛选"><option value="">所有协议</option>${['tcp','udp','http','https','stcp','stcp-visitor'].map(t=>`<option ${protocol===t?'selected':''}>${t}</option>`).join('')}</select></div><section class="panel" id="tunnel-list">${filteredTable()}</section>`;
@@ -115,6 +123,7 @@ $('#theme').addEventListener('click',()=>{document.body.classList.toggle('dark')
 try{document.body.classList.toggle('dark',localStorage.getItem('kurumi-theme')==='dark');}catch(_){/* theme storage is optional */}
 $('#nav').addEventListener('click',e=>{const b=e.target.closest('[data-page]');if(b)navigate(b.dataset.page);});
 $('#cancel').addEventListener('click',()=>dialog.close());
+$('#diff-close').addEventListener('click',()=>diffDialog.close());
 $('#editor').addEventListener('change',updateFields);
 $('#editor').addEventListener('submit',async e=>{
  e.preventDefault();const f=e.target,b=f.querySelector('button[type="submit"]');b.disabled=true;const val=n=>f.elements[n].value;let value;
@@ -138,6 +147,7 @@ $('#content').addEventListener('click',async e=>{
   if(action==='import-data'){const file=$('#import-file').files[0];if(!file)throw new Error('请选择配置文件');if(file.size>128*1024*1024)throw new Error('配置文件超过 128 MiB');if(!confirm('导入将替换当前配置和快照；运行中的实例需要重新应用。继续？'))return;let parsed;try{parsed=JSON.parse(await file.text());}catch(_){throw new Error('配置文件不是有效 JSON');}await api('import?revision='+data.revision,parsed);toast('导入成功，界面已刷新');await refresh();return;}
   if(action==='history-settings'){const input=$('#history-limit'), limit=Number(input.value);if(input.value===''||!Number.isInteger(limit)||limit<0||limit>100)throw new Error('快照数量须为 0–100');if(limit<data.history.length&&!confirm(`将删除 ${data.history.length-limit} 份最早快照，继续？`))return;await api('history-settings',{revision:data.revision,historyLimit:limit});toast('快照保留数量已更新');await refresh();return;}
   if(action==='export-toml'){if(!selected)throw new Error('先选择一个实例');const v=await api('config?id='+selected);download('kurumi-redacted.toml',v.toml,'text/plain');return;}
+  if(action==='diff'){showDiff(await api('diff?id='+encodeURIComponent(id)));return;}
   if(action==='probe'){
    const revision=data.revision;
    probing[id]=true;

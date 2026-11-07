@@ -224,11 +224,21 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			}
 			reply(w, 200, map[string]any{"toml": v.Text, "redacted": true})
 			return
+		case "/api/diff":
+			id := r.URL.Query().Get("id")
+			i, ok := a.store.DB.State.Instance(id)
+			if !ok { fail(w, 404, fmt.Errorf("实例不存在")); return }
+			p := a.procs[id]
+			if p == nil || p.appliedConfig == "" { fail(w, 409, fmt.Errorf("该实例尚无可比较的已应用配置；请先成功启动一次")); return }
+			current, err := a.store.render(id, false)
+			if err != nil { fail(w, 400, err); return }
+			coreID := ""
+			if a.store.DB.ActiveCore != nil { coreID = *a.store.DB.ActiveCore }
+			reply(w, 200, compareConfig(i.ID, i.Name, a.store.DB.Revision, p.appliedConfig, current.Text, p.appliedSecretDigest != current.SecretDigest, p.coreID != coreID))
+			return
 		case "/api/logs":
 			lines := []string{}
-			if p := a.procs[r.URL.Query().Get("id")]; p != nil {
-				lines = p.logs.read()
-			}
+			if p := a.procs[r.URL.Query().Get("id")]; p != nil { lines = p.logs.read() }
 			reply(w, 200, map[string]any{"lines": lines})
 			return
 		default:

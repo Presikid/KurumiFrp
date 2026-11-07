@@ -29,8 +29,10 @@ type process struct {
 	cmd    *exec.Cmd
 	done   chan struct{}
 	status RuntimeStatus
-	logs   *logBuffer
+	logs *logBuffer
 	coreID string
+	appliedConfig string
+	appliedSecretDigest string
 }
 type logBuffer struct {
 	mu       sync.Mutex
@@ -151,7 +153,7 @@ func (a *App) start(i Instance, r Rendered) error {
 	cmd.Env = childEnv(r.Env)
 	cmd.Dir = runtimeDir
 	cmd.WaitDelay = 2 * time.Second
-	p := &process{cmd: cmd, done: make(chan struct{}), logs: &logBuffer{secrets: r.Secrets}}
+	p := &process{cmd: cmd, done: make(chan struct{}), logs: &logBuffer{secrets: r.Secrets}, appliedConfig: r.Text, appliedSecretDigest: r.SecretDigest}
 	if a.store.DB.ActiveCore != nil {
 		p.coreID = *a.store.DB.ActiveCore
 	}
