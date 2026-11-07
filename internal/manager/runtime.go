@@ -131,6 +131,9 @@ func (a *App) verify(i Instance, r Rendered) (string, error) {
 	return out, nil
 }
 func (a *App) start(i Instance, r Rendered) error {
+	if a.closing {
+		return fmt.Errorf("manager is shutting down")
+	}
 	if p := a.procs[i.ID]; p != nil && p.view().State == "running" {
 		return fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
@@ -162,6 +165,7 @@ func (a *App) start(i Instance, r Rendered) error {
 	}
 	p.status = RuntimeStatus{State: "running", PID: cmd.Process.Pid, Started: now(), Applied: r.Digest}
 	a.procs[i.ID] = p
+	delete(a.startupErrors, i.ID)
 	go func() {
 		err := cmd.Wait()
 		p.logs.Write([]byte("\n"))
@@ -213,12 +217,20 @@ func (a *App) statuses() map[string]RuntimeStatus {
 				coreID = *a.store.DB.ActiveCore
 			}
 			v.Pending = e != nil || v.Applied != r.Digest || p.coreID != coreID
+		} else if message := a.startupErrors[i.ID]; i.AutoStart && message != "" {
+			v = RuntimeStatus{State: "autostart-failed", Exit: message}
 		}
 		out[i.ID] = v
 	}
 	return out
 }
 func (a *App) Close() error {
+	a.mu.Lock()
+	a.closing = true
+	a.mu.Unlock()
+	if a.startupDone != nil {
+		<-a.startupDone
+	}
 	a.core.Close()
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -41,6 +41,13 @@ observe real process exit. Verify failure leaves the old process alone. A succes
 spawn is not a registration check. There is no automatic rollback on post-spawn failure.
 Future hot reload must distinguish proxy changes from global process settings.
 
+Instances may opt into startup restoration individually. The manager snapshots the
+selected instances, renders and verifies each configuration, then compares its digest
+again before spawning so edits made during verification are not applied accidentally.
+Restoration is asynchronous and bounded by the normal verify timeout per instance;
+failures are exposed as runtime status and do not prevent the manager UI from opening.
+Shutdown signals the restoration worker and waits for it before stopping owned children.
+
 Logs are bounded, known secrets are scrubbed across fragmented writes, and oversized
 lines are dropped. Logs are memory-only and are not a complete durable audit trail.
 Only saved draft changes currently populate the persistent configuration event list.

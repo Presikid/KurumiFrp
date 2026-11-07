@@ -18,6 +18,7 @@ type Instance struct {
 	HTTPSPort int    `json:"httpsPort"`
 	Token     string `json:"token,omitempty"`
 	HasToken  bool   `json:"hasToken,omitempty"`
+	AutoStart bool   `json:"autoStart,omitempty"`
 }
 type Tunnel struct {
 	ID          string   `json:"id"`

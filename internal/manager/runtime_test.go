@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
@@ -86,3 +87,77 @@ func TestOwnedProcessLifecycle(t *testing.T) {
 		t.Fatal("child not stopped")
 	}
 }
+
+
+func autoStartFixture(t *testing.T, installBinary bool) *App {
+	t.Helper()
+	dir, bin := t.TempDir(), t.TempDir()
+	if installBinary {
+		exe, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, err := os.ReadFile(exe)
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := "frpc"
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		if err = os.WriteFile(filepath.Join(bin, name), payload, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := newStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := store.encrypt("autostart-test-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := store.DB.State.clone()
+	state.Instances = append(state.Instances, Instance{
+		ID: randomHex(8), Name: "Auto start fixture", Kind: "frpc",
+		Host: "127.0.0.1", Port: 7000, Token: secret, AutoStart: true,
+	})
+	if err = store.commit(state, "seed auto-start instance"); err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(dir, bin, "127.0.0.1:9000", fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("ok")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return app
+}
+
+func TestAutoStartRestoresOptedInInstances(t *testing.T) {
+	t.Setenv("FRP_TEST_HELPER", "1")
+	a := autoStartFixture(t, true)
+	defer a.Close()
+	<-a.startupDone
+	i := a.store.DB.State.Instances[0]
+	p := a.procs[i.ID]
+	if p == nil || p.view().State != "running" || p.view().PID < 1 {
+		t.Fatalf("auto-start did not launch the instance: %#v", a.statuses()[i.ID])
+	}
+	if status := a.statuses()[i.ID]; status.Pending {
+		t.Fatal("auto-started instance is unexpectedly pending")
+	}
+}
+
+func TestAutoStartFailureIsVisibleAndDoesNotClaimRunning(t *testing.T) {
+	a := autoStartFixture(t, false)
+	defer a.Close()
+	<-a.startupDone
+	i := a.store.DB.State.Instances[0]
+	status := a.statuses()[i.ID]
+	if status.State != "autostart-failed" || status.Exit == "" || status.PID != 0 {
+		t.Fatalf("startup failure was not reported accurately: %#v", status)
+	}
+	if a.procs[i.ID] != nil {
+		t.Fatal("failed auto-start created a process")
+	}
+}
+

@@ -17,17 +17,20 @@ import (
 )
 
 type App struct {
-	quit     chan struct{}
-	quitOnce sync.Once
-	core     *core.Manager
-	updater  *update.Manager
-	mu       sync.Mutex
-	store    *Store
-	bin      string
-	addr     string
-	auth     auth
-	procs    map[string]*process
-	assets   http.Handler
+	quit          chan struct{}
+	quitOnce      sync.Once
+	core          *core.Manager
+	updater       *update.Manager
+	mu            sync.Mutex
+	store         *Store
+	bin           string
+	addr          string
+	auth          auth
+	procs         map[string]*process
+	assets        http.Handler
+	startupDone   chan struct{}
+	closing       bool
+	startupErrors map[string]string
 }
 
 func New(dir, bin, addr string, assets fs.FS) (*App, error) {
@@ -86,7 +89,9 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	}); e != nil {
 		return nil, e
 	}
-	return &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets))}, nil
+	app := &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets)), startupDone: make(chan struct{}), startupErrors: map[string]string{}}
+	go app.restoreAutoStart()
+	return app, nil
 }
 func (a *App) SetDistribution(distribution string) {
 	a.updater = update.New(a.store.dir, update.DetectDistribution(distribution))
@@ -440,6 +445,63 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 200, map[string]any{"ok": true, "revision": a.store.DB.Revision})
+}
+
+// restoreAutoStart reapplies only instances explicitly opted in by the user.
+// Verification runs outside the application lock; the rendered digest is checked
+// again before launch so a concurrent draft edit is never applied accidentally.
+func (a *App) restoreAutoStart() {
+	defer close(a.startupDone)
+	a.mu.Lock()
+	instances := append([]Instance{}, a.store.DB.State.Instances...)
+	a.mu.Unlock()
+	for _, instance := range instances {
+		if !instance.AutoStart {
+			continue
+		}
+		a.mu.Lock()
+		if a.closing {
+			a.mu.Unlock()
+			return
+		}
+		current, ok := a.store.DB.State.Instance(instance.ID)
+		if !ok || !current.AutoStart {
+			a.mu.Unlock()
+			continue
+		}
+		rendered, err := a.store.render(instance.ID, false)
+		a.mu.Unlock()
+		if err == nil {
+			_, err = a.verify(current, rendered)
+		}
+		a.mu.Lock()
+		if a.closing {
+			a.mu.Unlock()
+			return
+		}
+		latest, exists := a.store.DB.State.Instance(instance.ID)
+		if !exists || !latest.AutoStart {
+			a.mu.Unlock()
+			continue
+		}
+		if err == nil {
+			latestRendered, renderErr := a.store.render(instance.ID, false)
+			if renderErr != nil {
+				err = renderErr
+			} else if latestRendered.Digest != rendered.Digest {
+				err = fmt.Errorf("配置在自动启动期间发生变化；请手动启动实例")
+			}
+		}
+		if err == nil {
+			err = a.start(latest, rendered)
+		}
+		if err != nil && (a.procs[instance.ID] == nil || a.procs[instance.ID].view().State != "running") {
+			a.startupErrors[instance.ID] = err.Error()
+		} else {
+			delete(a.startupErrors, instance.ID)
+		}
+		a.mu.Unlock()
+	}
 }
 
 func (a *App) Done() <-chan struct{} { return a.quit }
