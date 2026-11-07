@@ -97,7 +97,6 @@ func (s *Store) render(id string, preview bool) (Rendered, error) {
 	return r, nil
 }
 
-
 // renderRuntime adds a per-process, loopback-only frpc Admin API endpoint.
 // Its ephemeral credentials are intentionally excluded from the draft digest
 // and from the user-facing configuration preview.
