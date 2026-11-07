@@ -72,7 +72,7 @@ function openEditor(kind,id) {
  const old=(kind==='instance'?data.state.instances:data.state.tunnels).find(v=>v.id===id);editing={kind,id:old?.id||''};editRev=data.revision;
  $('#form-error').textContent='';
  if(kind==='instance') {
-  const v=old||{kind:'frpc',host:'127.0.0.1',port:7000,httpPort:0,httpsPort:0};
+  const v=old||{kind:'frpc',host:'127.0.0.1',port:7000,httpPort:0,httpsPort:0,autoStart:false};
   $('#dialog-body').innerHTML=`<h2>${old?'编辑实例':'新建运行实例'}</h2><p class="muted">只管理本机进程。留空的认证令牌会保留原值，不会清除。Linux 原生服务通常不能监听小于 1024 的端口；如需使用，请先配置适当权限。</p><div class="form-grid">${field('name','实例名称',v.name,'text','required maxlength="80"')}<label>实例类型<select name="kind" ${old?'disabled':''}><option value="frpc" ${v.kind==='frpc'?'selected':''}>frpc · 客户端</option><option value="frps" ${v.kind==='frps'?'selected':''}>frps · 服务端</option></select></label>${field('host','服务器地址 / 本机监听地址',v.host,'text','required')}${field('port','连接 / 监听端口',v.port,'number','required min="1" max="65535"')}<div class="span-2">${field('token',old&&v.hasToken?'认证令牌（已保存，留空保留）':'认证令牌（至少 8 字节）','','password',old?'autocomplete="new-password"':'required autocomplete="new-password"')}</div><div class="server-field">${field('httpPort','HTTP 虚拟主机端口（0 关闭）',v.httpPort,'number','min="0" max="65535"')}</div><div class="server-field">${field('httpsPort','HTTPS 虚拟主机端口（0 关闭）',v.httpsPort,'number','min="0" max="65535"')}</div></div>`;
  } else {
   const clients=data.state.instances.filter(i=>i.kind==='frpc');if(!clients.length){toast('请先添加一个 frpc 客户端实例');return;}
