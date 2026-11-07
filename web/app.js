@@ -4,20 +4,101 @@ const esc = (v = '') => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;'
 const titles = {overview:'网络总览',tunnels:'连接看板',instances:'运行实例',config:'配置中心',logs:'运行记录',update:'软件更新'};
 let updateChecked = false, releases = [], updateStatus = '';
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer;
+let authGeneration = 0, stateETag = '', stateSnapshot = '', renderedSnapshot = '', renderedPage = '';
+let stateRequest = null, logRequest = null, deferredConfig = null;
 const dialog = $('#dialog');
 function toast(text) { $('#toast').textContent = text; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 8000); }
-async function api(path, body) {
- const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST',credentials:'same-origin',headers:body === undefined ? {}:{'Content-Type':'application/json'},body:body === undefined ? undefined:JSON.stringify(body)});
+async function api(path, body, options = {}) {
+ const generation = authGeneration;
+ const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST',credentials:'same-origin',headers:{...(body === undefined ? {}:{'Content-Type':'application/json'}),...options.headers},body:body === undefined ? undefined:JSON.stringify(body),signal:options.signal});
+ if (options.conditional && response.status === 304) return {value:null,etag:response.headers.get('ETag') || ''};
  const json = await response.json();
- if (!response.ok) {if(response.status === 401 && path !== 'login') showLogin(); throw new Error(json.error || `HTTP ${response.status}`);}
- return json;
+ if (!response.ok) {if(response.status === 401 && path !== 'login' && generation === authGeneration) showLogin(); throw new Error(json.error || `HTTP ${response.status}`);}
+ if (path === 'login' || path === 'launch-login') resetSession();
+ return options.conditional ? {value:json,etag:response.headers.get('ETag') || ''} : json;
 }
-function showLogin() {updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; data = null; if (dialog.open) dialog.close();}
+function resetSession() {
+ ++authGeneration; ++serial;
+ stateRequest?.controller.abort(); logRequest?.controller.abort();
+ stateRequest = null; logRequest = null; deferredConfig = null;
+ stateETag = ''; stateSnapshot = ''; renderedSnapshot = ''; renderedPage = ''; data = null;
+}
+function showLogin() {resetSession();updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; if (dialog.open) dialog.close();}
+function hasSelection() {return Boolean(window.getSelection()?.toString());}
+function canSilentRender() {return !dialog.open && !hasSelection() && !$('#content').contains(document.activeElement);}
+function renderPreservingScroll() {
+ const x = window.scrollX, y = window.scrollY, previousSelected = selected, content = $('#content');
+ const top = content.scrollTop, left = content.scrollLeft;
+ const positions = ['#log-output','#config-output','.table-wrap'].flatMap(selector => [...content.querySelectorAll(selector)].map((el,index) => ({selector,index,top:el.scrollTop,left:el.scrollLeft,text:el.tagName === 'PRE' ? el.textContent : null})));
+ render();
+ for (const position of positions) {
+  const el = content.querySelectorAll(position.selector)[position.index];
+  if (!el || (position.text !== null && previousSelected !== selected)) continue;
+  // Keep the existing output while its asynchronous replacement is loading.
+  if (position.text !== null) el.textContent = position.text;
+  el.scrollTop = position.top; el.scrollLeft = position.left;
+ }
+ content.scrollTop = top; content.scrollLeft = left; window.scrollTo(x,y);
+}
 async function refresh(silent = false) {
- try { const fresh = await api('state'); data = fresh; $('#login').hidden = true; $('#app').hidden = false; if(!updateChecked){updateChecked=true;checkUpdates(true);}
- $('#revision').textContent = `DRAFT / r${data.revision}`; $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
- if (!dialog.open && !$('#content').contains(document.activeElement)) render(); else if (!silent && !dialog.open) render();
- } catch(e) {if (!silent && data) toast(e.message);}
+ const generation = authGeneration;
+ if (stateRequest) {
+  if (silent) return stateRequest.promise;
+  // An explicit refresh after a save must not reuse a request sent before it.
+  await stateRequest.promise;
+  if (generation !== authGeneration) return;
+  return refresh(false);
+ }
+ const request = {generation,controller:new AbortController()};
+ stateRequest = request;
+ request.promise = (async () => {
+  try {
+   const fresh = await api('state',undefined,{conditional:true,headers:stateETag ? {'If-None-Match':stateETag} : {},signal:request.controller.signal});
+   if (generation !== authGeneration) return;
+   if (fresh.value !== null) {data = fresh.value; stateSnapshot = JSON.stringify(data); stateETag = fresh.etag;}
+   if (!data) return;
+   $('#login').hidden = true; $('#app').hidden = false;
+   if (!updateChecked) {updateChecked = true; checkUpdates(true);}
+   if (!hasSelection()) {
+    const revision = `DRAFT / r${data.revision}`;
+    if ($('#revision').textContent !== revision) $('#revision').textContent = revision;
+    $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
+   }
+   if (!silent && !dialog.open) render();
+   else if (canSilentRender() && (renderedSnapshot !== stateSnapshot || renderedPage !== page)) renderPreservingScroll();
+   applyDeferredConfig();
+   // Logs have a separate endpoint and can change even when state returns 304.
+   await refreshLogs(silent);
+  } catch(e) {if (generation === authGeneration && e.name !== 'AbortError' && !silent && data) toast(e.message);}
+ })().finally(() => {if (stateRequest === request) stateRequest = null;});
+ return request.promise;
+}
+function refreshLogs(silent = true) {
+ if (!data || page !== 'logs' || !selected) return Promise.resolve();
+ const generation = authGeneration, id = selected;
+ if (logRequest && logRequest.generation === generation && logRequest.id === id) return logRequest.promise;
+ logRequest?.controller.abort();
+ const request = {generation,id,controller:new AbortController()};
+ logRequest = request;
+ request.promise = (async () => {
+  try {
+   const result = await api('logs?id='+encodeURIComponent(id),undefined,{signal:request.controller.signal});
+   if (generation !== authGeneration || page !== 'logs' || selected !== id || !canSilentRender()) return;
+   const output = $('#log-output'), text = result.lines.join('\n') || '没有日志。启动实例后，真实输出将显示在这里。';
+   if (!output || output.textContent === text) return;
+   const top = output.scrollTop, left = output.scrollLeft;
+   output.textContent = text; output.scrollTop = top; output.scrollLeft = left;
+  } catch(e) {if (generation === authGeneration && e.name !== 'AbortError' && !silent && data) toast(e.message);}
+ })().finally(() => {if (logRequest === request) logRequest = null;});
+ return request.promise;
+}
+function applyDeferredConfig() {
+ if (!deferredConfig || deferredConfig.serial !== serial || deferredConfig.id !== selected || page !== 'config' || !canSilentRender()) return;
+ const output = $('#config-output');
+ if (!output) return;
+ const top = output.scrollTop, left = output.scrollLeft;
+ output.textContent = deferredConfig.text; output.scrollTop = top; output.scrollLeft = left;
+ deferredConfig = null;
 }
 const stateOf = (id) => data.runtime[id] || {state:'stopped'};
 function badge(id) {const v=stateOf(id);return `<span class="pill ${v.state==='running'?'good':v.state==='exited'?'warn':''}">${({running:'进程运行',stopped:'未启动',exited:'进程已退出'})[v.state] || esc(v.state)}</span>${v.pending?'<span class="pill warn">待应用</span>':''}`;}
@@ -49,17 +130,18 @@ function render() {
   ensureSelected();
   content.innerHTML=header('配置中心','预览配置、导出数据和恢复历史快照。')+
   `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>实例配置预览</h3><button data-action="export-toml">导出脱敏 TOML</button></div><div class="panel-content">${picker()}<div class="notice">此预览中的 &lt;redacted&gt; 是占位符，不能直接部署。</div><pre id="config-output">${selected?'正在读取…':'先创建一个实例。'}</pre></div></section><section class="panel"><div class="panel-title"><h3>历史快照</h3><span class="pill">当前 r${data.revision}</span></div><div class="panel-content"><label>保留数量（0–100）<input id="history-limit" type="number" min="0" max="100" step="1" value="${data.historyLimit}"></label><button data-action="history-settings">保存数量</button><p class="small-note">减少数量时立即删除最早的快照；设为 0 则不保留快照。</p>${data.history.length?data.history.slice().reverse().map(h=>`<div class="check-row"><div><b>r${h.revision}</b><p class="small-note blank">${esc(h.summary)}<br>${time(h.at)}</p></div><button data-action="restore" data-target="${h.revision}">恢复</button></div>`).join(''):empty('暂无历史版本','修改配置时按保留数量保存前一版本。')}<p class="small-note blank">恢复前须停止全部托管实例。恢复只改变草稿，不会自动重新启动进程。</p></div></section></div><section class="panel"><div class="panel-title"><h3>导出配置和快照</h3></div><div class="panel-content"><label>导出范围<select id="export-scope"><option value="all">当前配置和全部快照</option><option value="config">仅当前配置</option><option value="snapshots">仅全部快照</option><option value="snapshot">单个快照</option></select></label><label>单个快照<select id="export-snapshot">${data.history.slice().reverse().map(h=>`<option value="${h.revision}">r${h.revision} · ${esc(h.summary)}</option>`).join('')}</select></label><p class="small-note">导出的单个配置文件包含密钥和所选快照，可直接导入其他设备。任何持有该文件的人都能访问其中的密钥，请妥善保管。</p><button data-action="export-data">导出配置文件</button><hr><label>选择配置文件<input id="import-file" type="file" accept=".json,application/json"></label><button data-action="import-data">导入并刷新</button><p class="small-note">导入会替换当前配置与历史快照，运行中的实例需重启应用新配置。</p></div></section>`;
-  if(selected) api('config?id='+encodeURIComponent(selected)).then(v=>{if(serial===n && $('#config-output')) $('#config-output').textContent=v.toml;}).catch(e=>toast(e.message));
+  if(selected) {const id=selected;api('config?id='+encodeURIComponent(id)).then(v=>{if(serial===n) {deferredConfig={serial:n,id,text:v.toml};applyDeferredConfig();}}).catch(e=>{if(serial===n && data)toast(e.message);});}
  } else if(page==='update') {
   content.innerHTML=header('软件更新','从 GitHub 获取官方版本，选择可用的新版本进行更新。')+`<section class="panel"><div class="panel-content"><p>当前版本 ${esc(data.version)}。更新期间工作台和托管连接可能中断；Windows 需要管理员授权。</p><label>选择版本<select id="update-version">${releases.filter(v=>v.newer&&v.available).map(v=>`<option value="${esc(v.tag)}">${esc(v.tag)}${v.prerelease?' · 预览版':''}</option>`).join('')}</select></label><div class="actions"><button data-action="check-update">检查版本</button><button class="primary" data-action="install-update" ${releases.some(v=>v.newer&&v.available)?'':'disabled'}>更新所选版本</button></div><p class="small-note">${esc(updateStatus||'选择版本后将下载并校验官方安装包。')}</p></div></section>`;
  } else if(page==='logs') {
   ensureSelected(); content.innerHTML=header('运行记录','真实子进程输出与配置变更记录。进程日志仅保留当前会话最近 200 行。')+
   `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>frp 标准输出</h3><span class="pill">自动刷新</span></div><div class="panel-content">${picker()}<pre id="log-output">正在读取…</pre></div></section><section class="panel"><div class="panel-title"><h3>配置变更</h3></div><div class="panel-content">${recent()}</div></section></div>`;
-  api('logs?id='+encodeURIComponent(selected)).then(v=>{if(serial===n && $('#log-output')) $('#log-output').textContent=v.lines.join('\n')||'没有日志。启动实例后，真实输出将显示在这里。';}).catch(e=>toast(e.message));
+  if(selected) refreshLogs(false); else $('#log-output').textContent='先创建一个实例。';
  }
+ renderedSnapshot = stateSnapshot; renderedPage = page;
 }
-async function checkUpdates(promptUser=false){try{const v=await api('update/releases');releases=v.versions;updateStatus=v.status||'';if(page==='update'&&data)render();const latest=releases.find(v=>v.newer&&v.available);if(promptUser&&latest&&confirm(`发现新版本 ${latest.tag}。现在查看更新吗？`))navigate('update');}catch(e){updateStatus='无法获取版本列表：'+e.message;if(page==='update'&&data)render();}}
-async function pollUpdate(){try{const v=await api('update/status');updateStatus=v.status;if(page==='update'&&data)render();if(updateStatus.startsWith('正在'))setTimeout(pollUpdate,2000);}catch(_){updateStatus='工作台暂时不可用，请稍后刷新。';}}
+async function checkUpdates(promptUser=false){const generation=authGeneration;try{const v=await api('update/releases');if(generation!==authGeneration)return;releases=v.versions;updateStatus=v.status||'';if(page==='update'&&data)render();const latest=releases.find(v=>v.newer&&v.available);if(promptUser&&latest&&confirm(`发现新版本 ${latest.tag}。现在查看更新吗？`))navigate('update');}catch(e){if(generation!==authGeneration)return;updateStatus='无法获取版本列表：'+e.message;if(page==='update'&&data)render();}}
+async function pollUpdate(){if(!data)return;const generation=authGeneration;try{const v=await api('update/status');if(generation!==authGeneration)return;updateStatus=v.status;if(page==='update'&&data)render();if(updateStatus.startsWith('正在'))setTimeout(pollUpdate,2000);}catch(_){if(generation===authGeneration)updateStatus='工作台暂时不可用，请稍后刷新。';}}
 function ensureSelected(){if(!data.state.instances.some(i=>i.id===selected))selected=data.state.instances[0]?.id||'';}
 function picker(){return `<select class="config-picker" id="instance-picker" aria-label="选择实例">${data.state.instances.length?data.state.instances.map(i=>`<option value="${i.id}" ${selected===i.id?'selected':''}>${esc(i.name)} · ${i.kind}</option>`).join(''):'<option>尚无实例</option>'}</select>`;}
 function filteredTable(){return tunnelTable(data.state.tunnels.filter(t=>(!protocol||t.type===protocol)&&`${t.name} ${t.localHost} ${t.remotePort} ${data.state.instances.find(i=>i.id===t.instanceId)?.name}`.toLowerCase().includes(filter.toLowerCase())));}
@@ -89,7 +171,7 @@ function updateFields(){
  f.elements.bandwidthKB.disabled=t==='stcp-visitor';
 }
 function navigate(to){if(!titles[to])return;page=to;location.hash=to;render();}
-function download(name,text,type='application/json'){const u=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}
+function download(name,text,type='application/json'){const u=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');try{a.href=u;a.download=name;document.body.appendChild(a);a.click();}finally{a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);}}
 $('#login-form').addEventListener('submit',async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;try{await api('login',{token:e.target.elements.token.value.trim()});e.target.reset();$('#login-error').textContent='';await refresh();}catch(err){$('#login-error').textContent=err.message;}finally{b.disabled=false;}});
 $('#logout').addEventListener('click',async()=>{try{await api('logout',{});showLogin();}catch(e){toast(e.message);}});
 $('#refresh').addEventListener('click',()=>refresh());

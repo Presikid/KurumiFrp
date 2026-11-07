@@ -433,6 +433,7 @@ func (m *Manager) Activate(ctx context.Context, id string) error {
 		cmd.Stdout = &output
 		cmd.Stderr = &output
 		err := cmd.Run()
+		_ = childprocess.Kill(cmd) // clean any probe descendants before releasing the process group
 		cancel()
 		if err != nil || strings.TrimSpace(output.text) != strings.TrimPrefix(v.Tag, "v") {
 			return fmt.Errorf("%s version probe failed; current core unchanged", kind)

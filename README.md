@@ -108,7 +108,7 @@ go vet ./...
 ## 更多资料
 
 - [安装、升级与卸载](docs/INSTALL.md)
-- [架构说明](docs/ARCHITECTURE.md) · [测试说明](docs/VALIDATION.md) · [开发路线](docs/ROADMAP.md)
+- [架构说明](docs/ARCHITECTURE.md) · [测试说明](docs/VALIDATION.md) · [开发路线](docs/ROADMAP.md) · [审计核验与修复](docs/AUDIT_REMEDIATION.md)
 - [主题素材说明](docs/ARTWORK.md)
 - [版本约定](docs/VERSIONING.md)
 

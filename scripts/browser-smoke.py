@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
                     response = opener.open(request, timeout=20)
                 except urllib.error.HTTPError as error:
                     response = error
-                return {"status": response.status, "body": response.read().decode()}
+                return {"status": response.status, "body": response.read().decode(), "headers": dict(response.headers)}
             if offline:
                 page.expose_function("testFetch", bridge)
             def load_page():
@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
                 page.set_content(html)
                 page.add_style_tag(content=(web / "style.css").read_text())
                 page.add_style_tag(content=(web / "core.css").read_text())
-                page.add_script_tag(content="window.fetch = async (p, o={}) => { const r = await window.testFetch(p, o); return new Response(r.body, {status:r.status,headers:{'Content-Type':'application/json'}}); };")
+                page.add_script_tag(content="window.fetch = async (p, o={}) => { const r = await window.testFetch(p, o); return new Response(r.status === 304 ? null : r.body, {status:r.status,headers:r.headers}); };")
                 page.add_script_tag(content=(web / "app.js").read_text())
                 page.add_script_tag(content=(web / "core.js").read_text())
             load_page()
@@ -106,6 +106,8 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#editor input[name="localPort"]').fill("3390")
             page.locator('#editor button[type="submit"]').click()
             page.locator('#dialog').wait_for(state="hidden")
+            polling_checks = page.evaluate((Path(__file__).with_name("polling-regression.js")).read_text(encoding="utf-8"), {"token": token})
+            print("Polling regression passed: " + polling_checks)
             page.locator('[data-page="overview"]').click()
             page.screenshot(path=str(shots / "overview.png"), full_page=True)
             page.locator('[data-page="config"]').click()

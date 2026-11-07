@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -12,7 +13,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"time"
+	"unicode/utf8"
 )
 
 type Snapshot struct {
@@ -108,6 +111,36 @@ func atomicWrite(path string, b []byte) error {
 	}
 	return os.Rename(f.Name(), path)
 }
+
+// writeIfChanged avoids replacing an unchanged private regular file. Changed
+// data still uses fsync + atomic rename: a crash must not truncate state.json.
+// Callers serialize writes and create the parent directory themselves.
+func writeIfChanged(path string, data []byte) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return false, fmt.Errorf("not a regular file: %s", path)
+		}
+		private := runtime.GOOS == "windows" || info.Mode().Perm() == 0600
+		if private && info.Size() == int64(len(data)) {
+			existing, readErr := privateFileLimit(path, int64(len(data)))
+			if readErr != nil {
+				return false, readErr
+			}
+			if bytes.Equal(existing, data) {
+				return false, nil
+			}
+		}
+	}
+	if err := atomicWrite(path, data); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func newStore(dir string) (*Store, error) {
 	dir, e := filepath.Abs(dir)
 	if e != nil {
@@ -247,6 +280,9 @@ func historyStates(h []Snapshot) []State {
 	return out
 }
 func (s *Store) encrypt(plain string) (string, error) {
+	if !utf8.ValidString(plain) {
+		return "", fmt.Errorf("密钥必须是有效的 UTF-8 文本")
+	}
 	if len(plain) < 8 || len(plain) > 1024 {
 		return "", fmt.Errorf("令牌/配对密钥长度须为 8-1024 字节")
 	}
@@ -289,6 +325,9 @@ func (s *Store) decrypt(text string) (string, error) {
 	if e != nil {
 		return "", fmt.Errorf("secret decryption failed")
 	}
+	if !utf8.Valid(p) {
+		return "", fmt.Errorf("decrypted secret is not valid UTF-8")
+	}
 	return string(p), nil
 }
 func snapshotDir(dir string, create bool) error {
@@ -319,7 +358,7 @@ func (s *Store) write(db Database) error {
 	if len(b) > maxStateSize {
 		return fmt.Errorf("配置文件超过 128 MiB，无法安全保存；请减少快照数量")
 	}
-	if err = atomicWrite(filepath.Join(s.dir, "state.json"), b); err != nil {
+	if _, err = writeIfChanged(filepath.Join(s.dir, "state.json"), b); err != nil {
 		return err
 	}
 	if s.DB.Format != 3 {
