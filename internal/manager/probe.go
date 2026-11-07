@@ -10,10 +10,10 @@ import (
 
 // ProbeResult reports only local target reachability, never remote frp registration.
 type ProbeResult struct {
- Status string `+"`json:"status"`"+`
- Address string `+"`json:"address,omitempty"`"+`
- LatencyMS int64 `+"`json:"latencyMs,omitempty"`"+`
- Message string `+"`json:"message"`"+`
+ Status string `json:"status"`
+ Address string `json:"address,omitempty"`
+ LatencyMS int64 `json:"latencyMs,omitempty"`
+ Message string `json:"message"`
 }
 
 func probeTarget(t Tunnel) ProbeResult {

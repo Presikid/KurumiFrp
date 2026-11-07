@@ -200,14 +200,6 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		switch r.URL.Path {
-		case "/api/probe":
-			var req struct { ID string `json:"id"` }
-			if e := decode(w, r, &req); e != nil { fail(w, 400, e); return }
-			t, ok := a.store.DB.State.Tunnel(req.ID)
-			if !ok { fail(w, 404, fmt.Errorf("规则不存在")); return }
-			result := probeTarget(t)
-			reply(w, 200, result)
-			return
 		case "/api/state":
 			history := []map[string]any{}
 			for _, h := range a.store.DB.History {
@@ -267,6 +259,11 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	var err error
 	switch r.URL.Path {
+	case "/api/probe":
+		t, ok := a.store.DB.State.Tunnel(req.ID)
+		if !ok { fail(w, 404, fmt.Errorf("规则不存在")); return }
+		reply(w, 200, probeTarget(t))
+		return
 	case "/api/history-settings":
 		if req.HistoryLimit == nil {
 			err = fmt.Errorf("请指定快照保留数量")
