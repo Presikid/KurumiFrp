@@ -106,6 +106,9 @@ Start-Process -FilePath (Join-Path $root 'kurumi.exe') -ArgumentList $arguments 
  if (!$NoOpen) { & (Join-Path $root 'Launch.ps1') }
  Write-Host "Installed in $root. Uninstall from Windows Settings > Apps or Uninstall.cmd."
  Write-Host 'Full uninstall deletes all application configurations, keys, cores and logs.'
+ # Release both PowerShell's provider location and the process working directory.
+ Set-Location -LiteralPath $root
+ [Environment]::CurrentDirectory = $root
  if ($ArchivePath) { & $dest --cleanup-package $source --cleanup-archive $ArchivePath } else { & $dest --cleanup-package $source }
  if ($LASTEXITCODE -ne 0) { throw 'Application installed, but package cleanup was not completed; inspect the error above.' }
  Write-Host 'Verified extracted installer payload removed. No Downloads folder was scanned.'

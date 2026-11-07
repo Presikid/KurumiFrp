@@ -39,6 +39,10 @@ def alive(pid):
     except ProcessLookupError:
         return False
 
+def batch(script, *args):
+    # Explicit cmd quoting; paths may contain spaces. Arguments here are fixed test flags.
+    return 'cmd.exe /d /s /c ""' + str(script) + '" ' + ' '.join(args) + '"'
+
 def ps(script, *args):
     return ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script), *args]
 
@@ -92,7 +96,9 @@ with tempfile.TemporaryDirectory(prefix='kurumi-lifecycle-') as temp:
             if iteration == 0:
                 (source / 'my-document.txt').write_text('must survive')
             install = ps(source / 'install.ps1', '-NoOpen', '-NoAutostart') if os.name == 'nt' else ['sh', str(source / 'install.sh')]
-            subprocess.run(install, env=env, check=True, timeout=90)
+            if os.name == 'nt' and iteration == 1:
+                install = batch(source / 'Install.cmd', '-NoOpen', '-NoAutostart')
+            subprocess.run(install, env=env, cwd=source, check=True, timeout=90)
             assert api('state')['version'] == VERSION
             assert not archive.exists(), 'verified original installer archive remains'
             for name in list(manifest['files']) + ['PACKAGE-MANIFEST.json']:
@@ -144,7 +150,8 @@ with tempfile.TemporaryDirectory(prefix='kurumi-lifecycle-') as temp:
             receipt = json.loads((target / 'install-receipt.json').read_text(encoding='utf-8-sig'))
         else:
             (target / 'cores/linked').symlink_to(outside, target_is_directory=True)
-        subprocess.run(uninstall, env=env, check=True, timeout=90)
+        final_uninstall = batch(target / 'Uninstall.cmd', '-Yes') if os.name == 'nt' else uninstall
+        subprocess.run(final_uninstall, env=env, cwd=target, check=True, timeout=90)
         for _ in range(100):
             if not alive(manager_pid) and not alive(child_pid):
                 break

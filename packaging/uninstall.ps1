@@ -69,6 +69,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Shutdown not confirmed. Installation retained; no process was killed by name.' }
  } elseif (Test-Path -LiteralPath (Join-Path $root 'data\manager.lock')) { throw 'Binary missing but process state unresolved. Files retained.' }
  Set-Location -LiteralPath $env:TEMP
+ [Environment]::CurrentDirectory = $env:TEMP
  # Keep the uninstaller and ownership receipt until other files are gone, so a
  # sharing violation cannot silently destroy the retry path.
  foreach ($entry in @(Get-ChildItem -LiteralPath $root -Force)) {
