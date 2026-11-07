@@ -183,3 +183,24 @@ func TestVisitorListenerConflictsAndLegacyState(t *testing.T) {
 		t.Fatal("frps and visitor conflict accepted")
 	}
 }
+
+func TestListenerHostsOverlapLocalhost(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"localhost", "192.168.1.5", false},
+		{"192.168.1.5", "LOCALHOST", false},
+		{"localhost", "127.0.0.1", true},
+		{"::1", "localhost", true},
+		{"localhost", "0.0.0.0", true},
+		{"::", "localhost", true},
+		{"localhost", "example.test", true},
+		{"host-a.test", "host-b.test", true},
+	}
+	for _, test := range tests {
+		if got := listenerHostsOverlap(test.a, test.b); got != test.want {
+			t.Errorf("listenerHostsOverlap(%q, %q) = %v; want %v", test.a, test.b, got, test.want)
+		}
+	}
+}

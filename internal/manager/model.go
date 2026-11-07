@@ -106,10 +106,19 @@ func labelOK(s string) bool {
 }
 func portOK(n int) bool { return n >= 1 && n <= 65535 }
 
-// Hostnames may resolve to different addresses over time, so treat them
-// conservatively. Wildcard listeners can overlap either IP family.
+// Unknown hostnames may resolve to different addresses over time, so treat
+// them conservatively. localhost may bind either IPv4 or IPv6 loopback.
 func listenerHostsOverlap(a, b string) bool {
+	isLocalhost := func(s string) bool {
+		return strings.EqualFold(strings.TrimSuffix(s, "."), "localhost")
+	}
 	ai, bi := net.ParseIP(a), net.ParseIP(b)
+	if isLocalhost(a) && bi != nil {
+		return bi.IsLoopback() || bi.IsUnspecified()
+	}
+	if isLocalhost(b) && ai != nil {
+		return ai.IsLoopback() || ai.IsUnspecified()
+	}
 	if ai == nil || bi == nil {
 		return true
 	}
