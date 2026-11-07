@@ -25,12 +25,15 @@ type RuntimeStatus struct {
 	Pending bool   `json:"pending"`
 }
 type process struct {
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	done   chan struct{}
-	status RuntimeStatus
-	logs   *logBuffer
-	coreID string
+	mu             sync.Mutex
+	cmd            *exec.Cmd
+	done           chan struct{}
+	status         RuntimeStatus
+	logs           *logBuffer
+	coreID         string
+	statusPort     int
+	statusPassword string
+	applied        map[string]appliedTunnel
 }
 type logBuffer struct {
 	mu       sync.Mutex
@@ -138,6 +141,14 @@ func (a *App) start(i Instance, r Rendered) error {
 	if e != nil {
 		return e
 	}
+	var statusPort int
+	var statusPassword string
+	if i.Kind == "frpc" {
+		r, statusPort, statusPassword, e = enableClientRegistration(r)
+		if e != nil {
+			return e
+		}
+	}
 	runtimeDir := filepath.Join(a.store.dir, "runtime")
 	if e = os.MkdirAll(runtimeDir, 0700); e != nil {
 		return e
@@ -151,7 +162,18 @@ func (a *App) start(i Instance, r Rendered) error {
 	cmd.Env = childEnv(r.Env)
 	cmd.Dir = runtimeDir
 	cmd.WaitDelay = 2 * time.Second
-	p := &process{cmd: cmd, done: make(chan struct{}), logs: &logBuffer{secrets: r.Secrets}}
+	p := &process{
+		cmd: cmd, done: make(chan struct{}), logs: &logBuffer{secrets: r.Secrets},
+		statusPort: statusPort, statusPassword: statusPassword,
+		applied: map[string]appliedTunnel{},
+	}
+	if i.Kind == "frpc" {
+		for _, t := range a.store.DB.State.Tunnels {
+			if t.InstanceID == i.ID && t.Enabled {
+				p.applied[t.ID] = appliedTunnel{Name: t.Name, Type: t.Type}
+			}
+		}
+	}
 	if a.store.DB.ActiveCore != nil {
 		p.coreID = *a.store.DB.ActiveCore
 	}

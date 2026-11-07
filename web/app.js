@@ -3,6 +3,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (v = '') => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const titles = {overview:'网络总览',tunnels:'连接看板',instances:'运行实例',config:'配置中心',logs:'运行记录',update:'软件更新'};
 let updateChecked = false, releases = [], updateStatus = '';
+let registrations = {}, registrationCheckedAt = '';
 let probeResults = Object.create(null), probing = Object.create(null), probeRevision = null, probingAll = false, probeBatchProgress = null;
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer;
 const dialog = $('#dialog');
@@ -13,7 +14,7 @@ async function api(path, body) {
  if (!response.ok) {if(response.status === 401 && path !== 'login') showLogin(); throw new Error(json.error || `HTTP ${response.status}`);}
  return json;
 }
-function showLogin() {updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; data = null; if (dialog.open) dialog.close();}
+function showLogin() {registrations={};registrationCheckedAt='';updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; data = null; if (dialog.open) dialog.close();}
 async function refresh(silent = false) {
  try { const fresh = await api('state'); if (probeRevision !== fresh.revision) { probeResults = Object.create(null); probeRevision = fresh.revision; } data = fresh; $('#login').hidden = true; $('#app').hidden = false; if(!updateChecked){updateChecked=true;checkUpdates(true);}
  $('#revision').textContent = `DRAFT / r${data.revision}`; $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
@@ -21,6 +22,20 @@ async function refresh(silent = false) {
  } catch(e) {if (!silent && data) toast(e.message);}
 }
 const stateOf = (id) => data.runtime[id] || {state:'stopped'};
+function registrationBadge(t) {
+ const v=registrations[t.id], labels={registered:'已注册',registering:'注册中',failed:'注册失败',unavailable:'状态不可读取',pending:'等待应用','pending-stop':'待应用停用',disabled:'草稿停用',stopped:'实例未运行',visitor:'Visitor 未监测'};
+ const state=v?.state||'unknown';
+ const label=labels[state]||'尚未检测';
+ const css=state==='registered'?'good':(['failed','unavailable','pending-stop'].includes(state)?'warn':'');
+ const details=[v?.remoteAddr,v?.error].filter(Boolean).map(x=>`<small>${esc(x)}</small>`).join('');
+ return `<span class="pill ${css}">${label}</span>${v?.pending?'<small>草稿改动未应用，显示旧运行配置</small>':''}${details}`;
+}
+async function pollRegistrations() {
+ if(!data || document.hidden || dialog.open)return;
+ try {const result=await api('registration');if(!data)return;registrations=result.tunnels||{};registrationCheckedAt=result.checkedAt||'';
+ if(!$('#content').contains(document.activeElement)&&['tunnels','overview','instances'].includes(page))render();
+ }catch(_){registrations={};registrationCheckedAt='';}
+}
 function badge(id) {const v=stateOf(id);return `<span class="pill ${v.state==='running'?'good':v.state==='exited'?'warn':''}">${({running:'进程运行',stopped:'未启动',exited:'进程已退出'})[v.state] || esc(v.state)}</span>${v.pending?'<span class="pill warn">待应用</span>':''}`;}
 function header(title,subtitle,action='') {return `<div class="page-head"><div><p class="eyebrow">KURUMI / ${esc(page.toUpperCase())}</p><h1>${title}</h1><p>${subtitle}</p></div>${action}</div>`;}
 function empty(title,text,action='') {return `<div class="empty"><span class="empty-symbol">◈</span><strong>${title}</strong><p>${text}</p>${action}</div>`;}
@@ -62,7 +77,7 @@ function render() {
  } else if(page==='instances') {
   content.innerHTML=header('运行实例','一个实例对应一个本机 frp 进程；远程服务器地址不代表远程管理权限。','<button class="primary" data-action="new-instance">＋ 新建实例</button>')+
   `<div class="notice">启动前会调用官方 frp verify。重启应用会中断该实例上的现有连接；本版本没有自动回退和开机自动启动实例。</div>`+
-  (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button><button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
+  (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span></div><p class="small-note">代理注册：${data.state.tunnels.filter(t=>t.instanceId===i.id&&registrations[t.id]?.state==='registered').length} / ${data.state.tunnels.filter(t=>t.instanceId===i.id&&t.enabled).length} 已注册 · 注册状态不代表外部可访问</p><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button><button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
  } else if(page==='tunnels') {
   content.innerHTML=header('连接看板','管理规则并检测本地目标：TCP 检查端口，HTTP/HTTPS 检查响应；UDP 无法可靠探测。','<button class="primary" data-action="new-tunnel">＋ 新建规则</button>')+
   `<div class="toolbar"><input id="search" placeholder="搜索规则、地址或实例…" aria-label="搜索规则" value="${esc(filter)}" ${probingAll?'disabled':'' }><select id="protocol" aria-label="按协议筛选" ${probingAll?'disabled':'' }><option value="">所有协议</option>${['tcp','udp','http','https','stcp','stcp-visitor'].map(t=>`<option ${protocol===t?'selected':''}>${t}</option>`).join('')}</select><button data-action="probe-visible" ${probingAll?'disabled':''}>${probingAll?'批量检测 '+(probeBatchProgress?.done||0)+'/'+(probeBatchProgress?.total||0):'检测当前筛选'}</button></div><section class="panel" id="tunnel-list">${filteredTable()}</section>`;
@@ -86,7 +101,7 @@ function picker(){return `<select class="config-picker" id="instance-picker" ari
 function filteredTable(){return tunnelTable(data.state.tunnels.filter(t=>(!protocol||t.type===protocol)&&`${t.name} ${t.localHost} ${t.remotePort} ${data.state.instances.find(i=>i.id===t.instanceId)?.name}`.toLowerCase().includes(filter.toLowerCase())));}
 function tunnelTable(rows) {
  if(!rows.length)return empty('这里还静悄悄的 ♡','先添加 frpc 实例，再创建 TCP、UDP、Web 或 STCP 规则。','<button data-action="new-tunnel">＋ 添加规则</button>');
- return `<div class="table-wrap"><table><thead><tr><th>服务 / 归属</th><th>协议</th><th>本地目标</th><th>远端 / 配对</th><th>配置意图</th><th>检测结果</th><th>操作</th></tr></thead><tbody>${rows.map(t=>`<tr><td><strong>${esc(t.name)}</strong><small>${esc(data.state.instances.find(i=>i.id===t.instanceId)?.name)}</small></td><td><span class="type-icon">${t.type.toUpperCase()}</span></td><td><code>${esc(t.localHost)}:${t.localPort}</code></td><td><code>${esc(t.type==='stcp-visitor'?t.serverName:t.type==='stcp'?'私密配对':t.type==='http'||t.type==='https'?t.domains.join(', '):t.remotePort)}</code></td><td><span class="pill ${t.enabled?'good':''}">${t.enabled?'期望启用':'期望停用'}</span></td><td class="probe-cell">${probeCell(t)}</td><td><div class="actions"><button data-action="probe" data-id="${t.id}" ${t.type==='udp'||probing[t.id]||probingAll?'disabled':''} ${t.type==='udp'?'title="UDP 不支持通用探测"':''}>${t.type==='udp'?'不支持':probing[t.id]?'检测中…':'检测目标'}</button><button data-action="edit-tunnel" data-id="${t.id}">编辑</button><button data-action="toggle" data-id="${t.id}">${t.enabled?'停用':'启用'}</button><button class="danger" data-action="delete-tunnel" data-id="${t.id}">删除</button></div></td></tr>`).join('')}</tbody></table></div>`;
+ return `<div class="table-wrap"><table><thead><tr><th>服务 / 归属</th><th>协议</th><th>本地目标</th><th>远端 / 配对</th><th>配置意图</th><th>检测结果</th><th>注册状态</th><th>操作</th></tr></thead><tbody>${rows.map(t=>`<tr><td><strong>${esc(t.name)}</strong><small>${esc(data.state.instances.find(i=>i.id===t.instanceId)?.name)}</small></td><td><span class="type-icon">${t.type.toUpperCase()}</span></td><td><code>${esc(t.localHost)}:${t.localPort}</code></td><td><code>${esc(t.type==='stcp-visitor'?t.serverName:t.type==='stcp'?'私密配对':t.type==='http'||t.type==='https'?t.domains.join(', '):t.remotePort)}</code></td><td><span class="pill ${t.enabled?'good':''}">${t.enabled?'期望启用':'期望停用'}</span></td><td class="probe-cell">${probeCell(t)}</td><td>${registrationBadge(t)}</td><td><div class="actions"><button data-action="probe" data-id="${t.id}" ${t.type==='udp'||probing[t.id]||probingAll?'disabled':''} ${t.type==='udp'?'title="UDP 不支持通用探测"':''}>${t.type==='udp'?'不支持':probing[t.id]?'检测中…':'检测目标'}</button><button data-action="edit-tunnel" data-id="${t.id}">编辑</button><button data-action="toggle" data-id="${t.id}">${t.enabled?'停用':'启用'}</button><button class="danger" data-action="delete-tunnel" data-id="${t.id}">删除</button></div></td></tr>`).join('')}</tbody></table></div>`;
 }
 function field(name,label,value='',type='text',extra=''){return `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;}
 function openEditor(kind,id) {
@@ -216,5 +231,5 @@ $('#content').addEventListener('click',async e=>{
 window.addEventListener('hashchange',()=>{const p=location.hash.slice(1);if(titles[p]&&page!==p){page=p;render();}});
 page=titles[location.hash.slice(1)]?location.hash.slice(1):'overview';
 // core.js consumes a launch ticket before the first authenticated state request.
-if(!/^#launch=([a-f0-9]{64})$/.test(location.hash))refresh(true);
-setInterval(()=>{if(data&&!document.hidden&&!dialog.open)refresh(true);},5000);
+if(!/^#launch=([a-f0-9]{64})$/.test(location.hash))refresh(true).then(pollRegistrations);
+setInterval(()=>{if(data&&!document.hidden&&!dialog.open){refresh(true);pollRegistrations();}},5000);

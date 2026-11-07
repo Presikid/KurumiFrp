@@ -185,6 +185,14 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.updateAPI(w, r)
 			return
 		}
+		if r.URL.Path == "/api/registration" {
+			if r.Method != http.MethodGet {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			reply(w, http.StatusOK, a.registration(r.Context()))
+			return
+		}
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		a.api(w, r)
