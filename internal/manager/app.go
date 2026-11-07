@@ -60,7 +60,9 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	}
 	return &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets))}, nil
 }
-func (a *App) SetDistribution(distribution string) { a.updater = update.New(a.store.dir, update.DetectDistribution(distribution)) }
+func (a *App) SetDistribution(distribution string) {
+	a.updater = update.New(a.store.dir, update.DetectDistribution(distribution))
+}
 func (a *App) AccessToken() string { return a.auth.token }
 func HTTPServer(addr string, h http.Handler) *http.Server {
 	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
@@ -147,7 +149,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.coreAPI(w, r)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/api/update/") { a.updateAPI(w,r); return }
+		if strings.HasPrefix(r.URL.Path, "/api/update/") {
+			a.updateAPI(w, r)
+			return
+		}
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		a.api(w, r)

@@ -25,7 +25,9 @@ func TestLegacyOversizedHistoryCanBeSavedAndReloaded(t *testing.T) {
 	if err != nil || len(b) <= 8<<20 {
 		t.Fatal("fixture is not oversized", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "master.key"), s.key, 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(dir, "master.key"), s.key, 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "state.json"), b, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -59,8 +61,12 @@ func TestHistoryLimitAndSeparateSnapshots(t *testing.T) {
 	if len(a.store.DB.History) != 5 {
 		t.Fatal("default retention", len(a.store.DB.History))
 	}
-	if _, err := os.Stat(filepath.Join(a.store.dir, "snapshots")); !os.IsNotExist(err) { t.Fatal("unexpected snapshot directory") }
-	if err := a.store.setHistoryLimit(2); err != nil { t.Fatal(err) }
+	if _, err := os.Stat(filepath.Join(a.store.dir, "snapshots")); !os.IsNotExist(err) {
+		t.Fatal("unexpected snapshot directory")
+	}
+	if err := a.store.setHistoryLimit(2); err != nil {
+		t.Fatal(err)
+	}
 	s, err := newStore(a.store.dir)
 	if err != nil || s.DB.HistoryLimit != 2 || len(s.DB.History) != 2 {
 		t.Fatal("reload", err)
@@ -80,26 +86,42 @@ func TestHistoryLimitAndSeparateSnapshots(t *testing.T) {
 }
 
 func TestExportAndImportAcrossStores(t *testing.T) {
- source := testApp(t)
- seed(t, source)
- for _, scope := range []string{"all", "config", "snapshots", "snapshot"} {
-  path := "/api/export?scope="+scope
-  if scope == "snapshot" { path += "&revision=1" }
-  w := request(source, "GET", path, nil, source.AccessToken(), "")
-  if w.Code != 200 { t.Fatal(scope, w.Body.String()) }
-  var db Database
-  if err := json.Unmarshal(w.Body.Bytes(), &db); err != nil || db.Key == "" || db.Format != 3 { t.Fatal(scope, err) }
-  target := testApp(t)
-  dest := request(target, "POST", fmt.Sprintf("/api/import?revision=%d", target.store.DB.Revision), db, target.AccessToken(), "")
-  if dest.Code != 200 { t.Fatal(scope, dest.Body.String()) }
-  if scope == "all" || scope == "config" {
-   secret, err := target.store.decrypt(target.store.DB.State.Instances[0].Token)
-   if err != nil || secret != "test-secret-1234" { t.Fatal("imported secret", err) }
-  }
-  if _, err := newStore(target.store.dir); err != nil { t.Fatal(scope, err) }
- }
- if request(source, "GET", "/api/export?scope=all", nil, "", "").Code != 401 { t.Fatal("unauthenticated export") }
- if request(source, "GET", "/api/export?scope=snapshot&revision=999", nil, source.AccessToken(), "").Code != 404 { t.Fatal("missing snapshot accepted") }
+	source := testApp(t)
+	seed(t, source)
+	for _, scope := range []string{"all", "config", "snapshots", "snapshot"} {
+		path := "/api/export?scope=" + scope
+		if scope == "snapshot" {
+			path += "&revision=1"
+		}
+		w := request(source, "GET", path, nil, source.AccessToken(), "")
+		if w.Code != 200 {
+			t.Fatal(scope, w.Body.String())
+		}
+		var db Database
+		if err := json.Unmarshal(w.Body.Bytes(), &db); err != nil || db.Key == "" || db.Format != 3 {
+			t.Fatal(scope, err)
+		}
+		target := testApp(t)
+		dest := request(target, "POST", fmt.Sprintf("/api/import?revision=%d", target.store.DB.Revision), db, target.AccessToken(), "")
+		if dest.Code != 200 {
+			t.Fatal(scope, dest.Body.String())
+		}
+		if scope == "all" || scope == "config" {
+			secret, err := target.store.decrypt(target.store.DB.State.Instances[0].Token)
+			if err != nil || secret != "test-secret-1234" {
+				t.Fatal("imported secret", err)
+			}
+		}
+		if _, err := newStore(target.store.dir); err != nil {
+			t.Fatal(scope, err)
+		}
+	}
+	if request(source, "GET", "/api/export?scope=all", nil, "", "").Code != 401 {
+		t.Fatal("unauthenticated export")
+	}
+	if request(source, "GET", "/api/export?scope=snapshot&revision=999", nil, source.AccessToken(), "").Code != 404 {
+		t.Fatal("missing snapshot accepted")
+	}
 }
 
 func TestVisitorListenerConflictsAndLegacyState(t *testing.T) {

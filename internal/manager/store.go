@@ -123,9 +123,15 @@ func newStore(dir string) (*Store, error) {
 	keyPath := filepath.Join(dir, "master.key")
 	b, e := privateFileLimit(dbPath, maxStateSize)
 	if os.IsNotExist(e) {
-		if _, err := os.Lstat(keyPath); err == nil { return nil, fmt.Errorf("state missing; existing master key retained") } else if !os.IsNotExist(err) { return nil, err }
+		if _, err := os.Lstat(keyPath); err == nil {
+			return nil, fmt.Errorf("state missing; existing master key retained")
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
 		s.key = make([]byte, 32)
-		if _, e = rand.Read(s.key); e != nil { return nil, e }
+		if _, e = rand.Read(s.key); e != nil {
+			return nil, e
+		}
 		s.DB = Database{Format: 3, Revision: 1, State: State{Instances: []Instance{}, Tunnels: []Tunnel{}}, History: []Snapshot{}, Events: []Event{}, HistoryLimit: defaultHistoryLimit}
 		return s, s.write(s.DB)
 	}
@@ -139,12 +145,16 @@ func newStore(dir string) (*Store, error) {
 		return nil, e
 	}
 	if header.Format == 3 {
-		if e = json.Unmarshal(b, &s.DB); e != nil { return nil, e }
+		if e = json.Unmarshal(b, &s.DB); e != nil {
+			return nil, e
+		}
 		s.key, e = base64.RawStdEncoding.DecodeString(s.DB.Key)
 	} else {
 		s.key, e = privateFile(keyPath)
 	}
-	if e != nil || len(s.key) != 32 { return nil, fmt.Errorf("invalid or missing encryption key") }
+	if e != nil || len(s.key) != 32 {
+		return nil, fmt.Errorf("invalid or missing encryption key")
+	}
 	switch header.Format {
 	case 1:
 		if e = json.Unmarshal(b, &s.DB); e != nil {
@@ -191,7 +201,9 @@ func newStore(dir string) (*Store, error) {
 			s.DB.History = append(s.DB.History, snap)
 		}
 	case 3:
-		if s.DB.HistoryLimit < 0 || s.DB.HistoryLimit > maxHistoryLimit || len(s.DB.History) > s.DB.HistoryLimit { return nil, fmt.Errorf("invalid history limit") }
+		if s.DB.HistoryLimit < 0 || s.DB.HistoryLimit > maxHistoryLimit || len(s.DB.History) > s.DB.HistoryLimit {
+			return nil, fmt.Errorf("invalid history limit")
+		}
 	default:
 		return nil, fmt.Errorf("unsupported database")
 	}
@@ -219,7 +231,9 @@ func newStore(dir string) (*Store, error) {
 		}
 	}
 	if header.Format != 3 {
-		if e = s.write(s.DB); e != nil { return nil, e }
+		if e = s.write(s.DB); e != nil {
+			return nil, e
+		}
 		s.DB.Format = 3
 	}
 	return s, nil
@@ -295,19 +309,29 @@ func snapshotDir(dir string, create bool) error {
 
 // The complete configuration and its history are committed in one atomic file.
 func (s *Store) write(db Database) error {
- db.Format = 3
- db.Key = base64.RawStdEncoding.EncodeToString(s.key)
- b, err := json.MarshalIndent(db, "", "  ")
- if err != nil { return err }
- if len(b) > maxStateSize { return fmt.Errorf("配置文件超过 128 MiB，无法安全保存；请减少快照数量") }
- if err = atomicWrite(filepath.Join(s.dir, "state.json"), b); err != nil { return err }
- if s.DB.Format != 3 {
-  for _, name := range s.refs { _ = os.Remove(filepath.Join(s.dir, "snapshots", name)) }
-  if len(s.refs) > 0 { _ = os.Remove(filepath.Join(s.dir, "snapshots")) }
-  _ = os.Remove(filepath.Join(s.dir, "master.key"))
-  s.refs = map[uint64]string{}
- }
- return nil
+	db.Format = 3
+	db.Key = base64.RawStdEncoding.EncodeToString(s.key)
+	b, err := json.MarshalIndent(db, "", "  ")
+	if err != nil {
+		return err
+	}
+	if len(b) > maxStateSize {
+		return fmt.Errorf("配置文件超过 128 MiB，无法安全保存；请减少快照数量")
+	}
+	if err = atomicWrite(filepath.Join(s.dir, "state.json"), b); err != nil {
+		return err
+	}
+	if s.DB.Format != 3 {
+		for _, name := range s.refs {
+			_ = os.Remove(filepath.Join(s.dir, "snapshots", name))
+		}
+		if len(s.refs) > 0 {
+			_ = os.Remove(filepath.Join(s.dir, "snapshots"))
+		}
+		_ = os.Remove(filepath.Join(s.dir, "master.key"))
+		s.refs = map[uint64]string{}
+	}
+	return nil
 }
 func (s *Store) commit(st State, summary string) error {
 	if e := validate(st); e != nil {

@@ -47,7 +47,9 @@ func run() error {
 	digest := flag.String("cleanup-sha256", "", "expected Setup SHA-256")
 	flag.Parse()
 	if *systemUpdate {
-		if distribution != "linux-system" { return fmt.Errorf("system update requires a Linux system installation") }
+		if distribution != "linux-system" {
+			return fmt.Errorf("system update requires a Linux system installation")
+		}
 		return update.PerformSystemUpdate()
 	}
 	if *native != "" {
