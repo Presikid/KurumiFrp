@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Presikid/KurumiFrp/internal/core"
+	"github.com/Presikid/KurumiFrp/internal/update"
 	"io"
 	"io/fs"
 	"net"
@@ -19,6 +20,7 @@ type App struct {
 	quit     chan struct{}
 	quitOnce sync.Once
 	core     *core.Manager
+	updater  *update.Manager
 	mu       sync.Mutex
 	store    *Store
 	bin      string
@@ -56,8 +58,9 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	if e != nil {
 		return nil, e
 	}
-	return &App{quit: make(chan struct{}), core: cores, store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets))}, nil
+	return &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets))}, nil
 }
+func (a *App) SetDistribution(distribution string) { a.updater = update.New(a.store.dir, update.DetectDistribution(distribution)) }
 func (a *App) AccessToken() string { return a.auth.token }
 func HTTPServer(addr string, h http.Handler) *http.Server {
 	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
@@ -144,6 +147,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.coreAPI(w, r)
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, "/api/update/") { a.updateAPI(w,r); return }
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		a.api(w, r)
@@ -197,6 +201,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != "POST" {
 		w.WriteHeader(405)
+		return
+	}
+	if r.URL.Path == "/api/import" {
+		a.importConfig(w, r)
 		return
 	}
 	var req struct {

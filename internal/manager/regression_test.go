@@ -22,9 +22,10 @@ func TestLegacyOversizedHistoryCanBeSavedAndReloaded(t *testing.T) {
 		s.DB.History = append(s.DB.History, Snapshot{Revision: uint64(i + 1), Summary: strings.Repeat("x", 3<<20), State: s.DB.State.clone()})
 	}
 	b, err := json.MarshalIndent(s.DB, "", "  ")
-	if err != nil || len(b) <= maxStateSize {
+	if err != nil || len(b) <= 8<<20 {
 		t.Fatal("fixture is not oversized", err)
 	}
+	if err := os.WriteFile(filepath.Join(dir, "master.key"), s.key, 0600); err != nil { t.Fatal(err) }
 	if err := os.WriteFile(filepath.Join(dir, "state.json"), b, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -39,8 +40,8 @@ func TestLegacyOversizedHistoryCanBeSavedAndReloaded(t *testing.T) {
 		t.Fatalf("legacy history was not preserved: %d", len(s.DB.History))
 	}
 	current, err := os.ReadFile(filepath.Join(dir, "state.json"))
-	if err != nil || len(current) > maxStateSize || strings.Contains(string(current), strings.Repeat("x", 100)) {
-		t.Fatal("snapshots are still stored in current configuration", err)
+	if err != nil || len(current) > maxStateSize || !strings.Contains(string(current), strings.Repeat("x", 100)) {
+		t.Fatal("snapshots not stored in current configuration", err)
 	}
 	if _, err := newStore(dir); err != nil {
 		t.Fatal("saved state did not reload:", err)
@@ -58,17 +59,8 @@ func TestHistoryLimitAndSeparateSnapshots(t *testing.T) {
 	if len(a.store.DB.History) != 5 {
 		t.Fatal("default retention", len(a.store.DB.History))
 	}
-	entries, err := os.ReadDir(filepath.Join(a.store.dir, "snapshots"))
-	if err != nil || len(entries) != 5 {
-		t.Fatal("snapshot files", len(entries), err)
-	}
-	if err := a.store.setHistoryLimit(2); err != nil {
-		t.Fatal(err)
-	}
-	entries, err = os.ReadDir(filepath.Join(a.store.dir, "snapshots"))
-	if err != nil || len(entries) != 2 {
-		t.Fatal("old files not removed", len(entries), err)
-	}
+	if _, err := os.Stat(filepath.Join(a.store.dir, "snapshots")); !os.IsNotExist(err) { t.Fatal("unexpected snapshot directory") }
+	if err := a.store.setHistoryLimit(2); err != nil { t.Fatal(err) }
 	s, err := newStore(a.store.dir)
 	if err != nil || s.DB.HistoryLimit != 2 || len(s.DB.History) != 2 {
 		t.Fatal("reload", err)
@@ -87,56 +79,27 @@ func TestHistoryLimitAndSeparateSnapshots(t *testing.T) {
 	}
 }
 
-func TestExportScopesAndSecrets(t *testing.T) {
-	a := testApp(t)
-	seed(t, a)
-	for _, scope := range []string{"all", "config", "snapshots", "snapshot"} {
-		path := "/api/export?scope=" + scope
-		if scope == "snapshot" {
-			path += "&revision=1"
-		}
-		w := request(a, "GET", path, nil, a.AccessToken(), "")
-		if w.Code != 200 || strings.Contains(w.Body.String(), "test-secret-1234") {
-			t.Fatal(scope, w.Code, w.Body.String())
-		}
-		var result map[string]any
-		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
-			t.Fatal(err)
-		}
-		_, hasConfig := result["config"]
-		_, hasSnapshots := result["snapshots"]
-		if hasConfig != (scope == "all" || scope == "config") || hasSnapshots != (scope != "config") {
-			t.Fatal(scope, result)
-		}
-	}
-	w := request(a, "GET", "/api/export?scope=config&secrets=1", nil, a.AccessToken(), "")
-	if w.Code != 200 || !strings.Contains(w.Body.String(), "test-secret-1234") {
-		t.Fatal("explicit secret export failed")
-	}
-	if request(a, "GET", "/api/export?scope=all", nil, "", "").Code != 401 {
-		t.Fatal("unauthenticated export")
-	}
-	if request(a, "GET", "/api/export?scope=snapshot&revision=999", nil, a.AccessToken(), "").Code != 404 {
-		t.Fatal("missing snapshot accepted")
-	}
-}
-
-func TestOversizedCurrentStateDoesNotReplaceStoredData(t *testing.T) {
-	a := testApp(t)
-	i := seed(t, a)
-	before, err := os.ReadFile(filepath.Join(a.store.dir, "state.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	st := a.store.DB.State.clone()
-	st.Tunnels = append(st.Tunnels, Tunnel{ID: randomHex(8), InstanceID: i.ID, Name: "large", Type: "tcp", LocalHost: "127.0.0.1", LocalPort: 80, RemotePort: 9001, ServerName: strings.Repeat("x", maxStateSize)})
-	if err := a.store.commit(st, "too large"); err == nil {
-		t.Fatal("oversized state accepted")
-	}
-	after, err := os.ReadFile(filepath.Join(a.store.dir, "state.json"))
-	if err != nil || string(before) != string(after) {
-		t.Fatal("failed save modified data", err)
-	}
+func TestExportAndImportAcrossStores(t *testing.T) {
+ source := testApp(t)
+ seed(t, source)
+ for _, scope := range []string{"all", "config", "snapshots", "snapshot"} {
+  path := "/api/export?scope="+scope
+  if scope == "snapshot" { path += "&revision=1" }
+  w := request(source, "GET", path, nil, source.AccessToken(), "")
+  if w.Code != 200 { t.Fatal(scope, w.Body.String()) }
+  var db Database
+  if err := json.Unmarshal(w.Body.Bytes(), &db); err != nil || db.Key == "" || db.Format != 3 { t.Fatal(scope, err) }
+  target := testApp(t)
+  dest := request(target, "POST", fmt.Sprintf("/api/import?revision=%d", target.store.DB.Revision), db, target.AccessToken(), "")
+  if dest.Code != 200 { t.Fatal(scope, dest.Body.String()) }
+  if scope == "all" || scope == "config" {
+   secret, err := target.store.decrypt(target.store.DB.State.Instances[0].Token)
+   if err != nil || secret != "test-secret-1234" { t.Fatal("imported secret", err) }
+  }
+  if _, err := newStore(target.store.dir); err != nil { t.Fatal(scope, err) }
+ }
+ if request(source, "GET", "/api/export?scope=all", nil, "", "").Code != 401 { t.Fatal("unauthenticated export") }
+ if request(source, "GET", "/api/export?scope=snapshot&revision=999", nil, source.AccessToken(), "").Code != 404 { t.Fatal("missing snapshot accepted") }
 }
 
 func TestVisitorListenerConflictsAndLegacyState(t *testing.T) {

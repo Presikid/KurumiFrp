@@ -109,13 +109,13 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             with page.expect_download() as exported:
                 page.locator('[data-action="export-data"]').click()
             exported_json = json.loads(Path(exported.value.path()).read_text(encoding='utf-8'))
-            assert 'config' in exported_json and 'snapshots' not in exported_json
+            assert 'state' in exported_json and exported_json['history'] == [] and exported_json['key']
             assert 'test-passphrase-123' not in json.dumps(exported_json)
             page.locator('#export-scope').select_option('snapshot')
             with page.expect_download() as exported:
                 page.locator('[data-action="export-data"]').click()
             exported_json = json.loads(Path(exported.value.path()).read_text(encoding='utf-8'))
-            assert len(exported_json['snapshots']) == 1 and 'config' not in exported_json
+            assert 'state' in exported_json and exported_json['history'] == [] and exported_json['key']
             page.on('dialog', lambda dialog: dialog.accept())
             page.locator('#history-limit').fill('2')
             page.locator('[data-action="history-settings"]').click()

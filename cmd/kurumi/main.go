@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Presikid/KurumiFrp/internal/manager"
+	"github.com/Presikid/KurumiFrp/internal/update"
 	"github.com/Presikid/KurumiFrp/web"
 )
 
@@ -41,9 +42,14 @@ func run() error {
 	cleanup := flag.String("cleanup-package", "", "remove a verified extracted release payload after installation")
 	token := flag.Bool("show-token", false, "print existing local access token and exit")
 	native := flag.String("native-maintenance", "", "native installer operation: init or purge")
+	systemUpdate := flag.Bool("system-update", false, "perform a verified Linux package update")
 	setup := flag.String("cleanup-setup", "", "exact native Setup executable to remove after successful installation")
 	digest := flag.String("cleanup-sha256", "", "expected Setup SHA-256")
 	flag.Parse()
+	if *systemUpdate {
+		if distribution != "linux-system" { return fmt.Errorf("system update requires a Linux system installation") }
+		return update.PerformSystemUpdate()
+	}
 	if *native != "" {
 		exe, err := os.Executable()
 		if err != nil {
@@ -160,6 +166,7 @@ func run() error {
 	if e != nil {
 		return e
 	}
+	app.SetDistribution(distribution)
 	defer func() {
 		if err := app.Close(); err != nil {
 			cleanShutdown = false

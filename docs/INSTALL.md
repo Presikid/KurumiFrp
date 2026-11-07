@@ -85,10 +85,16 @@ sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 
 ## 从 0.4 或更早版本迁移
 
-0.5 不会自动执行旧用户目录中可能被篡改的程序，也不会把旧数据不经确认提升为机器级安装。检测到当前账户旧 HKCU 卸载项时阻止安装并提示迁移；不会扫描其他用户目录。先退出旧工作台并停止实例，完整备份 data 和 cores（包括 access.token/master.key；脱敏导出不是备份），使用旧卸载器移除原安装，然后安装 0.5。停止新工作台，将完整备份放入新账户对应的 ProgramData 子目录；不要覆盖 profile.json 和机器安装记录。Linux 从 0.4 的原生包升级保留原 `/var/lib/kurumifrp` 数据。
+0.5 不会自动执行旧用户目录中可能被篡改的程序，也不会把旧数据不经确认提升为机器级安装。检测到当前账户旧 HKCU 卸载项时阻止安装并提示迁移；不会扫描其他用户目录。先退出旧工作台并停止实例，完整备份旧版 data 和 cores（包括 access.token/master.key），使用旧卸载器移除原安装，然后安装 0.5。停止新工作台，将完整备份放入新账户对应的 ProgramData 子目录；不要覆盖 profile.json 和机器安装记录。Linux 从 0.4 的原生包升级保留原 `/var/lib/kurumifrp` 数据。
 
 ## 规范与验证
 
 目录依据：微软 Shell 安全建议 https://learn.microsoft.com/en-us/windows/win32/shell/sec-shell ，Windows Known Folders https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid ，FHS https://refspecs.linuxfoundation.org/FHS_3.0/fhs/index.html ，systemd.exec https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html 。程序放 Program Files 不代表配置也应写入该只读目录。
 
 CI 目标覆盖默认 Program Files 安装、HKLM 登记、真实普通账户使用、账户间密钥隔离、Program Files 写保护、临时路径、升级与完整卸载；Linux 覆盖实际 DEB/systemd 与 Fedora 容器 RPM 生命周期。以对应提交的 CI 结果为准。ARM64 构建不等于原生硬件验证；没有完成全系统文件访问追踪，不承诺操作系统、浏览器或第三方软件完全不产生外部记录。
+
+## 配置迁移与软件更新
+
+工作台的当前实例配置、令牌、历史快照和快照数量统一存入 `state.json`。从配置中心导出的单个 JSON 文件可在另一台工作台导入，导入完成后界面自动刷新；已经运行的实例需重启才能应用新配置。配置文件携带解密密钥，应像密码一样保管。工作台本地访问令牌及 frp 核心程序属于本机运行数据，不包含在导出的配置中。旧版状态与密钥会在首次运行时迁移。
+
+软件更新页面访问本项目的 GitHub Releases，列出可用新版本；经确认后校验官方安装包的大小和 SHA-256，并使用原生安装机制升级。Windows 需要 UAC 授权，Linux 原生包使用受限的 systemd 更新任务和包管理器。更新会停止工作台及实例，源码运行版本不支持自动安装。

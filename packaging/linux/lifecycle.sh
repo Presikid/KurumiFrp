@@ -36,6 +36,7 @@ stop_workbench() {
 start_workbench() {
  if systemd_active; then
   systemctl daemon-reload
+  systemctl enable --now kurumifrp-updater.path
   if command -v deb-systemd-helper >/dev/null 2>&1; then
    deb-systemd-helper unmask "$UNIT" >/dev/null || true
    if deb-systemd-helper --quiet was-enabled "$UNIT"; then deb-systemd-helper enable "$UNIT" >/dev/null; fi
@@ -51,6 +52,7 @@ start_workbench() {
 remove_unit_state() {
  if command -v deb-systemd-helper >/dev/null 2>&1; then deb-systemd-helper purge "$UNIT" >/dev/null; fi
  if systemd_active; then
+  systemctl disable --now kurumifrp-updater.path >/dev/null 2>&1 || true
   systemctl disable "$UNIT" >/dev/null 2>&1 || true
   systemctl daemon-reload
   systemctl reset-failed "$UNIT" >/dev/null 2>&1 || true
