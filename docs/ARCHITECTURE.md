@@ -72,3 +72,18 @@ Windows 卸载脚本保留自身和所有权记录到其他文件清理完成，
 ## 0.4 原生发行
 
 Windows 采用 Inno Setup 原生引擎，不执行 PS1/CMD；安装器根据 CPU 选择 Go GUI 子系统程序。原生维护命令仅处理安装记录确认的 data/cores 与指定摘要的 Setup.exe；安装引擎负责自身文件和系统集成项。Linux 通过 DEB/RPM 登记 /usr 文件和 systemd 服务，独立低权限账户持有 /var/lib/kurumifrp；root 专用账户所有权记录保存在独立目录。包维护脚本只处理固定目录，普通 remove/升级不等于 purge。
+
+
+## Password-encrypted portable backups
+
+The encrypted backup captures the complete format-3 configuration database,
+including encrypted credentials, history and the 32-byte configuration data key.
+It uses a fresh 16-byte salt with PBKDF2-HMAC-SHA256 (600,000 iterations),
+followed by AES-256-GCM with a fresh 12-byte nonce and versioned AAD. The backup
+passphrase is request-only: it is not saved in the local database. Restore bounds
+input size and key-derivation iterations, authenticates before decoding the
+payload, then delegates to the existing import validation and revision checks.
+
+Legacy plaintext JSON export remains available for compatibility and must be
+handled as a full credential bundle. Neither encrypted nor plaintext backups
+include the installed frp binaries or the local manager access token.
