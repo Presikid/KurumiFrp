@@ -88,6 +88,8 @@ func TestHistoryLimitAndSeparateSnapshots(t *testing.T) {
 func TestExportAndImportAcrossStores(t *testing.T) {
 	source := testApp(t)
 	seed(t, source)
+	coreID := "v0.61.0-linux_amd64-0000000000000000"
+	source.store.DB.ActiveCore = &coreID
 	for _, scope := range []string{"all", "config", "snapshots", "snapshot"} {
 		path := "/api/export?scope=" + scope
 		if scope == "snapshot" {
@@ -106,6 +108,8 @@ func TestExportAndImportAcrossStores(t *testing.T) {
 		if dest.Code != 200 {
 			t.Fatal(scope, dest.Body.String())
 		}
+		status, err := target.core.Status()
+		if err != nil || status.Active != coreID { t.Fatal("active core not imported", err) }
 		if scope == "all" || scope == "config" {
 			secret, err := target.store.decrypt(target.store.DB.State.Instances[0].Token)
 			if err != nil || secret != "test-secret-1234" {

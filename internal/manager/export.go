@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"github.com/Presikid/KurumiFrp/internal/core"
 )
 
 // Exported files contain the data key and are therefore sensitive credentials.
@@ -74,6 +75,7 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, fmt.Errorf("配置文件格式无效"))
 		return
 	}
+	if db.ActiveCore == nil || !core.ValidID(*db.ActiveCore) { fail(w, 400, fmt.Errorf("核心配置无效")); return }
 	check := &Store{key: key}
 	revisions := map[uint64]bool{}
 	for _, h := range db.History {
@@ -119,5 +121,13 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.store.DB = db
+	if err = a.core.UseConfigActive(*db.ActiveCore, func(id string) error {
+		next := a.store.DB
+		next.ActiveCore = &id
+		next.Revision++
+		if err := a.store.write(next); err != nil { return err }
+		a.store.DB = next
+		return nil
+	}); err != nil { fail(w, 500, err); return }
 	reply(w, 200, map[string]any{"ok": true, "revision": db.Revision})
 }

@@ -225,7 +225,7 @@ func (m *Manager) Start(tag string) error {
 		if err != nil {
 			m.status = "更新失败：" + err.Error()
 		} else {
-			m.status = "更新安装程序已启动，工作台可能暂时断开"
+			m.status = "更新请求已提交；工作台可能暂时断开，请在重新打开后确认版本"
 		}
 	}()
 	return nil

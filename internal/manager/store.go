@@ -33,6 +33,7 @@ type Database struct {
 	HistoryLimit int        `json:"historyLimit"`
 	Events       []Event    `json:"events"`
 	Key          string     `json:"key,omitempty"`
+	ActiveCore   *string    `json:"activeCore"`
 }
 type Store struct {
 	dir  string

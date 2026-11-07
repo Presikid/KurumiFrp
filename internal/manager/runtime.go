@@ -30,6 +30,7 @@ type process struct {
 	done   chan struct{}
 	status RuntimeStatus
 	logs   *logBuffer
+	coreID string
 }
 type logBuffer struct {
 	mu       sync.Mutex
@@ -151,6 +152,7 @@ func (a *App) start(i Instance, r Rendered) error {
 	cmd.Dir = runtimeDir
 	cmd.WaitDelay = 2 * time.Second
 	p := &process{cmd: cmd, done: make(chan struct{}), logs: &logBuffer{secrets: r.Secrets}}
+	if a.store.DB.ActiveCore != nil { p.coreID = *a.store.DB.ActiveCore }
 	cmd.Stdout = p.logs
 	cmd.Stderr = p.logs
 	if e = cmd.Start(); e != nil {
@@ -204,7 +206,9 @@ func (a *App) statuses() map[string]RuntimeStatus {
 		if p := a.procs[i.ID]; p != nil {
 			v = p.view()
 			r, e := a.store.render(i.ID, false)
-			v.Pending = e != nil || v.Applied != r.Digest
+			coreID := ""
+			if a.store.DB.ActiveCore != nil { coreID = *a.store.DB.ActiveCore }
+			v.Pending = e != nil || v.Applied != r.Digest || p.coreID != coreID
 		}
 		out[i.ID] = v
 	}
