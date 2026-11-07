@@ -236,6 +236,14 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(405)
 		return
 	}
+	if r.URL.Path == "/api/backup/export" {
+		a.backupExport(w, r)
+		return
+	}
+	if r.URL.Path == "/api/backup/import" {
+		a.backupImport(w, r)
+		return
+	}
 	if r.URL.Path == "/api/import" {
 		a.importConfig(w, r)
 		return
