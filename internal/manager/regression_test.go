@@ -109,7 +109,9 @@ func TestExportAndImportAcrossStores(t *testing.T) {
 			t.Fatal(scope, dest.Body.String())
 		}
 		status, err := target.core.Status()
-		if err != nil || status.Active != coreID { t.Fatal("active core not imported", err) }
+		if err != nil || status.Active != coreID {
+			t.Fatal("active core not imported", err)
+		}
 		if scope == "all" || scope == "config" {
 			secret, err := target.store.decrypt(target.store.DB.State.Instances[0].Token)
 			if err != nil || secret != "test-secret-1234" {

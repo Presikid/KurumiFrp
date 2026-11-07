@@ -60,22 +60,32 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	}
 	if s.DB.ActiveCore == nil {
 		status, err := cores.Status()
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		id := status.Active
 		db := s.DB
 		db.ActiveCore = &id
-		if err = s.write(db); err != nil { return nil, err }
+		if err = s.write(db); err != nil {
+			return nil, err
+		}
 		s.DB = db
-		if err = cores.RemoveLegacyActive(); err != nil { return nil, err }
+		if err = cores.RemoveLegacyActive(); err != nil {
+			return nil, err
+		}
 	}
 	if e = cores.UseConfigActive(*s.DB.ActiveCore, func(id string) error {
 		db := s.DB
 		db.ActiveCore = &id
 		db.Revision++
-		if err := s.write(db); err != nil { return err }
+		if err := s.write(db); err != nil {
+			return err
+		}
 		s.DB = db
 		return nil
-	}); e != nil { return nil, e }
+	}); e != nil {
+		return nil, e
+	}
 	return &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets))}, nil
 }
 func (a *App) SetDistribution(distribution string) {
