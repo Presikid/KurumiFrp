@@ -1,0 +1,127 @@
+'use strict';
+const $ = (s) => document.querySelector(s);
+const esc = (v = '') => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const titles = {overview:'网络总览',tunnels:'连接看板',instances:'运行实例',config:'配置中心',logs:'运行记录'};
+let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer;
+const dialog = $('#dialog');
+function toast(text) { $('#toast').textContent = text; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 4500); }
+async function api(path, body) {
+ const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST',credentials:'same-origin',headers:body === undefined ? {}:{'Content-Type':'application/json'},body:body === undefined ? undefined:JSON.stringify(body)});
+ const json = await response.json();
+ if (!response.ok) {if(response.status === 401 && path !== 'login') showLogin(); throw new Error(json.error || `HTTP ${response.status}`);}
+ return json;
+}
+function showLogin() {$('#login').hidden = false; $('#app').hidden = true; data = null; if (dialog.open) dialog.close();}
+async function refresh(silent = false) {
+ try { const fresh = await api('state'); data = fresh; $('#login').hidden = true; $('#app').hidden = false;
+ $('#revision').textContent = `DRAFT / r${data.revision}`; $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
+ if (!dialog.open && !$('#content').contains(document.activeElement)) render(); else if (!silent && !dialog.open) render();
+ } catch(e) {if (!silent && data) toast(e.message);}
+}
+const stateOf = (id) => data.runtime[id] || {state:'stopped'};
+function badge(id) {const v=stateOf(id);return `<span class="pill ${v.state==='running'?'good':v.state==='exited'?'warn':''}">${({running:'进程运行',stopped:'未启动',exited:'进程已退出'})[v.state] || esc(v.state)}</span>${v.pending?'<span class="pill warn">待应用</span>':''}`;}
+function header(title,subtitle,action='') {return `<div class="page-head"><div><p class="eyebrow">KURUMI / ${esc(page.toUpperCase())}</p><h1>${title}</h1><p>${subtitle}</p></div>${action}</div>`;}
+function empty(title,text,action='') {return `<div class="empty"><span class="empty-symbol">◈</span><strong>${title}</strong><p>${text}</p>${action}</div>`;}
+function time(v) {return new Date(v).toLocaleString('zh-CN',{hour12:false});}
+function recent() {return data.events.length?`<div class="timeline">${data.events.slice(-6).reverse().map(e=>`<div class="event"><p>${esc(e.message)}</p><small>${time(e.at)}</small></div>`).join('')}</div>`:empty('还没有操作记录','保存第一份配置后，变更记录会出现在这里。');}
+function render() {
+ if (!data) return;
+ const n = ++serial; $('#page-title').textContent=titles[page]; document.title=titles[page]+' · KurumiFRP';
+ document.querySelectorAll('[data-page]').forEach(el=>el.classList.toggle('active',el.dataset.page===page));
+ const content=$('#content');
+ if(page==='overview') {
+  const running=Object.values(data.runtime).filter(v=>v.state==='running').length;
+  const pending=Object.values(data.runtime).filter(v=>v.pending).length;
+  content.innerHTML=header('连接，尽在掌握','管理本机的每一个实例，清楚区分配置意图与运行状态。','<button class="primary" data-action="new-instance">＋ 新建实例</button>')+
+  `<section class="hero"><div><p class="eyebrow">YOUR CONNECTION WORKSPACE</p><h2>把复杂的连接，<br>整理成清晰的日常。</h2><p>从一个 frpc 或 frps 实例开始。保存草稿、检查配置，再明确应用；所有运行数据来自本机，不使用演示流量。</p></div><div class="hero-graphic" aria-hidden="true"><div class="node">▣</div><span class="node-line">···</span><div class="node">⇄</div><span class="node-line">···</span><div class="node">◎</div></div></section>`+
+  `<section class="metrics">${[[data.state.instances.length,'已登记实例','本机 frpc / frps'],[running,'进程运行中','链路状态尚未探测'],[data.state.tunnels.filter(t=>t.enabled).length,'期望启用规则','配置意图，不等于已注册'],[pending,'存在待应用配置','保存不会打断当前连接']].map(([v,l,h])=>`<div class="metric"><span class="label">${l}</span><strong>${v.toString().padStart(2,'0')}</strong><small>${h}</small></div>`).join('')}</section>`+
+  `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>连接概览</h3><button class="quiet" data-go="tunnels">全部连接 →</button></div>${tunnelTable(data.state.tunnels.slice(0,5))}</section><section class="panel"><div class="panel-title"><h3>环境与边界</h3><span class="pill accent">LOCAL</span></div><div class="panel-content"><div class="check-row"><span>frpc 二进制</span><span class="pill ${data.binaries.frpc?'good':'warn'}">${data.binaries.frpc?'已找到':'未安装'}</span></div><div class="check-row"><span>frps 二进制</span><span class="pill ${data.binaries.frps?'good':'warn'}">${data.binaries.frps?'已找到':'未安装'}</span></div><div class="check-row"><span>配置保存</span><span class="pill good">本地持久化</span></div><div class="check-row"><span>远端设备管理</span><span class="pill">尚未实现</span></div><p class="small-note blank">令牌已加密保存。指定 frp-dir 中的二进制属于受信任程序；请仅放入官方或自行审计的版本。</p></div></section></div>`+
+  `<section class="panel"><div class="panel-title"><h3>最近变更</h3><span class="muted">版本可恢复 · 最多保留 30 份</span></div><div class="panel-content">${recent()}</div></section>`;
+ } else if(page==='instances') {
+  content.innerHTML=header('运行实例','一个实例对应一个本机 frp 进程；远程服务器地址不代表远程管理权限。','<button class="primary" data-action="new-instance">＋ 新建实例</button>')+
+  `<div class="notice">启动前会调用官方 frp verify。重启应用会中断该实例上的现有连接；本版本没有自动回退和开机自动启动实例。</div>`+
+  (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button><button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
+ } else if(page==='tunnels') {
+  content.innerHTML=header('连接看板','把需要访问的服务整理成规则；修改后在运行实例中校验并应用。','<button class="primary" data-action="new-tunnel">＋ 新建规则</button>')+
+  `<div class="toolbar"><input id="search" placeholder="搜索规则、地址或实例…" aria-label="搜索规则" value="${esc(filter)}"><select id="protocol" aria-label="按协议筛选"><option value="">所有协议</option>${['tcp','udp','http','https','stcp','stcp-visitor'].map(t=>`<option ${protocol===t?'selected':''}>${t}</option>`).join('')}</select></div><section class="panel" id="tunnel-list">${filteredTable()}</section>`;
+ } else if(page==='config') {
+  ensureSelected();
+  content.innerHTML=header('配置中心','查看脱敏 TOML、导出草稿和恢复历史；密钥不会被导出。','<button data-action="export-state">导出脱敏草稿</button>')+
+  `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>实例配置预览</h3><button data-action="export-toml">导出 TOML</button></div><div class="panel-content">${picker()}<div class="notice">此预览中的 &lt;redacted&gt; 是占位符，不能直接部署。真实运行时由服务端注入密钥；不向浏览器返回明文。</div><pre id="config-output">${selected?'正在读取…':'先创建一个实例。'}</pre></div></section><section class="panel"><div class="panel-title"><h3>草稿历史</h3><span class="pill">当前 r${data.revision}</span></div><div class="panel-content">${data.history.length?data.history.slice().reverse().map(h=>`<div class="check-row"><div><b>r${h.revision}</b><p class="small-note blank">${esc(h.summary)}<br>${time(h.at)}</p></div><button data-action="restore" data-target="${h.revision}">恢复</button></div>`).join(''):empty('暂无历史版本','修改配置时自动保存前一版本。')}<p class="small-note blank">恢复前须停止全部托管实例。恢复只改变草稿，不会自动重新启动进程。</p></div></section></div>`;
+  if(selected) api('config?id='+encodeURIComponent(selected)).then(v=>{if(serial===n && $('#config-output')) $('#config-output').textContent=v.toml;}).catch(e=>toast(e.message));
+ } else if(page==='logs') {
+  ensureSelected(); content.innerHTML=header('运行记录','真实子进程输出与配置变更记录。进程日志仅保留当前会话最近 200 行。')+
+  `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>frp 标准输出</h3><span class="pill">自动刷新</span></div><div class="panel-content">${picker()}<pre id="log-output">正在读取…</pre></div></section><section class="panel"><div class="panel-title"><h3>配置变更</h3></div><div class="panel-content">${recent()}</div></section></div>`;
+  api('logs?id='+encodeURIComponent(selected)).then(v=>{if(serial===n && $('#log-output')) $('#log-output').textContent=v.lines.join('\n')||'没有日志。启动实例后，真实输出将显示在这里。';}).catch(e=>toast(e.message));
+ }
+}
+function ensureSelected(){if(!data.state.instances.some(i=>i.id===selected))selected=data.state.instances[0]?.id||'';}
+function picker(){return `<select class="config-picker" id="instance-picker" aria-label="选择实例">${data.state.instances.length?data.state.instances.map(i=>`<option value="${i.id}" ${selected===i.id?'selected':''}>${esc(i.name)} · ${i.kind}</option>`).join(''):'<option>尚无实例</option>'}</select>`;}
+function filteredTable(){return tunnelTable(data.state.tunnels.filter(t=>(!protocol||t.type===protocol)&&`${t.name} ${t.localHost} ${t.remotePort} ${data.state.instances.find(i=>i.id===t.instanceId)?.name}`.toLowerCase().includes(filter.toLowerCase())));}
+function tunnelTable(rows) {
+ if(!rows.length)return empty('还没有匹配的连接','先添加 frpc 实例，再创建 TCP、UDP、Web 或 STCP 规则。','<button data-action="new-tunnel">＋ 添加规则</button>');
+ return `<div class="table-wrap"><table><thead><tr><th>服务 / 归属</th><th>协议</th><th>本地目标</th><th>远端 / 配对</th><th>配置意图</th><th>操作</th></tr></thead><tbody>${rows.map(t=>`<tr><td><strong>${esc(t.name)}</strong><small>${esc(data.state.instances.find(i=>i.id===t.instanceId)?.name)}</small></td><td><span class="type-icon">${t.type.toUpperCase()}</span></td><td><code>${esc(t.localHost)}:${t.localPort}</code></td><td><code>${esc(t.type==='stcp-visitor'?t.serverName:t.type==='stcp'?'私密配对':t.type==='http'||t.type==='https'?t.domains.join(', '):t.remotePort)}</code></td><td><span class="pill ${t.enabled?'good':''}">${t.enabled?'期望启用':'期望停用'}</span></td><td><div class="actions"><button data-action="edit-tunnel" data-id="${t.id}">编辑</button><button data-action="toggle" data-id="${t.id}">${t.enabled?'停用':'启用'}</button><button class="danger" data-action="delete-tunnel" data-id="${t.id}">删除</button></div></td></tr>`).join('')}</tbody></table></div>`;
+}
+function field(name,label,value='',type='text',extra=''){return `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;}
+function openEditor(kind,id) {
+ const old=(kind==='instance'?data.state.instances:data.state.tunnels).find(v=>v.id===id);editing={kind,id:old?.id||''};editRev=data.revision;
+ $('#form-error').textContent='';
+ if(kind==='instance') {
+  const v=old||{kind:'frpc',host:'127.0.0.1',port:7000,httpPort:0,httpsPort:0};
+  $('#dialog-body').innerHTML=`<h2>${old?'编辑实例':'新建运行实例'}</h2><p class="muted">只管理本机进程。留空的认证令牌会保留原值，不会清除。</p><div class="form-grid">${field('name','实例名称',v.name,'text','required maxlength="80"')}<label>实例类型<select name="kind" ${old?'disabled':''}><option value="frpc" ${v.kind==='frpc'?'selected':''}>frpc · 客户端</option><option value="frps" ${v.kind==='frps'?'selected':''}>frps · 服务端</option></select></label>${field('host','服务器地址 / 本机监听地址',v.host,'text','required')}${field('port','连接 / 监听端口',v.port,'number','required min="1" max="65535"')}<div class="span-2">${field('token',old&&v.hasToken?'认证令牌（已保存，留空保留）':'认证令牌（至少 8 字节）','','password',old?'autocomplete="new-password"':'required autocomplete="new-password"')}</div><div class="server-field">${field('httpPort','HTTP 虚拟主机端口（0 关闭）',v.httpPort,'number','min="0" max="65535"')}</div><div class="server-field">${field('httpsPort','HTTPS 虚拟主机端口（0 关闭）',v.httpsPort,'number','min="0" max="65535"')}</div></div>`;
+ } else {
+  const clients=data.state.instances.filter(i=>i.kind==='frpc');if(!clients.length){toast('请先添加一个 frpc 客户端实例');return;}
+  const v=old||{instanceId:clients[0].id,type:'tcp',localHost:'127.0.0.1',localPort:8080,remotePort:6000,domains:[],bandwidthKB:0,enabled:true};
+  $('#dialog-body').innerHTML=`<h2>${old?'编辑规则':'新建连接规则'}</h2><p class="muted">保存只更新草稿。启停意图在下次启动或重启应用时生效。</p><div class="form-grid">${field('name','规则名称',v.name,'text','required pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]{0,63}"')}<label>归属实例<select name="instanceId">${clients.map(i=>`<option value="${i.id}" ${v.instanceId===i.id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></label><label>协议<select name="type">${['tcp','udp','http','https','stcp','stcp-visitor'].map(p=>`<option ${p===v.type?'selected':''}>${p}</option>`).join('')}</select></label>${field('bandwidthKB','带宽上限（KB/s，0 不限）',v.bandwidthKB,'number','min="0" max="10000000"')}${field('localHost','本地目标 / Visitor 监听地址',v.localHost,'text','required')}${field('localPort','本地端口',v.localPort,'number','required min="1" max="65535"')}<div class="port-field">${field('remotePort','远端端口',v.remotePort,'number','min="1" max="65535"')}</div><div class="domain-field span-2">${field('domains','域名（多个用逗号分隔）',(v.domains||[]).join(', '))}</div><div class="visitor-field">${field('serverName','服务端 STCP 规则名',v.serverName)}</div><div class="secret-field">${field('secret',old&&v.hasSecret?'配对密钥（留空保留）':'配对密钥（至少 8 字节）','','password','autocomplete="new-password"')}</div><label class="form-check span-2"><input name="enabled" type="checkbox" ${v.enabled?'checked':''}>期望启用此规则</label></div>`;
+ }
+ updateFields();dialog.showModal();
+}
+function updateFields(){
+ const f=$('#editor');
+ if(editing.kind==='instance'){document.querySelectorAll('.server-field').forEach(e=>e.hidden=f.elements.kind.value!=='frps');return;}
+ const t=f.elements.type.value;const show={'.port-field':['tcp','udp'].includes(t),'.domain-field':['http','https'].includes(t),'.visitor-field':t==='stcp-visitor','.secret-field':t.startsWith('stcp')};
+ for(const [q,v] of Object.entries(show)) document.querySelectorAll(q).forEach(el=>{el.hidden=!v;el.querySelectorAll('input').forEach(input=>input.disabled=!v);});
+ f.elements.bandwidthKB.disabled=t==='stcp-visitor';
+}
+function navigate(to){if(!titles[to])return;page=to;location.hash=to;render();}
+function download(name,text,type='application/json'){const u=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}
+$('#login-form').addEventListener('submit',async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;try{await api('login',{token:e.target.elements.token.value.trim()});e.target.reset();$('#login-error').textContent='';await refresh();}catch(err){$('#login-error').textContent=err.message;}finally{b.disabled=false;}});
+$('#logout').addEventListener('click',async()=>{try{await api('logout',{});showLogin();}catch(e){toast(e.message);}});
+$('#refresh').addEventListener('click',()=>refresh());
+$('#theme').addEventListener('click',()=>{document.body.classList.toggle('dark');try{localStorage.setItem('kurumi-theme',document.body.classList.contains('dark')?'dark':'light');}catch(_){/* private browsing may deny storage */}});
+try{document.body.classList.toggle('dark',localStorage.getItem('kurumi-theme')==='dark');}catch(_){/* theme storage is optional */}
+$('#nav').addEventListener('click',e=>{const b=e.target.closest('[data-page]');if(b)navigate(b.dataset.page);});
+$('#cancel').addEventListener('click',()=>dialog.close());
+$('#editor').addEventListener('change',updateFields);
+$('#editor').addEventListener('submit',async e=>{
+ e.preventDefault();const f=e.target,b=f.querySelector('button[type="submit"]');b.disabled=true;const val=n=>f.elements[n].value;let value;
+ if(editing.kind==='instance') {const kind=val('kind');value={id:editing.id,name:val('name').trim(),kind,host:val('host').trim(),port:+val('port'),token:val('token'),httpPort:kind==='frps'?+val('httpPort'):0,httpsPort:kind==='frps'?+val('httpsPort'):0};}
+ else {const type=val('type');value={id:editing.id,name:val('name').trim(),instanceId:val('instanceId'),type,localHost:val('localHost').trim(),localPort:+val('localPort'),remotePort:['tcp','udp'].includes(type)?+val('remotePort'):0,domains:['http','https'].includes(type)?val('domains').split(',').map(v=>v.trim()).filter(Boolean):[],serverName:type==='stcp-visitor'?val('serverName').trim():'',secret:type.startsWith('stcp')?val('secret'):'',bandwidthKB:type==='stcp-visitor'?0:+val('bandwidthKB'),enabled:f.elements.enabled.checked};}
+ try{await api('save',{revision:editRev,kind:editing.kind,value});dialog.close();toast('草稿已保存；运行中的实例未改变');await refresh();}catch(err){$('#form-error').textContent=err.message;}finally{b.disabled=false;}
+});
+$('#content').addEventListener('input',e=>{if(e.target.id==='search'){filter=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}});
+$('#content').addEventListener('change',e=>{if(e.target.id==='protocol'){protocol=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='instance-picker'){selected=e.target.value;render();}});
+$('#content').addEventListener('click',async e=>{
+ const b=e.target.closest('button');if(!b||!data)return;if(b.dataset.go){navigate(b.dataset.go);return;}
+ const action=b.dataset.action,id=b.dataset.id;if(!action)return;
+ if(action==='new-instance'||action==='edit-instance'){openEditor('instance',id);return;}
+ if(action==='new-tunnel'||action==='edit-tunnel'){openEditor('tunnel',id);return;}
+ if(action==='logs'){selected=id;navigate('logs');return;}
+ b.disabled=true;
+ try{
+  if(action==='export-state'){download('kurumi-redacted-draft.json',JSON.stringify({format:'kurumi-redacted-draft',revision:data.revision,state:data.state},null,2));toast('已导出脱敏草稿；此文件不包含密钥且不支持直接恢复');return;}
+  if(action==='export-toml'){if(!selected)throw new Error('先选择一个实例');const v=await api('config?id='+selected);download('kurumi-redacted.toml',v.toml,'text/plain');return;}
+  if(action==='validate'){const v=await api('validate',{revision:data.revision,id});toast('官方 frp 配置校验通过；尚未执行网络探测');return;}
+  if(['start','restart','stop'].includes(action)){
+   if(action==='restart'&&!confirm('重启应用将中断该实例的现有连接。配置检查失败时不会停止旧进程；新进程启动失败时不会自动回退。继续？'))return;
+   if(action==='stop'&&!confirm('停止该实例及其正在转发的连接？'))return;
+   await api('control',{revision:data.revision,id,action});toast(action==='stop'?'进程已停止':'启动请求完成，正在刷新真实进程状态');
+  }else if(action.startsWith('delete-')){if(!confirm('删除这项草稿配置？历史版本仍保留。'))return;await api('delete',{revision:data.revision,id,kind:action.slice(7)});toast('草稿配置已删除');}
+  else if(action==='toggle'){const t=data.state.tunnels.find(t=>t.id===id);await api('save',{revision:data.revision,kind:'tunnel',value:{...t,enabled:!t.enabled}});toast('启停意图已保存，请在实例页应用');}
+  else if(action==='restore'){if(!confirm('恢复历史草稿？全部托管实例必须已停止，当前草稿也会保留为历史版本。'))return;await api('restore',{revision:data.revision,target:+b.dataset.target});toast('历史草稿已恢复，实例不会自动启动');}
+  await refresh();
+ }catch(err){toast(err.message);}finally{b.disabled=false;}
+});
+window.addEventListener('hashchange',()=>{const p=location.hash.slice(1);if(titles[p]&&page!==p){page=p;render();}});
+page=titles[location.hash.slice(1)]?location.hash.slice(1):'overview';
+refresh(true);setInterval(()=>{if(data&&!document.hidden&&!dialog.open)refresh(true);},5000);

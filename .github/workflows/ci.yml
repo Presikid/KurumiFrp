@@ -1,0 +1,46 @@
+name: Foundation CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: foundation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: stable
+          cache: false
+      - name: Format, vet and tests
+        shell: bash
+        run: |
+          test -z "$(gofmt -l cmd internal web)"
+          go vet ./...
+          go test -v ./...
+          go build -o kurumi ./cmd/kurumi
+      - name: Race detector and cross-compilation
+        if: runner.os == 'Linux'
+        run: |
+          go test -race ./...
+          GOOS=windows GOARCH=amd64 go build -o kurumi-windows.exe ./cmd/kurumi
+          GOOS=linux GOARCH=arm64 go build -o kurumi-arm64 ./cmd/kurumi
+      - name: Real frp integration (pinned official release)
+        if: runner.os == 'Linux'
+        run: |
+          curl --fail --location --retry 3 --max-time 120 -o frp.tgz https://github.com/fatedier/frp/releases/download/v0.72.0/frp_0.72.0_linux_amd64.tar.gz
+          echo 'daf719b32ca2778770bb92955e231a07414d754378b9af328aa2642862479804  frp.tgz' | sha256sum --check --strict
+          mkdir -p frp
+          tar -xzf frp.tgz --strip-components=1 -C frp
+          python3 scripts/frp-smoke.py ./kurumi ./frp
