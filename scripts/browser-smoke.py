@@ -108,6 +108,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#export-scope').select_option('config')
             with page.expect_download() as exported:
                 page.locator('[data-action="export-data"]').click()
+            config_file = str(exported.value.path())
             exported_json = json.loads(Path(exported.value.path()).read_text(encoding='utf-8'))
             assert 'state' in exported_json and exported_json['history'] == [] and exported_json['key']
             assert 'test-passphrase-123' not in json.dumps(exported_json)
@@ -121,6 +122,10 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('[data-action="history-settings"]').click()
             expect(page.locator('#history-limit')).to_have_value('2')
             expect(page.locator('[data-action="restore"]')).to_have_count(2)
+            page.locator('#import-file').set_input_files(config_file)
+            page.locator('[data-action="import-data"]').click()
+            expect(page.locator('#toast')).to_contain_text('导入成功')
+            expect(page.locator('[data-action="restore"]')).to_have_count(0)
             page.locator('[data-page="instances"]').click()
             page.locator('[data-action="start"]').first.click()
             page.locator('#toast').wait_for(state="visible")

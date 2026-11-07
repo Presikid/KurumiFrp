@@ -42,3 +42,21 @@ func TestDownloadChecksDigestAndSize(t *testing.T) {
 		t.Fatal("invalid digest accepted")
 	}
 }
+
+func TestReleaseListAndSelection(t *testing.T) {
+	m := New(t.TempDir(), "windows-installed")
+	jsonBody := `[{"tag_name":"v0.6.0","prerelease":true,"assets":[{"name":"KurumiFRP-0.6.0-Setup.exe","browser_download_url":"https://github.com/Presikid/KurumiFrp/releases/download/v0.6.0/KurumiFRP-0.6.0-Setup.exe","size":3,"digest":"sha256:` + strings.Repeat("a", 64) + `"}]}]`
+	m.client = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(jsonBody)), Header: make(http.Header)}, nil
+	})}
+	versions, err := m.Versions(context.Background())
+	if err != nil || len(versions) != 1 || !versions[0].Available || !versions[0].Newer {
+		t.Fatal(versions, err)
+	}
+	if _, err = m.selectAsset(context.Background(), "v0.6.0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.selectAsset(context.Background(), "v0.4.0"); err == nil {
+		t.Fatal("downgrade accepted")
+	}
+}
