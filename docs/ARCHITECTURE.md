@@ -88,3 +88,14 @@ healthy; a 4xx/5xx response is reported as responding, not unreachable. UDP is
 explicitly unsupported because a generic UDP datagram cannot reliably prove that
 an application is listening. None of these checks proves frp registration, remote
 server reachability, or public Internet access.
+
+ 
+## 链路监测与私有状态接口
+
+`GET /api/health?id=<实例 ID>` 受现有登录授权保护。接口先在应用互斥锁内复制配置、进程状态和修订号，再释放锁开展有超时限制的网络检测；单项检测约 2 秒，目标任务最多 32 个并发。它不会自动启停实例、修改配置或打开防火墙。
+
+对新启动的 frpc，运行配置在所有 `[[proxies]]` / `[[visitors]]` 表之前插入 `webServer.addr = "127.0.0.1"`、系统选取的临时端口与随机认证密码。密码通过子进程环境传递，纳入日志已知敏感词过滤，不写入可读 TOML 文件；草稿摘要、WebUI 预览和 JSON 导出不包含管理密码。进程退出时清空管理密码。早期启动的 frpc 进程必须显式重启后才具有该状态接口。
+
+本机 Admin API 请求禁用代理和重定向，指定 Basic Auth、读取大小限制与超时。绑定回环不代表抵御同机恶意进程或被入侵系统。临时端口采用申请后释放再启动 frpc 的方式，存在短暂端口竞争的可能；接口无法访问时报告标记「不可用」，不据此断言代理下线。
+
+入口 TCP 握手并不证明 frp 认证成功；frpc 报告代理 running 也不能证明公网端到端可用。HTTP 检测以本地业务返回的状态分类；UDP 不具备可靠的通用 TCP 探测；STCP Visitor 监听口不是后端业务口。导出的报告排除已知密码，但包含实例名、内网地址及域名等拓扑信息，仍需谨慎分享。
