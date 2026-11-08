@@ -22,6 +22,7 @@ import (
 
 var advapi = syscall.NewLazyDLL("advapi32.dll")
 var localFree = syscall.NewLazyDLL("kernel32.dll").NewProc("LocalFree")
+var getFileAttributes = syscall.NewLazyDLL("kernel32.dll").NewProc("GetFileAttributesW")
 var sidName = regexp.MustCompile(`^S-1-[0-9]+(?:-[0-9]+)+$`)
 
 const machineACL = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
@@ -136,7 +137,18 @@ func windowsPlainPath(path string) error {
 		if st.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("refusing linked path: %s", p)
 		}
-		if data, ok := st.Sys().(*syscall.Win32FileAttributeData); ok && data.FileAttributes&0x400 != 0 {
+		name, e := syscall.UTF16PtrFromString(p)
+		if e != nil {
+			return e
+		}
+		attributes, _, callErr := getFileAttributes.Call(uintptr(unsafe.Pointer(name)))
+		if uint32(attributes) == 0xffffffff {
+			if callErr != nil && callErr != syscall.Errno(0) {
+				return callErr
+			}
+			return fmt.Errorf("cannot inspect file attributes: %s", p)
+		}
+		if uint32(attributes)&0x400 != 0 {
 			return fmt.Errorf("refusing reparse-point path: %s", p)
 		}
 		if parent := filepath.Dir(p); parent == p {
