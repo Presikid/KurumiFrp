@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Presikid/KurumiFrp/internal/version"
 )
 
 const productID = "io.github.Presikid.KurumiFrp"
@@ -90,7 +92,7 @@ func localRequest(dir, method, endpoint string) error {
 		if err = json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&state); err != nil {
 			return err
 		}
-		if state.Version != "0.7.0" {
+		if state.Version != version.Current {
 			return fmt.Errorf("unexpected running manager version: %s", state.Version)
 		}
 	}
@@ -219,7 +221,7 @@ func cleanPackage(source, executable string, archivePath ...string) error {
 	if err = d.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("invalid manifest suffix")
 	}
-	if manifest.Product != productID || manifest.Version != "0.7.0" {
+	if manifest.Product != productID || manifest.Version != version.Current {
 		return fmt.Errorf("unrecognized package manifest")
 	}
 	names, err := packageNames(manifest.Platform)

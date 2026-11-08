@@ -8,6 +8,7 @@ import (
 	"debug/elf"
 	"debug/macho"
 	"debug/pe"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -159,7 +160,28 @@ func checkExecutable(file, platform string) error {
 			return fmt.Errorf("invalid ELF executable")
 		}
 		defer f.Close()
-		match = (f.Type == elf.ET_EXEC || f.Type == elf.ET_DYN) && ((platform == "linux_amd64" && f.Machine == elf.EM_X86_64) || (platform == "linux_arm64" && f.Machine == elf.EM_AARCH64))
+		validType := f.Type == elf.ET_EXEC || f.Type == elf.ET_DYN
+		switch platform {
+		case "linux_amd64":
+			match = f.Machine == elf.EM_X86_64 && f.Class == elf.ELFCLASS64
+		case "linux_arm64":
+			match = f.Machine == elf.EM_AARCH64 && f.Class == elf.ELFCLASS64
+		case "linux_arm", "linux_arm_hf":
+			match = f.Machine == elf.EM_ARM && f.Class == elf.ELFCLASS32 && f.ByteOrder == binary.LittleEndian
+		case "linux_riscv64":
+			match = f.Machine == elf.EM_RISCV && f.Class == elf.ELFCLASS64 && f.ByteOrder == binary.LittleEndian
+		case "linux_loong64":
+			match = f.Machine == elf.EM_LOONGARCH && f.Class == elf.ELFCLASS64 && f.ByteOrder == binary.LittleEndian
+		case "linux_mips":
+			match = f.Machine == elf.EM_MIPS && f.Class == elf.ELFCLASS32 && f.ByteOrder == binary.BigEndian
+		case "linux_mipsle":
+			match = f.Machine == elf.EM_MIPS && f.Class == elf.ELFCLASS32 && f.ByteOrder == binary.LittleEndian
+		case "linux_mips64":
+			match = f.Machine == elf.EM_MIPS && f.Class == elf.ELFCLASS64 && f.ByteOrder == binary.BigEndian
+		case "linux_mips64le":
+			match = f.Machine == elf.EM_MIPS && f.Class == elf.ELFCLASS64 && f.ByteOrder == binary.LittleEndian
+		}
+		match = validType && match
 	case strings.HasPrefix(platform, "windows_"):
 		f, err := pe.Open(file)
 		if err != nil {

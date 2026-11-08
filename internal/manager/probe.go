@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -65,7 +66,11 @@ func probeTargetWithRoots(t Tunnel, roots *x509.CertPool) ProbeResult {
 		_ = conn.Close()
 		result.Status = "reachable"
 		result.LatencyMS = time.Since(started).Milliseconds()
-		result.Message = "本地 TCP 端口可连接；这不代表 FRP 远端隧道已注册或公网可达"
+		if t.Type == "stcp-visitor" {
+			result.Message = "STCP Visitor 本地监听端口可连接；这不代表远端 STCP 服务或公网隧道可达"
+		} else {
+			result.Message = "本地 TCP 端口可连接；这不代表 FRP 远端隧道已注册或公网可达"
+		}
 		return stampProbe(result)
 	case "http", "https":
 		return probeHTTP(t, result, roots)
@@ -97,9 +102,33 @@ func probeHTTP(t Tunnel, result ProbeResult, roots *x509.CertPool) ProbeResult {
 		hostHeader = "[" + host + "]"
 	}
 
+	path := t.ProbePath
+	if path == "" {
+		path = "/"
+	}
+	method := t.ProbeMethod
+	if method == "" {
+		method = http.MethodHead
+	}
+	if !probePathOK(path) || !probeMethodOK(method) {
+		result.Status = "invalid"
+		result.Message = "HTTP 检测路径或方法无效"
+		return stampProbe(result)
+	}
+	parsedPath, err := url.ParseRequestURI(path)
+	if err != nil {
+		result.Status = "invalid"
+		result.Message = "HTTP 检测路径无效"
+		return stampProbe(result)
+	}
+	probeURL := (&url.URL{
+		Scheme: scheme, Host: "kurumifrp-probe.invalid",
+		Path: parsedPath.Path, RawPath: parsedPath.RawPath, RawQuery: parsedPath.RawQuery,
+	}).String()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodHead, scheme+"://kurumifrp-probe.invalid/", nil)
+	request, err := http.NewRequestWithContext(ctx, method, probeURL, nil)
 	if err != nil {
 		result.Status = "invalid"
 		result.Message = "无法构造 HTTP 探测请求"
@@ -139,10 +168,14 @@ func probeHTTP(t Tunnel, result ProbeResult, roots *x509.CertPool) ProbeResult {
 
 	result.LatencyMS = time.Since(started).Milliseconds()
 	result.HTTPStatus = response.StatusCode
-	if response.StatusCode >= 200 && response.StatusCode < 400 {
+	switch {
+	case response.StatusCode >= 200 && response.StatusCode < 300:
 		result.Status = "healthy"
 		result.Message = fmt.Sprintf("%s 本地服务已响应 HTTP %d；仅代表本地服务可响应，不代表 FRP 远端隧道已注册", strings.ToUpper(t.Type), response.StatusCode)
-	} else {
+	case response.StatusCode >= 300 && response.StatusCode < 400 && response.StatusCode != http.StatusNotModified:
+		result.Status = "redirect"
+		result.Message = fmt.Sprintf("%s 本地服务返回重定向 HTTP %d；本次检测不会自动跟随跳转", strings.ToUpper(t.Type), response.StatusCode)
+	default:
 		result.Status = "responding"
 		result.Message = fmt.Sprintf("%s 本地服务已响应 HTTP %d；端口可达，但应用返回非成功状态（也可能不支持 HEAD）", strings.ToUpper(t.Type), response.StatusCode)
 	}
@@ -169,11 +202,23 @@ func (a *App) probeAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tunnel, ok := a.store.DB.State.Tunnel(req.ID)
-	a.mu.Unlock()
 	if !ok {
+		a.mu.Unlock()
 		fail(w, 404, fmt.Errorf("规则不存在"))
 		return
 	}
+	if a.activeProbes >= 12 {
+		a.mu.Unlock()
+		fail(w, http.StatusTooManyRequests, fmt.Errorf("检测任务过多，请稍后重试"))
+		return
+	}
+	a.activeProbes++
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.activeProbes--
+		a.mu.Unlock()
+	}()
 
 	result := probeTarget(tunnel)
 
