@@ -430,6 +430,71 @@ type legacyProfile struct {
 	digest string
 }
 
+func verifyLegacyRootForMigration(legacyRoot, install string) (bool, bool, error) {
+	if err := verifyDirectoryACL(legacyRoot, machineACL); err != nil {
+		return false, false, err
+	}
+	var installReceipt machineReceipt
+	if err := readBoundedJSON(filepath.Join(install, "native-install.json"), &installReceipt); err != nil {
+		return false, false, err
+	}
+	if installReceipt.Product != productID || installReceipt.Schema != 2 || !strings.EqualFold(installReceipt.InstallDir, install) {
+		return false, false, fmt.Errorf("current installation receipt mismatch")
+	}
+	entries, err := os.ReadDir(legacyRoot)
+	if err != nil {
+		return false, false, err
+	}
+	known := map[string]bool{"machine-install.json": true, "profiles": true, ".uninstalling": true}
+	for _, entry := range entries {
+		if !known[entry.Name()] {
+			return false, false, fmt.Errorf("unrecognized file in old runtime directory: %s", entry.Name())
+		}
+	}
+	hasMachine, hasProfiles, hasMarker := false, false, false
+	for _, entry := range entries {
+		switch entry.Name() {
+		case "machine-install.json":
+			hasMachine = true
+		case "profiles":
+			hasProfiles = true
+		case ".uninstalling":
+			hasMarker = true
+		}
+	}
+	if hasMarker {
+		if err := windowsPlainPath(filepath.Join(legacyRoot, ".uninstalling")); err != nil {
+			return false, false, err
+		}
+		b, err := os.ReadFile(filepath.Join(legacyRoot, ".uninstalling"))
+		if err != nil {
+			return false, false, err
+		}
+		if string(b) != productID {
+			return false, false, fmt.Errorf("unknown old installation maintenance marker")
+		}
+	}
+	if hasMachine {
+		var receipt machineReceipt
+		if err := readBoundedJSON(filepath.Join(legacyRoot, "machine-install.json"), &receipt); err != nil {
+			return false, false, err
+		}
+		if receipt.Product != productID || receipt.Schema != 2 || !strings.EqualFold(receipt.InstallDir, install) {
+			return false, false, fmt.Errorf("old installation receipt mismatch")
+		}
+	} else if hasProfiles || !hasMarker && len(entries) != 0 {
+		return false, false, fmt.Errorf("old installation receipt is missing")
+	}
+	if hasProfiles {
+		if err := verifyDirectoryACL(filepath.Join(legacyRoot, "profiles"), profilesACL); err != nil {
+			return false, false, err
+		}
+	} else if hasMachine && !hasMarker {
+		return false, false, fmt.Errorf("old profiles directory is unexpectedly missing")
+	}
+	return hasProfiles, hasMarker, nil
+}
+
 func migrateLegacyWindowsProfiles(legacyRoot, runtimeRoot, install string) error {
 	legacyRoot = filepath.Clean(legacyRoot)
 	runtimeRoot = filepath.Clean(runtimeRoot)
@@ -449,26 +514,33 @@ func migrateLegacyWindowsProfiles(legacyRoot, runtimeRoot, install string) error
 	if !rootInfo.IsDir() {
 		return fmt.Errorf("old ProgramData path is not a directory; it was retained")
 	}
-	if err = verifyMachine(legacyRoot, install); err != nil {
+	hasProfiles, hasMarker, err := verifyLegacyRootForMigration(legacyRoot, install)
+	if err != nil {
 		return fmt.Errorf("old ProgramData installation ownership or permissions could not be verified; old data was retained: %w", err)
 	}
 	marker := filepath.Join(legacyRoot, ".uninstalling")
-	if err = windowsPlainPath(marker); err == nil {
-		b, readErr := os.ReadFile(marker)
-		if readErr != nil {
-			return readErr
+	if !hasMarker {
+		file, createErr := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if createErr != nil {
+			return fmt.Errorf("cannot lock the old installation for migration: %w", createErr)
 		}
-		if string(b) != productID {
-			return fmt.Errorf("unknown old installation maintenance marker; old data was retained")
+		_, writeErr := file.Write([]byte(productID))
+		closeErr := file.Close()
+		if writeErr != nil {
+			return writeErr
 		}
-	} else if !os.IsNotExist(err) {
-		return err
+		if closeErr != nil {
+			return closeErr
+		}
 	}
 
 	oldProfiles := filepath.Join(legacyRoot, "profiles")
-	entries, err := os.ReadDir(oldProfiles)
-	if err != nil {
-		return err
+	var entries []os.DirEntry
+	if hasProfiles {
+		entries, err = os.ReadDir(oldProfiles)
+		if err != nil {
+			return err
+		}
 	}
 	profiles := make([]legacyProfile, 0, len(entries))
 	for _, entry := range entries {
@@ -559,7 +631,7 @@ func migrateLegacyWindowsProfiles(legacyRoot, runtimeRoot, install string) error
 		}
 	}
 
-	if err = os.Remove(oldProfiles); err != nil {
+	if err = os.Remove(oldProfiles); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("old profiles directory is not empty; old data was retained: %w", err)
 	}
 	if err = os.Remove(filepath.Join(legacyRoot, "machine-install.json")); err != nil && !os.IsNotExist(err) {
