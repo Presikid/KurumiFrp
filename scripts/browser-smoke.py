@@ -130,6 +130,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#dialog').wait_for(state="hidden")
             polling_checks = page.evaluate((Path(__file__).with_name("polling-regression.js")).read_text(encoding="utf-8"), {"token": token})
             print("Polling regression passed: " + polling_checks)
+            page.locator('[data-page="tunnels"]').click()
             page.locator('[data-action="probe"]').first.click()
             expect(page.locator('.probe-cell .pill.good').first).to_contain_text("TCP 可连接")
             page.locator('[data-action="new-tunnel"]').first.click()
