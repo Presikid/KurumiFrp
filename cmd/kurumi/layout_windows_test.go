@@ -155,3 +155,50 @@ func TestMigrateLegacyWindowsProfilesRefusesUnownedData(t *testing.T) {
 		t.Fatal("unverified legacy data was changed:", err)
 	}
 }
+
+func TestMigrateLegacyWindowsProfilesResumesAfterProfileMove(t *testing.T) {
+	legacyRoot, runtimeRoot, install, sid := windowsMigrationFixture(t)
+	source := filepath.Join(legacyRoot, "profiles", sid)
+	target := filepath.Join(runtimeRoot, "profiles", sid)
+	if err := os.Rename(source, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(legacyRoot, "profiles")); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateLegacyWindowsProfiles(legacyRoot, runtimeRoot, install); err != nil {
+		t.Fatal("migration did not resume after profile move:", err)
+	}
+	if _, err := os.Lstat(legacyRoot); !os.IsNotExist(err) {
+		t.Fatalf("legacy root remains after resumed migration: %v", err)
+	}
+	if _, err := verifyLegacyProfile(target, sid); err != nil {
+		t.Fatal("resumed migration damaged the destination profile:", err)
+	}
+}
+
+func TestCopyLegacyWindowsProfilePreservesContents(t *testing.T) {
+	legacyRoot, _, _, sid := windowsMigrationFixture(t)
+	source := filepath.Join(legacyRoot, "profiles", sid)
+	target := filepath.Join(t.TempDir(), "copy")
+	if err := createPrivateDirectory(target, profileACL(sid)); err != nil {
+		t.Fatal(err)
+	}
+	before, err := profileTreeDigest(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = copyLegacyProfile(source, target); err != nil {
+		t.Fatal(err)
+	}
+	after, err := profileTreeDigest(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatal("cross-volume copy changed the profile contents")
+	}
+	if _, err = verifyLegacyProfile(target, sid); err != nil {
+		t.Fatal("copied profile failed receipt/ACL validation:", err)
+	}
+}
