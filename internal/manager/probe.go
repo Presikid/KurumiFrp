@@ -202,11 +202,23 @@ func (a *App) probeAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tunnel, ok := a.store.DB.State.Tunnel(req.ID)
-	a.mu.Unlock()
 	if !ok {
+		a.mu.Unlock()
 		fail(w, 404, fmt.Errorf("规则不存在"))
 		return
 	}
+	if a.activeProbes >= 12 {
+		a.mu.Unlock()
+		fail(w, http.StatusTooManyRequests, fmt.Errorf("检测任务过多，请稍后重试"))
+		return
+	}
+	a.activeProbes++
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.activeProbes--
+		a.mu.Unlock()
+	}()
 
 	result := probeTarget(tunnel)
 

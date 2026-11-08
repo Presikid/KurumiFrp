@@ -225,6 +225,12 @@ func TestProbeAPIAuthenticationAndRevision(t *testing.T) {
 	}
 	revision := a.store.DB.Revision
 	id := a.store.DB.State.Tunnels[0].ID
+	a.activeProbes = 12
+	limited := request(a, "POST", "/api/probe", map[string]any{"revision": revision, "id": id}, a.AccessToken(), "")
+	if limited.Code != http.StatusTooManyRequests {
+		t.Fatalf("saturated probe limit returned %d", limited.Code)
+	}
+	a.activeProbes = 0
 
 	response := request(a, "POST", "/api/probe", map[string]any{"revision": revision, "id": id}, a.AccessToken(), "")
 	if response.Code != http.StatusOK {
@@ -236,6 +242,9 @@ func TestProbeAPIAuthenticationAndRevision(t *testing.T) {
 	}
 	if result.Status != "reachable" {
 		t.Fatalf("expected reachable API result, got %#v", result)
+	}
+	if a.activeProbes != 0 {
+		t.Fatalf("probe slot not released: %d", a.activeProbes)
 	}
 
 	stale := request(a, "POST", "/api/probe", map[string]any{"revision": revision - 1, "id": id}, a.AccessToken(), "")
