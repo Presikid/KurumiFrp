@@ -3,6 +3,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -232,5 +234,38 @@ func TestCleanupMigrationTempsRetainsUnknownDirectories(t *testing.T) {
 	}
 	if _, err := os.Stat(unknown); err != nil {
 		t.Fatal("unknown runtime data was removed:", err)
+	}
+}
+
+func TestMigrationSnapshotsProfileAfterGracefulStop(t *testing.T) {
+	legacyRoot, runtimeRoot, install, sid := windowsMigrationFixture(t)
+	data := filepath.Join(legacyRoot, "profiles", sid, "data")
+	token := strings.Repeat("a", 64)
+	if err := os.WriteFile(filepath.Join(data, "access.token"), []byte(token), 0600); err != nil {
+		t.Fatal(err)
+	}
+	lock := filepath.Join(data, "manager.lock")
+	if err := os.WriteFile(lock, []byte("test"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/quit" || r.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if err := os.Remove(lock); err != nil {
+			t.Error(err)
+		}
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+	if err := os.WriteFile(filepath.Join(data, "listen.addr"), []byte(strings.TrimPrefix(server.URL, "http://")), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateLegacyWindowsProfiles(legacyRoot, runtimeRoot, install); err != nil {
+		t.Fatalf("graceful shutdown changed profile before migration: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runtimeRoot, "profiles", sid, "data", "state.json")); err != nil {
+		t.Fatal("state not migrated:", err)
 	}
 }
