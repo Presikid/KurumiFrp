@@ -1,5 +1,5 @@
 - 增加 Linux 和 Windows ARM64 原生环境的测试，覆盖官方核心下载与真实连接。
-- 增加 Firefox、WebKit 浏览器及 Linux 多架构官方核心验证。
+- 增加 macOS 源码运行检查、Firefox 和 WebKit 浏览器验证，以及 Linux 多架构官方核心验证。
 - 修正发布说明重复显示产品名和版本号的问题。
 
 安装包尚未签名。

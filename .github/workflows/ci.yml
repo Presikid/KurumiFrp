@@ -140,6 +140,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/native-windows-smoke.py dist-native/KurumiFRP-0.7.1.4-Setup.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  source-macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: stable
+          cache: false
+      - name: macOS source build and official frp
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+          go test -race ./...
+          go build -o kurumi-live ./cmd/kurumi
+          python3 scripts/core-smoke.py ./kurumi-live
   browser-compatibility:
     strategy:
       fail-fast: false
@@ -168,7 +186,7 @@ jobs:
           python3 -m playwright install --with-deps "${KURUMI_BROWSER}"
           python3 scripts/browser-smoke.py ./kurumi
   repair-0713-release-notes:
-    needs: [test, native-arm, browser-compatibility]
+    needs: [test, native-arm, source-macos, browser-compatibility]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -183,7 +201,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/repair-0713-notes.py
   release:
-    needs: [test, native-arm, browser-compatibility]
+    needs: [test, native-arm, source-macos, browser-compatibility]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 10
