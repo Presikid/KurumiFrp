@@ -76,7 +76,7 @@ with tempfile.TemporaryDirectory(prefix='core-ui-') as tmp:
                     value=fixture(route_path)
                     if value is not None:r.fulfill(status=200,content_type='application/json',body=json.dumps(value))
                     else:r.continue_()
-                page.route('**/api/core/**',route);page.goto(base)
+                page.route('**/api/core*',route);page.goto(base)
             page.locator('#login-form input').fill(token);page.locator('#login-form button').click();page.locator('#app').wait_for(state='visible')
             page.locator('[data-page=core]').click();page.locator('#core-version option[value="v0.72.0"]').wait_for(state='attached')
             for _ in range(20):
@@ -99,7 +99,7 @@ with tempfile.TemporaryDirectory(prefix='core-ui-') as tmp:
                 req=urllib.request.Request(base+'/api/browser-ticket',data=b'{}',headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
                 with opener.open(req,timeout=8) as r: launch_url=json.load(r)['url']
                 context=browser.new_context();auto=context.new_page()
-                auto.route('**/api/core/**',route)
+                auto.route('**/api/core*',route)
                 auto.on('pageerror',lambda e:errors.append(str(e)))
                 auto.goto(launch_url)
                 auto.locator('#app').wait_for(state='visible')
