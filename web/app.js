@@ -3,7 +3,7 @@ const $ = (s) => document.querySelector(s);
 const esc = (v = '') => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const titles = {overview:'网络总览',tunnels:'连接看板',instances:'运行实例',config:'配置中心',logs:'运行记录',update:'软件更新'};
 let updateChecked = false, releases = [], updateStatus = '';
-let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer;
+let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer, refreshTimer = null;
 let authGeneration = 0, stateETag = '', stateSnapshot = '', renderedSnapshot = '', renderedPage = '';
 let stateRequest = null, logRequest = null, deferredConfig = null;
 const dialog = $('#dialog');
@@ -17,7 +17,23 @@ async function api(path, body, options = {}) {
  if (path === 'login' || path === 'launch-login') resetSession();
  return options.conditional ? {value:json,etag:response.headers.get('ETag') || ''} : json;
 }
+function stopRefreshPolling() {
+ if (refreshTimer !== null) {
+  clearTimeout(refreshTimer);
+  refreshTimer = null;
+ }
+}
+function scheduleRefresh(delay) {
+ stopRefreshPolling();
+ if (!data || document.hidden || dialog.open) return;
+ const wait = delay ?? (Object.values(data.runtime || {}).some(v => v.state === 'running') ? 5000 : 10000);
+ refreshTimer = setTimeout(() => {
+  refreshTimer = null;
+  refresh(true);
+ }, wait);
+}
 function resetSession() {
+ stopRefreshPolling();
  ++authGeneration; ++serial;
  stateRequest?.controller.abort(); logRequest?.controller.abort();
  stateRequest = null; logRequest = null; deferredConfig = null;
@@ -70,7 +86,10 @@ async function refresh(silent = false) {
    // Logs have a separate endpoint and can change even when state returns 304.
    await refreshLogs(silent);
   } catch(e) {if (generation === authGeneration && e.name !== 'AbortError' && !silent && data) toast(e.message);}
- })().finally(() => {if (stateRequest === request) stateRequest = null;});
+ })().finally(() => {
+  if (stateRequest === request) stateRequest = null;
+  scheduleRefresh();
+ });
  return request.promise;
 }
 function refreshLogs(silent = true) {
@@ -161,7 +180,7 @@ function openEditor(kind,id) {
   const v=old||{instanceId:clients[0].id,type:'tcp',localHost:'127.0.0.1',localPort:8080,remotePort:6000,domains:[],bandwidthKB:0,enabled:true};
   $('#dialog-body').innerHTML=`<h2>${old?'编辑规则':'新建连接规则'}</h2><p class="muted">保存只更新草稿。启停意图在下次启动或重启应用时生效。Linux 原生服务的 Visitor 通常不能监听小于 1024 的端口。</p><div class="form-grid">${field('name','规则名称',v.name,'text','required pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]{0,63}"')}<label>归属实例<select name="instanceId">${clients.map(i=>`<option value="${i.id}" ${v.instanceId===i.id?'selected':''}>${esc(i.name)}</option>`).join('')}</select></label><label>协议<select name="type">${['tcp','udp','http','https','stcp','stcp-visitor'].map(p=>`<option ${p===v.type?'selected':''}>${p}</option>`).join('')}</select></label>${field('bandwidthKB','带宽上限（KB/s，0 不限）',v.bandwidthKB,'number','min="0" max="10000000"')}${field('localHost','本地目标 / Visitor 监听地址',v.localHost,'text','required')}${field('localPort','本地端口',v.localPort,'number','required min="1" max="65535"')}<div class="port-field">${field('remotePort','远端端口',v.remotePort,'number','min="1" max="65535"')}</div><div class="domain-field span-2">${field('domains','域名（多个用逗号分隔）',(v.domains||[]).join(', '))}</div><div class="visitor-field">${field('serverName','服务端 STCP 规则名',v.serverName)}</div><div class="secret-field">${field('secret',old&&v.hasSecret?'配对密钥（留空保留）':'配对密钥（至少 8 字节）','','password','autocomplete="new-password"')}</div><label class="form-check span-2"><input name="enabled" type="checkbox" ${v.enabled?'checked':''}>期望启用此规则</label></div>`;
  }
- updateFields();dialog.showModal();
+ stopRefreshPolling();updateFields();dialog.showModal();
 }
 function updateFields(){
  const f=$('#editor');
@@ -179,6 +198,7 @@ $('#theme').addEventListener('click',()=>{document.body.classList.toggle('dark')
 try{document.body.classList.toggle('dark',localStorage.getItem('kurumi-theme')==='dark');}catch(_){/* theme storage is optional */}
 $('#nav').addEventListener('click',e=>{const b=e.target.closest('[data-page]');if(b)navigate(b.dataset.page);});
 $('#cancel').addEventListener('click',()=>dialog.close());
+dialog.addEventListener('close',()=>scheduleRefresh(0));
 $('#editor').addEventListener('change',updateFields);
 $('#editor').addEventListener('submit',async e=>{
  e.preventDefault();const f=e.target,b=f.querySelector('button[type="submit"]');b.disabled=true;const val=n=>f.elements[n].value;let value;
@@ -217,4 +237,7 @@ window.addEventListener('hashchange',()=>{const p=location.hash.slice(1);if(titl
 page=titles[location.hash.slice(1)]?location.hash.slice(1):'overview';
 // core.js consumes a launch ticket before the first authenticated state request.
 if(!/^#launch=([a-f0-9]{64})$/.test(location.hash))refresh(true);
-setInterval(()=>{if(data&&!document.hidden&&!dialog.open)refresh(true);},5000);
+document.addEventListener('visibilitychange', () => {
+ if (document.hidden) stopRefreshPolling();
+ else if (data && !dialog.open) refresh(true);
+});

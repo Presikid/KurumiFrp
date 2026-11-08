@@ -7,6 +7,20 @@ import (
 	"testing"
 )
 
+func TestLogBufferChunkedWritesPreserveLineBoundaries(t *testing.T) {
+	buf := newLogBuffer([]string{"split-secret"})
+	_, _ = buf.Write([]byte("first\nsecond split-"))
+	_, _ = buf.Write([]byte("secret\n"))
+	_, _ = buf.Write([]byte(strings.Repeat("x", 10000)))
+	_, _ = buf.Write([]byte(strings.Repeat("y", 6385)))
+	_, _ = buf.Write([]byte("\nlast\n"))
+	got := buf.read()
+	want := []string{"first", "second [REDACTED]", "[oversized log line omitted]", "last"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("chunked log lines = %#v, want %#v", got, want)
+	}
+}
+
 func TestLogRedactorMasksQuotedCredentials(t *testing.T) {
 	secret := "a-credential:\"\\\t<>&\u2028\u2029\x7f"
 	jsonText, _ := json.Marshal(secret)

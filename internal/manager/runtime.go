@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -107,30 +108,40 @@ func (l *logBuffer) Write(b []byte) (int, error) {
 	if l.redactor == nil {
 		l.redactor = newLogRedactor(l.secrets)
 	}
-	for _, c := range b {
-		if c == '\n' {
-			line := "[oversized log line omitted]"
-			if !l.dropping {
-				line = l.redactor.Replace(ansi.ReplaceAllString(string(l.pending), ""))
-			}
-			l.lines = append(l.lines, line)
-			if len(l.lines) > 200 {
-				l.lines[0] = ""
-				l.lines = l.lines[len(l.lines)-200:]
-			}
-			l.pending = l.pending[:0]
-			l.dropping = false
-			continue
+
+	written := len(b)
+	for len(b) > 0 {
+		newline := bytes.IndexByte(b, '\n')
+		chunk := b
+		if newline >= 0 {
+			chunk = b[:newline]
 		}
-		if !l.dropping {
-			l.pending = append(l.pending, c)
-			if len(l.pending) > 16384 {
+		if !l.dropping && len(chunk) > 0 {
+			if len(chunk) > 16384-len(l.pending) {
 				l.pending = nil
 				l.dropping = true
+			} else {
+				l.pending = append(l.pending, chunk...)
 			}
 		}
+		if newline < 0 {
+			break
+		}
+
+		line := "[oversized log line omitted]"
+		if !l.dropping {
+			line = l.redactor.Replace(ansi.ReplaceAllString(string(l.pending), ""))
+		}
+		l.lines = append(l.lines, line)
+		if len(l.lines) > 200 {
+			l.lines[0] = ""
+			l.lines = l.lines[len(l.lines)-200:]
+		}
+		l.pending = l.pending[:0]
+		l.dropping = false
+		b = b[newline+1:]
 	}
-	return len(b), nil
+	return written, nil
 }
 func (l *logBuffer) read() []string {
 	l.mu.Lock()
