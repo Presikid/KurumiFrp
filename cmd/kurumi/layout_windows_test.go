@@ -206,7 +206,7 @@ func TestCopyLegacyWindowsProfilePreservesContents(t *testing.T) {
 func TestCleanupMigrationTempsRemovesOnlyRecognizedPrivateDirectories(t *testing.T) {
 	_, runtimeRoot, _, sid := windowsMigrationFixture(t)
 	profilesRoot := filepath.Join(runtimeRoot, "profiles")
-	temp := filepath.Join(profilesRoot, ".migration-"+sid+"-12345")
+	temp := filepath.Join(profilesRoot, ".migration-"+sid+"--12345")
 	if err := createPrivateDirectory(temp, profileACL(sid)); err != nil {
 		t.Fatal(err)
 	}
