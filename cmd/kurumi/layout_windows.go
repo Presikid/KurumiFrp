@@ -694,6 +694,15 @@ func prepareWindowsProfile(create bool) error {
 	if e = verifyMachine(root, install); e != nil {
 		return e
 	}
+	legacyRoot, e := legacyWindowsDataRoot()
+	if e != nil {
+		return e
+	}
+	if _, e = os.Lstat(legacyRoot); e == nil {
+		return fmt.Errorf("legacy ProgramData data is still present; rerun the installer to complete migration before starting KurumiFRP")
+	} else if !os.IsNotExist(e) {
+		return e
+	}
 	if _, e = os.Lstat(filepath.Join(root, ".uninstalling")); !os.IsNotExist(e) {
 		return fmt.Errorf("machine installation maintenance in progress")
 	}
