@@ -21,7 +21,7 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 
 ## 下载安装
 
-前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.7、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
+前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.8、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
 
 **Windows 10 / 11**
 
@@ -30,13 +30,13 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 **Debian / Ubuntu**
 
 ```sh
-sudo apt install ./kurumifrp_0.7.1.7_amd64.deb
+sudo apt install ./kurumifrp_0.7.1.8_amd64.deb
 ```
 
 **Fedora / RHEL 系**
 
 ```sh
-sudo dnf install ./kurumifrp-0.7.1.7-1.x86_64.rpm
+sudo dnf install ./kurumifrp-0.7.1.8-1.x86_64.rpm
 ```
 
 Linux 安装包会配置 systemd 服务；ARM64 请下载对应架构的包。安装、升级、卸载及旧版迁移的步骤见 [安装说明](docs/INSTALL.md)。目前安装包尚未进行商业代码签名，也没有在线 APT/YUM 软件源。
@@ -70,7 +70,7 @@ frp 核心支持自动安装官方 Windows、Linux 各架构及 macOS amd64 / ar
 
 **导出文件包含恢复配置所需的密钥，请像密码一样保管，不要公开分享。** 导入后界面会刷新，但已经运行的实例需要重新启动才能使用新配置。导出文件不包含 frp 核心程序，换机器后请另行安装适合目标系统的核心。
 
-Windows 数据位于 `%ProgramData%\KurumiFRP` 下，并按 Windows 账户隔离；Linux 原生包的数据位于 `/var/lib/kurumifrp`。源码运行时默认使用当前目录下的 `data`。完整路径及卸载时的数据处理见 [安装说明](docs/INSTALL.md)。
+Windows 原生安装版的数据位于安装目录下的 `runtime/profiles/<Windows SID>`，并按 Windows 账户隔离；Linux 原生包的数据位于 `/var/lib/kurumifrp`。源码运行时默认使用当前目录下的 `data`。旧版 ProgramData 数据会在升级时经验证后自动迁移。完整路径及卸载时的数据处理见 [安装说明](docs/INSTALL.md)。
 
 ## 从源码运行
 
