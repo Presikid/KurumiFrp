@@ -30,6 +30,7 @@ jobs:
           formatting="$(gofmt -l cmd internal web)"
           if [[ -n "$formatting" ]]; then
             printf 'Go files need gofmt:\n%s\n' "$formatting"
+            while IFS= read -r file; do gofmt -d "$file"; done <<< "$formatting"
             exit 1
           fi
           python scripts/check-release-notes.py
