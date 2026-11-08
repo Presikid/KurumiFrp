@@ -1,6 +1,6 @@
 # 0.5 验证范围
 
-新增 Windows Known Folder 路径、防环境变量劫持、NTFS 账户目录权限、临时会话清理与保留未知文件的单元测试。Windows 原生测试实际安装到默认 Program Files，检查 HKLM 卸载项，创建临时普通账户并验证可运行、不能读取另一账户的密钥或写入 Program Files；测试子 frp 使用受控 TEMP，检查升级和跨账户卸载。Linux 原生测试检查子进程 TMPDIR 与 systemd RuntimeDirectory 生命周期。
+新增 Windows 安装目录内运行时路径、防环境变量劫持、NTFS 账户目录权限、临时会话清理与保留未知文件的单元测试。Windows 原生测试实际安装到默认 Program Files，检查 HKLM 卸载项，创建临时普通账户并验证可运行、不能读取另一账户的密钥或写入 Program Files；测试子 frp 使用受控 TEMP，检查升级和跨账户卸载。Linux 原生测试检查子进程 TMPDIR 与 systemd RuntimeDirectory 生命周期。
 
 新增测试是否通过应查对应提交 CI，不以此文档代替结果；没有做全系统文件写入跟踪、所有 Windows 客户端版本或 ARM64 实机验证。下文为历史版本记录。
 
