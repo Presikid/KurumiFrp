@@ -96,7 +96,7 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
             assert not (app/'data').exists() and not (app/'cores').exists(), 'runtime wrote into Program Files'
             assert Path(paths['temporary'])==profile/'tmp'
             subprocess.run([str(exe),'--check-running'],check=True,timeout=25)
-            assert api('state')['version']=='0.7.1.2'
+            assert api('state')['version']=='0.7.1.5'
             wait_until(lambda:not source.exists())
             current=[(profile/'data/access.token').read_text(), json.loads((profile/'data/state.json').read_text())['key']]
             if before is not None: assert before==current, 'reinstall rotated secrets'
@@ -136,7 +136,7 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
         failed=subprocess.run([str(app/'unins000.exe'),'/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'],timeout=35)
         assert failed.returncode!=0 and exe.exists() and (profile/'data/state.json').exists()
         token.write_bytes(saved)
-        assert api('state')['version']=='0.7.1.2'
+        assert api('state')['version']=='0.7.1.5'
         fixture=root/'fixture.go'
         fixture.write_text('package main\nimport("os";"time";"path/filepath")\nfunc main(){if len(os.Args)>1 && os.Args[1]=="verify"{return};os.WriteFile(filepath.Join(os.TempDir(),"frp-temp-probe"),[]byte(os.Getenv("TEMP")),0600);for{time.Sleep(time.Second)}}\n')
         subprocess.run(['go','build','-o',str(profile/'cores/frps.exe'),str(fixture)],check=True,timeout=90)

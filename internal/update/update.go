@@ -141,14 +141,19 @@ func newer(a, b string) bool {
 	return false
 }
 func packageName(tag, distribution string) string {
+	return packageNameForArch(tag, distribution, runtime.GOARCH)
+}
+
+func packageNameForArch(tag, distribution, goarch string) string {
 	version := strings.TrimPrefix(tag, "v")
 	if distribution == "windows-installed" {
 		return "KurumiFRP-" + version + "-Setup.exe"
 	}
-	if distribution == "linux-deb" && (runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64") {
-		return "kurumifrp_" + version + "_" + runtime.GOARCH + ".deb"
+	debArch := map[string]string{"amd64": "amd64", "arm64": "arm64", "arm": "armhf", "riscv64": "riscv64"}[goarch]
+	if distribution == "linux-deb" && debArch != "" {
+		return "kurumifrp_" + version + "_" + debArch + ".deb"
 	}
-	arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[runtime.GOARCH]
+	arch := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[goarch]
 	if distribution == "linux-rpm" && arch != "" {
 		return "kurumifrp-" + version + "-1." + arch + ".rpm"
 	}

@@ -53,7 +53,7 @@ try:
     run(install)
     ensure_running()
     before=keys()
-    assert api('state')['version']=='0.7.1.2'
+    assert api('state')['version']=='0.7.1.5'
     run(['dpkg','--verify','kurumifrp'] if is_deb else ['rpm','-V','kurumifrp'])
     # Reinstall/upgrade path must stop and restart the owned manager, never purge data.
     run(install)
@@ -72,14 +72,14 @@ try:
         run(['systemctl', 'is-active', '--quiet', 'kurumifrp-updater.path'])
         request_file=base/'update.request'
         staged=base/'.update-test'
-        staged.write_text('v0.7.1.2')  # Same version is rejected without downloading or installing.
+        staged.write_text('v0.7.1.5')  # Same version is rejected without downloading or installing.
         os.chown(staged, uid, -1)
         os.replace(staged, request_file)
         for _ in range(200):
             if not request_file.exists(): break
             time.sleep(.1)
         assert not request_file.exists(), 'systemd did not process update request'
-        assert api('state')['version']=='0.7.1.2', 'rejected update changed the running version'
+        assert api('state')['version']=='0.7.1.5', 'rejected update changed the running version'
     fixture=base/'cores/frps'
     fixture.write_text('#!/bin/sh\nif [ "$1" = verify ]; then exit 0; fi\nprintf %s "$TMPDIR" > "$TMPDIR/frp-temp-probe"\nexec sleep 600\n')
     fixture.chmod(0o755)
