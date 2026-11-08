@@ -30,13 +30,25 @@ with tempfile.TemporaryDirectory(prefix='core-ui-') as tmp:
             try:opener.open(base,timeout=1).close();break
             except OSError:time.sleep(.1)
         token=(root/'access.token').read_text()
+        status_request=urllib.request.Request(base+'/api/core',headers={'Authorization':'Bearer '+token})
+        with opener.open(status_request,timeout=8) as response:
+            status_etag=response.headers.get('ETag')
+        assert status_etag, 'core status omitted ETag'
+        conditional_status=urllib.request.Request(base+'/api/core',headers={'Authorization':'Bearer '+token,'If-None-Match':status_etag})
+        try:
+            opener.open(conditional_status,timeout=8)
+            raise AssertionError('unchanged core status did not return 304')
+        except urllib.error.HTTPError as error:
+            assert error.code==304, f'conditional core status returned {error.code}'
         host='linux_amd64'
         release={'tag_name':'v0.72.0','assets':[{'name':'frp_0.72.0_linux_amd64.tar.gz','platform':host,'compatible':True,'installable':True,'size':14564595,'digest':'sha256:'+'a'*64,'browser_download_url':'https://github.com/fatedier/frp/releases/download/v0.72.0/frp_0.72.0_linux_amd64.tar.gz'},{'name':'frp_0.72.0_windows_amd64.zip','platform':'windows_amd64','compatible':False,'installable':False,'size':10000000,'browser_download_url':'https://github.com/fatedier/frp/releases/download/v0.72.0/frp_0.72.0_windows_amd64.zip'}]}
+        request_counts={'core_status':0}
         def fixture(path):
             if path=='/api/core/releases':return [{'tag_name':'v0.72.0'}]
             if path.startswith('/api/core/release?'):return release
             return None
         def bridge(path,options):
+            if path=='/api/core':request_counts['core_status']+=1
             value=fixture(path)
             if value is not None:return {'status':200,'body':json.dumps(value)}
             if not path.startswith('/api/'):raise ValueError('unexpected URL')
@@ -59,12 +71,20 @@ with tempfile.TemporaryDirectory(prefix='core-ui-') as tmp:
                 for f in ['app.js','core.js']:page.add_script_tag(content=(web/f).read_text())
             else:
                 def route(r):
-                    value=fixture(r.request.url.removeprefix(base))
+                    route_path=r.request.url.removeprefix(base)
+                    if route_path=='/api/core':request_counts['core_status']+=1
+                    value=fixture(route_path)
                     if value is not None:r.fulfill(status=200,content_type='application/json',body=json.dumps(value))
                     else:r.continue_()
                 page.route('**/api/core/**',route);page.goto(base)
             page.locator('#login-form input').fill(token);page.locator('#login-form button').click();page.locator('#app').wait_for(state='visible')
             page.locator('[data-page=core]').click();page.locator('#core-version option[value="v0.72.0"]').wait_for(state='attached')
+            for _ in range(20):
+                if request_counts['core_status']>=1:break
+                page.wait_for_timeout(100)
+            assert request_counts['core_status']==1, f'expected one initial core status request, got {request_counts["core_status"]}'
+            page.wait_for_timeout(2500)
+            assert request_counts['core_status']==1, 'idle core page is polling more often than its 10-second interval'
             expect(page.locator("#core-install")).to_be_enabled()
             assert page.locator('#core-asset').input_value().endswith('linux_amd64.tar.gz')
             page.screenshot(path=str(shots/'core-desktop.png'),full_page=True)
