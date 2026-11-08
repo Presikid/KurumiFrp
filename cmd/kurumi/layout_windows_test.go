@@ -202,3 +202,35 @@ func TestCopyLegacyWindowsProfilePreservesContents(t *testing.T) {
 		t.Fatal("copied profile failed receipt/ACL validation:", err)
 	}
 }
+
+func TestCleanupMigrationTempsRemovesOnlyRecognizedPrivateDirectories(t *testing.T) {
+	_, runtimeRoot, _, sid := windowsMigrationFixture(t)
+	profilesRoot := filepath.Join(runtimeRoot, "profiles")
+	temp := filepath.Join(profilesRoot, ".migration-"+sid+"-12345")
+	if err := createPrivateDirectory(temp, profileACL(sid)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(temp, "partial.tmp"), []byte("partial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupMigrationTemps(runtimeRoot); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(temp); !os.IsNotExist(err) {
+		t.Fatalf("migration temp directory remains: %v", err)
+	}
+}
+
+func TestCleanupMigrationTempsRetainsUnknownDirectories(t *testing.T) {
+	_, runtimeRoot, _, _ := windowsMigrationFixture(t)
+	unknown := filepath.Join(runtimeRoot, "profiles", "unexpected")
+	if err := os.Mkdir(unknown, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupMigrationTemps(runtimeRoot); err == nil {
+		t.Fatal("accepted an unknown runtime profile directory")
+	}
+	if _, err := os.Stat(unknown); err != nil {
+		t.Fatal("unknown runtime data was removed:", err)
+	}
+}
