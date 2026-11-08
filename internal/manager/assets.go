@@ -23,10 +23,15 @@ type embeddedAssetHandler struct {
 
 func newEmbeddedAssetHandler(source fs.FS) http.Handler {
 	files := make(map[string]embeddedAsset)
-	for _, name := range []string{"index.html", "app.js", "core.js", "style.css", "core.css", "kurumi.webp"} {
+	// Serve every embedded file so future pages and nested assets do not need
+	// a second, easy-to-forget allowlist outside the embed declaration.
+	_ = fs.WalkDir(source, ".", func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return nil
+		}
 		body, err := fs.ReadFile(source, name)
 		if err != nil {
-			continue
+			return nil
 		}
 		digest := sha256.Sum256(body)
 		contentType := mime.TypeByExtension(path.Ext(name))
@@ -47,7 +52,8 @@ func newEmbeddedAssetHandler(source fs.FS) http.Handler {
 			contentType: contentType,
 			etag:        "\"" + hex.EncodeToString(digest[:]) + "\"",
 		}
-	}
+		return nil
+	})
 	return &embeddedAssetHandler{files: files}
 }
 

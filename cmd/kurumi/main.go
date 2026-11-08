@@ -87,7 +87,7 @@ func run() error {
 	}
 	if distribution == "windows-installed" {
 		if *dir != defaultData || *bin != defaultCore {
-			return fmt.Errorf("installed builds keep state in ProgramData; use a source build for custom paths")
+			return fmt.Errorf("installed builds keep runtime data under the installation directory; use a source build for custom paths")
 		}
 		// Setup starts the unelevated manager asynchronously. Its read-only
 		// readiness probe may arrive before that account creates its profile.

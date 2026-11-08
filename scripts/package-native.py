@@ -43,7 +43,11 @@ def windows():
         stage = Path(temp)
         for arch in ('amd64', 'arm64'):
             build('windows', arch, stage / arch / 'kurumi.exe')
-        shutil.copyfile(ROOT / 'docs/INSTALL.md', stage / 'INSTALL.md')
+        # The bundled language translation has its own attribution; include it
+        # in the existing installation guide rather than creating a license folder.
+        guide = (ROOT / 'docs/INSTALL.md').read_text(encoding='utf-8')
+        notice = (ROOT / 'packaging/windows/ChineseSimplified-LICENSE.txt').read_text(encoding='utf-8')
+        (stage / 'INSTALL.md').write_text(guide + '\n## 第三方组件声明\n\n简体中文安装界面翻译使用以下第三方许可；这不是 KurumiFRP 的项目许可。\n\n' + notice, encoding='utf-8')
         run([iscc, '/DAppVersion=' + VERSION, '/DPayloadDir=' + str(stage),
              '/DOutputPath=' + str(OUT), ROOT / 'packaging/windows/kurumifrp.iss'])
 
