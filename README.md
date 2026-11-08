@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/kurumi.webp" width="200" alt="时崎狂三与时钟的主题插画">
+  <img src="assets/material/solo/KA15-bat-magic-gentle-v01.png" width="1000">
 </p>
 
 <h1 align="center">KurumiFRP</h1>
@@ -113,4 +113,4 @@ go vet ./...
 - [主题素材说明](docs/ARTWORK.md)
 - [版本约定](docs/VERSIONING.md)
 
-时崎狂三是《约会大作战》中的角色；本项目的主题插画为非官方同人创作，相关角色权利属于各自权利方。项目目前未指定开源许可证。
+
