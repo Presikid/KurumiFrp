@@ -27,7 +27,11 @@ jobs:
       - name: Format, vet and unit tests
         shell: bash
         run: |
-          test -z "$(gofmt -l cmd internal web)"
+          formatting="$(gofmt -l cmd internal web)"
+          if [[ -n "$formatting" ]]; then
+            printf 'Go files need gofmt:\n%s\n' "$formatting"
+            exit 1
+          fi
           python scripts/check-release-notes.py
           go vet ./...
           go test -count=1 -v ./...
