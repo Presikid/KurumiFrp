@@ -2,9 +2,9 @@
 
 package main
 
-// Windows binaries are machine-installed and read-only. Mutable state is kept
-// in ProgramData and isolated by Windows SID; never grant Users write access to
-// Program Files or access to another account's tokens/downloaded executables.
+// Windows binaries are machine-installed and read-only. Mutable state lives
+// beneath the installation directory in an ACL-protected runtime root, with
+// each Windows SID receiving a private profile.
 import (
 	"encoding/json"
 	"fmt"
@@ -37,19 +37,31 @@ type profileReceipt struct {
 	Schema  int    `json:"schema"`
 }
 
-func windowsDataRoot() (string, error) {
-	// FOLDERID_ProgramData, resolved through the Shell API rather than an
-	// untrusted inherited environment variable or a hard-coded system drive.
+func windowsRuntimeRoot() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	install, err := nativeRoot(exe)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(install, "runtime"), nil
+}
+
+// legacyWindowsDataRoot resolves the old ProgramData location only for a
+// one-time, ownership-checked migration from earlier machine installations.
+func legacyWindowsDataRoot() (string, error) {
 	guid := syscall.GUID{Data1: 0x62ab5d82, Data2: 0xfdc1, Data3: 0x4dc3, Data4: [8]byte{0xa9, 0xdd, 0x07, 0x0d, 0x1d, 0x49, 0x5d, 0x97}}
 	var p *uint16
 	r, _, _ := syscall.NewLazyDLL("shell32.dll").NewProc("SHGetKnownFolderPath").Call(uintptr(unsafe.Pointer(&guid)), 0, 0, uintptr(unsafe.Pointer(&p)))
 	if r != 0 || p == nil {
-		return "", fmt.Errorf("cannot resolve ProgramData (HRESULT 0x%x)", r)
+		return "", fmt.Errorf("cannot resolve legacy ProgramData location (HRESULT 0x%x)", r)
 	}
 	defer syscall.NewLazyDLL("ole32.dll").NewProc("CoTaskMemFree").Call(uintptr(unsafe.Pointer(p)))
 	base := syscall.UTF16ToString((*[32768]uint16)(unsafe.Pointer(p))[:])
 	if !filepath.IsAbs(base) {
-		return "", fmt.Errorf("invalid ProgramData location")
+		return "", fmt.Errorf("invalid legacy ProgramData location")
 	}
 	return filepath.Join(base, "KurumiFRP"), nil
 }
@@ -70,7 +82,7 @@ func currentSID() (string, error) {
 	return s, nil
 }
 func windowsUserRoot() (string, error) {
-	root, e := windowsDataRoot()
+	root, e := windowsRuntimeRoot()
 	if e != nil {
 		return "", e
 	}
@@ -218,7 +230,7 @@ func verifyMachine(root, install string) error {
 	return nil
 }
 func initMachine(install string) error {
-	root, e := windowsDataRoot()
+	root, e := windowsRuntimeRoot()
 	if e != nil {
 		return e
 	}
@@ -240,6 +252,13 @@ func initMachine(install string) error {
 	if e = verifyMachine(root, install); e != nil {
 		return e
 	}
+	legacyRoot, e := legacyWindowsDataRoot()
+	if e != nil {
+		return e
+	}
+	if e = migrateLegacyWindowsProfiles(legacyRoot, root, install); e != nil {
+		return e
+	}
 	if e = os.Remove(filepath.Join(root, ".uninstalling")); e != nil && !os.IsNotExist(e) {
 		return e
 	}
@@ -251,7 +270,7 @@ func prepareWindowsProfile(create bool) error {
 		return e
 	}
 	install := filepath.Dir(exe)
-	root, e := windowsDataRoot()
+	root, e := windowsRuntimeRoot()
 	if e != nil {
 		return e
 	}
@@ -292,7 +311,7 @@ func prepareWindowsProfile(create bool) error {
 	return nil
 }
 func stopMachine(install string, purge bool) (err error) {
-	root, err := windowsDataRoot()
+	root, err := windowsRuntimeRoot()
 	if err != nil {
 		return err
 	}
@@ -384,7 +403,7 @@ func checkMachineGate() error {
 	if distribution != "windows-installed" {
 		return nil
 	}
-	root, e := windowsDataRoot()
+	root, e := windowsRuntimeRoot()
 	if e != nil {
 		return e
 	}
