@@ -96,7 +96,6 @@ func TestReleaseListAndSelection(t *testing.T) {
 	}
 }
 
-
 func TestVersionsSortNumerically(t *testing.T) {
 	m := New(t.TempDir(), "source")
 	jsonBody := `[
