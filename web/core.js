@@ -135,8 +135,9 @@ async function showCoreReleaseOptions(force=false) {
 }
 let coreSelection=0;
 async function loadCoreRelease(tag,force=false) {
- if(!force && coreRelease?.tag_name===tag) {paintCoreAsset();return;}
+ if(!force && coreRelease?.tag_name===tag) {coreSelection++;paintCoreAsset();return;}
  if(!force && coreReleaseCache.has(tag)) {
+  coreSelection++;
   coreRelease=coreReleaseCache.get(tag);
   coreError='';
   const options=coreRelease.assets.slice().sort((a,b)=>Number(b.compatible)-Number(a.compatible));
