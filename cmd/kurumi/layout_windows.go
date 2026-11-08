@@ -601,6 +601,12 @@ func migrateLegacyWindowsProfiles(legacyRoot, runtimeRoot, install string) error
 		if err = stopExisting(filepath.Join(source, "data"), 45*time.Second); err != nil {
 			return fmt.Errorf("old profile %s is still running; data was retained: %w", sid, err)
 		}
+		// Shutdown removes the manager lock and may clean its temporary files.
+		// Compare against the stopped profile, not the pre-shutdown snapshot.
+		digest, verifyErr = verifyLegacyProfile(source, sid)
+		if verifyErr != nil {
+			return fmt.Errorf("stopped old profile %s failed validation and was retained: %w", sid, verifyErr)
+		}
 		target := filepath.Join(runtimeRoot, "profiles", sid)
 		if _, statErr := os.Lstat(target); statErr == nil {
 			targetDigest, targetErr := verifyLegacyProfile(target, sid)
