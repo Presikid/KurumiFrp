@@ -134,15 +134,20 @@ async function showCoreReleaseOptions(force=false) {
  await loadCoreRelease(tag,force);
 }
 let coreSelection=0;
+function showCoreAssetOptions(release) {
+ const previous=$('#core-asset')?.value;
+ const options=release.assets.slice().sort((a,b)=>Number(b.compatible)-Number(a.compatible));
+ $('#core-asset').innerHTML=options.map(a=>`<option value="${esc(a.name)}">${esc(a.platform)}${a.compatible?' · 匹配本机':''} · ${coreSize(a.size)}</option>`).join('');
+ if(options.some(a=>a.name===previous))$('#core-asset').value=previous;
+ paintCoreAsset();
+}
 async function loadCoreRelease(tag,force=false) {
- if(!force && coreRelease?.tag_name===tag) {coreSelection++;paintCoreAsset();return;}
+ if(!force && coreRelease?.tag_name===tag) {coreSelection++;showCoreAssetOptions(coreRelease);return;}
  if(!force && coreReleaseCache.has(tag)) {
   coreSelection++;
   coreRelease=coreReleaseCache.get(tag);
   coreError='';
-  const options=coreRelease.assets.slice().sort((a,b)=>Number(b.compatible)-Number(a.compatible));
-  $('#core-asset').innerHTML=options.map(a=>`<option value="${esc(a.name)}">${esc(a.platform)}${a.compatible?' · 匹配本机':''} · ${coreSize(a.size)}</option>`).join('');
-  paintCoreAsset();
+  showCoreAssetOptions(coreRelease);
   return;
  }
  const generation=++coreSelection;coreRelease=null;paintCoreAsset();
@@ -150,9 +155,7 @@ async function loadCoreRelease(tag,force=false) {
   const r=await api('core/release?tag='+encodeURIComponent(tag));
   if(generation!==coreSelection||!$('#core-screen'))return;
   coreRelease=r;coreReleaseCache.set(tag,r);coreError='';
-  const options=r.assets.slice().sort((a,b)=>Number(b.compatible)-Number(a.compatible));
-  $('#core-asset').innerHTML=options.map(a=>`<option value="${esc(a.name)}">${esc(a.platform)}${a.compatible?' · 匹配本机':''} · ${coreSize(a.size)}</option>`).join('');
-  paintCoreAsset();
+  showCoreAssetOptions(r);
  }catch(e){coreError=e.message;}paintCoreStatus();
 }
 function paintCoreAsset() {
