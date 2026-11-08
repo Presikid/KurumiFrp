@@ -792,16 +792,6 @@ func stopMachine(install string, purge bool) (err error) {
 	if err = verifyMachine(root, install); err != nil {
 		return err
 	}
-	legacyRoot, err := legacyWindowsDataRoot()
-	if err != nil {
-		return err
-	}
-	if err = migrateLegacyWindowsProfiles(legacyRoot, root, install); err != nil {
-		return fmt.Errorf("legacy data migration must complete before maintenance: %w", err)
-	}
-	if err = cleanupMigrationTemps(root); err != nil {
-		return err
-	}
 	marker := filepath.Join(root, ".uninstalling")
 	if b, e := os.ReadFile(marker); e == nil {
 		if string(b) != productID {
@@ -819,6 +809,16 @@ func stopMachine(install string, purge bool) (err error) {
 			_ = os.Remove(marker)
 		}
 	}()
+	legacyRoot, err := legacyWindowsDataRoot()
+	if err != nil {
+		return err
+	}
+	if err = migrateLegacyWindowsProfiles(legacyRoot, root, install); err != nil {
+		return fmt.Errorf("legacy data migration must complete before maintenance: %w", err)
+	}
+	if err = cleanupMigrationTemps(root); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(filepath.Join(root, "profiles"))
 	if err != nil {
 		return err
