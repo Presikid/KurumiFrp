@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/kurumi.webp" width="200" alt="时崎狂三与时钟的主题插画">
+  <img src="assets/material/solo/KA15-bat-magic-gentle-v01.png" width="1000">
 </p>
 
 <h1 align="center">KurumiFRP</h1>
@@ -21,7 +21,7 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 
 ## 下载安装
 
-前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.0、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
+前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.12、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
 
 **Windows 10 / 11**
 
@@ -30,16 +30,18 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 **Debian / Ubuntu**
 
 ```sh
-sudo apt install ./kurumifrp_0.7.0_amd64.deb
+sudo apt install ./kurumifrp_0.7.1.12_amd64.deb
 ```
 
 **Fedora / RHEL 系**
 
 ```sh
-sudo dnf install ./kurumifrp-0.7.0-1.x86_64.rpm
+sudo dnf install ./kurumifrp-0.7.1.12-1.x86_64.rpm
 ```
 
 Linux 安装包会配置 systemd 服务；ARM64 请下载对应架构的包。安装、升级、卸载及旧版迁移的步骤见 [安装说明](docs/INSTALL.md)。目前安装包尚未进行商业代码签名，也没有在线 APT/YUM 软件源。
+
+从 0.6.0 升级到四段版本号的版本时，请下载原生安装包手动升级；旧版内置更新器无法识别新的版本号。
 
 ## 第一次使用
 
@@ -54,14 +56,15 @@ Windows 快捷方式可以自动打开工作台；手动登录或无桌面环境
 
 ## 能做什么？
 
-- **连接与实例**：管理本机多个 `frpc` / `frps`，配置 TCP、UDP、HTTP、HTTPS、STCP 和 Visitor，查看进程状态与运行记录。
+- **连接与实例**：管理本机多个 `frpc` / `frps`，配置 TCP、UDP、HTTP、HTTPS、STCP 和 Visitor，查看进程状态与运行记录；可为每个实例选择在工作台启动时自动恢复。
+- **本地目标诊断**：检测 TCP/STCP 端口或 HTTP/HTTPS 服务，可自定义诊断路径并批量检查；结果只代表本地目标状态，不代表远端隧道或公网可达。UDP 不支持通用探测。
 - **核心管理**：从 frp 官方发布中选择、下载和切换核心版本，下载时校验文件；切换不会自动启动实例。
-- **本地目标诊断**：TCP/STCP 检查本地端口；HTTP/HTTPS 发送不跟随重定向的 HEAD 请求并显示状态码、耗时和原因。UDP 没有通用可靠探测方式。检测结果不代表远端 FRP 隧道已注册或公网可达。
+- **配置差异**：对比实例上次应用的配置与当前草稿，查看变更；密钥内容不会出现在差异中。
 - **配置与快照**：在界面中预览配置、导入导出，或恢复历史快照。默认保留 5 份，可调整为 0–100 份。
 - **软件更新**：已安装的 Windows 和 Linux 原生包可从工作台选择项目发布版本并更新；源码运行版本需要自行更新。
 - **随手看看**：界面支持深浅主题和手机尺寸，运行记录保留当前会话最近的进程输出。
 
-frp 核心支持自动安装 Linux、Windows、macOS 的 amd64 / arm64 版本；KurumiFRP 的预编译安装包面向 Linux 和 Windows 的 amd64 / arm64。核心最低支持 frp 0.60，具体验证情况见 [测试说明](docs/VALIDATION.md)。
+frp 核心支持自动安装官方 Windows、Linux 各架构及 macOS amd64 / arm64 版本。KurumiFRP 提供 Windows x64 / ARM64 安装包、Linux amd64 / arm64 的 DEB 和 RPM、Linux armhf / riscv64 的 DEB，以及其他官方 Linux 架构的便携版。便携版需手动替换程序更新。核心最低支持 frp 0.60，具体验证情况见 [测试说明](docs/VALIDATION.md)。
 
 ## 备份与迁移
 
@@ -69,7 +72,7 @@ frp 核心支持自动安装 Linux、Windows、macOS 的 amd64 / arm64 版本；
 
 **导出文件包含恢复配置所需的密钥，请像密码一样保管，不要公开分享。** 导入后界面会刷新，但已经运行的实例需要重新启动才能使用新配置。导出文件不包含 frp 核心程序，换机器后请另行安装适合目标系统的核心。
 
-Windows 数据位于 `%ProgramData%\KurumiFRP` 下，并按 Windows 账户隔离；Linux 原生包的数据位于 `/var/lib/kurumifrp`。源码运行时默认使用当前目录下的 `data`。完整路径及卸载时的数据处理见 [安装说明](docs/INSTALL.md)。
+Windows 原生安装版的数据位于安装目录下的 `runtime/profiles/<Windows SID>`，并按 Windows 账户隔离；Linux 原生包的数据位于 `/var/lib/kurumifrp`。源码运行时默认使用当前目录下的 `data`。旧版 ProgramData 数据会在升级时经验证后自动迁移。完整路径及卸载时的数据处理见 [安装说明](docs/INSTALL.md)。
 
 ## 从源码运行
 
@@ -100,14 +103,15 @@ go vet ./...
 ## 使用前知道这些
 
 - 保存配置不会自动改变正在运行的实例；导入或恢复配置后，需要按界面提示重新启动实例。
-- 工作台和 frp 实例是两回事：目前不会在工作台启动后自动恢复所有已保存的实例。
+- 工作台和 frp 实例是两回事：实例默认手动启动；可在编辑窗口单独启用自动恢复，启动前仍会校验配置，失败原因显示在实例卡片。
 - 软件更新会中断正在运行的实例。管理器异常退出后，请先确认旧进程状态，不要盲目删除进程锁。
 - 工作台面向本机管理；远程设备 Agent、配额和定时策略等功能目前尚未实现。
 
 ## 更多资料
 
 - [安装、升级与卸载](docs/INSTALL.md)
-- [架构说明](docs/ARCHITECTURE.md) · [测试说明](docs/VALIDATION.md) · [开发路线](docs/ROADMAP.md)
+- [架构说明](docs/ARCHITECTURE.md) · [测试说明](docs/VALIDATION.md) · [开发路线](docs/ROADMAP.md) · [审计核验与修复](docs/AUDIT_REMEDIATION.md)
 - [主题素材说明](docs/ARTWORK.md)
+- [版本约定](docs/VERSIONING.md)
 
-时崎狂三是《约会大作战》中的角色；本项目的主题插画为非官方同人创作，相关角色权利属于各自权利方。项目目前未指定开源许可证。
+
