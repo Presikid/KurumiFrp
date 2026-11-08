@@ -71,4 +71,4 @@ Windows 卸载脚本保留自身和所有权记录到其他文件清理完成，
 
 ## 0.4 原生发行
 
-Windows 采用 Inno Setup 原生引擎，不执行 PS1/CMD；安装器根据 CPU 选择 Go GUI 子系统程序。原生维护命令仅处理安装记录确认的 data/cores 与指定摘要的 Setup.exe；安装引擎负责自身文件和系统集成项。Linux 通过 DEB/RPM 登记 /usr 文件和 systemd 服务，独立低权限账户持有 /var/lib/kurumifrp；root 专用账户所有权记录保存在独立目录。包维护脚本只处理固定目录，普通 remove/升级不等于 purge。
+Windows 采用 Inno Setup 原生引擎，不执行 PS1/CMD；安装器根据 CPU 选择 Go GUI 子系统程序。原生安装版将可变运行数据放在安装目录下受 ACL 保护的 `runtime/profiles/<SID>`，原生维护命令仅处理安装记录确认的 profiles 与指定摘要的 Setup.exe；安装引擎负责自身文件和系统集成项。Linux 通过 DEB/RPM 登记 /usr 文件和 systemd 服务，独立低权限账户持有 /var/lib/kurumifrp；root 专用账户所有权记录保存在独立目录。包维护脚本只处理固定目录，普通 remove/升级不等于 purge。
