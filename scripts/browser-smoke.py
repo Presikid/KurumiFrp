@@ -89,7 +89,14 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#login-form button').click()
             page.locator('#app').wait_for(state="visible")
             page.locator('[data-action="new-instance"]').first.click()
-            page.locator('#editor input[name="name"]').fill("Tokyo entry")
+            # Modal input should not trigger a full-viewport backdrop filter repaint.
+            backdrop_filter = page.locator('#dialog').evaluate(
+                "(dialog) => getComputedStyle(dialog, '::backdrop').getPropertyValue('backdrop-filter').trim()"
+            )
+            assert backdrop_filter in ("", "none"), f"modal backdrop unexpectedly applies a filter: {backdrop_filter}"
+            name_input = page.locator('#editor input[name="name"]')
+            name_input.press_sequentially("Tokyo entry", delay=5)
+            assert name_input.input_value() == "Tokyo entry"
             page.locator('#editor input[name="host"]').fill("127.0.0.1")
             page.locator('#editor input[name="token"]').fill("test-passphrase-123")
             page.locator('#editor button[type="submit"]').click()
