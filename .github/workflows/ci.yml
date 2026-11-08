@@ -167,6 +167,21 @@ jobs:
           python3 -m pip install playwright==1.57.0
           python3 -m playwright install --with-deps "${KURUMI_BROWSER}"
           python3 scripts/browser-smoke.py ./kurumi
+  repair-0713-release-notes:
+    needs: [test, native-arm, browser-compatibility]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Remove the duplicated heading if the release is unchanged
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/repair-0713-notes.py
   release:
     needs: [test, native-arm, browser-compatibility]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
