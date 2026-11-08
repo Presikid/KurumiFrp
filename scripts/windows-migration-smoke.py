@@ -21,8 +21,8 @@ expected = "b01f3342688e299853667697345279c0938a7aa21af842efc9125218b5d5b41c"
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 def api(profile, path, body=None):
-    address = (profile / "data/listen.addr").read_text().strip()
-    token = (profile / "data/access.token").read_text()
+    address = (profile / "data/listen.addr").read_text(encoding="utf-8").strip()
+    token = (profile / "data/access.token").read_text(encoding="utf-8")
     req = urllib.request.Request("http://" + address + "/api/" + path,
         data=None if body is None else json.dumps(body).encode(),
         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
@@ -47,8 +47,8 @@ with tempfile.TemporaryDirectory(prefix="kurumi-upgrade-") as tmp:
         paths = json.loads(subprocess.check_output([str(exe), "--paths"], text=True))
         old_profile = Path(paths["data"]).parent
         subprocess.run([str(exe), "--check-running"], check=True, timeout=30)
-        token = (old_profile / "data/access.token").read_text()
-        before = json.loads((old_profile / "data/state.json").read_text())
+        token = (old_profile / "data/access.token").read_text(encoding="utf-8")
+        before = json.loads((old_profile / "data/state.json").read_text(encoding="utf-8"))
         state = api(old_profile, "state")
         api(old_profile, "save", {"revision": state["revision"], "kind": "instance", "value": {
             "name": "migration-fixture", "kind": "frps", "host": "127.0.0.1", "port": 17070,
@@ -59,8 +59,8 @@ with tempfile.TemporaryDirectory(prefix="kurumi-upgrade-") as tmp:
         subprocess.run([str(exe), "--check-running"], check=True, timeout=30)
         assert profile.is_relative_to(app / "runtime"), "profile was not moved into install directory"
         assert not old_root.exists(), "legacy root remains after migration"
-        assert (profile / "data/access.token").read_text() == token, "access token changed"
-        assert json.loads((profile / "data/state.json").read_text())["key"] == before["key"], "state key changed"
+        assert (profile / "data/access.token").read_text(encoding="utf-8") == token, "access token changed"
+        assert json.loads((profile / "data/state.json").read_text(encoding="utf-8"))["key"] == before["key"], "state key changed"
         assert any(i["name"] == "migration-fixture" for i in api(profile, "state")["state"]["instances"])
         assert not (app / "licenses/ChineseSimplified-LICENSE.txt").exists()
         print("PASS: genuine 0.7.1.5 installation upgrades with configuration and credentials preserved")
