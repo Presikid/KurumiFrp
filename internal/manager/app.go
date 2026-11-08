@@ -30,12 +30,13 @@ type App struct {
 	assets   http.Handler
 
 	// Lifecycle reservations are protected by mu. Slow operations run without it.
-	operations  map[string]*runtimeOperation
-	operationWG sync.WaitGroup
-	closing     bool
-	closeOnce   sync.Once
-	closeErr    error
-	stateCache  *stateResponseCache
+	operations   map[string]*runtimeOperation
+	operationWG  sync.WaitGroup
+	closing      bool
+	closeOnce    sync.Once
+	closeErr     error
+	stateCache   *stateResponseCache
+	activeProbes int
 }
 
 func New(dir, bin, addr string, assets fs.FS) (*App, error) {
@@ -179,6 +180,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.auth.logout(r)
 			http.SetCookie(w, &http.Cookie{Name: "kurumi_session", Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 			reply(w, 200, map[string]bool{"ok": true})
+			return
+		}
+		if r.URL.Path == "/api/probe" && r.Method == "POST" {
+			a.probeAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/core" || strings.HasPrefix(r.URL.Path, "/api/core/") {
