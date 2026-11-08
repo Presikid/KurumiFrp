@@ -21,10 +21,24 @@ var tagRE = regexp.MustCompile(`^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$`)
 var digestRE = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 var assetRE = regexp.MustCompile(`^frp_([0-9]+\.[0-9]+\.[0-9]+)_([a-z0-9]+)_([a-z0-9_]+)\.(tar\.gz|zip)$`)
 
-func Host() string { return runtime.GOOS + "_" + runtime.GOARCH }
+func Host() string { return platformFor(runtime.GOOS, runtime.GOARCH) }
+
+// Set at build time for the ARMv7 hard-float release. Generic source builds
+// use the upstream baseline ARM archive unless explicitly configured.
+var armVariant = "arm"
+
+func platformFor(goos, goarch string) string {
+	if goos == "linux" && goarch == "arm" {
+		if armVariant == "arm_hf" {
+			return "linux_arm_hf"
+		}
+		return "linux_arm"
+	}
+	return goos + "_" + goarch
+}
 func supported(platform string) bool {
 	switch platform {
-	case "linux_amd64", "linux_arm64", "windows_amd64", "windows_arm64", "darwin_amd64", "darwin_arm64":
+	case "linux_amd64", "linux_arm64", "linux_arm", "linux_arm_hf", "linux_riscv64", "linux_loong64", "linux_mips", "linux_mipsle", "linux_mips64", "linux_mips64le", "windows_amd64", "windows_arm64", "darwin_amd64", "darwin_arm64":
 		return true
 	}
 	return false

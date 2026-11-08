@@ -55,7 +55,7 @@ type Manager struct {
 	catalogAt      time.Time
 }
 
-var idRE = regexp.MustCompile(`^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}-(linux|windows|darwin)_(amd64|arm64)-[a-f0-9]{16}$`)
+var idRE = regexp.MustCompile(`^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}-(linux|windows|darwin)_(amd64|arm64|arm|arm_hf|riscv64|loong64|mips|mipsle|mips64|mips64le)-[a-f0-9]{16}$`)
 
 func New(root string) (*Manager, error) {
 	root, err := filepath.Abs(root)

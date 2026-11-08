@@ -118,7 +118,7 @@ func TestCatalogSelection(t *testing.T) {
 	if _, e = choose(r, Host()); e != nil {
 		t.Fatal(e)
 	}
-	for _, p := range []string{"../linux_amd64", "alien_amd64", "linux_mips"} {
+	for _, p := range []string{"../linux_amd64", "alien_amd64", "linux_386"} {
 		if _, e = choose(r, p); e == nil {
 			t.Fatal("accepted", p)
 		}
