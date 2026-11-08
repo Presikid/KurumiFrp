@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/Presikid/KurumiFrp/internal/core"
@@ -30,13 +31,16 @@ type App struct {
 	assets   http.Handler
 
 	// Lifecycle reservations are protected by mu. Slow operations run without it.
-	operations   map[string]*runtimeOperation
-	operationWG  sync.WaitGroup
-	closing      bool
-	closeOnce    sync.Once
-	closeErr     error
-	stateCache   *stateResponseCache
-	activeProbes int
+	operations    map[string]*runtimeOperation
+	operationWG   sync.WaitGroup
+	closing       bool
+	closeOnce     sync.Once
+	closeErr      error
+	stateCache    *stateResponseCache
+	activeProbes  int
+	startupDone   chan struct{}
+	startupCancel context.CancelFunc
+	startupErrors map[string]string
 }
 
 func New(dir, bin, addr string, assets fs.FS) (*App, error) {
@@ -95,7 +99,12 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	}); e != nil {
 		return nil, e
 	}
-	return &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets)}, nil
+	app := &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	ctx, cancel := context.WithCancel(context.Background())
+	app.startupCancel = cancel
+	instances := append([]Instance(nil), s.DB.State.Instances...)
+	go app.restoreAutoStart(ctx, instances)
+	return app, nil
 }
 func (a *App) SetDistribution(distribution string) {
 	a.updater = update.New(a.store.dir, update.DetectDistribution(distribution))
