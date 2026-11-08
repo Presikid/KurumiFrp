@@ -5,7 +5,7 @@ titles.core = '核心管理';
 const coreRenderBase = render;
 let coreStatus, coreRelease, coreReleases = [], coreError = '', coreLoading = false;
 let coreStatusETag = '', coreStatusRequest = null, corePollTimer = null;
-let coreReleasesLoaded = false;
+let coreReleasesLoaded = false, coreReleaseCache = new Map();
 render = function () {
  coreRenderBase();
  if (data && page === 'core') mountCore();
@@ -136,11 +136,19 @@ async function showCoreReleaseOptions(force=false) {
 let coreSelection=0;
 async function loadCoreRelease(tag,force=false) {
  if(!force && coreRelease?.tag_name===tag) {paintCoreAsset();return;}
+ if(!force && coreReleaseCache.has(tag)) {
+  coreRelease=coreReleaseCache.get(tag);
+  coreError='';
+  const options=coreRelease.assets.slice().sort((a,b)=>Number(b.compatible)-Number(a.compatible));
+  $('#core-asset').innerHTML=options.map(a=>`<option value="${esc(a.name)}">${esc(a.platform)}${a.compatible?' · 匹配本机':''} · ${coreSize(a.size)}</option>`).join('');
+  paintCoreAsset();
+  return;
+ }
  const generation=++coreSelection;coreRelease=null;paintCoreAsset();
  try {
   const r=await api('core/release?tag='+encodeURIComponent(tag));
   if(generation!==coreSelection||!$('#core-screen'))return;
-  coreRelease=r;coreError='';
+  coreRelease=r;coreReleaseCache.set(tag,r);coreError='';
   const options=r.assets.slice().sort((a,b)=>Number(b.compatible)-Number(a.compatible));
   $('#core-asset').innerHTML=options.map(a=>`<option value="${esc(a.name)}">${esc(a.platform)}${a.compatible?' · 匹配本机':''} · ${coreSize(a.size)}</option>`).join('');
   paintCoreAsset();
