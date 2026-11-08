@@ -528,6 +528,7 @@ func migrateLegacyWindowsProfiles(legacyRoot, runtimeRoot, install string) error
 		_, writeErr := file.Write([]byte(productID))
 		closeErr := file.Close()
 		if writeErr != nil {
+			_ = os.Remove(marker)
 			return writeErr
 		}
 		if closeErr != nil {
