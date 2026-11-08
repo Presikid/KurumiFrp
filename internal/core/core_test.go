@@ -170,6 +170,46 @@ func TestInstallActivateAndTamper(t *testing.T) {
 		t.Fatal("arbitrary executable selected")
 	}
 }
+func TestStatusCacheInvalidatedAfterInstall(t *testing.T) {
+	m, _ := fixtureManager(t, false)
+	before, err := m.Status()
+	if err != nil || len(before.Installed) != 0 {
+		t.Fatalf("initial status = %#v, %v", before.Installed, err)
+	}
+	id, err := m.install(context.Background(), "v0.72.0", Host())
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := m.Status()
+	if err != nil || len(after.Installed) != 1 || after.Installed[0].ID != id {
+		t.Fatalf("status did not observe the newly installed core: %#v, %v", after.Installed, err)
+	}
+}
+
+func TestStatusCacheReturnsDefensiveManifestCopies(t *testing.T) {
+	m, _ := fixtureManager(t, false)
+	if _, err := m.install(context.Background(), "v0.72.0", Host()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := m.Status()
+	if err != nil || len(first.Installed) != 1 {
+		t.Fatalf("first status = %#v, %v", first.Installed, err)
+	}
+	for name := range first.Installed[0].Files {
+		first.Installed[0].Files[name] = "caller-mutated"
+		break
+	}
+	second, err := m.Status()
+	if err != nil || len(second.Installed) != 1 {
+		t.Fatalf("second status = %#v, %v", second.Installed, err)
+	}
+	for _, digest := range second.Installed[0].Files {
+		if digest == "caller-mutated" {
+			t.Fatal("status caller mutated the manager's cached manifest")
+		}
+	}
+}
+
 func TestDigestFailureDoesNotReplace(t *testing.T) {
 	m, _ := fixtureManager(t, true)
 	if _, e := m.install(context.Background(), "v0.72.0", Host()); e == nil {

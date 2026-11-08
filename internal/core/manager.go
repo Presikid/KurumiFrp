@@ -53,6 +53,10 @@ type Manager struct {
 	saveActive     func(string) error
 	catalog        []Release
 	catalogAt      time.Time
+
+	installedCache      []Installed
+	installedCacheAt    time.Time
+	installedCacheValid bool
 }
 
 var idRE = regexp.MustCompile(`^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}-(linux|windows|darwin)_(amd64|arm64|arm|arm_hf|riscv64|loong64|mips|mipsle|mips64|mips64le)-[a-f0-9]{16}$`)
@@ -179,26 +183,61 @@ func (m *Manager) RemoveLegacyActive() error {
 	}
 	return err
 }
+
+const installedCacheTTL = 30 * time.Second
+
+func cloneInstalled(items []Installed) []Installed {
+	out := make([]Installed, len(items))
+	for i, item := range items {
+		out[i] = item
+		if item.Files != nil {
+			out[i].Files = make(map[string]string, len(item.Files))
+			for name, digest := range item.Files {
+				out[i].Files[name] = digest
+			}
+		}
+	}
+	return out
+}
+
+// installedLocked caches immutable version manifests between UI status polls.
+// Install completion invalidates the cache; the short TTL also notices manual
+// filesystem changes without rescanning every version on every status request.
+func (m *Manager) installedLocked() ([]Installed, error) {
+	if m.installedCacheValid && time.Since(m.installedCacheAt) < installedCacheTTL {
+		return cloneInstalled(m.installedCache), nil
+	}
+	entries, err := os.ReadDir(filepath.Join(m.root, "versions"))
+	if err != nil {
+		return nil, err
+	}
+	installed := make([]Installed, 0, len(entries))
+	for _, entry := range entries {
+		if idRE.MatchString(entry.Name()) {
+			v, err := m.manifest(entry.Name())
+			if err == nil {
+				installed = append(installed, v)
+			}
+		}
+	}
+	m.installedCache = cloneInstalled(installed)
+	m.installedCacheAt = time.Now()
+	m.installedCacheValid = true
+	return cloneInstalled(m.installedCache), nil
+}
+
 func (m *Manager) Status() (Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s := Status{Host: Host(), Supported: supported(Host()), Installed: []Installed{}, Job: m.job}
+	s := Status{Host: Host(), Supported: supported(Host()), Job: m.job}
 	id, err := m.active()
 	if err != nil {
 		return s, err
 	}
 	s.Active = id
-	entries, err := os.ReadDir(filepath.Join(m.root, "versions"))
+	s.Installed, err = m.installedLocked()
 	if err != nil {
 		return s, err
-	}
-	for _, e := range entries {
-		if idRE.MatchString(e.Name()) {
-			v, err := m.manifest(e.Name())
-			if err == nil {
-				s.Installed = append(s.Installed, v)
-			}
-		}
 	}
 	return s, nil
 }
@@ -364,6 +403,7 @@ func (m *Manager) install(ctx context.Context, tag, platform string) (string, er
 		if err = m.checkFiles(v); err != nil {
 			return "", err
 		}
+		m.installedCacheValid = false
 		return v.ID, nil
 	}
 	if !os.IsNotExist(err) {
@@ -372,6 +412,7 @@ func (m *Manager) install(ctx context.Context, tag, platform string) (string, er
 	if err = os.Rename(dir, target); err != nil {
 		return "", err
 	}
+	m.installedCacheValid = false
 	return v.ID, nil
 }
 func (m *Manager) checkFiles(v Installed) error {

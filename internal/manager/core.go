@@ -1,8 +1,12 @@
 package manager
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // Network operations use the core manager's own lock and never block normal
@@ -14,9 +18,23 @@ func (a *App) coreAPI(w http.ResponseWriter, r *http.Request) {
 			v, e := a.core.Status()
 			if e != nil {
 				fail(w, 500, e)
-			} else {
-				reply(w, 200, v)
+				return
 			}
+			body, err := json.Marshal(v)
+			if err != nil {
+				fail(w, 500, err)
+				return
+			}
+			digest := sha256.Sum256(body)
+			etag := "\"" + hex.EncodeToString(digest[:]) + "\""
+			w.Header().Set("ETag", etag)
+			if matchesStateETag(strings.Join(r.Header.Values("If-None-Match"), ","), etag) {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(body)
 		case "/api/core/releases":
 			v, e := a.core.Releases(r.Context())
 			if e != nil {
