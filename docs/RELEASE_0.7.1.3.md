@@ -1,5 +1,3 @@
-# KurumiFRP 0.7.1.3
-
 - 核心管理新增官方 frp Linux ARM、RISC-V、LoongArch 和 MIPS 架构支持。
 - 增加 armhf、riscv64 DEB 与更多 Linux 架构的便携包。
 - 发布附件不再包含单独的 checksums.txt；应用更新继续校验 GitHub 提供的安装包摘要。
