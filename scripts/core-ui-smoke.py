@@ -42,10 +42,14 @@ with tempfile.TemporaryDirectory(prefix='core-ui-') as tmp:
             assert error.code==304, f'conditional core status returned {error.code}'
         host='linux_amd64'
         release={'tag_name':'v0.72.0','assets':[{'name':'frp_0.72.0_linux_amd64.tar.gz','platform':host,'compatible':True,'installable':True,'size':14564595,'digest':'sha256:'+'a'*64,'browser_download_url':'https://github.com/fatedier/frp/releases/download/v0.72.0/frp_0.72.0_linux_amd64.tar.gz'},{'name':'frp_0.72.0_windows_amd64.zip','platform':'windows_amd64','compatible':False,'installable':False,'size':10000000,'browser_download_url':'https://github.com/fatedier/frp/releases/download/v0.72.0/frp_0.72.0_windows_amd64.zip'}]}
-        request_counts={'core_status':0}
+        request_counts={'core_status':0,'core_releases':0,'core_release':0}
         def fixture(path):
-            if path=='/api/core/releases':return [{'tag_name':'v0.72.0'}]
-            if path.startswith('/api/core/release?'):return release
+            if path=='/api/core/releases':
+                request_counts['core_releases']+=1
+                return [{'tag_name':'v0.72.0'}]
+            if path.startswith('/api/core/release?'):
+                request_counts['core_release']+=1
+                return release
             return None
         def bridge(path,options):
             if path=='/api/core':request_counts['core_status']+=1
@@ -80,14 +84,20 @@ with tempfile.TemporaryDirectory(prefix='core-ui-') as tmp:
             page.locator('#login-form input').fill(token);page.locator('#login-form button').click();page.locator('#app').wait_for(state='visible')
             page.locator('[data-page=core]').click();page.locator('#core-version option[value="v0.72.0"]').wait_for(state='attached')
             for _ in range(20):
-                if request_counts['core_status']>=1:break
+                if request_counts['core_status']>=1 and request_counts['core_releases']>=1 and request_counts['core_release']>=1:break
                 page.wait_for_timeout(100)
             assert request_counts['core_status']==1, f'expected one initial core status request, got {request_counts["core_status"]}'
+            assert request_counts['core_releases']==1 and request_counts['core_release']==1, f'core metadata was fetched more than once: {request_counts}'
             page.wait_for_timeout(2500)
             assert request_counts['core_status']==1, 'idle core page is polling more often than its 10-second interval'
             expect(page.locator("#core-install")).to_be_enabled()
             assert page.locator('#core-asset').input_value().endswith('linux_amd64.tar.gz')
             page.screenshot(path=str(shots/'core-desktop.png'),full_page=True)
+            page.locator('[data-page=overview]').click()
+            page.locator('[data-page=core]').click()
+            page.locator('#core-version option[value="v0.72.0"]').wait_for(state='attached')
+            assert page.locator('#core-asset').input_value().endswith('linux_amd64.tar.gz'), 'cached release assets were not restored after page remount'
+            assert request_counts['core_releases']==1 and request_counts['core_release']==1, f'page navigation repeated GitHub metadata requests: {request_counts}'
             page.locator('#core-asset').select_option('frp_0.72.0_windows_amd64.zip')
             assert page.locator('#core-install').is_disabled()
             assert 'windows_amd64.zip' in page.locator('#core-official').get_attribute('href')
