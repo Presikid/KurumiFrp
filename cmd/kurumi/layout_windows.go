@@ -252,13 +252,6 @@ func initMachine(install string) error {
 	if e = verifyMachine(root, install); e != nil {
 		return e
 	}
-	legacyRoot, e := legacyWindowsDataRoot()
-	if e != nil {
-		return e
-	}
-	if e = migrateLegacyWindowsProfiles(legacyRoot, root, install); e != nil {
-		return e
-	}
 	if e = os.Remove(filepath.Join(root, ".uninstalling")); e != nil && !os.IsNotExist(e) {
 		return e
 	}
