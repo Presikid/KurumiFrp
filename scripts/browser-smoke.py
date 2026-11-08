@@ -40,10 +40,15 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             header = response.read(12)
             assert header[:4] == b"RIFF" and header[8:12] == b"WEBP", "theme image was not embedded and served"
         with sync_playwright() as p:
-            launch = {"headless": True, "args": ["--no-sandbox"]}
+            engine = os.environ.get("KURUMI_BROWSER", "chromium")
+            if engine not in ("chromium", "firefox", "webkit"):
+                raise ValueError("unsupported browser engine: " + engine)
+            launch = {"headless": True}
+            if engine == "chromium":
+                launch["args"] = ["--no-sandbox"]
             if len(sys.argv) > 2:
                 launch["executable_path"] = sys.argv[2]
-            browser = p.chromium.launch(**launch)
+            browser = getattr(p, engine).launch(**launch)
             page = browser.new_page(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
             errors = []
             page.on("pageerror", lambda e: errors.append(str(e)))
