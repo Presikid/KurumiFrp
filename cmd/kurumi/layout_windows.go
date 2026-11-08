@@ -2,12 +2,15 @@
 
 package main
 
-// Windows binaries are machine-installed and read-only. Mutable state is kept
-// in ProgramData and isolated by Windows SID; never grant Users write access to
-// Program Files or access to another account's tokens/downloaded executables.
+// Windows binaries are machine-installed and read-only. Mutable state lives
+// beneath the installation directory in an ACL-protected runtime root, with
+// each Windows SID receiving a private profile.
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,7 +22,9 @@ import (
 
 var advapi = syscall.NewLazyDLL("advapi32.dll")
 var localFree = syscall.NewLazyDLL("kernel32.dll").NewProc("LocalFree")
-var sidName = regexp.MustCompile(`^S-1-[0-9]+(?:-[0-9]+)+$`)
+var getFileAttributes = syscall.NewLazyDLL("kernel32.dll").NewProc("GetFileAttributesW")
+var sidName = regexp.MustCompile("^S-1-[0-9]+(?:-[0-9]+)+$")
+var migrationTempName = regexp.MustCompile("^\\.migration-(S-1-[0-9]+(?:-[0-9]+)+)--[0-9]+$")
 
 const machineACL = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
 
@@ -37,19 +42,31 @@ type profileReceipt struct {
 	Schema  int    `json:"schema"`
 }
 
-func windowsDataRoot() (string, error) {
-	// FOLDERID_ProgramData, resolved through the Shell API rather than an
-	// untrusted inherited environment variable or a hard-coded system drive.
+func windowsRuntimeRoot() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	install, err := nativeRoot(exe)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(install, "runtime"), nil
+}
+
+// legacyWindowsDataRoot resolves the old ProgramData location only for a
+// one-time, ownership-checked migration from earlier machine installations.
+func legacyWindowsDataRoot() (string, error) {
 	guid := syscall.GUID{Data1: 0x62ab5d82, Data2: 0xfdc1, Data3: 0x4dc3, Data4: [8]byte{0xa9, 0xdd, 0x07, 0x0d, 0x1d, 0x49, 0x5d, 0x97}}
 	var p *uint16
 	r, _, _ := syscall.NewLazyDLL("shell32.dll").NewProc("SHGetKnownFolderPath").Call(uintptr(unsafe.Pointer(&guid)), 0, 0, uintptr(unsafe.Pointer(&p)))
 	if r != 0 || p == nil {
-		return "", fmt.Errorf("cannot resolve ProgramData (HRESULT 0x%x)", r)
+		return "", fmt.Errorf("cannot resolve legacy ProgramData location (HRESULT 0x%x)", r)
 	}
 	defer syscall.NewLazyDLL("ole32.dll").NewProc("CoTaskMemFree").Call(uintptr(unsafe.Pointer(p)))
 	base := syscall.UTF16ToString((*[32768]uint16)(unsafe.Pointer(p))[:])
 	if !filepath.IsAbs(base) {
-		return "", fmt.Errorf("invalid ProgramData location")
+		return "", fmt.Errorf("invalid legacy ProgramData location")
 	}
 	return filepath.Join(base, "KurumiFRP"), nil
 }
@@ -70,7 +87,7 @@ func currentSID() (string, error) {
 	return s, nil
 }
 func windowsUserRoot() (string, error) {
-	root, e := windowsDataRoot()
+	root, e := windowsRuntimeRoot()
 	if e != nil {
 		return "", e
 	}
@@ -108,8 +125,42 @@ func securityText(sd uintptr) (string, error) {
 	s = strings.ReplaceAll(s, "D:PAI", "D:P")
 	return s, nil
 }
+func windowsPlainPath(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	for p := abs; ; p = filepath.Dir(p) {
+		st, e := os.Lstat(p)
+		if e != nil {
+			return e
+		}
+		if st.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing linked path: %s", p)
+		}
+		name, e := syscall.UTF16PtrFromString(p)
+		if e != nil {
+			return e
+		}
+		attributes, _, callErr := getFileAttributes.Call(uintptr(unsafe.Pointer(name)))
+		if uint32(attributes) == 0xffffffff {
+			if callErr != nil && callErr != syscall.Errno(0) {
+				return callErr
+			}
+			return fmt.Errorf("cannot inspect file attributes: %s", p)
+		}
+		if uint32(attributes)&0x400 != 0 {
+			return fmt.Errorf("refusing reparse-point path: %s", p)
+		}
+		if parent := filepath.Dir(p); parent == p {
+			break
+		}
+	}
+	return nil
+}
+
 func verifyDirectoryACL(path, sddl string) error {
-	if e := plainPath(path); e != nil {
+	if e := windowsPlainPath(path); e != nil {
 		return e
 	}
 	st, e := os.Lstat(path)
@@ -148,7 +199,7 @@ func verifyDirectoryACL(path, sddl string) error {
 	return nil
 }
 func createPrivateDirectory(path, sddl string) error {
-	if e := plainPath(filepath.Dir(path)); e != nil {
+	if e := windowsPlainPath(filepath.Dir(path)); e != nil {
 		return e
 	}
 	sd, e := securityDescriptor(sddl)
@@ -167,7 +218,7 @@ func createPrivateDirectory(path, sddl string) error {
 	return verifyDirectoryACL(path, sddl)
 }
 func readBoundedJSON(path string, target any) error {
-	if e := plainPath(path); e != nil {
+	if e := windowsPlainPath(path); e != nil {
 		return e
 	}
 	st, e := os.Lstat(path)
@@ -217,8 +268,437 @@ func verifyMachine(root, install string) error {
 	}
 	return nil
 }
+
+const (
+	maxLegacyProfileEntries = 100000
+	maxLegacyProfileBytes   = int64(8 << 30)
+)
+
+func profileTreeDigest(root string) (string, error) {
+	if err := windowsPlainPath(root); err != nil {
+		return "", err
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return "", err
+	}
+	if !rootInfo.IsDir() {
+		return "", fmt.Errorf("legacy profile is not a directory")
+	}
+
+	hash := sha256.New()
+	var entries int
+	var total int64
+	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := windowsPlainPath(path); err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		entries++
+		if entries > maxLegacyProfileEntries {
+			return fmt.Errorf("legacy profile contains too many entries")
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if info.IsDir() {
+			_, _ = io.WriteString(hash, "D\x00"+rel+"\x00")
+			return nil
+		}
+		if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxLegacyProfileBytes-total {
+			return fmt.Errorf("legacy profile contains an unsupported or oversized file: %s", rel)
+		}
+		total += info.Size()
+		_, _ = io.WriteString(hash, "F\x00"+rel+"\x00")
+		_, _ = io.WriteString(hash, fmt.Sprintf("%d\x00", info.Size()))
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		n, copyErr := io.Copy(hash, io.LimitReader(file, info.Size()+1))
+		closeErr := file.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if n != info.Size() {
+			return fmt.Errorf("legacy profile changed while being inspected: %s", rel)
+		}
+		_, _ = io.WriteString(hash, "\x00")
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func copyLegacyProfile(source, target string) error {
+	var entries int
+	var total int64
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := windowsPlainPath(path); err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if path == source {
+			return nil
+		}
+		entries++
+		if entries > maxLegacyProfileEntries {
+			return fmt.Errorf("legacy profile contains too many entries")
+		}
+		rel, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		destination := filepath.Join(target, rel)
+		if info.IsDir() {
+			return os.Mkdir(destination, 0700)
+		}
+		if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxLegacyProfileBytes-total {
+			return fmt.Errorf("legacy profile contains an unsupported or oversized file: %s", rel)
+		}
+		total += info.Size()
+		input, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err != nil {
+			_ = input.Close()
+			return err
+		}
+		n, copyErr := io.Copy(output, io.LimitReader(input, info.Size()+1))
+		inputErr := input.Close()
+		syncErr := output.Sync()
+		closeErr := output.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if inputErr != nil {
+			return inputErr
+		}
+		if syncErr != nil {
+			return syncErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if n != info.Size() {
+			return fmt.Errorf("legacy profile changed while being copied: %s", rel)
+		}
+		return nil
+	})
+}
+
+func verifyLegacyProfile(path, sid string) (string, error) {
+	if err := verifyDirectoryACL(path, profileACL(sid)); err != nil {
+		return "", err
+	}
+	var receipt profileReceipt
+	if err := readBoundedJSON(filepath.Join(path, "profile.json"), &receipt); err != nil {
+		return "", err
+	}
+	if receipt.Product != productID || receipt.SID != sid || receipt.Schema != 1 {
+		return "", fmt.Errorf("unrecognized legacy profile: %s", sid)
+	}
+	return profileTreeDigest(path)
+}
+
+type legacyProfile struct {
+	sid    string
+	source string
+	target string
+	digest string
+}
+
+func cleanupMigrationTemps(runtimeRoot string) error {
+	profilesRoot := filepath.Join(runtimeRoot, "profiles")
+	if err := verifyDirectoryACL(profilesRoot, profilesACL); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(profilesRoot)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if sidName.MatchString(entry.Name()) {
+			path := filepath.Join(profilesRoot, entry.Name())
+			if err := verifyDirectoryACL(path, profileACL(entry.Name())); err != nil {
+				return err
+			}
+			var receipt profileReceipt
+			if err := readBoundedJSON(filepath.Join(path, "profile.json"), &receipt); err != nil {
+				return err
+			}
+			if receipt.Product != productID || receipt.SID != entry.Name() || receipt.Schema != 1 {
+				return fmt.Errorf("unrecognized runtime profile: %s", entry.Name())
+			}
+			continue
+		}
+		match := migrationTempName.FindStringSubmatch(entry.Name())
+		if match == nil {
+			return fmt.Errorf("unknown runtime profile entry retained: %s", entry.Name())
+		}
+		path := filepath.Join(profilesRoot, entry.Name())
+		if err := verifyDirectoryACL(path, profileACL(match[1])); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("cannot remove incomplete migration directory %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
+
+func verifyLegacyRootForMigration(legacyRoot, install string) (bool, bool, error) {
+	if err := verifyDirectoryACL(legacyRoot, machineACL); err != nil {
+		return false, false, err
+	}
+	var installReceipt machineReceipt
+	if err := readBoundedJSON(filepath.Join(install, "native-install.json"), &installReceipt); err != nil {
+		return false, false, err
+	}
+	if installReceipt.Product != productID || installReceipt.Schema != 2 || !strings.EqualFold(installReceipt.InstallDir, install) {
+		return false, false, fmt.Errorf("current installation receipt mismatch")
+	}
+	entries, err := os.ReadDir(legacyRoot)
+	if err != nil {
+		return false, false, err
+	}
+	known := map[string]bool{"machine-install.json": true, "profiles": true, ".uninstalling": true}
+	for _, entry := range entries {
+		if !known[entry.Name()] {
+			return false, false, fmt.Errorf("unrecognized file in old runtime directory: %s", entry.Name())
+		}
+	}
+	hasMachine, hasProfiles, hasMarker := false, false, false
+	for _, entry := range entries {
+		switch entry.Name() {
+		case "machine-install.json":
+			hasMachine = true
+		case "profiles":
+			hasProfiles = true
+		case ".uninstalling":
+			hasMarker = true
+		}
+	}
+	if hasMarker {
+		if err := windowsPlainPath(filepath.Join(legacyRoot, ".uninstalling")); err != nil {
+			return false, false, err
+		}
+		b, err := os.ReadFile(filepath.Join(legacyRoot, ".uninstalling"))
+		if err != nil {
+			return false, false, err
+		}
+		if string(b) != productID {
+			return false, false, fmt.Errorf("unknown old installation maintenance marker")
+		}
+	}
+	if hasMachine {
+		var receipt machineReceipt
+		if err := readBoundedJSON(filepath.Join(legacyRoot, "machine-install.json"), &receipt); err != nil {
+			return false, false, err
+		}
+		if receipt.Product != productID || receipt.Schema != 2 || !strings.EqualFold(receipt.InstallDir, install) {
+			return false, false, fmt.Errorf("old installation receipt mismatch")
+		}
+	} else if hasProfiles || !hasMarker && len(entries) != 0 {
+		return false, false, fmt.Errorf("old installation receipt is missing")
+	}
+	if hasProfiles {
+		if err := verifyDirectoryACL(filepath.Join(legacyRoot, "profiles"), profilesACL); err != nil {
+			return false, false, err
+		}
+	} else if hasMachine && !hasMarker {
+		return false, false, fmt.Errorf("old profiles directory is unexpectedly missing")
+	}
+	return hasProfiles, hasMarker, nil
+}
+
+func migrateLegacyWindowsProfiles(legacyRoot, runtimeRoot, install string) error {
+	legacyRoot = filepath.Clean(legacyRoot)
+	runtimeRoot = filepath.Clean(runtimeRoot)
+	if strings.EqualFold(legacyRoot, runtimeRoot) {
+		return nil
+	}
+	if err := windowsPlainPath(legacyRoot); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("cannot inspect old ProgramData directory: %w", err)
+	}
+	rootInfo, err := os.Lstat(legacyRoot)
+	if err != nil {
+		return err
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("old ProgramData path is not a directory; it was retained")
+	}
+	hasProfiles, hasMarker, err := verifyLegacyRootForMigration(legacyRoot, install)
+	if err != nil {
+		return fmt.Errorf("old ProgramData installation ownership or permissions could not be verified; old data was retained: %w", err)
+	}
+	marker := filepath.Join(legacyRoot, ".uninstalling")
+	if !hasMarker {
+		file, createErr := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if createErr != nil {
+			return fmt.Errorf("cannot lock the old installation for migration: %w", createErr)
+		}
+		_, writeErr := file.Write([]byte(productID))
+		closeErr := file.Close()
+		if writeErr != nil {
+			_ = os.Remove(marker)
+			return writeErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+
+	if err = cleanupMigrationTemps(runtimeRoot); err != nil {
+		return fmt.Errorf("cannot clean an incomplete migration directory: %w", err)
+	}
+	oldProfiles := filepath.Join(legacyRoot, "profiles")
+	var entries []os.DirEntry
+	if hasProfiles {
+		entries, err = os.ReadDir(oldProfiles)
+		if err != nil {
+			return err
+		}
+	}
+	profiles := make([]legacyProfile, 0, len(entries))
+	for _, entry := range entries {
+		sid := entry.Name()
+		if !sidName.MatchString(sid) {
+			return fmt.Errorf("unknown old profile entry %q; all old data was retained", sid)
+		}
+		source := filepath.Join(oldProfiles, sid)
+		digest, verifyErr := verifyLegacyProfile(source, sid)
+		if verifyErr != nil {
+			return fmt.Errorf("old profile %s failed validation and was retained: %w", sid, verifyErr)
+		}
+		if err = stopExisting(filepath.Join(source, "data"), 45*time.Second); err != nil {
+			return fmt.Errorf("old profile %s is still running; data was retained: %w", sid, err)
+		}
+		// Shutdown removes the manager lock and may clean its temporary files.
+		// Compare against the stopped profile, not the pre-shutdown snapshot.
+		digest, verifyErr = verifyLegacyProfile(source, sid)
+		if verifyErr != nil {
+			return fmt.Errorf("stopped old profile %s failed validation and was retained: %w", sid, verifyErr)
+		}
+		target := filepath.Join(runtimeRoot, "profiles", sid)
+		if _, statErr := os.Lstat(target); statErr == nil {
+			targetDigest, targetErr := verifyLegacyProfile(target, sid)
+			if targetErr != nil || targetDigest != digest {
+				return fmt.Errorf("destination profile %s already exists with different or untrusted data; both copies were retained", sid)
+			}
+		} else if !os.IsNotExist(statErr) {
+			return statErr
+		}
+		profiles = append(profiles, legacyProfile{sid: sid, source: source, target: target, digest: digest})
+	}
+
+	for _, profile := range profiles {
+		if _, err = os.Lstat(profile.target); err == nil {
+			if err = os.RemoveAll(profile.source); err != nil {
+				return fmt.Errorf("migrated profile %s but could not remove its verified old copy: %w", profile.sid, err)
+			}
+			continue
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+
+		if err = os.Rename(profile.source, profile.target); err == nil {
+			movedDigest, digestErr := verifyLegacyProfile(profile.target, profile.sid)
+			if digestErr == nil && movedDigest == profile.digest {
+				continue
+			}
+			_ = os.Rename(profile.target, profile.source)
+			if digestErr != nil {
+				return fmt.Errorf("moved profile %s failed post-move validation: %w", profile.sid, digestErr)
+			}
+			return fmt.Errorf("profile %s changed during migration; original data was restored when possible", profile.sid)
+		}
+
+		tempPath := filepath.Join(filepath.Dir(profile.target), fmt.Sprintf(".migration-%s--%d", profile.sid, time.Now().UnixNano()))
+		if err = createPrivateDirectory(tempPath, profileACL(profile.sid)); err != nil {
+			return fmt.Errorf("cannot prepare a private migration directory for %s: %w", profile.sid, err)
+		}
+		cleanupTemp := true
+		func() {
+			defer func() {
+				if cleanupTemp {
+					_ = os.RemoveAll(tempPath)
+				}
+			}()
+			if err = copyLegacyProfile(profile.source, tempPath); err != nil {
+				return
+			}
+			sourceDigest, sourceErr := profileTreeDigest(profile.source)
+			if sourceErr != nil {
+				err = sourceErr
+				return
+			}
+			targetDigest, targetErr := verifyLegacyProfile(tempPath, profile.sid)
+			if targetErr != nil {
+				err = targetErr
+				return
+			}
+			if sourceDigest != profile.digest || targetDigest != profile.digest {
+				err = fmt.Errorf("profile %s changed during cross-volume migration", profile.sid)
+				return
+			}
+			err = os.Rename(tempPath, profile.target)
+			if err == nil {
+				cleanupTemp = false
+			}
+		}()
+		if err != nil {
+			return fmt.Errorf("could not copy old profile %s; original data was retained: %w", profile.sid, err)
+		}
+		if err = os.RemoveAll(profile.source); err != nil {
+			return fmt.Errorf("copied profile %s but could not remove its verified old copy: %w", profile.sid, err)
+		}
+	}
+
+	if err = os.Remove(oldProfiles); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("old profiles directory is not empty; old data was retained: %w", err)
+	}
+	if err = os.Remove(filepath.Join(legacyRoot, "machine-install.json")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err = os.Remove(marker); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err = os.Remove(legacyRoot); err != nil {
+		return fmt.Errorf("profiles were migrated but old directory contains unrecognized files; retained at %s: %w", legacyRoot, err)
+	}
+	return nil
+}
+
 func initMachine(install string) error {
-	root, e := windowsDataRoot()
+	root, e := windowsRuntimeRoot()
 	if e != nil {
 		return e
 	}
@@ -240,6 +720,16 @@ func initMachine(install string) error {
 	if e = verifyMachine(root, install); e != nil {
 		return e
 	}
+	legacyRoot, e := legacyWindowsDataRoot()
+	if e != nil {
+		return e
+	}
+	if e = migrateLegacyWindowsProfiles(legacyRoot, root, install); e != nil {
+		return e
+	}
+	if e = cleanupMigrationTemps(root); e != nil {
+		return e
+	}
 	if e = os.Remove(filepath.Join(root, ".uninstalling")); e != nil && !os.IsNotExist(e) {
 		return e
 	}
@@ -251,11 +741,20 @@ func prepareWindowsProfile(create bool) error {
 		return e
 	}
 	install := filepath.Dir(exe)
-	root, e := windowsDataRoot()
+	root, e := windowsRuntimeRoot()
 	if e != nil {
 		return e
 	}
 	if e = verifyMachine(root, install); e != nil {
+		return e
+	}
+	legacyRoot, e := legacyWindowsDataRoot()
+	if e != nil {
+		return e
+	}
+	if _, e = os.Lstat(legacyRoot); e == nil {
+		return fmt.Errorf("legacy ProgramData data is still present; rerun the installer to complete migration before starting KurumiFRP")
+	} else if !os.IsNotExist(e) {
 		return e
 	}
 	if _, e = os.Lstat(filepath.Join(root, ".uninstalling")); !os.IsNotExist(e) {
@@ -292,7 +791,7 @@ func prepareWindowsProfile(create bool) error {
 	return nil
 }
 func stopMachine(install string, purge bool) (err error) {
-	root, err := windowsDataRoot()
+	root, err := windowsRuntimeRoot()
 	if err != nil {
 		return err
 	}
@@ -316,6 +815,16 @@ func stopMachine(install string, purge bool) (err error) {
 			_ = os.Remove(marker)
 		}
 	}()
+	legacyRoot, err := legacyWindowsDataRoot()
+	if err != nil {
+		return err
+	}
+	if err = migrateLegacyWindowsProfiles(legacyRoot, root, install); err != nil {
+		return fmt.Errorf("legacy data migration must complete before maintenance: %w", err)
+	}
+	if err = cleanupMigrationTemps(root); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(filepath.Join(root, "profiles"))
 	if err != nil {
 		return err
@@ -384,7 +893,7 @@ func checkMachineGate() error {
 	if distribution != "windows-installed" {
 		return nil
 	}
-	root, e := windowsDataRoot()
+	root, e := windowsRuntimeRoot()
 	if e != nil {
 		return e
 	}

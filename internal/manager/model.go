@@ -3,6 +3,7 @@ package manager
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"regexp"
 	"strings"
 	"unicode"
@@ -29,6 +30,8 @@ type Tunnel struct {
 	LocalPort   int      `json:"localPort"`
 	RemotePort  int      `json:"remotePort"`
 	Domains     []string `json:"domains"`
+	ProbePath   string   `json:"probePath,omitempty"`
+	ProbeMethod string   `json:"probeMethod,omitempty"`
 	ServerName  string   `json:"serverName"`
 	Secret      string   `json:"secret,omitempty"`
 	HasSecret   bool     `json:"hasSecret,omitempty"`
@@ -80,6 +83,20 @@ var idPattern = regexp.MustCompile(`^[a-f0-9]{16}$`)
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 var domainPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$`)
 
+func probePathOK(s string) bool {
+	if s == "" {
+		return true
+	}
+	if len(s) > 512 || !strings.HasPrefix(s, "/") || strings.HasPrefix(s, "//") {
+		return false
+	}
+	u, err := url.ParseRequestURI(s)
+	return err == nil && !u.IsAbs() && u.Host == "" && u.Fragment == ""
+}
+
+func probeMethodOK(s string) bool {
+	return s == "" || s == "HEAD" || s == "GET"
+}
 func hostOK(s string) bool {
 	if net.ParseIP(s) != nil {
 		return true
@@ -267,6 +284,9 @@ func validate(s State) error {
 				}
 			}
 		case "http", "https":
+			if !probePathOK(t.ProbePath) || !probeMethodOK(t.ProbeMethod) {
+				return fmt.Errorf("HTTP 检测路径或方法无效（路径须以单个 / 开头，方法仅支持 HEAD/GET）")
+			}
 			if len(t.Domains) == 0 || len(t.Domains) > 16 {
 				return fmt.Errorf("HTTP/HTTPS 需要 1-16 个域名")
 			}

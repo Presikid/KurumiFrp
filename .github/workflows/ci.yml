@@ -20,6 +20,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: stable
@@ -27,12 +35,8 @@ jobs:
       - name: Format, vet and unit tests
         shell: bash
         run: |
-          unformatted="$(gofmt -l cmd internal web)"
-          if [ -n "$unformatted" ]; then
-            printf "Go files need gofmt:\n%s\n" "$unformatted"
-            gofmt -d cmd internal web
-            exit 1
-          fi
+          test -z "$(gofmt -l cmd internal web)"
+          python scripts/check-release-notes.py
           go vet ./...
           go test -count=1 -v ./...
           go build -o kurumi ./cmd/kurumi
@@ -41,6 +45,14 @@ jobs:
         run: |
           go test -race ./...
           python3 scripts/core-smoke.py ./kurumi
+      - name: Windows official core and forwarding
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          go build -o kurumi-live.exe ./cmd/kurumi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/core-smoke.py ./kurumi-live.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Browser regression
         if: runner.os == 'Linux'
         run: |
@@ -54,25 +66,31 @@ jobs:
         run: |
           python scripts/package-native.py windows
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python scripts/native-windows-smoke.py dist-native/KurumiFRP-0.7.0-Setup.exe
+          python scripts/native-windows-smoke.py "dist-native/KurumiFRP-$((Get-Content VERSION -Raw).Trim())-Setup.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/windows-migration-smoke.py "dist-native/KurumiFRP-$((Get-Content VERSION -Raw).Trim())-Setup.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build DEB and RPM for amd64 and arm64
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm
+          sudo apt-get install -y rpm qemu-user-static
           python3 scripts/package-native.py linux
+          python3 scripts/package-portable.py
+          KURUMI_PORTABLE_TESTS=1 go test -count=1 ./internal/core -run TestBuiltPortableExecutableArchitectures
+          python3 scripts/portable-smoke.py
+          python3 scripts/official-cores-smoke.py
       - name: Native Debian package and systemd lifecycle
         if: runner.os == 'Linux'
         run: |
-          sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_0.7.0_amd64.deb
+          sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb
       - name: Native RPM install and removal on Fedora
         if: runner.os == 'Linux'
         run: |
           docker run --rm -v "$PWD:/src:ro" fedora:43 sh -ec '
-            dnf install -y python3 util-linux /src/dist-native/kurumifrp-0.7.0-1.x86_64.rpm
+            dnf install -y python3 util-linux /src/dist-native/kurumifrp-$(cat /src/VERSION)-1.x86_64.rpm
             rpm -e kurumifrp
-            KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 /src/scripts/native-linux-smoke.py /src/dist-native/kurumifrp-0.7.0-1.x86_64.rpm
+            KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 /src/scripts/native-linux-smoke.py /src/dist-native/kurumifrp-$(cat /src/VERSION)-1.x86_64.rpm
           '
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -81,10 +99,156 @@ jobs:
             dist-native/*.exe
             dist-native/*.deb
             dist-native/*.rpm
+            dist-native/*.tar.gz
           if-no-files-found: error
+  native-arm:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04-arm, windows-11-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: stable
+          architecture: arm64
+          cache: false
+      - name: Native ARM64 unit tests
+        shell: bash
+        run: |
+          test "$(go env GOARCH)" = arm64
+          go vet ./...
+          go test -count=1 ./...
+      - name: Linux ARM64 race and real official frp
+        if: runner.os == 'Linux'
+        run: |
+          go test -race ./...
+          go build -o kurumi-live ./cmd/kurumi
+          python3 scripts/core-smoke.py ./kurumi-live
+      - name: Native ARM64 DEB lifecycle
+        if: runner.os == 'Linux'
+        run: |
+          python3 scripts/package-native.py linux --arch arm64 --deb-only
+          sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_$(cat VERSION)_arm64.deb
+      - name: Windows ARM64 real official frp
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          go build -o kurumi-live.exe ./cmd/kurumi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/core-smoke.py ./kurumi-live.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Windows ARM64 installer lifecycle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python scripts/package-native.py windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/native-windows-smoke.py "dist-native/KurumiFRP-$((Get-Content VERSION -Raw).Trim())-Setup.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/windows-migration-smoke.py "dist-native/KurumiFRP-$((Get-Content VERSION -Raw).Trim())-Setup.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  source-macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: stable
+          cache: false
+      - name: macOS source build and official frp
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+          go test -race ./...
+          go build -o kurumi-live ./cmd/kurumi
+          python3 scripts/core-smoke.py ./kurumi-live
+  browser-compatibility:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            browser: firefox
+          - os: ubuntu-24.04
+            browser: webkit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: stable
+          cache: false
+      - name: Browser compatibility regression
+        env:
+          KURUMI_BROWSER: ${{ matrix.browser }}
+        run: |
+          go build -o kurumi ./cmd/kurumi
+          python3 -m pip install playwright==1.57.0
+          python3 -m playwright install --with-deps "${KURUMI_BROWSER}"
+          python3 scripts/browser-smoke.py ./kurumi
+  repair-0713-release-notes:
+    needs: [test, native-arm, source-macos, browser-compatibility]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
+      - name: Remove the duplicated heading if the release is unchanged
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/repair-0713-notes.py
   release:
-    needs: test
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [test, native-arm, source-macos, browser-compatibility]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -93,6 +257,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: native-*
@@ -103,13 +275,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="$(cat VERSION)"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$version" =~ ^[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}$ ]]
+          IFS=. read -r a b c d <<< "$version"
+          for part in "$a" "$b" "$c" "$d"; do (( 10#$part <= 65535 )); done
           test -f "dist-native/KurumiFRP-${version}-Setup.exe"
-          test "$(find dist-native -maxdepth 1 -name '*.deb' | wc -l)" -eq 2
-          test "$(find dist-native -maxdepth 1 -name '*.rpm' | wc -l)" -eq 2
-          (cd dist-native && sha256sum *.exe *.deb *.rpm > checksums.txt)
+          for arch in amd64 arm64 armhf riscv64; do
+            test -f "dist-native/kurumifrp_${version}_${arch}.deb"
+          done
+          for arch in x86_64 aarch64; do
+            test -f "dist-native/kurumifrp-${version}-1.${arch}.rpm"
+          done
+          for arch in arm arm_hf riscv64 loong64 mips mipsle mips64 mips64le; do
+            test -f "dist-native/KurumiFRP-${version}-linux-${arch}.tar.gz"
+          done
           if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo 'Existing release retained; bump VERSION for another release.'
             exit 0
           fi
-          gh release create "v$version" dist-native/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "KurumiFRP $version native installers preview" --notes-file "docs/RELEASE_$version.md" --prerelease
+          gh release create "v$version" dist-native/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "KurumiFrp $version" --notes-file "docs/RELEASE_$version.md" --prerelease

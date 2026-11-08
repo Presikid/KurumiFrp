@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/Presikid/KurumiFrp/internal/core"
@@ -17,19 +18,28 @@ import (
 )
 
 type App struct {
-	quit          chan struct{}
-	quitOnce      sync.Once
-	core          *core.Manager
-	updater       *update.Manager
-	mu            sync.Mutex
-	store         *Store
-	bin           string
-	addr          string
-	auth          auth
-	procs         map[string]*process
-	assets        http.Handler
-	startupDone   chan struct{}
+	quit     chan struct{}
+	quitOnce sync.Once
+	core     *core.Manager
+	updater  *update.Manager
+	mu       sync.Mutex
+	store    *Store
+	bin      string
+	addr     string
+	auth     auth
+	procs    map[string]*process
+	assets   http.Handler
+
+	// Lifecycle reservations are protected by mu. Slow operations run without it.
+	operations    map[string]*runtimeOperation
+	operationWG   sync.WaitGroup
 	closing       bool
+	closeOnce     sync.Once
+	closeErr      error
+	stateCache    *stateResponseCache
+	activeProbes  int
+	startupDone   chan struct{}
+	startupCancel context.CancelFunc
 	startupErrors map[string]string
 }
 
@@ -89,8 +99,11 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	}); e != nil {
 		return nil, e
 	}
-	app := &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets)), startupDone: make(chan struct{}), startupErrors: map[string]string{}}
-	go app.restoreAutoStart()
+	app := &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	ctx, cancel := context.WithCancel(context.Background())
+	app.startupCancel = cancel
+	instances := append([]Instance(nil), s.DB.State.Instances...)
+	go app.restoreAutoStart(ctx, instances)
 	return app, nil
 }
 func (a *App) SetDistribution(distribution string) {
@@ -178,12 +191,24 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			reply(w, 200, map[string]bool{"ok": true})
 			return
 		}
+		if r.URL.Path == "/api/probe" && r.Method == "POST" {
+			a.probeAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/core" || strings.HasPrefix(r.URL.Path, "/api/core/") {
 			a.coreAPI(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/update/") {
 			a.updateAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/control" || r.URL.Path == "/api/validate" {
+			a.runtimeAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/state" && r.Method == "GET" {
+			a.handleState(w, r)
 			return
 		}
 		a.mu.Lock()
@@ -205,15 +230,6 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		switch r.URL.Path {
-		case "/api/state":
-			history := []map[string]any{}
-			for _, h := range a.store.DB.History {
-				history = append(history, map[string]any{"revision": h.Revision, "at": h.At, "summary": h.Summary})
-			}
-			_, ec := a.binary("frpc")
-			_, es := a.binary("frps")
-			reply(w, 200, map[string]any{"version": "0.7.0", "revision": a.store.DB.Revision, "state": a.store.DB.State.public(), "runtime": a.statuses(), "history": history, "historyLimit": a.store.DB.HistoryLimit, "events": a.store.DB.Events, "binaries": map[string]bool{"frpc": ec == nil, "frps": es == nil}})
-			return
 		case "/api/export":
 			a.export(w, r)
 			return
@@ -401,41 +417,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-	case "/api/validate", "/api/control":
-		i, ok := a.store.DB.State.Instance(req.ID)
-		if !ok {
-			err = fmt.Errorf("实例不存在")
-			break
-		}
-		if r.URL.Path == "/api/control" && req.Action == "stop" {
-			err = a.stop(i.ID)
-			break
-		}
-		if r.URL.Path == "/api/control" && req.Action != "start" && req.Action != "restart" {
-			err = fmt.Errorf("未知操作")
-			break
-		}
-		var rendered Rendered
-		rendered, err = a.store.render(i.ID, false)
-		if err != nil {
-			break
-		}
-		var output string
-		output, err = a.verify(i, rendered)
-		if err != nil {
-			break
-		}
-		if r.URL.Path == "/api/validate" {
-			reply(w, 200, map[string]any{"ok": true, "output": output, "note": "仅验证配置，不证明网络连通"})
-			return
-		}
-		if req.Action == "restart" {
-			err = a.stop(i.ID)
-			if err != nil {
-				break
-			}
-		}
-		err = a.start(i, rendered)
+
 	default:
 		fail(w, 404, fmt.Errorf("接口不存在"))
 		return
@@ -445,63 +427,6 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 200, map[string]any{"ok": true, "revision": a.store.DB.Revision})
-}
-
-// restoreAutoStart reapplies only instances explicitly opted in by the user.
-// Verification runs outside the application lock; the rendered digest is checked
-// again before launch so a concurrent draft edit is never applied accidentally.
-func (a *App) restoreAutoStart() {
-	defer close(a.startupDone)
-	a.mu.Lock()
-	instances := append([]Instance{}, a.store.DB.State.Instances...)
-	a.mu.Unlock()
-	for _, instance := range instances {
-		if !instance.AutoStart {
-			continue
-		}
-		a.mu.Lock()
-		if a.closing {
-			a.mu.Unlock()
-			return
-		}
-		current, ok := a.store.DB.State.Instance(instance.ID)
-		if !ok || !current.AutoStart {
-			a.mu.Unlock()
-			continue
-		}
-		rendered, err := a.store.render(instance.ID, false)
-		a.mu.Unlock()
-		if err == nil {
-			_, err = a.verify(current, rendered)
-		}
-		a.mu.Lock()
-		if a.closing {
-			a.mu.Unlock()
-			return
-		}
-		latest, exists := a.store.DB.State.Instance(instance.ID)
-		if !exists || !latest.AutoStart {
-			a.mu.Unlock()
-			continue
-		}
-		if err == nil {
-			latestRendered, renderErr := a.store.render(instance.ID, false)
-			if renderErr != nil {
-				err = renderErr
-			} else if latestRendered.Digest != rendered.Digest {
-				err = fmt.Errorf("配置在自动启动期间发生变化；请手动启动实例")
-			}
-		}
-		if err == nil {
-			err = a.start(latest, rendered)
-		}
-		if err != nil && (a.procs[instance.ID] == nil || a.procs[instance.ID].view().State != "running") {
-			a.startupErrors[instance.ID] = err.Error()
-		} else {
-			delete(a.startupErrors, instance.ID)
-		}
-		a.mu.Unlock()
-	}
 }
 
 func (a *App) Done() <-chan struct{} { return a.quit }

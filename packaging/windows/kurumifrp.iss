@@ -95,7 +95,6 @@ Source: "{#PayloadDir}\amd64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\arm64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: IsArm64
 Source: "{#PayloadDir}\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "kurumi.ico"; DestDir: "{app}"; Flags: ignoreversion
-Source: "ChineseSimplified-LICENSE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\KurumiFRP"; Filename: "{app}\kurumi.exe"; Parameters: "--open"; WorkingDir: "{app}"; IconFilename: "{app}\kurumi.ico"
@@ -160,10 +159,27 @@ begin
   end;
 end;
 
+procedure RemoveLegacyTranslationNotice();
+var P, D: String;
+begin
+  D := ExpandConstant('{app}\licenses');
+  P := D + '\ChineseSimplified-LICENSE.txt';
+  if FileExists(P) and PlainDestination(P) then begin
+    try
+      if Lowercase(GetSHA256OfFile(P)) = '02f0dd3b98833040147d01daf91243c24392a33ddced674152220b5216782c6a' then begin
+        if DeleteFile(P) then RemoveDir(D);
+      end;
+    except
+      Log('Legacy translation notice could not be removed; it was retained.');
+    end;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var Code: Integer; App, Exe: String;
 begin
   if CurStep = ssPostInstall then begin
+    RemoveLegacyTranslationNotice();
     App := ExpandConstant('{app}'); Exe := App + '\kurumi.exe';
     if not Exec(Exe, '--native-maintenance init', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
     if Code <> 0 then RaiseException(ExpandConstant('{cm:InitFailed}'));
