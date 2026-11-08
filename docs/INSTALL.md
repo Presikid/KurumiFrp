@@ -95,7 +95,7 @@ sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 
 ## 从 0.4 或更早版本迁移
 
-0.5 不会自动执行旧用户目录中可能被篡改的程序，也不会把旧数据不经确认提升为机器级安装。检测到当前账户旧 HKCU 卸载项时阻止安装并提示迁移；不会扫描其他用户目录。先退出旧工作台并停止实例，完整备份旧版 data 和 cores（包括 access.token/master.key），使用旧卸载器移除原安装，然后安装 0.5。停止新工作台，将完整备份放入新账户对应的 ProgramData 子目录；不要覆盖 profile.json 和机器安装记录。Linux 从 0.4 的原生包升级保留原 `/var/lib/kurumifrp` 数据。
+以下是 0.5 发布时的历史迁移说明：当时安装器不会自动执行旧用户目录中的程序，也不会把旧数据不经确认提升为机器级安装。当前版本已改为自动迁移受安装回执、SID 和 ACL 验证的旧 ProgramData 数据；从旧版升级时不再手动把备份放回 ProgramData，而由当前安装器迁移到安装目录的 `runtime`。Linux 从 0.4 的原生包升级仍保留原 `/var/lib/kurumifrp` 数据。
 
 ## 规范与验证
 
