@@ -98,10 +98,10 @@ func windowsMigrationFixture(t *testing.T) (legacyRoot, runtimeRoot, install, si
 		}
 	}
 	for path, value := range map[string]string{
-		filepath.Join("data", "access.token"): "0123456789abcdef",
-		filepath.Join("data", "master.key"):   "test-master-key",
-		filepath.Join("data", "state.json"):   "{\"format\":3,\"instances\":[],\"tunnels\":[]}",
-		filepath.Join("cores", "frpc.exe"):    "synthetic frpc core",
+		filepath.Join("data", "access.token"):            "0123456789abcdef",
+		filepath.Join("data", "master.key"):              "test-master-key",
+		filepath.Join("data", "state.json"):              "{\"format\":3,\"instances\":[],\"tunnels\":[]}",
+		filepath.Join("cores", "frpc.exe"):               "synthetic frpc core",
 		filepath.Join("tmp", "session-old", "probe.tmp"): "temporary child file",
 	} {
 		if err := os.WriteFile(filepath.Join(profile, path), []byte(value), 0600); err != nil {
@@ -127,10 +127,10 @@ func TestMigrateLegacyWindowsProfilesIntoInstallDirectory(t *testing.T) {
 		t.Fatal("migrated profile failed validation:", err)
 	}
 	for path, want := range map[string]string{
-		filepath.Join("data", "access.token"): "0123456789abcdef",
-		filepath.Join("data", "master.key"):   "test-master-key",
-		filepath.Join("data", "state.json"):   "{\"format\":3,\"instances\":[],\"tunnels\":[]}",
-		filepath.Join("cores", "frpc.exe"):    "synthetic frpc core",
+		filepath.Join("data", "access.token"):            "0123456789abcdef",
+		filepath.Join("data", "master.key"):              "test-master-key",
+		filepath.Join("data", "state.json"):              "{\"format\":3,\"instances\":[],\"tunnels\":[]}",
+		filepath.Join("cores", "frpc.exe"):               "synthetic frpc core",
 		filepath.Join("tmp", "session-old", "probe.tmp"): "temporary child file",
 	} {
 		got, err := os.ReadFile(filepath.Join(profile, path))
