@@ -71,7 +71,7 @@ def as_standard(username,password,program,args=(),wait=False):
 with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
     root=Path(temp)
     app=Path(os.environ.get('ProgramW6432',os.environ['ProgramFiles']))/'KurumiFRP'; exe=app/'kurumi.exe'
-    common=Path(os.environ['ProgramData'])/'KurumiFRP'
+    common=app/'runtime'
     if app.exists() or common.exists(): raise SystemExit('Pre-existing machine paths retained.')
     profile=None
     account=None
@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
             paths=json.loads(subprocess.check_output([str(exe),'--paths'],text=True))
             profile=Path(paths['data']).parent
             assert profile.parent==common/'profiles', paths
-            assert not (app/'data').exists() and not (app/'cores').exists(), 'runtime wrote into Program Files'
+            assert profile.is_relative_to(app), 'runtime data escaped the installation directory'
             assert Path(paths['temporary'])==profile/'tmp'
             subprocess.run([str(exe),'--check-running'],check=True,timeout=25)
             assert api('state')['version']=='0.7.1.4'
@@ -156,12 +156,12 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
         if result.returncode:
             print(log.read_text(encoding='utf-8',errors='replace'));result.check_returncode()
         wait_until(lambda:not app.exists())
-        assert not common.exists(), 'ProgramData residue'
+        assert not common.exists(), 'installation runtime residue'
         assert (outside/'keep').read_text()=='user document'
         try:
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,arp,0,access): raise AssertionError('ARP residue')
         except FileNotFoundError: pass
-        print('PASS: default Program Files install/reinstall, ProgramData isolation with a real standard user, private credentials, read-only Program Files, temporary paths, HKLM registration, verified Setup removal and full machine uninstall.')
+        print('PASS: default Program Files install/reinstall, installation-directory isolation with a real standard user, private credentials, read-only Program Files, temporary paths, HKLM registration, verified Setup removal and full machine uninstall.')
     finally:
         if exe.exists(): subprocess.run([str(exe),'--native-maintenance','stop'],timeout=100)
         if account: subprocess.run(['net.exe','user',account,'/delete'],check=True,capture_output=True)
