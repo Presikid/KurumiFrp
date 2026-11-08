@@ -50,12 +50,12 @@ with tempfile.TemporaryDirectory(prefix='core-ui-') as tmp:
         def bridge(path,options):
             if path=='/api/core':request_counts['core_status']+=1
             value=fixture(path)
-            if value is not None:return {'status':200,'body':json.dumps(value)}
+            if value is not None:return {'status':200,'body':json.dumps(value),'headers':{'Content-Type':'application/json'}}
             if not path.startswith('/api/'):raise ValueError('unexpected URL')
             req=urllib.request.Request(base+path,data=options.get('body','').encode() if options.get('body') else None,headers=options.get('headers',{}),method=options.get('method','GET'))
             try:r=opener.open(req,timeout=10)
             except urllib.error.HTTPError as e:r=e
-            return {'status':r.status,'body':r.read().decode()}
+            return {'status':r.status,'body':r.read().decode(),'headers':dict(r.headers)}
         with sync_playwright() as p:
             args={'headless':True,'args':['--no-sandbox']}
             if len(sys.argv)>2:args['executable_path']=sys.argv[2]
@@ -67,7 +67,7 @@ with tempfile.TemporaryDirectory(prefix='core-ui-') as tmp:
                 html=re.sub(r'<link[^>]*>|<script[^>]*></script>','',(web/'index.html').read_text())
                 page.set_content(html)
                 for f in ['style.css','core.css']:page.add_style_tag(content=(web/f).read_text())
-                page.add_script_tag(content="window.fetch=async(p,o={})=>{const r=await window.testFetch(p,o);return new Response(r.body,{status:r.status,headers:{'Content-Type':'application/json'}})}")
+                page.add_script_tag(content="window.fetch=async(p,o={})=>{const r=await window.testFetch(p,o);return new Response(r.body,{status:r.status,headers:r.headers||{'Content-Type':'application/json'}})}")
                 for f in ['app.js','core.js']:page.add_script_tag(content=(web/f).read_text())
             else:
                 def route(r):
