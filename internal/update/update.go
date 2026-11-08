@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -183,6 +184,9 @@ func (m *Manager) Versions(ctx context.Context) ([]Version, error) {
 		_, ok := assetFor(r, m.distribution)
 		out = append(out, Version{r.Tag, r.Prerelease, newer(r.Tag, current), ok})
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return newer(out[i].Tag, out[j].Tag)
+	})
 	return out, nil
 }
 func (m *Manager) selectAsset(ctx context.Context, tag string) (Asset, error) {
