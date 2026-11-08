@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/material/solo/KA15-bat-magic-gentle-v01.png" width="200" alt="KA15-bat-magic-gentle-v01.png">
+  <img src="assets/material/solo/KA15-bat-magic-gentle-v01.png" width="1000">
 </p>
 
 <h1 align="center">KurumiFRP</h1>
