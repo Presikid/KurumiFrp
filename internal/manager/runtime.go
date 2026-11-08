@@ -259,6 +259,7 @@ func (a *App) startPrepared(i Instance, r Rendered, path, configPath, coreID str
 	}
 	p.status = RuntimeStatus{State: "running", PID: cmd.Process.Pid, Started: now(), Applied: r.Digest}
 	a.procs[i.ID] = p
+	delete(a.startupErrors, i.ID)
 	go func() {
 		err := cmd.Wait()
 		// Clean the owned process group even when its leader exited first. Do
@@ -316,6 +317,8 @@ func (a *App) statuses() map[string]RuntimeStatus {
 			v = p.view()
 			r, e := a.store.render(i.ID, false)
 			v.Pending = e != nil || v.Applied != r.Digest || p.coreID != a.activeCoreID()
+		} else if message := a.startupErrors[i.ID]; i.AutoStart && message != "" {
+			v = RuntimeStatus{State: "autostart-failed", Exit: message}
 		}
 		out[i.ID] = v
 	}
@@ -325,10 +328,16 @@ func (a *App) Close() error {
 	a.closeOnce.Do(func() {
 		a.mu.Lock()
 		a.closing = true
+		if a.startupCancel != nil {
+			a.startupCancel()
+		}
 		for _, op := range a.operations {
 			op.cancel()
 		}
 		a.mu.Unlock()
+		if a.startupDone != nil {
+			<-a.startupDone
+		}
 		a.core.Cancel()
 		// In-flight control operations must finish before the final process
 		// snapshot; no app mutex is held while waiting on them or on children.
