@@ -183,6 +183,7 @@ func (m *Manager) RemoveLegacyActive() error {
 	}
 	return err
 }
+
 const installedCacheTTL = 10 * time.Second
 
 func cloneInstalled(items []Installed) []Installed {
