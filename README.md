@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/kurumi.webp" width="200" alt="时崎狂三与时钟的主题插画">
+  <img src="assets/material/solo/KA15-bat-magic-gentle-v01.png" width="200" alt="KA15-bat-magic-gentle-v01.png">
 </p>
 
 <h1 align="center">KurumiFRP</h1>
