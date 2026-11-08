@@ -23,7 +23,58 @@ import (
 var advapi = syscall.NewLazyDLL("advapi32.dll")
 var localFree = syscall.NewLazyDLL("kernel32.dll").NewProc("LocalFree")
 var getFileAttributes = syscall.NewLazyDLL("kernel32.dll").NewProc("GetFileAttributesW")
-var sidName = regexp.MustCompile(`^S-1-[0-9]+(?:-[0-9]+)+$`)
+var sidName = regexp.MustCompile(`^S-1-[0-9]+(?:-[0-9]+)+//go:build windows
+
+package main
+
+// Windows binaries are machine-installed and read-only. Mutable state lives
+// beneath the installation directory in an ACL-protected runtime root, with
+// each Windows SID receiving a private profile.
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"syscall"
+	"time"
+	"unsafe"
+)
+
+var advapi = syscall.NewLazyDLL("advapi32.dll")
+var localFree = syscall.NewLazyDLL("kernel32.dll").NewProc("LocalFree")
+var getFileAttributes = syscall.NewLazyDLL("kernel32.dll").NewProc("GetFileAttributesW")
+)
+var migrationTempName = regexp.MustCompile(`^\.migration-(S-1-[0-9]+(?:-[0-9]+)+)-[0-9]+//go:build windows
+
+package main
+
+// Windows binaries are machine-installed and read-only. Mutable state lives
+// beneath the installation directory in an ACL-protected runtime root, with
+// each Windows SID receiving a private profile.
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"syscall"
+	"time"
+	"unsafe"
+)
+
+var advapi = syscall.NewLazyDLL("advapi32.dll")
+var localFree = syscall.NewLazyDLL("kernel32.dll").NewProc("LocalFree")
+var getFileAttributes = syscall.NewLazyDLL("kernel32.dll").NewProc("GetFileAttributesW")
+)
 
 const machineACL = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
 
@@ -431,6 +482,34 @@ type legacyProfile struct {
 	digest string
 }
 
+func cleanupMigrationTemps(runtimeRoot string) error {
+	profilesRoot := filepath.Join(runtimeRoot, "profiles")
+	if err := verifyDirectoryACL(profilesRoot, profilesACL); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(profilesRoot)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if sidName.MatchString(entry.Name()) {
+			continue
+		}
+		match := migrationTempName.FindStringSubmatch(entry.Name())
+		if match == nil {
+			return fmt.Errorf("unknown runtime profile entry retained: %s", entry.Name())
+		}
+		path := filepath.Join(profilesRoot, entry.Name())
+		if err := verifyDirectoryACL(path, profileACL(match[1])); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("cannot remove incomplete migration directory %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
+
 func verifyLegacyRootForMigration(legacyRoot, install string) (bool, bool, error) {
 	if err := verifyDirectoryACL(legacyRoot, machineACL); err != nil {
 		return false, false, err
@@ -536,6 +615,9 @@ func migrateLegacyWindowsProfiles(legacyRoot, runtimeRoot, install string) error
 		}
 	}
 
+	if err = cleanupMigrationTemps(runtimeRoot); err != nil {
+		return fmt.Errorf("cannot clean an incomplete migration directory: %w", err)
+	}
 	oldProfiles := filepath.Join(legacyRoot, "profiles")
 	var entries []os.DirEntry
 	if hasProfiles {
@@ -744,6 +826,16 @@ func stopMachine(install string, purge bool) (err error) {
 		return err
 	}
 	if err = verifyMachine(root, install); err != nil {
+		return err
+	}
+	legacyRoot, err := legacyWindowsDataRoot()
+	if err != nil {
+		return err
+	}
+	if err = migrateLegacyWindowsProfiles(legacyRoot, root, install); err != nil {
+		return fmt.Errorf("legacy data migration must complete before maintenance: %w", err)
+	}
+	if err = cleanupMigrationTemps(root); err != nil {
 		return err
 	}
 	marker := filepath.Join(root, ".uninstalling")
