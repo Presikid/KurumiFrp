@@ -109,12 +109,15 @@ function paintCoreStatus() {
 async function loadCoreReleases(force=false) {
  if(coreLoading)return;
  if(!force && coreReleasesLoaded) {
-  await showCoreReleaseOptions(false);
+  try {await showCoreReleaseOptions(false);}
+  catch(e) {coreError=e.message;paintCoreStatus();}
   return;
  }
+ if(force)coreReleasesLoaded=false;
  coreLoading=true;coreError='';
  try {
   coreReleases=await api('core/releases');
+  if(!coreReleases.length)throw new Error('没有可用的稳定版本');
   coreReleasesLoaded=true;
   await showCoreReleaseOptions(force);
  }catch(e){coreError=e.message;}finally{coreLoading=false;paintCoreStatus();}
