@@ -267,6 +267,7 @@ func verifyMachine(root, install string) error {
 	}
 	return nil
 }
+
 const (
 	maxLegacyProfileEntries = 100000
 	maxLegacyProfileBytes   = int64(8 << 30)
