@@ -9,10 +9,10 @@
 | 内容 | 位置 |
 |---|---|
 | 主程序、说明、安装登记、原生卸载器 | `%ProgramFiles%\KurumiFRP` |
-| 账户隔离的配置、令牌、密钥、历史 | `%ProgramData%\KurumiFRP\profiles\<Windows SID>\data` |
+| 账户隔离的配置、令牌、密钥、历史 | `%ProgramFiles%\\KurumiFRP\\runtime\\profiles\\<Windows SID>\\data` |
 | 下载的 frpc/frps 及版本清单 | `%ProgramFiles%\\KurumiFRP\\runtime\\profiles\\<Windows SID>\\cores` |
-| 工作台及托管 frp 的运行临时文件 | 同一账户目录内的 `tmp\session-*` |
-| 机器级目录所有权记录 | `%ProgramData%\KurumiFRP\machine-install.json` |
+| 工作台及托管 frp 的运行临时文件 | `%ProgramFiles%\\KurumiFRP\\runtime\\profiles\\<Windows SID>\\tmp\\session-*` |
+| 机器级目录所有权记录 | `%ProgramFiles%\\KurumiFRP\\runtime\\machine-install.json` |
 
 这是机器级安装、按 Windows 账户隔离的本机工作台，不是 Windows 系统服务。每个账户有独立配置、令牌和实例；应用自己的长期文件不另外放进该账户的 AppData/Documents。SID 是 Windows 安全标识，不是另建系统账户。普通用户对 Program Files 没有写权限；安装目录中的 `runtime` 根目录由管理员创建并保护；普通用户只能创建并访问自己受 NTFS 权限保护的 SID 子目录，系统和管理员仍拥有管理权限。运行时路径由当前可执行文件所在的安装目录解析，不依赖 AppData、ProgramData 或用户环境变量。
 
