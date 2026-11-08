@@ -72,7 +72,8 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
     root=Path(temp)
     app=Path(os.environ.get('ProgramW6432',os.environ['ProgramFiles']))/'KurumiFRP'; exe=app/'kurumi.exe'
     common=app/'runtime'
-    if app.exists() or common.exists(): raise SystemExit('Pre-existing machine paths retained.')
+    legacy=Path(os.environ['ProgramData'])/'KurumiFRP'
+    if app.exists() or common.exists() or legacy.exists(): raise SystemExit('Pre-existing machine paths retained.')
     profile=None
     account=None
     def api(path,body=None):
@@ -94,6 +95,7 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
             profile=Path(paths['data']).parent
             assert profile.parent==common/'profiles', paths
             assert profile.is_relative_to(app), 'runtime data escaped the installation directory'
+            assert not legacy.exists(), 'legacy ProgramData data was not migrated'
             assert Path(paths['temporary'])==profile/'tmp'
             subprocess.run([str(exe),'--check-running'],check=True,timeout=25)
             assert api('state')['version']=='0.7.1.4'
@@ -157,6 +159,7 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
             print(log.read_text(encoding='utf-8',errors='replace'));result.check_returncode()
         wait_until(lambda:not app.exists())
         assert not common.exists(), 'installation runtime residue'
+        assert not legacy.exists(), 'legacy ProgramData residue'
         assert (outside/'keep').read_text()=='user document'
         try:
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,arp,0,access): raise AssertionError('ARP residue')
