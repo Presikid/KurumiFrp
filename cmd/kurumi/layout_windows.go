@@ -24,7 +24,7 @@ var advapi = syscall.NewLazyDLL("advapi32.dll")
 var localFree = syscall.NewLazyDLL("kernel32.dll").NewProc("LocalFree")
 var getFileAttributes = syscall.NewLazyDLL("kernel32.dll").NewProc("GetFileAttributesW")
 var sidName = regexp.MustCompile("^S-1-[0-9]+(?:-[0-9]+)+$")
-var migrationTempName = regexp.MustCompile("^\\.migration-(S-1-[0-9]+(?:-[0-9]+)+)-[0-9]+$")
+var migrationTempName = regexp.MustCompile("^\\.migration-(S-1-[0-9]+(?:-[0-9]+)+)--[0-9]+$")
 
 const machineACL = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
 
@@ -635,7 +635,7 @@ func migrateLegacyWindowsProfiles(legacyRoot, runtimeRoot, install string) error
 			return fmt.Errorf("profile %s changed during migration; original data was restored when possible", profile.sid)
 		}
 
-		tempPath := filepath.Join(filepath.Dir(profile.target), fmt.Sprintf(".migration-%s-%d", profile.sid, time.Now().UnixNano()))
+		tempPath := filepath.Join(filepath.Dir(profile.target), fmt.Sprintf(".migration-%s--%d", profile.sid, time.Now().UnixNano()))
 		if err = createPrivateDirectory(tempPath, profileACL(profile.sid)); err != nil {
 			return fmt.Errorf("cannot prepare a private migration directory for %s: %w", profile.sid, err)
 		}
