@@ -32,8 +32,8 @@ func TestWindowsPrivateProfileACL(t *testing.T) {
 		}
 	}
 }
-func TestWindowsProgramDataPaths(t *testing.T) {
-	root, e := windowsDataRoot()
+func TestWindowsInstallDirectoryPaths(t *testing.T) {
+	root, e := windowsRuntimeRoot()
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -43,11 +43,11 @@ func TestWindowsProgramDataPaths(t *testing.T) {
 	}
 	sid, _ := currentSID()
 	if user != filepath.Join(root, "profiles", sid) {
-		t.Fatal("not isolated by SID")
+		t.Fatal("not isolated by SID beneath install runtime")
 	}
-	// A forged environment must not redirect known folders into an attacker path.
+	// A forged environment must not redirect the installation-local runtime root.
 	t.Setenv("ProgramData", filepath.Join(t.TempDir(), "fake"))
-	again, e := windowsDataRoot()
+	again, e := windowsRuntimeRoot()
 	if e != nil || !strings.EqualFold(again, root) {
 		t.Fatal("trusted an environment override")
 	}
