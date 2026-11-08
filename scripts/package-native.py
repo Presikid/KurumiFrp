@@ -21,11 +21,14 @@ def run(args, **kwargs):
 def build(system, arch, dest):
     dest.parent.mkdir(parents=True, exist_ok=True)
     mode = 'windows-installed' if system == 'windows' else 'linux-system'
+    goarch = {'armhf': 'arm'}.get(arch, arch)
     flags = '-s -w -X main.distribution=' + mode
     if system == 'windows':
         flags += ' -H=windowsgui'
+    if system == 'linux' and arch == 'armhf':
+        flags += ' -X github.com/Presikid/KurumiFrp/internal/core.armVariant=arm_hf'
     run(['go', 'build', '-trimpath', '-ldflags=' + flags, '-o', dest, './cmd/kurumi'],
-        env=dict(os.environ, GOOS=system, GOARCH=arch, CGO_ENABLED='0'))
+        env=dict(os.environ, GOOS=system, GOARCH=goarch, GOARM='7', CGO_ENABLED='0'))
 
 
 def windows():
@@ -81,7 +84,9 @@ def maintainer(action):
 
 
 def linux(arch, deb_only=False):
-    rpm_arch = {'amd64': 'x86_64', 'arm64': 'aarch64'}[arch]
+    rpm_arch = {'amd64': 'x86_64', 'arm64': 'aarch64'}.get(arch)
+    if not deb_only and rpm_arch is None:
+        raise ValueError('RPM is not supported for this architecture')
     with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
         work = Path(temp)
         binary = work / 'kurumifrp'
@@ -183,18 +188,15 @@ if [ "$1" = 0 ]; then remove_unit_state; purge_state; elif systemd_active; then 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('target', choices=['windows', 'linux'])
-    parser.add_argument('--arch', choices=['amd64', 'arm64', 'all'], default='all')
+    parser.add_argument('--arch', choices=['amd64', 'arm64', 'armhf', 'riscv64', 'all'], default='all')
     parser.add_argument('--deb-only', action='store_true', help='local DEB build without rpmbuild')
     args = parser.parse_args()
     OUT.mkdir(exist_ok=True)
     if args.target == 'windows':
         windows()
     else:
-        for arch in (('amd64', 'arm64') if args.arch == 'all' else (args.arch,)):
-            linux(arch, args.deb_only)
-    packages = sorted(p for p in OUT.iterdir() if p.suffix in ('.exe', '.deb', '.rpm'))
-    (OUT / 'checksums.txt').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name + '\n'
-                                             for p in packages), encoding='ascii')
+        for arch in (('amd64', 'arm64', 'armhf', 'riscv64') if args.arch == 'all' else (args.arch,)):
+            linux(arch, args.deb_only or arch in ('armhf', 'riscv64'))
 
 
 if __name__ == '__main__':

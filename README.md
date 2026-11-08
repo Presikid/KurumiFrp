@@ -21,7 +21,7 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 
 ## 下载安装
 
-前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.2、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
+前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.3、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
 
 **Windows 10 / 11**
 
@@ -30,13 +30,13 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 **Debian / Ubuntu**
 
 ```sh
-sudo apt install ./kurumifrp_0.7.1.2_amd64.deb
+sudo apt install ./kurumifrp_0.7.1.3_amd64.deb
 ```
 
 **Fedora / RHEL 系**
 
 ```sh
-sudo dnf install ./kurumifrp-0.7.1.2-1.x86_64.rpm
+sudo dnf install ./kurumifrp-0.7.1.3-1.x86_64.rpm
 ```
 
 Linux 安装包会配置 systemd 服务；ARM64 请下载对应架构的包。安装、升级、卸载及旧版迁移的步骤见 [安装说明](docs/INSTALL.md)。目前安装包尚未进行商业代码签名，也没有在线 APT/YUM 软件源。
@@ -62,7 +62,7 @@ Windows 快捷方式可以自动打开工作台；手动登录或无桌面环境
 - **软件更新**：已安装的 Windows 和 Linux 原生包可从工作台选择项目发布版本并更新；源码运行版本需要自行更新。
 - **随手看看**：界面支持深浅主题和手机尺寸，运行记录保留当前会话最近的进程输出。
 
-frp 核心支持自动安装 Linux、Windows、macOS 的 amd64 / arm64 版本；KurumiFRP 的预编译安装包面向 Linux 和 Windows 的 amd64 / arm64。核心最低支持 frp 0.60，具体验证情况见 [测试说明](docs/VALIDATION.md)。
+frp 核心支持自动安装官方 Windows、Linux 各架构及 macOS amd64 / arm64 版本。KurumiFRP 提供 Windows x64 / ARM64 安装包、Linux amd64 / arm64 的 DEB 和 RPM、Linux armhf / riscv64 的 DEB，以及其他官方 Linux 架构的便携版。便携版需手动替换程序更新。核心最低支持 frp 0.60，具体验证情况见 [测试说明](docs/VALIDATION.md)。
 
 ## 备份与迁移
 
