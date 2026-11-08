@@ -128,7 +128,7 @@ async function showCoreReleaseOptions(force=false) {
  if(force)coreRelease=null;
  const tag=$('#core-version').value;
  if(coreRelease?.tag_name===tag) {
-  paintCoreAsset();
+  showCoreAssetOptions(coreRelease);
   return;
  }
  await loadCoreRelease(tag,force);
