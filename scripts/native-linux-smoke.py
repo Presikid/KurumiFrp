@@ -9,6 +9,8 @@ import tempfile
 import time
 import urllib.request
 
+expected_version = (Path(__file__).resolve().parents[1] / 'VERSION').read_text(encoding='utf-8').strip()
+
 if os.geteuid() != 0 or os.environ.get('KURUMI_DISPOSABLE_PACKAGE_TEST') != '1':
     raise SystemExit('This test requires an explicitly disposable root environment.')
 package = Path(sys.argv[1]).resolve()
@@ -53,7 +55,7 @@ try:
     run(install)
     ensure_running()
     before=keys()
-    assert api('state')['version']=='0.7.1.9'
+    assert api('state')['version']==expected_version
     run(['dpkg','--verify','kurumifrp'] if is_deb else ['rpm','-V','kurumifrp'])
     # Reinstall/upgrade path must stop and restart the owned manager, never purge data.
     run(install)
@@ -72,14 +74,14 @@ try:
         run(['systemctl', 'is-active', '--quiet', 'kurumifrp-updater.path'])
         request_file=base/'update.request'
         staged=base/'.update-test'
-        staged.write_text('v0.7.1.9')  # Same version is rejected without downloading or installing.
+        staged.write_text('v' + expected_version)  # Same version is rejected without downloading or installing.
         os.chown(staged, uid, -1)
         os.replace(staged, request_file)
         for _ in range(200):
             if not request_file.exists(): break
             time.sleep(.1)
         assert not request_file.exists(), 'systemd did not process update request'
-        assert api('state')['version']=='0.7.1.9', 'rejected update changed the running version'
+        assert api('state')['version']==expected_version, 'rejected update changed the running version'
     fixture=base/'cores/frps'
     fixture.write_text('#!/bin/sh\nif [ "$1" = verify ]; then exit 0; fi\nprintf %s "$TMPDIR" > "$TMPDIR/frp-temp-probe"\nexec sleep 600\n')
     fixture.chmod(0o755)
