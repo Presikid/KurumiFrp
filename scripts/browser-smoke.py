@@ -39,6 +39,16 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
         with urllib.request.urlopen(base + "/kurumi.webp", timeout=5) as response:
             header = response.read(12)
             assert header[:4] == b"RIFF" and header[8:12] == b"WEBP", "theme image was not embedded and served"
+        with urllib.request.urlopen(base + "/app.js", timeout=5) as response:
+            asset_etag = response.headers.get("ETag")
+            assert response.headers.get("Cache-Control") == "private, no-cache"
+            assert asset_etag, "embedded script omitted ETag"
+        conditional_asset = urllib.request.Request(base + "/app.js", headers={"If-None-Match": asset_etag})
+        try:
+            urllib.request.urlopen(conditional_asset, timeout=5)
+            raise AssertionError("unchanged embedded asset did not return 304")
+        except urllib.error.HTTPError as error:
+            assert error.code == 304, f"conditional asset request returned {error.code}"
         with sync_playwright() as p:
             engine = os.environ.get("KURUMI_BROWSER", "chromium")
             if engine not in ("chromium", "firefox", "webkit"):
