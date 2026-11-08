@@ -152,6 +152,8 @@ jobs:
           go-version: stable
           cache: false
       - name: macOS source build and official frp
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: |
           go vet ./...
           go test -count=1 ./...
