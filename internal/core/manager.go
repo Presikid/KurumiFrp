@@ -184,7 +184,7 @@ func (m *Manager) RemoveLegacyActive() error {
 	return err
 }
 
-const installedCacheTTL = 10 * time.Second
+const installedCacheTTL = 30 * time.Second
 
 func cloneInstalled(items []Installed) []Installed {
 	out := make([]Installed, len(items))
