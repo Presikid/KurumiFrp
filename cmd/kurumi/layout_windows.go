@@ -443,6 +443,17 @@ func cleanupMigrationTemps(runtimeRoot string) error {
 	}
 	for _, entry := range entries {
 		if sidName.MatchString(entry.Name()) {
+			path := filepath.Join(profilesRoot, entry.Name())
+			if err := verifyDirectoryACL(path, profileACL(entry.Name())); err != nil {
+				return err
+			}
+			var receipt profileReceipt
+			if err := readBoundedJSON(filepath.Join(path, "profile.json"), &receipt); err != nil {
+				return err
+			}
+			if receipt.Product != productID || receipt.SID != entry.Name() || receipt.Schema != 1 {
+				return fmt.Errorf("unrecognized runtime profile: %s", entry.Name())
+			}
 			continue
 		}
 		match := migrationTempName.FindStringSubmatch(entry.Name())
