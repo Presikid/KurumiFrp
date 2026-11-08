@@ -39,11 +39,26 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
         with urllib.request.urlopen(base + "/kurumi.webp", timeout=5) as response:
             header = response.read(12)
             assert header[:4] == b"RIFF" and header[8:12] == b"WEBP", "theme image was not embedded and served"
+        with urllib.request.urlopen(base + "/app.js", timeout=5) as response:
+            asset_etag = response.headers.get("ETag")
+            assert response.headers.get("Cache-Control") == "private, no-cache"
+            assert asset_etag, "embedded script omitted ETag"
+        conditional_asset = urllib.request.Request(base + "/app.js", headers={"If-None-Match": asset_etag})
+        try:
+            urllib.request.urlopen(conditional_asset, timeout=5)
+            raise AssertionError("unchanged embedded asset did not return 304")
+        except urllib.error.HTTPError as error:
+            assert error.code == 304, f"conditional asset request returned {error.code}"
         with sync_playwright() as p:
-            launch = {"headless": True, "args": ["--no-sandbox"]}
+            engine = os.environ.get("KURUMI_BROWSER", "chromium")
+            if engine not in ("chromium", "firefox", "webkit"):
+                raise ValueError("unsupported browser engine: " + engine)
+            launch = {"headless": True}
+            if engine == "chromium":
+                launch["args"] = ["--no-sandbox"]
             if len(sys.argv) > 2:
                 launch["executable_path"] = sys.argv[2]
-            browser = p.chromium.launch(**launch)
+            browser = getattr(p, engine).launch(**launch)
             page = browser.new_page(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
             errors = []
             page.on("pageerror", lambda e: errors.append(str(e)))
@@ -58,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
                     response = opener.open(request, timeout=20)
                 except urllib.error.HTTPError as error:
                     response = error
-                return {"status": response.status, "body": response.read().decode()}
+                return {"status": response.status, "body": response.read().decode(), "headers": dict(response.headers)}
             if offline:
                 page.expose_function("testFetch", bridge)
             def load_page():
@@ -71,7 +86,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
                 page.set_content(html)
                 page.add_style_tag(content=(web / "style.css").read_text())
                 page.add_style_tag(content=(web / "core.css").read_text())
-                page.add_script_tag(content="window.fetch = async (p, o={}) => { const r = await window.testFetch(p, o); return new Response(r.body, {status:r.status,headers:{'Content-Type':'application/json'}}); };")
+                page.add_script_tag(content="window.fetch = async (p, o={}) => { const r = await window.testFetch(p, o); return new Response(r.status === 304 ? null : r.body, {status:r.status,headers:r.headers}); };")
                 page.add_script_tag(content=(web / "app.js").read_text())
                 page.add_script_tag(content=(web / "core.js").read_text())
             load_page()
@@ -84,7 +99,14 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#login-form button').click()
             page.locator('#app').wait_for(state="visible")
             page.locator('[data-action="new-instance"]').first.click()
-            page.locator('#editor input[name="name"]').fill("Tokyo entry")
+            # Modal input should not trigger a full-viewport backdrop filter repaint.
+            backdrop_filter = page.locator('#dialog').evaluate(
+                "(dialog) => getComputedStyle(dialog, '::backdrop').getPropertyValue('backdrop-filter').trim()"
+            )
+            assert backdrop_filter in ("", "none"), f"modal backdrop unexpectedly applies a filter: {backdrop_filter}"
+            name_input = page.locator('#editor input[name="name"]')
+            name_input.press_sequentially("Tokyo entry", delay=5)
+            assert name_input.input_value() == "Tokyo entry"
             page.locator('#editor input[name="host"]').fill("127.0.0.1")
             page.locator('#editor input[name="token"]').fill("test-passphrase-123")
             page.locator('#editor button[type="submit"]').click()
@@ -106,6 +128,8 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#editor input[name="localPort"]').fill(str(port))
             page.locator('#editor button[type="submit"]').click()
             page.locator('#dialog').wait_for(state="hidden")
+            polling_checks = page.evaluate((Path(__file__).with_name("polling-regression.js")).read_text(encoding="utf-8"), {"token": token})
+            print("Polling regression passed: " + polling_checks)
             page.locator('[data-action="probe"]').first.click()
             expect(page.locator('.probe-cell .pill.good').first).to_contain_text("TCP 可连接")
             page.locator('[data-action="new-tunnel"]').first.click()

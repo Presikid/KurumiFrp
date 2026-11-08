@@ -1,6 +1,6 @@
 # 0.5 验证范围
 
-新增 Windows Known Folder 路径、防环境变量劫持、NTFS 账户目录权限、临时会话清理与保留未知文件的单元测试。Windows 原生测试实际安装到默认 Program Files，检查 HKLM 卸载项，创建临时普通账户并验证可运行、不能读取另一账户的密钥或写入 Program Files；测试子 frp 使用受控 TEMP，检查升级和跨账户卸载。Linux 原生测试检查子进程 TMPDIR 与 systemd RuntimeDirectory 生命周期。
+新增 Windows 安装目录内运行时路径、防环境变量劫持、NTFS 账户目录权限、临时会话清理与保留未知文件的单元测试。新增旧 ProgramData profile 迁移测试，覆盖安装回执/ACL 校验、配置与密钥/核心/临时目录内容一致性、拒绝未登记数据、迁移中断后的恢复，以及复制路径的目录摘要验证。Windows 原生测试实际安装到默认 Program Files，检查 HKLM 卸载项，创建临时普通账户并验证可运行、不能读取另一账户的密钥或写入程序文件；测试子 frp 使用受控 TEMP，检查升级和跨账户卸载。Linux 原生测试检查子进程 TMPDIR 与 systemd RuntimeDirectory 生命周期。
 
 新增测试是否通过应查对应提交 CI，不以此文档代替结果；没有做全系统文件写入跟踪、所有 Windows 客户端版本或 ARM64 实机验证。下文为历史版本记录。
 
@@ -53,7 +53,7 @@ branch was used for these tests. Sandbox sample rules are not seeded in the prod
 
 ## 0.4 原生安装验证
 
-沙箱已执行 Go 测试、vet、真实 dpkg 构建/安装/重装/remove/purge 与本机认证 API，未使用用户设备。沙箱没有活动 systemd，因此沙箱通过不等于系统启动验证。Windows Setup.exe 由 CI 的 Inno Setup 编译并通过真实安装引擎测试；Linux CI 增加真实 systemd + dpkg 生命周期和 Fedora 容器 RPM 测试。发布 job 只有两个平台全部检查成功后才能上传 Setup.exe、两个 DEB、两个 RPM 和 checksums.txt。以该提交的 Actions 结果为准，不以工作流文件存在代替成功。
+沙箱已执行 Go 测试、vet、真实 dpkg 构建/安装/重装/remove/purge 与本机认证 API，未使用用户设备。沙箱没有活动 systemd，因此沙箱通过不等于系统启动验证。Windows Setup.exe 由 CI 的 Inno Setup 编译并通过真实安装引擎测试；Linux CI 增加真实 systemd + dpkg 生命周期和 Fedora 容器 RPM 测试。发布 job 只有两个平台全部检查成功后才能上传 Setup.exe、DEB 和 RPM 安装包。以该提交的 Actions 结果为准，不以工作流文件存在代替成功。
 
 
 ## Local target diagnostic checks

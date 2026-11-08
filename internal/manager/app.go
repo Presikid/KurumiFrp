@@ -28,6 +28,15 @@ type App struct {
 	auth     auth
 	procs    map[string]*process
 	assets   http.Handler
+
+	// Lifecycle reservations are protected by mu. Slow operations run without it.
+	operations   map[string]*runtimeOperation
+	operationWG  sync.WaitGroup
+	closing      bool
+	closeOnce    sync.Once
+	closeErr     error
+	stateCache   *stateResponseCache
+	activeProbes int
 }
 
 func New(dir, bin, addr string, assets fs.FS) (*App, error) {
@@ -86,7 +95,7 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	}); e != nil {
 		return nil, e
 	}
-	return &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets))}, nil
+	return &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets)}, nil
 }
 func (a *App) SetDistribution(distribution string) {
 	a.updater = update.New(a.store.dir, update.DetectDistribution(distribution))
@@ -185,6 +194,14 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.updateAPI(w, r)
 			return
 		}
+		if r.URL.Path == "/api/control" || r.URL.Path == "/api/validate" {
+			a.runtimeAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/state" && r.Method == "GET" {
+			a.handleState(w, r)
+			return
+		}
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		a.api(w, r)
@@ -204,15 +221,6 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		switch r.URL.Path {
-		case "/api/state":
-			history := []map[string]any{}
-			for _, h := range a.store.DB.History {
-				history = append(history, map[string]any{"revision": h.Revision, "at": h.At, "summary": h.Summary})
-			}
-			_, ec := a.binary("frpc")
-			_, es := a.binary("frps")
-			reply(w, 200, map[string]any{"version": "0.7.0", "revision": a.store.DB.Revision, "state": a.store.DB.State.public(), "runtime": a.statuses(), "history": history, "historyLimit": a.store.DB.HistoryLimit, "events": a.store.DB.Events, "binaries": map[string]bool{"frpc": ec == nil, "frps": es == nil}})
-			return
 		case "/api/export":
 			a.export(w, r)
 			return
@@ -400,41 +408,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-	case "/api/validate", "/api/control":
-		i, ok := a.store.DB.State.Instance(req.ID)
-		if !ok {
-			err = fmt.Errorf("实例不存在")
-			break
-		}
-		if r.URL.Path == "/api/control" && req.Action == "stop" {
-			err = a.stop(i.ID)
-			break
-		}
-		if r.URL.Path == "/api/control" && req.Action != "start" && req.Action != "restart" {
-			err = fmt.Errorf("未知操作")
-			break
-		}
-		var rendered Rendered
-		rendered, err = a.store.render(i.ID, false)
-		if err != nil {
-			break
-		}
-		var output string
-		output, err = a.verify(i, rendered)
-		if err != nil {
-			break
-		}
-		if r.URL.Path == "/api/validate" {
-			reply(w, 200, map[string]any{"ok": true, "output": output, "note": "仅验证配置，不证明网络连通"})
-			return
-		}
-		if req.Action == "restart" {
-			err = a.stop(i.ID)
-			if err != nil {
-				break
-			}
-		}
-		err = a.start(i, rendered)
+
 	default:
 		fail(w, 404, fmt.Errorf("接口不存在"))
 		return

@@ -1,8 +1,9 @@
-"""Real TCP roundtrip through official frps/frpc; uses disposable loopback ports.
+"""Real TCP/STCP roundtrips through official frps/frpc; uses disposable loopback ports.
 Usage: python3 scripts/frp-smoke.py ./kurumi /path/to/frp-dir
 This does not download or install software or touch an existing workspace.
 """
 import json
+import os
 from pathlib import Path
 import socket
 import socketserver
@@ -40,9 +41,14 @@ with tempfile.TemporaryDirectory(prefix="kurumi-frp-") as tmp, socketserver.Thre
             if p not in used:
                 used.add(p)
                 return p
-    http_port, bind_port, remote_port = unique_port(), unique_port(), unique_port()
+    http_port, bind_port, remote_port, visitor_port = unique_port(), unique_port(), unique_port(), unique_port()
     base = f"http://127.0.0.1:{http_port}"
-    manager = subprocess.Popen([binary, "--data", tmp, "--frp-dir", frp, "--listen", f"127.0.0.1:{http_port}"], stdout=subprocess.DEVNULL)
+    # frpc reads lowercase http_proxy directly and does not apply no_proxy.
+    # This disposable integration fixture connects only to our loopback frps;
+    # keep the runner's outbound HTTP proxy out of that local test connection.
+    local_env = os.environ.copy()
+    local_env.pop("http_proxy", None)
+    manager = subprocess.Popen([binary, "--data", tmp, "--frp-dir", frp, "--listen", f"127.0.0.1:{http_port}"], stdout=subprocess.DEVNULL, env=local_env)
     try:
         for _ in range(100):
             try:
@@ -71,39 +77,53 @@ with tempfile.TemporaryDirectory(prefix="kurumi-frp-") as tmp, socketserver.Thre
             if len(installed) != 1:
                 raise RuntimeError("select a single installed core for the disposable workspace")
             api("core/activate", {"id": installed[0]["id"]})
-        save("instance", {"name": "smoke-frps", "kind": "frps", "host": "127.0.0.1", "port": bind_port, "token": "smoke-auth-secret-123"})
-        save("instance", {"name": "smoke-frpc", "kind": "frpc", "host": "127.0.0.1", "port": bind_port, "token": "smoke-auth-secret-123"})
+        # Exercise real Go-template + TOML parsing, including quotes, slashes,
+        # Unicode, equals signs, and template-looking data expanded only once.
+        auth_secret = 'smoke-"auth"\\secret=猫{{ .Envs.UNEXPECTED }}'
+        pair_secret = 'pair-"secret"\\key=私密{{ .Envs.UNEXPECTED }}'
+        save("instance", {"name": "smoke-frps", "kind": "frps", "host": "127.0.0.1", "port": bind_port, "token": auth_secret})
+        save("instance", {"name": "smoke-frpc", "kind": "frpc", "host": "127.0.0.1", "port": bind_port, "token": auth_secret})
         state = api("state")
         server_id, client_id = [i["id"] for i in state["state"]["instances"]]
         save("tunnel", {"instanceId": client_id, "name": "echo", "type": "tcp", "localHost": "127.0.0.1", "localPort": echo.server_address[1], "remotePort": remote_port, "enabled": True})
+        save("tunnel", {"instanceId": client_id, "name": "private-echo", "type": "stcp", "localHost": "127.0.0.1", "localPort": echo.server_address[1], "secret": pair_secret, "enabled": True})
+        save("instance", {"name": "smoke-visitor", "kind": "frpc", "host": "127.0.0.1", "port": bind_port, "token": auth_secret})
+        visitor_id = api("state")["state"]["instances"][-1]["id"]
+        save("tunnel", {"instanceId": visitor_id, "name": "visitor", "type": "stcp-visitor", "serverName": "private-echo", "localHost": "127.0.0.1", "localPort": visitor_port, "secret": pair_secret, "enabled": True})
         control(server_id, "start")
         control(client_id, "start")
+        control(visitor_id, "start")
         message = b"kurumi-real-frp-roundtrip"
-        success = False
-        for _ in range(120):
-            try:
-                with socket.create_connection(("127.0.0.1", remote_port), timeout=.5) as connection:
-                    connection.sendall(message)
-                    received = b""
-                    while len(received) < len(message):
-                        chunk = connection.recv(1000)
-                        if not chunk:
+        for target_port in [remote_port, visitor_port]:
+            success = False
+            for _ in range(120):
+                try:
+                    with socket.create_connection(("127.0.0.1", target_port), timeout=.5) as connection:
+                        connection.sendall(message)
+                        received = b""
+                        while len(received) < len(message):
+                            chunk = connection.recv(1000)
+                            if not chunk:
+                                break
+                            received += chunk
+                        if received == message:
+                            success = True
                             break
-                        received += chunk
-                    if received == message:
-                        success = True
-                        break
-            except OSError:
-                pass
-            time.sleep(.1)
-        if not success:
-            for id in [server_id, client_id]:
-                print(json.dumps(api("logs?id=" + id), ensure_ascii=False))
-            raise AssertionError("TCP roundtrip failed")
+                except OSError:
+                    pass
+                time.sleep(.1)
+            if not success:
+                for id in [server_id, client_id, visitor_id]:
+                    print(json.dumps(api("logs?id=" + id), ensure_ascii=False))
+                raise AssertionError(f"TCP/STCP roundtrip failed on {target_port}")
+        for config in (Path(tmp) / "runtime").glob("*.toml"):
+            text = config.read_text()
+            assert auth_secret not in text and pair_secret not in text
+        control(visitor_id, "stop")
         control(client_id, "stop")
         control(server_id, "stop")
         assert all(v["state"] != "running" for v in api("state")["runtime"].values())
-        print("PASS: official frps/frpc verify, start, TCP byte roundtrip and stop.")
+        print("PASS: official frps/frpc verify, complex credentials, TCP/STCP byte roundtrips and stop.")
     finally:
         manager.terminate()
         manager.wait(timeout=20)

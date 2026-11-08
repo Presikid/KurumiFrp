@@ -71,8 +71,9 @@ def as_standard(username,password,program,args=(),wait=False):
 with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
     root=Path(temp)
     app=Path(os.environ.get('ProgramW6432',os.environ['ProgramFiles']))/'KurumiFRP'; exe=app/'kurumi.exe'
-    common=Path(os.environ['ProgramData'])/'KurumiFRP'
-    if app.exists() or common.exists(): raise SystemExit('Pre-existing machine paths retained.')
+    common=app/'runtime'
+    legacy=Path(os.environ['ProgramData'])/'KurumiFRP'
+    if app.exists() or common.exists() or legacy.exists(): raise SystemExit('Pre-existing machine paths retained.')
     profile=None
     account=None
     def api(path,body=None):
@@ -93,10 +94,11 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
             paths=json.loads(subprocess.check_output([str(exe),'--paths'],text=True))
             profile=Path(paths['data']).parent
             assert profile.parent==common/'profiles', paths
-            assert not (app/'data').exists() and not (app/'cores').exists(), 'runtime wrote into Program Files'
+            assert profile.is_relative_to(app), 'runtime data escaped the installation directory'
+            assert not legacy.exists(), 'legacy ProgramData data was not migrated'
             assert Path(paths['temporary'])==profile/'tmp'
             subprocess.run([str(exe),'--check-running'],check=True,timeout=25)
-            assert api('state')['version']=='0.7.0'
+            assert api('state')['version']=='0.7.1.9'
             wait_until(lambda:not source.exists())
             current=[(profile/'data/access.token').read_text(), json.loads((profile/'data/state.json').read_text())['key']]
             if before is not None: assert before==current, 'reinstall rotated secrets'
@@ -106,6 +108,17 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
                 command=winreg.QueryValueEx(key,'UninstallString')[0]
                 assert 'unins' in command and '.exe' in command
             assert not list(app.rglob('*.ps1')) and not list(app.rglob('*.cmd')), 'script launch dependency remains'
+            legacy_notice=app/'licenses/ChineseSimplified-LICENSE.txt'
+            assert not legacy_notice.exists(), 'standalone translation license was installed'
+            assert 'Copyright (c) 2019 - 2020 kirakira' in (app/'INSTALL.md').read_text(encoding='utf-8')
+            if i == 0:
+                legacy_notice.parent.mkdir(exist_ok=True)
+                shutil.copyfile(Path(__file__).resolve().parents[1]/'packaging/windows/ChineseSimplified-LICENSE.txt', legacy_notice)
+                (legacy_notice.parent/'user-note.txt').write_text('keep')
+            else:
+                assert (legacy_notice.parent/'user-note.txt').read_text() == 'keep'
+                (legacy_notice.parent/'user-note.txt').unlink()
+                legacy_notice.parent.rmdir()
         # Test an actual non-administrator account, not only an elevated runner.
         import secrets
         username='kfrp'+secrets.token_hex(5)
@@ -136,7 +149,7 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
         failed=subprocess.run([str(app/'unins000.exe'),'/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART'],timeout=35)
         assert failed.returncode!=0 and exe.exists() and (profile/'data/state.json').exists()
         token.write_bytes(saved)
-        assert api('state')['version']=='0.7.0'
+        assert api('state')['version']=='0.7.1.9'
         fixture=root/'fixture.go'
         fixture.write_text('package main\nimport("os";"time";"path/filepath")\nfunc main(){if len(os.Args)>1 && os.Args[1]=="verify"{return};os.WriteFile(filepath.Join(os.TempDir(),"frp-temp-probe"),[]byte(os.Getenv("TEMP")),0600);for{time.Sleep(time.Second)}}\n')
         subprocess.run(['go','build','-o',str(profile/'cores/frps.exe'),str(fixture)],check=True,timeout=90)
@@ -156,12 +169,13 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
         if result.returncode:
             print(log.read_text(encoding='utf-8',errors='replace'));result.check_returncode()
         wait_until(lambda:not app.exists())
-        assert not common.exists(), 'ProgramData residue'
+        assert not common.exists(), 'installation runtime residue'
+        assert not legacy.exists(), 'legacy ProgramData residue'
         assert (outside/'keep').read_text()=='user document'
         try:
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,arp,0,access): raise AssertionError('ARP residue')
         except FileNotFoundError: pass
-        print('PASS: default Program Files install/reinstall, ProgramData isolation with a real standard user, private credentials, read-only Program Files, temporary paths, HKLM registration, verified Setup removal and full machine uninstall.')
+        print('PASS: default Program Files install/reinstall, installation-directory isolation with a real standard user, private credentials, read-only Program Files, temporary paths, HKLM registration, verified Setup removal and full machine uninstall.')
     finally:
         if exe.exists(): subprocess.run([str(exe),'--native-maintenance','stop'],timeout=100)
         if account: subprocess.run(['net.exe','user',account,'/delete'],check=True,capture_output=True)
