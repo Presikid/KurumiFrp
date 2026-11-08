@@ -23,58 +23,8 @@ import (
 var advapi = syscall.NewLazyDLL("advapi32.dll")
 var localFree = syscall.NewLazyDLL("kernel32.dll").NewProc("LocalFree")
 var getFileAttributes = syscall.NewLazyDLL("kernel32.dll").NewProc("GetFileAttributesW")
-var sidName = regexp.MustCompile(`^S-1-[0-9]+(?:-[0-9]+)+//go:build windows
-
-package main
-
-// Windows binaries are machine-installed and read-only. Mutable state lives
-// beneath the installation directory in an ACL-protected runtime root, with
-// each Windows SID receiving a private profile.
-import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
-	"syscall"
-	"time"
-	"unsafe"
-)
-
-var advapi = syscall.NewLazyDLL("advapi32.dll")
-var localFree = syscall.NewLazyDLL("kernel32.dll").NewProc("LocalFree")
-var getFileAttributes = syscall.NewLazyDLL("kernel32.dll").NewProc("GetFileAttributesW")
-)
-var migrationTempName = regexp.MustCompile(`^\.migration-(S-1-[0-9]+(?:-[0-9]+)+)-[0-9]+//go:build windows
-
-package main
-
-// Windows binaries are machine-installed and read-only. Mutable state lives
-// beneath the installation directory in an ACL-protected runtime root, with
-// each Windows SID receiving a private profile.
-import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
-	"syscall"
-	"time"
-	"unsafe"
-)
-
-var advapi = syscall.NewLazyDLL("advapi32.dll")
-var localFree = syscall.NewLazyDLL("kernel32.dll").NewProc("LocalFree")
-var getFileAttributes = syscall.NewLazyDLL("kernel32.dll").NewProc("GetFileAttributesW")
-)
+var sidName = regexp.MustCompile("^S-1-[0-9]+(?:-[0-9]+)+$")
+var migrationTempName = regexp.MustCompile("^\\.migration-(S-1-[0-9]+(?:-[0-9]+)+)-[0-9]+$")
 
 const machineACL = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)"
 
