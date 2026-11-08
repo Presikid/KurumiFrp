@@ -269,7 +269,7 @@ func verifyMachine(root, install string) error {
 }
 const (
 	maxLegacyProfileEntries = 100000
-	maxLegacyProfileBytes  = int64(8 << 30)
+	maxLegacyProfileBytes   = int64(8 << 30)
 )
 
 func profileTreeDigest(root string) (string, error) {
