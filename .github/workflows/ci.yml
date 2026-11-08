@@ -20,6 +20,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: stable
@@ -58,7 +66,7 @@ jobs:
         run: |
           python scripts/package-native.py windows
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python scripts/native-windows-smoke.py dist-native/KurumiFRP-0.7.1.4-Setup.exe
+          python scripts/native-windows-smoke.py dist-native/KurumiFRP-0.7.1.5-Setup.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build DEB and RPM for amd64 and arm64
         if: runner.os == 'Linux'
@@ -73,14 +81,14 @@ jobs:
       - name: Native Debian package and systemd lifecycle
         if: runner.os == 'Linux'
         run: |
-          sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_0.7.1.4_amd64.deb
+          sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_0.7.1.5_amd64.deb
       - name: Native RPM install and removal on Fedora
         if: runner.os == 'Linux'
         run: |
           docker run --rm -v "$PWD:/src:ro" fedora:43 sh -ec '
-            dnf install -y python3 util-linux /src/dist-native/kurumifrp-0.7.1.4-1.x86_64.rpm
+            dnf install -y python3 util-linux /src/dist-native/kurumifrp-0.7.1.5-1.x86_64.rpm
             rpm -e kurumifrp
-            KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 /src/scripts/native-linux-smoke.py /src/dist-native/kurumifrp-0.7.1.4-1.x86_64.rpm
+            KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 /src/scripts/native-linux-smoke.py /src/dist-native/kurumifrp-0.7.1.5-1.x86_64.rpm
           '
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -102,6 +110,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: stable
@@ -123,7 +139,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           python3 scripts/package-native.py linux --arch arm64 --deb-only
-          sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_0.7.1.4_arm64.deb
+          sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_0.7.1.5_arm64.deb
       - name: Windows ARM64 real official frp
         if: runner.os == 'Windows'
         shell: pwsh
@@ -138,7 +154,7 @@ jobs:
         run: |
           python scripts/package-native.py windows
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python scripts/native-windows-smoke.py dist-native/KurumiFRP-0.7.1.4-Setup.exe
+          python scripts/native-windows-smoke.py dist-native/KurumiFRP-0.7.1.5-Setup.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   source-macos:
     runs-on: macos-latest
@@ -147,6 +163,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: stable
@@ -175,6 +199,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version: stable
@@ -198,6 +230,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
       - name: Remove the duplicated heading if the release is unchanged
         env:
           GH_TOKEN: ${{ github.token }}
@@ -213,6 +253,14 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: native-*
