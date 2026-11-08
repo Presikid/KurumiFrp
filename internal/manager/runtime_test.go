@@ -15,6 +15,17 @@ import (
 func TestMain(m *testing.M) {
 	if os.Getenv("FRP_TEST_HELPER") == "1" {
 		if len(os.Args) > 1 && os.Args[1] == "verify" {
+			if marker := os.Getenv("FRP_TEST_VERIFY_MARKER"); marker != "" {
+				if err := os.WriteFile(marker, []byte("entered"), 0600); err != nil {
+					os.Exit(2)
+				}
+				for {
+					if _, err := os.Stat(marker + ".release"); err == nil {
+						break
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			}
 			if strings.Contains(os.Getenv("KURUMI_AUTH_TOML"), "invalid-verify") {
 				fmt.Println(os.Getenv("KURUMI_AUTH_TOML"))
 				os.Exit(1)
@@ -157,5 +168,67 @@ func TestAutoStartFailureIsVisibleAndDoesNotClaimRunning(t *testing.T) {
 	}
 	if a.procs[i.ID] != nil {
 		t.Fatal("failed auto-start created a process")
+	}
+}
+
+func waitForVerifier(t *testing.T, marker string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("automatic verification did not start")
+}
+
+func TestAutoStartDoesNotApplyStaleConfiguration(t *testing.T) {
+	t.Setenv("FRP_TEST_HELPER", "1")
+	marker := filepath.Join(t.TempDir(), "verify")
+	t.Setenv("FRP_TEST_VERIFY_MARKER", marker)
+	a := autoStartFixture(t, true)
+	defer a.Close()
+	waitForVerifier(t, marker)
+	i := a.store.DB.State.public().Instances[0]
+	i.Host = "localhost"
+	w := request(a, "POST", "/api/save", map[string]any{"revision": a.store.DB.Revision, "kind": "instance", "value": i}, a.AccessToken(), "")
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	if err := os.WriteFile(marker+".release", []byte("ok"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-a.startupDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startup did not finish")
+	}
+	if a.procs[i.ID] != nil {
+		t.Fatal("stale instance was started")
+	}
+	if s := a.statuses()[i.ID]; s.State != "autostart-failed" {
+		t.Fatalf("stale start not reported: %#v", s)
+	}
+}
+
+func TestCloseCancelsAutomaticVerification(t *testing.T) {
+	t.Setenv("FRP_TEST_HELPER", "1")
+	marker := filepath.Join(t.TempDir(), "verify")
+	t.Setenv("FRP_TEST_VERIFY_MARKER", marker)
+	a := autoStartFixture(t, true)
+	waitForVerifier(t, marker)
+	done := make(chan error, 1)
+	go func() { done <- a.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not cancel verifier")
+	}
+	if len(a.procs) != 0 {
+		t.Fatal("process launched during shutdown")
 	}
 }
