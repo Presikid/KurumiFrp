@@ -5,6 +5,7 @@ titles.core = '核心管理';
 const coreRenderBase = render;
 let coreStatus, coreRelease, coreReleases = [], coreError = '', coreLoading = false;
 let coreStatusETag = '', coreStatusRequest = null, corePollTimer = null;
+let coreReleasesLoaded = false;
 render = function () {
  coreRenderBase();
  if (data && page === 'core') mountCore();
@@ -31,7 +32,7 @@ function mountCore() {
  </div></section></div>
  <section class="panel"><div class="panel-title"><h3>已下载核心</h3><span class="muted">frpc + frps 成对管理</span></div><div class="panel-content" id="core-installed"></div></section>
  <p class="small-note">下载仅连接 GitHub 官方发布与其文件存储。网络受限时可为 KurumiFRP 启动进程配置 HTTPS_PROXY；不会自动使用第三方镜像或关闭证书校验。</p></div>`;
- $('#core-reload').onclick = loadCoreReleases;
+ $('#core-reload').onclick = () => loadCoreReleases(true);
  $('#core-version').onchange = () => loadCoreRelease($('#core-version').value);
  $('#core-asset').onchange = paintCoreAsset;
  $('#core-install').onclick = async () => {
@@ -105,20 +106,36 @@ function paintCoreStatus() {
  $('#core-installed').innerHTML=coreStatus.installed.length ? coreStatus.installed.map(v=>`<div class="core-installed-row"><div><b>${esc(v.tag)}</b><span class="pill ${v.id===coreStatus.active?'good':''}">${v.id===coreStatus.active?'当前启用':esc(v.platform)}</span><p class="small-note">${esc(v.installedAt)}<br>SHA-256 ${esc(v.archiveSHA256.slice(0,20))}…</p></div><button data-core-activate="${esc(v.id)}" ${v.id===coreStatus.active||running?'disabled':''}>${v.id===coreStatus.active?'已启用':running?'先停止实例':'启用此版本'}</button></div>`).join('') : empty('尚未下载核心','选择与你的主机匹配的版本。旧版手动放入 frp-dir 的文件仍然可用。');
  paintCoreAsset();
 }
-async function loadCoreReleases() {
- if(coreLoading)return;coreLoading=true;coreError='';
+async function loadCoreReleases(force=false) {
+ if(coreLoading)return;
+ if(!force && coreReleasesLoaded) {
+  await showCoreReleaseOptions(false);
+  return;
+ }
+ coreLoading=true;coreError='';
  try {
   coreReleases=await api('core/releases');
-  if(!$('#core-screen'))return;
-  const previous=coreRelease?.tag_name;
-  $('#core-version').innerHTML=coreReleases.map((r,i)=>`<option value="${esc(r.tag_name)}">${esc(r.tag_name)}${i===0?' · 最新稳定版':''}</option>`).join('');
-  if(!coreReleases.length)throw new Error('没有可用的稳定版本');
-  if(coreReleases.some(r=>r.tag_name===previous))$('#core-version').value=previous;
-  await loadCoreRelease($('#core-version').value);
+  coreReleasesLoaded=true;
+  await showCoreReleaseOptions(force);
  }catch(e){coreError=e.message;}finally{coreLoading=false;paintCoreStatus();}
 }
+async function showCoreReleaseOptions(force=false) {
+ if(!$('#core-screen'))return;
+ const previous=coreRelease?.tag_name;
+ $('#core-version').innerHTML=coreReleases.map((r,i)=>`<option value="${esc(r.tag_name)}">${esc(r.tag_name)}${i===0?' · 最新稳定版':''}</option>`).join('');
+ if(!coreReleases.length)throw new Error('没有可用的稳定版本');
+ if(coreReleases.some(r=>r.tag_name===previous))$('#core-version').value=previous;
+ if(force)coreRelease=null;
+ const tag=$('#core-version').value;
+ if(coreRelease?.tag_name===tag) {
+  paintCoreAsset();
+  return;
+ }
+ await loadCoreRelease(tag,force);
+}
 let coreSelection=0;
-async function loadCoreRelease(tag) {
+async function loadCoreRelease(tag,force=false) {
+ if(!force && coreRelease?.tag_name===tag) {paintCoreAsset();return;}
  const generation=++coreSelection;coreRelease=null;paintCoreAsset();
  try {
   const r=await api('core/release?tag='+encodeURIComponent(tag));
