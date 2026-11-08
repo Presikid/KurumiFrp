@@ -4,12 +4,17 @@
 titles.core = '核心管理';
 const coreRenderBase = render;
 let coreStatus, coreRelease, coreReleases = [], coreError = '', coreLoading = false;
-render = function () { coreRenderBase(); if (data && page === 'core') mountCore(); };
+let coreStatusETag = '', coreStatusRequest = null, corePollTimer = null;
+render = function () {
+ coreRenderBase();
+ if (data && page === 'core') mountCore();
+ else stopCorePolling();
+};
 const corePhase = {idle:'等待选择版本', metadata:'读取官方发布信息', downloading:'下载中', extracting:'校验通过，正在安全解压', installed:'下载完成，等待启用', failed:'下载失败，原核心未改变', cancelled:'下载已取消，原核心未改变'};
 const coreBusy = () => ['metadata','downloading','extracting'].includes(coreStatus?.job.state);
 const coreSize = n => (Number(n||0)/1048576).toFixed(1)+' MiB';
 function mountCore() {
- if ($('#core-screen')) {paintCoreStatus();return;}
+ if ($('#core-screen')) {paintCoreStatus();scheduleCorePoll(0);return;}
  $('#content').innerHTML = header('frp 核心管理','从官方发布中选择版本。识别的是运行本程序的主机，不是当前浏览器设备。') + `
  <div id="core-screen">
  <section class="hero core-hero"><div><p class="eyebrow">OFFICIAL RELEASES / VERIFIED DOWNLOADS</p><h2>选好版本，剩下的交给工作台。</h2><p>自动匹配平台 · SHA-256 校验 · 独立版本目录 · 明确切换，不覆盖运行中的程序</p></div><span class="core-download-icon" aria-hidden="true">↓</span></section>
@@ -42,11 +47,49 @@ function mountCore() {
   try {await api('core/activate',{id:b.dataset.coreActivate});toast('核心已启用；在运行实例页校验配置后启动');await pollCore();await refresh(true);}
   catch(e){toast(e.message);}finally{b.disabled=false;}
  };
- pollCore();loadCoreReleases();
+ scheduleCorePoll(0);loadCoreReleases();
+}
+function stopCorePolling() {
+ if (corePollTimer !== null) {
+  clearTimeout(corePollTimer);
+  corePollTimer = null;
+ }
+}
+function scheduleCorePoll(delay) {
+ stopCorePolling();
+ if (!data || page !== 'core' || document.hidden) return;
+ const wait = delay ?? (coreBusy() ? 1500 : 10000);
+ corePollTimer = setTimeout(() => {
+  corePollTimer = null;
+  pollCore();
+ }, wait);
 }
 async function pollCore() {
- if (!data || page!=='core')return;
- try{coreStatus=await api('core');paintCoreStatus();}catch(e){coreError=e.message;paintCoreStatus();}
+ if (!data || page !== 'core' || document.hidden) return;
+ if (coreStatusRequest) return coreStatusRequest;
+ const request = (async () => {
+  try {
+   const fresh = await api('core', undefined, {
+    conditional: true,
+    headers: coreStatusETag ? {'If-None-Match': coreStatusETag} : {}
+   });
+   if (fresh.value !== null) {
+    coreStatus = fresh.value;
+    coreStatusETag = fresh.etag;
+    paintCoreStatus();
+   }
+  } catch (e) {
+   coreError = e.message;
+   paintCoreStatus();
+  }
+ })();
+ coreStatusRequest = request;
+ try {
+  await request;
+ } finally {
+  if (coreStatusRequest === request) coreStatusRequest = null;
+  scheduleCorePoll();
+ }
 }
 function paintCoreStatus() {
  if (!$('#core-screen'))return;
@@ -94,7 +137,10 @@ function paintCoreAsset() {
  if(asset)$('#core-official').href=asset.browser_download_url;
  $('#core-asset-note').textContent=asset ? asset.installable ? `${asset.name} · 下载后进行 SHA-256 校验` : '此安装包不匹配本机或缺少校验信息，只提供官方下载入口。' : '等待版本信息；失败时可点击刷新重试。';
 }
-setInterval(()=>{if(!document.hidden)pollCore();},1500);
+document.addEventListener('visibilitychange', () => {
+ if (document.hidden) stopCorePolling();
+ else if (page === 'core') scheduleCorePoll(0);
+});
 if(location.hash==='#core'){page='core';render();}
 (async()=>{
  const match=/^#launch=([a-f0-9]{64})$/.exec(location.hash);
