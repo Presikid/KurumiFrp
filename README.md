@@ -21,7 +21,7 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 
 ## 下载安装
 
-前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.20、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
+前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.21、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
 
 **Windows 10 / 11**
 
@@ -30,13 +30,13 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 **Debian / Ubuntu**
 
 ```sh
-sudo apt install ./kurumifrp_0.7.1.20_amd64.deb
+sudo apt install ./kurumifrp_0.7.1.21_amd64.deb
 ```
 
 **Fedora / RHEL 系**
 
 ```sh
-sudo dnf install ./kurumifrp-0.7.1.20-1.x86_64.rpm
+sudo dnf install ./kurumifrp-0.7.1.21-1.x86_64.rpm
 ```
 
 Linux 安装包会配置 systemd 服务；ARM64 请下载对应架构的包。安装、升级、卸载及旧版迁移的步骤见 [安装说明](docs/INSTALL.md)。目前安装包尚未进行商业代码签名，也没有在线 APT/YUM 软件源。
