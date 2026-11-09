@@ -7,6 +7,7 @@ let probeResults = Object.create(null), probing = Object.create(null), probeRevi
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer, refreshTimer = null;
 let authGeneration = 0, stateETag = '', stateSnapshot = '', renderedSnapshot = '', renderedPage = '';
 let stateRequest = null, logRequest = null, deferredConfig = null;
+let logFilter = '', logSnapshot = null;
 let registrationRequest = null, registrations = Object.create(null), registrationRevision = null, registrationProcesses = Object.create(null);
 let registrationPaintPending = false;
 let navigationGeneration = 0;
@@ -51,7 +52,7 @@ function resetSession() {
  stopRefreshPolling();
  ++authGeneration; ++serial;
  stateRequest?.controller.abort(); logRequest?.controller.abort();
- stateRequest = null; logRequest = null; deferredConfig = null;
+ stateRequest = null; logRequest = null; deferredConfig = null; logFilter = ''; logSnapshot = null;
  registrationRequest = null; registrations = Object.create(null); registrationRevision = null; registrationProcesses = Object.create(null); registrationPaintPending = false; healthChecking = false; healthSelected = ''; ++navigationGeneration;
  stateETag = ''; stateSnapshot = ''; renderedSnapshot = ''; renderedPage = ''; data = null;
  probeResults = Object.create(null); probing = Object.create(null); probeRevision = null; probingAll = false; probeBatchProgress = null;
@@ -120,14 +121,24 @@ function refreshLogs(silent = true) {
  request.promise = (async () => {
   try {
    const result = await api('logs?id='+encodeURIComponent(id),undefined,{signal:request.controller.signal});
-   if (generation !== authGeneration || page !== 'logs' || selected !== id || !canSilentRender()) return;
-   const output = $('#log-output'), text = result.lines.join('\n') || '没有日志。启动实例后，真实输出将显示在这里。';
-   if (!output || output.textContent === text) return;
-   const top = output.scrollTop, left = output.scrollLeft;
-   output.textContent = text; output.scrollTop = top; output.scrollLeft = left;
+   if (logRequest !== request || generation !== authGeneration || page !== 'logs' || selected !== id) return;
+   logSnapshot = {id, lines: result.lines};
+   // The filter is edited in place, so updating only the output does not disturb focus.
+   if (canSilentRender() || (document.activeElement?.id === 'log-filter' && !hasSelection())) paintLogs();
   } catch(e) {if (generation === authGeneration && e.name !== 'AbortError' && !silent && data) toast(e.message);}
  })().finally(() => {if (logRequest === request) logRequest = null;});
  return request.promise;
+}
+function paintLogs() {
+ const output = $('#log-output');
+ if (!output || !logSnapshot || logSnapshot.id !== selected) return;
+ const lines = logSnapshot.lines;
+ const query = logFilter.toLocaleLowerCase();
+ const matches = query ? lines.filter(line => line.toLocaleLowerCase().includes(query)) : lines;
+ const text = matches.join('\n') || (lines.length && query ? '没有匹配的日志。' : '没有日志。启动实例后，真实输出将显示在这里。');
+ if (output.textContent === text) return;
+ const top = output.scrollTop, left = output.scrollLeft;
+ output.textContent = text; output.scrollTop = top; output.scrollLeft = left;
 }
 function applyDeferredConfig() {
  if (!deferredConfig || deferredConfig.serial !== serial || deferredConfig.id !== selected || page !== 'config' || !canSilentRender()) return;
@@ -197,8 +208,8 @@ function render() {
   content.innerHTML=header('软件更新','从 GitHub 获取官方版本，选择可用的新版本进行更新。')+`<section class="panel"><div class="panel-content"><p>当前版本 ${esc(data.version)}。更新期间工作台和托管连接可能中断；Windows 需要管理员授权。</p><label>选择版本<select id="update-version">${releases.map(v=>`<option value="${esc(v.tag)}" ${v.newer&&v.available?'':'disabled'}>${v.newer&&v.available?'':'✕ '}${esc(v.tag)}${v.metadataFallback?' · 发布状态待确认':v.prerelease?' · 预览版':''}${v.newer?(v.available?'':' · 无可用安装包'):' · 暂不支持切换'}</option>`).join('')}</select></label><div class="actions"><button data-action="check-update">检查版本</button><button class="primary" data-action="install-update" ${releases.some(v=>v.newer&&v.available)?'':'disabled'}>更新所选版本</button></div><p class="small-note">${esc(updateStatus||'选择版本后将下载并校验官方安装包。')}</p></div></section>`;
  } else if(page==='logs') {
   ensureSelected(); content.innerHTML=header('运行记录','真实子进程输出与配置变更记录。进程日志仅保留当前会话最近 200 行。')+
-  `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>frp 标准输出</h3><span class="pill">自动刷新</span></div><div class="panel-content">${picker()}<pre id="log-output">正在读取…</pre></div></section><section class="panel"><div class="panel-title"><h3>配置变更</h3></div><div class="panel-content">${recent()}</div></section></div>`;
-  if(selected) refreshLogs(false); else $('#log-output').textContent='先创建一个实例。';
+  `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>frp 标准输出</h3><span class="pill">自动刷新</span></div><div class="panel-content">${picker()}<label class="config-picker">筛选当前日志<input id="log-filter" type="search" value="${esc(logFilter)}" placeholder="输入文字筛选（不区分大小写）"></label><pre id="log-output">正在读取…</pre></div></section><section class="panel"><div class="panel-title"><h3>配置变更</h3></div><div class="panel-content">${recent()}</div></section></div>`;
+  if(selected) {paintLogs(); refreshLogs(false);} else $('#log-output').textContent='先创建一个实例。';
  }
  renderedSnapshot = stateSnapshot; renderedPage = page;
 }
@@ -390,7 +401,7 @@ $('#editor').addEventListener('submit',async e=>{
  else {const type=val('type');value={id:editing.id,name:val('name').trim(),instanceId:val('instanceId'),type,localHost:val('localHost').trim(),localPort:+val('localPort'),remotePort:['tcp','udp'].includes(type)?+val('remotePort'):0,domains:['http','https'].includes(type)?val('domains').split(',').map(v=>v.trim()).filter(Boolean):[],probePath:['http','https'].includes(type)?(val('probePath').trim()||'/'):'',probeMethod:['http','https'].includes(type)?val('probeMethod'):'',serverName:type==='stcp-visitor'?val('serverName').trim():'',secret:type.startsWith('stcp')?val('secret'):'',bandwidthKB:type==='stcp-visitor'?0:+val('bandwidthKB'),enabled:f.elements.enabled.checked};}
  try{await api('save',{revision:editRev,kind:editing.kind,value});dialog.close();toast('草稿已保存；运行中的实例未改变');await refresh();}catch(err){$('#form-error').textContent=err.message;}finally{b.disabled=false;}
 });
-$('#content').addEventListener('input',e=>{if(e.target.id==='search'){filter=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}});
+$('#content').addEventListener('input',e=>{if(e.target.id==='search'){filter=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='log-filter'){logFilter=e.target.value;paintLogs();}});
 $('#content').addEventListener('change',e=>{if(e.target.id==='health-instance')healthSelected=e.target.value;if(e.target.id==='protocol'){protocol=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='instance-picker'){selected=e.target.value;render();}});
 $('#content').addEventListener('click',async e=>{
  const b=e.target.closest('button');if(!b||!data)return;if(b.dataset.go){navigate(b.dataset.go);return;}
