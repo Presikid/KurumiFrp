@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
-import urllib.request
+from download_retry import get
 
 TAG = "v0.72.0"
 VERSION = TAG.removeprefix("v")
@@ -17,14 +17,6 @@ EMULATORS = {
     "mips": "qemu-mips-static", "mipsle": "qemu-mipsel-static",
     "mips64": "qemu-mips64-static", "mips64le": "qemu-mips64el-static",
 }
-
-def get(url, limit):
-    req = urllib.request.Request(url, headers={"User-Agent": "KurumiFRP-CI", "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=120) as response:
-        data = response.read(limit + 1)
-    if len(data) > limit:
-        raise RuntimeError("response exceeds size limit: " + url)
-    return data
 
 release = json.loads(get(API, 4 << 20))
 if release["tag_name"] != TAG or release["draft"] or release["prerelease"]:

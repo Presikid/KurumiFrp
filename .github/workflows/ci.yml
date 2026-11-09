@@ -1,6 +1,7 @@
 name: Test and native packages
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -79,6 +80,7 @@ jobs:
           python3 scripts/package-portable.py
           KURUMI_PORTABLE_TESTS=1 go test -count=1 ./internal/core -run TestBuiltPortableExecutableArchitectures
           python3 scripts/portable-smoke.py
+          python3 -m unittest discover -s scripts -p 'test_download_retry.py'
           python3 scripts/official-cores-smoke.py
       - name: Native Debian package and systemd lifecycle
         if: runner.os == 'Linux'
@@ -160,6 +162,31 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/windows-migration-smoke.py "dist-native/KurumiFRP-$((Get-Content VERSION -Raw).Trim())-Setup.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  native-ubuntu-26:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: stable
+          cache: false
+      - name: Go tests and Ubuntu 26.04 DEB lifecycle
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+          python3 scripts/package-native.py linux --arch amd64 --deb-only
+          sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb
   source-macos:
     runs-on: macos-latest
     timeout-minutes: 20
@@ -224,7 +251,7 @@ jobs:
           python3 -m playwright install --with-deps "${KURUMI_BROWSER}"
           python3 scripts/browser-smoke.py ./kurumi
   repair-0713-release-notes:
-    needs: [test, native-arm, source-macos, browser-compatibility]
+    needs: [test, native-arm, native-ubuntu-26, source-macos, browser-compatibility]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -247,7 +274,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/repair-0713-notes.py
   release:
-    needs: [test, native-arm, source-macos, browser-compatibility]
+    needs: [test, native-arm, native-ubuntu-26, source-macos, browser-compatibility]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 10
