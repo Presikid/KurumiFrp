@@ -113,6 +113,11 @@ func (sv *XTCPVisitor) processTunnelStartEvents() {
 		case <-sv.ctx.Done():
 			return
 		case <-sv.startTunnelCh:
+			// A delayed failure from an older connection can arrive after a
+			// replacement has already been established.
+			if sv.session.Ready() {
+				continue
+			}
 			start := time.Now()
 			sv.makeNatHole()
 			duration := time.Since(start)
@@ -262,8 +267,6 @@ func (sv *XTCPVisitor) getTunnelConn(ctx context.Context) (net.Conn, error) {
 	if err == nil {
 		return conn, nil
 	}
-	sv.session.Close()
-
 	select {
 	case sv.startTunnelCh <- struct{}{}:
 	default:
@@ -355,6 +358,7 @@ func (sv *XTCPVisitor) makeNatHole() {
 type TunnelSession interface {
 	Init(context.Context, *net.UDPConn, *net.UDPAddr) error
 	OpenConn(context.Context) (net.Conn, error)
+	Ready() bool
 	Close()
 }
 
@@ -401,9 +405,15 @@ func (ks *KCPTunnelSession) Init(ctx context.Context, listenConn *net.UDPConn, r
 		_ = lConn.Close()
 		return err
 	}
-	ks.session = session
-	ks.lConn = lConn
+	previous, previousConn := ks.session, ks.lConn
+	ks.session, ks.lConn = session, lConn
 	ks.mu.Unlock()
+	if previous != nil {
+		_ = previous.Close()
+	}
+	if previousConn != nil {
+		_ = previousConn.Close()
+	}
 	return nil
 }
 
@@ -414,7 +424,31 @@ func (ks *KCPTunnelSession) OpenConn(_ context.Context) (net.Conn, error) {
 	if session == nil {
 		return nil, ErrNoTunnelSession
 	}
-	return session.Open()
+	conn, err := session.Open()
+	if err != nil {
+		// Another goroutine may have installed a replacement while Open was
+		// failing. Only retire the session that actually failed.
+		ks.mu.Lock()
+		if ks.session == session {
+			ks.session = nil
+			lConn := ks.lConn
+			ks.lConn = nil
+			ks.mu.Unlock()
+			_ = session.Close()
+			if lConn != nil {
+				_ = lConn.Close()
+			}
+		} else {
+			ks.mu.Unlock()
+		}
+	}
+	return conn, err
+}
+
+func (ks *KCPTunnelSession) Ready() bool {
+	ks.mu.RLock()
+	defer ks.mu.RUnlock()
+	return ks.session != nil && !ks.session.IsClosed()
 }
 
 func (ks *KCPTunnelSession) Close() {
@@ -465,9 +499,15 @@ func (qs *QUICTunnelSession) Init(ctx context.Context, listenConn *net.UDPConn, 
 		_ = quicConn.CloseWithError(0, "")
 		return err
 	}
-	qs.session = quicConn
-	qs.listenConn = listenConn
+	previous, previousConn := qs.session, qs.listenConn
+	qs.session, qs.listenConn = quicConn, listenConn
 	qs.mu.Unlock()
+	if previous != nil {
+		_ = previous.CloseWithError(0, "")
+	}
+	if previousConn != nil && previousConn != listenConn {
+		_ = previousConn.Close()
+	}
 	return nil
 }
 
@@ -480,9 +520,32 @@ func (qs *QUICTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 	}
 	stream, err := session.OpenStreamSync(ctx)
 	if err != nil {
+		// A caller's timeout does not make an otherwise healthy shared
+		// tunnel unusable for other connections.
+		if ctx.Err() == nil || session.Context().Err() != nil {
+			qs.mu.Lock()
+			if qs.session == session {
+				qs.session = nil
+				listenConn := qs.listenConn
+				qs.listenConn = nil
+				qs.mu.Unlock()
+				_ = session.CloseWithError(0, "")
+				if listenConn != nil {
+					_ = listenConn.Close()
+				}
+			} else {
+				qs.mu.Unlock()
+			}
+		}
 		return nil, err
 	}
 	return netpkg.QuicStreamToNetConn(stream, session), nil
+}
+
+func (qs *QUICTunnelSession) Ready() bool {
+	qs.mu.RLock()
+	defer qs.mu.RUnlock()
+	return qs.session != nil && qs.session.Context().Err() == nil
 }
 
 func (qs *QUICTunnelSession) Close() {
@@ -497,3 +560,4 @@ func (qs *QUICTunnelSession) Close() {
 		qs.listenConn = nil
 	}
 }
+
