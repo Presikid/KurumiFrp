@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Modified by KurumiFRP: avoid retaining the process environment globally.
+
 package legacy
 
 import (
@@ -21,28 +23,20 @@ import (
 	"text/template"
 )
 
-var glbEnvs map[string]string
-
-func init() {
-	glbEnvs = make(map[string]string)
-	envs := os.Environ()
-	for _, env := range envs {
-		pair := strings.SplitN(env, "=", 2)
-		if len(pair) != 2 {
-			continue
-		}
-		glbEnvs[pair[0]] = pair[1]
-	}
-}
-
 type Values struct {
 	Envs map[string]string // environment vars
 }
 
+// GetValues snapshots the environment only when a file-based template needs it.
 func GetValues() *Values {
-	return &Values{
-		Envs: glbEnvs,
+	envs := make(map[string]string)
+	for _, env := range os.Environ() {
+		pair := strings.SplitN(env, "=", 2)
+		if len(pair) == 2 {
+			envs[pair[0]] = pair[1]
+		}
 	}
+	return &Values{Envs: envs}
 }
 
 func RenderContent(in []byte) (out []byte, err error) {
