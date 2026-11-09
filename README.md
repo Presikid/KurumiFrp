@@ -21,7 +21,7 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 
 ## 下载安装
 
-前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.18、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
+前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.19、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
 
 **Windows 10 / 11**
 
@@ -30,13 +30,13 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 **Debian / Ubuntu**
 
 ```sh
-sudo apt install ./kurumifrp_0.7.1.18_amd64.deb
+sudo apt install ./kurumifrp_0.7.1.19_amd64.deb
 ```
 
 **Fedora / RHEL 系**
 
 ```sh
-sudo dnf install ./kurumifrp-0.7.1.18-1.x86_64.rpm
+sudo dnf install ./kurumifrp-0.7.1.19-1.x86_64.rpm
 ```
 
 Linux 安装包会配置 systemd 服务；ARM64 请下载对应架构的包。安装、升级、卸载及旧版迁移的步骤见 [安装说明](docs/INSTALL.md)。目前安装包尚未进行商业代码签名，也没有在线 APT/YUM 软件源。
@@ -58,6 +58,7 @@ Windows 快捷方式可以自动打开工作台；手动登录或无桌面环境
 
 - **连接与实例**：管理本机多个 `frpc` / `frps`，配置 TCP、UDP、HTTP、HTTPS、STCP 和 Visitor，查看进程状态与运行记录；可为每个实例选择在工作台启动时自动恢复。
 - **本地目标诊断**：检测 TCP/STCP 端口或 HTTP/HTTPS 服务，可自定义诊断路径并批量检查；结果只代表本地目标状态，不代表远端隧道或公网可达。UDP 不支持通用探测。
+- **代理注册与链路监测**：运行实例和连接看板从本机 frpc 的受保护状态接口读取已应用代理状态；旧进程需要重启后才支持，状态不可用和待应用不会算成已注册。Visitor 不提供代理注册状态。链路监测中心按实例检查进程、草稿控制端口和本地目标，并显示规则注册及汇总；结果不代表认证成功或公网可达。导出的诊断报告不含认证凭据，但含实例名称与网络地址，请妥善保管。
 - **核心管理**：从 frp 官方发布中选择、下载和切换核心版本，下载时校验文件；切换不会自动启动实例。
 - **配置差异**：对比实例上次应用的配置与当前草稿，查看变更；密钥内容不会出现在差异中。
 - **配置与快照**：在界面中预览配置、导入导出，或恢复历史快照。默认保留 5 份，可调整为 0–100 份。

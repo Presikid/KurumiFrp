@@ -112,37 +112,62 @@ func (a *App) registrationAPI(w http.ResponseWriter, r *http.Request) {
 		client, exists := clients[tunnel.InstanceID]
 		_, wasApplied := client.applied[tunnel.ID]
 		draft, hasDraftSignature := draftSignatures[tunnel.ID]
-		item := registrationItem{State: "stopped", Pending: runtimes[tunnel.InstanceID].Pending}
-		if !tunnel.Enabled {
-			item.State = "disabled"
-			if exists && wasApplied && a.procs[tunnel.InstanceID] == client.proc && client.proc.view().State == "running" {
-				item.State = "pending-stop"
-			}
-		} else if !exists || a.procs[tunnel.InstanceID] != client.proc || client.proc.view().State != "running" {
-			item.State = "stopped"
-		} else if old, ok := client.signatures[tunnel.ID]; !wasApplied || !ok || !hasDraftSignature || draft != old {
-			item.State = "pending"
-		} else if tunnel.Type == "stcp-visitor" {
-			item.State = "not-reported"
-		} else if value, ok := results[tunnel.InstanceID]; !ok || value.err != nil {
-			item.State = "unavailable"
-			if client.reason != "" {
-				item.Error = client.reason
-			} else {
-				item.Error = "本机安全状态接口不可用或身份验证失败"
-			}
-		} else if status, ok := value.values[tunnel.Type+"\x00"+tunnel.Name]; !ok {
-			item.State = "registering"
-		} else if strings.EqualFold(status.Status, "running") {
-			item.State = "registered"
-			item.RemoteAddr = safeStatusText(status.RemoteAddr, client.secrets)
-		} else if status.Error != "" {
-			item.State = "failed"
-			item.Error = safeStatusText(status.Error, client.secrets)
-		} else {
-			item.State = "registering"
-		}
+		applied, hasAppliedSignature := client.signatures[tunnel.ID]
+		value := results[tunnel.InstanceID]
+		running := exists && a.procs[tunnel.InstanceID] == client.proc && client.proc.view().State == "running"
+		item := classifyRegistration(registrationContext{
+			tunnel: tunnel, pending: runtimes[tunnel.InstanceID].Pending, running: running,
+			wasApplied: wasApplied, appliedSignature: applied, hasAppliedSignature: hasAppliedSignature,
+			draftSignature: draft, hasDraftSignature: hasDraftSignature,
+			observed: value.values, observedErr: value.err, reason: client.reason, secrets: client.secrets,
+		})
 		items[tunnel.ID] = item
 	}
 	reply(w, http.StatusOK, map[string]any{"revision": revision, "tunnels": items})
+}
+
+type registrationContext struct {
+	tunnel                                 Tunnel
+	pending, running, wasApplied           bool
+	appliedSignature, draftSignature       [32]byte
+	hasAppliedSignature, hasDraftSignature bool
+	observed                               map[string]observedProxy
+	observedErr                            error
+	reason                                 string
+	secrets                                []string
+}
+
+// classifyRegistration describes only state attributable to the current applied process.
+func classifyRegistration(c registrationContext) registrationItem {
+	tunnel := c.tunnel
+	item := registrationItem{State: "stopped", Pending: c.pending}
+	if !tunnel.Enabled {
+		item.State = "disabled"
+		if c.running && c.wasApplied {
+			item.State = "pending-stop"
+		}
+	} else if !c.running {
+		item.State = "stopped"
+	} else if !c.wasApplied || !c.hasAppliedSignature || !c.hasDraftSignature || c.draftSignature != c.appliedSignature {
+		item.State = "pending"
+	} else if tunnel.Type == "stcp-visitor" {
+		item.State = "not-reported"
+	} else if c.observedErr != nil || c.observed == nil {
+		item.State = "unavailable"
+		item.Error = c.reason
+		if item.Error == "" {
+			item.Error = "本机安全状态接口不可用或身份验证失败"
+		}
+	} else if value, ok := c.observed[tunnel.Type+"\x00"+tunnel.Name]; !ok {
+		item.State = "registering"
+	} else if strings.EqualFold(value.Status, "running") {
+		item.State = "registered"
+		item.RemoteAddr = safeStatusText(value.RemoteAddr, c.secrets)
+	} else if value.Error != "" {
+		item.State = "failed"
+		item.Error = safeStatusText(value.Error, c.secrets)
+	} else {
+		item.State = "registering"
+	}
+	return item
 }

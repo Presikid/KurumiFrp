@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -205,37 +204,21 @@ func (a *App) healthAPI(w http.ResponseWriter, r *http.Request) {
 		row.Target.Message = safeStatusText(row.Target.Message, secrets)
 		row.Target.Address = safeStatusText(row.Target.Address, secrets)
 		row.Target.Host = safeStatusText(row.Target.Host, secrets)
-		item := registrationItem{State: "stopped", Pending: runtime.Pending}
-		if !t.Enabled {
-			item.State = "disabled"
-			if p != nil && p.view().State == "running" {
-				if _, ok := p.appliedTunnels[t.ID]; ok {
-					item.State = "pending-stop"
-				}
-			}
-		} else if p == nil || p.view().State != "running" || i.Kind != "frpc" {
-			item.State = "stopped"
-		} else if old, ok := p.appliedTunnelSignatures[t.ID]; !ok || !hasDraftSignature || draftSignature != old {
-			item.State = "pending"
-		} else if t.Type == "stcp-visitor" {
-			item.State = "not-reported"
-		} else if observedErr != nil || observed == nil {
-			item.State = "unavailable"
-			item.Error = p.monitorReason
-			if item.Error == "" {
-				item.Error = "本机安全状态接口不可用或身份验证失败"
-			}
-		} else if value, ok := observed[t.Type+"\x00"+t.Name]; !ok {
-			item.State = "registering"
-		} else if strings.EqualFold(value.Status, "running") {
-			item.State = "registered"
-			item.RemoteAddr = safeStatusText(value.RemoteAddr, secrets)
-		} else if value.Error != "" {
-			item.State = "failed"
-			item.Error = safeStatusText(value.Error, secrets)
-		} else {
-			item.State = "registering"
+		var applied [32]byte
+		var wasApplied, hasAppliedSignature bool
+		var reason string
+		running := p != nil && p.view().State == "running" && i.Kind == "frpc"
+		if running {
+			_, wasApplied = p.appliedTunnels[t.ID]
+			applied, hasAppliedSignature = p.appliedTunnelSignatures[t.ID]
+			reason = p.monitorReason
 		}
+		item := classifyRegistration(registrationContext{
+			tunnel: t, pending: runtime.Pending, running: running,
+			wasApplied: wasApplied, appliedSignature: applied, hasAppliedSignature: hasAppliedSignature,
+			draftSignature: draftSignature, hasDraftSignature: hasDraftSignature,
+			observed: observed, observedErr: observedErr, reason: reason, secrets: secrets,
+		})
 		row.Registration = item
 	}
 	report.Endpoint.Address = safeStatusText(report.Endpoint.Address, secrets)
