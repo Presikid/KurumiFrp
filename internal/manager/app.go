@@ -345,6 +345,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(405)
 		return
 	}
+	if r.URL.Path == "/api/import/toml" || r.URL.Path == "/api/import/toml/preview" {
+		a.tomlImportAPI(w, r)
+		return
+	}
 	if r.URL.Path == "/api/import" {
 		a.importConfig(w, r)
 		return
