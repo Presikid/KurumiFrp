@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	htmltemplate "html/template"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -42,10 +44,10 @@ func TestTOMLQuoteControlsAndUnicode(t *testing.T) {
 	}
 }
 
-func TestRenderedEnvironmentIsACompleteTOMLLiteral(t *testing.T) {
+func TestRenderedEnvironmentWorksWithBothTemplateEngines(t *testing.T) {
 	a := testApp(t)
 	i := seed(t, a)
-	plain := `prefix-"quoted"\path=秘'密{{ .Envs.UNEXPECTED }}`
+	plain := `prefix-"quoted"\path=秘'密<&>{{ .Envs.UNEXPECTED }}`
 	secret, err := a.store.encrypt(plain)
 	if err != nil {
 		t.Fatal(err)
@@ -66,32 +68,38 @@ func TestRenderedEnvironmentIsACompleteTOMLLiteral(t *testing.T) {
 	env := map[string]string{"UNEXPECTED": "must-not-expand"}
 	for _, entry := range rendered.Env {
 		key, value, ok := strings.Cut(entry, "=")
-		if !ok || value != quote(plain) {
-			t.Fatalf("environment must contain the complete literal: %q", entry)
+		if !ok || value != templateCredential(plain) {
+			t.Fatal("environment did not contain escaped credential")
 		}
 		env[key] = value
 	}
-	tmpl, err := template.New("frp").Parse(rendered.Text)
+	textTmpl, err := template.New("frp").Parse(rendered.Text)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var expanded bytes.Buffer
-	if err := tmpl.Execute(&expanded, struct{ Envs map[string]string }{env}); err != nil {
+	htmlTmpl, err := htmltemplate.New("frp").Parse(rendered.Text)
+	if err != nil {
 		t.Fatal(err)
 	}
-	count := 0
-	for _, line := range strings.Split(expanded.String(), "\n") {
-		if strings.HasPrefix(line, "auth.token = ") || strings.HasPrefix(line, "secretKey = ") {
-			_, value, _ := strings.Cut(line, " = ")
-			var decoded string
-			if err := json.Unmarshal([]byte(value), &decoded); err != nil || decoded != plain {
-				t.Fatalf("credential changed during one-pass expansion: %q, %v", line, err)
-			}
-			count++
+	for _, tmpl := range []interface{ Execute(io.Writer, any) error }{textTmpl, htmlTmpl} {
+		var expanded bytes.Buffer
+		if err := tmpl.Execute(&expanded, struct{ Envs map[string]string }{env}); err != nil {
+			t.Fatal(err)
 		}
-	}
-	if count != 3 || strings.Contains(rendered.Text, plain) {
-		t.Fatal("missing credentials or secret embedded in runtime file")
+		count := 0
+		for _, line := range strings.Split(expanded.String(), "\n") {
+			if strings.HasPrefix(line, "auth.token = ") || strings.HasPrefix(line, "secretKey = ") {
+				_, value, _ := strings.Cut(line, " = ")
+				var decoded string
+				if err := json.Unmarshal([]byte(value), &decoded); err != nil || decoded != plain {
+					t.Fatalf("credential changed during one-pass expansion: %q, %v", line, err)
+				}
+				count++
+			}
+		}
+		if count != 3 || strings.Contains(rendered.Text, plain) {
+			t.Fatal("missing credentials or secret embedded in runtime file")
+		}
 	}
 	preview, err := a.store.render(i.ID, true)
 	if err != nil || len(preview.Env) != 0 || strings.Contains(preview.Text, plain) {

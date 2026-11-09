@@ -167,6 +167,26 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusOK, map[string]any{"ok": true, "output": output, "note": "仅验证配置，不证明网络连通"})
 		return
 	}
+	runtimeRendered, private, err := a.preparePrivateStatus(op.ctx, snapshot.binary, snapshot.instance, snapshot.rendered)
+	if err != nil {
+		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	started := false
+	defer func() {
+		if !started {
+			private.cleanup()
+		}
+	}()
+	// Status setup invokes a verifier outside the lock too. Recheck before
+	// stopping the existing process if the draft/core changed during it.
+	a.mu.Lock()
+	status, err = a.checkRuntimeSnapshot(op.ctx, snapshot)
+	a.mu.Unlock()
+	if err != nil {
+		fail(w, status, err)
+		return
+	}
 	if req.Action == "restart" {
 		if err = stopProcess(snapshot.process); err != nil {
 			fail(w, http.StatusBadRequest, err)
@@ -175,7 +195,7 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	// Verification deliberately uses an isolated staging file. Do not overwrite
 	// the file of a running process before validation and an explicit restart.
-	configPath, err := a.prepareRuntimeConfig(snapshot.instance.ID, snapshot.rendered)
+	configPath, err := a.prepareRuntimeConfig(snapshot.instance.ID, runtimeRendered)
 	if err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
@@ -185,9 +205,11 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	status, err = a.checkRuntimeSnapshot(op.ctx, snapshot)
 	if err == nil {
-		err = a.startPrepared(snapshot.instance, snapshot.rendered, snapshot.binary, configPath, snapshot.coreID)
+		err = a.startPrepared(snapshot.instance, runtimeRendered, snapshot.binary, configPath, snapshot.coreID, private)
 		if err != nil {
 			status = http.StatusBadRequest
+		} else {
+			started = true
 		}
 	}
 	revision := a.store.DB.Revision

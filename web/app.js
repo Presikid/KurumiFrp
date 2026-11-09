@@ -7,6 +7,9 @@ let probeResults = Object.create(null), probing = Object.create(null), probeRevi
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer, refreshTimer = null;
 let authGeneration = 0, stateETag = '', stateSnapshot = '', renderedSnapshot = '', renderedPage = '';
 let stateRequest = null, logRequest = null, deferredConfig = null;
+let registrationRequest = null, registrations = Object.create(null), registrationRevision = null, registrationProcesses = Object.create(null);
+let navigationGeneration = 0;
+let healthDialog = null;
 const dialog = $('#dialog');
 const diffDialog = $('#diff-dialog');
 let backupDialogEl = null;
@@ -36,7 +39,7 @@ function stopRefreshPolling() {
 }
 function scheduleRefresh(delay) {
  stopRefreshPolling();
- if (!data || document.hidden || dialog.open || diffDialog.open || backupDialogEl?.open) return;
+ if (!data || document.hidden || dialog.open || diffDialog.open || backupDialogEl?.open || healthDialog?.open) return;
  const wait = delay ?? (Object.values(data.runtime || {}).some(v => v.state === 'running') ? 5000 : 10000);
  refreshTimer = setTimeout(() => {
   refreshTimer = null;
@@ -48,12 +51,13 @@ function resetSession() {
  ++authGeneration; ++serial;
  stateRequest?.controller.abort(); logRequest?.controller.abort();
  stateRequest = null; logRequest = null; deferredConfig = null;
+ registrationRequest = null; registrations = Object.create(null); registrationRevision = null; registrationProcesses = Object.create(null); ++navigationGeneration;
  stateETag = ''; stateSnapshot = ''; renderedSnapshot = ''; renderedPage = ''; data = null;
  probeResults = Object.create(null); probing = Object.create(null); probeRevision = null; probingAll = false; probeBatchProgress = null;
 }
-function showLogin() {resetSession();updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; if (dialog.open) dialog.close(); if (diffDialog.open) diffDialog.close(); if (backupDialogEl?.open) backupDialogEl.close();}
+function showLogin() {resetSession();updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; if (dialog.open) dialog.close(); if (diffDialog.open) diffDialog.close(); if (backupDialogEl?.open) backupDialogEl.close(); if (healthDialog?.open) healthDialog.close();}
 function hasSelection() {return Boolean(window.getSelection()?.toString());}
-function canSilentRender() {return !dialog.open && !diffDialog.open && !backupDialogEl?.open && !hasSelection() && !$('#content').contains(document.activeElement);}
+function canSilentRender() {return !dialog.open && !diffDialog.open && !backupDialogEl?.open && !healthDialog?.open && !hasSelection() && !$('#content').contains(document.activeElement);}
 function renderPreservingScroll() {
  const x = window.scrollX, y = window.scrollY, previousSelected = selected, content = $('#content');
  const top = content.scrollTop, left = content.scrollLeft;
@@ -83,7 +87,7 @@ async function refresh(silent = false) {
   try {
    const fresh = await api('state',undefined,{conditional:true,headers:stateETag ? {'If-None-Match':stateETag} : {},signal:request.controller.signal});
    if (generation !== authGeneration) return;
-   if (fresh.value !== null) {if (probeRevision !== fresh.value.revision) {probeResults = Object.create(null); probeRevision = fresh.value.revision;} data = fresh.value; stateSnapshot = JSON.stringify(data); stateETag = fresh.etag;}
+   if (fresh.value !== null) {if (probeRevision !== fresh.value.revision) {probeResults = Object.create(null); probeRevision = fresh.value.revision;} invalidateRegistrationForRuntime(data, fresh.value); data = fresh.value; stateSnapshot = JSON.stringify(data); stateETag = fresh.etag;}
    if (!data) return;
    $('#login').hidden = true; $('#app').hidden = false;
    if (!updateChecked) {updateChecked = true; checkUpdates(true);}
@@ -92,9 +96,10 @@ async function refresh(silent = false) {
     if ($('#revision').textContent !== revision) $('#revision').textContent = revision;
     $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
    }
-   if (!silent && !dialog.open && !diffDialog.open && !backupDialogEl?.open) render();
+   if (!silent && !dialog.open && !diffDialog.open && !backupDialogEl?.open && !healthDialog?.open) render();
    else if (canSilentRender() && (renderedSnapshot !== stateSnapshot || renderedPage !== page)) renderPreservingScroll();
    applyDeferredConfig();
+   refreshRegistration();
    // Logs have a separate endpoint and can change even when state returns 304.
    await refreshLogs(silent);
   } catch(e) {if (generation === authGeneration && e.name !== 'AbortError' && !silent && data) toast(e.message);}
@@ -173,7 +178,7 @@ function render() {
  } else if(page==='instances') {
   content.innerHTML=header('运行实例','一个实例对应一个本机 frp 进程；远程服务器地址不代表远程管理权限。','<button class="primary" data-action="new-instance">＋ 新建实例</button>')+
   `<div class="notice">启动前会调用官方 frp verify。可以为每个实例单独启用工作台启动时自动恢复；失败原因会显示在实例卡片中。</div>`+
-  (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span><span>${i.autoStart?'工作台启动时自动恢复':'手动启动'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button><button data-action="duplicate-instance" data-id="${i.id}">复制实例</button>${v.applied?`<button data-action="diff" data-id="${i.id}">查看差异</button>`:''}<button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
+  (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span><span>${i.autoStart?'工作台启动时自动恢复':'手动启动'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button><button data-action="duplicate-instance" data-id="${i.id}">复制实例</button><button data-action="health" data-id="${i.id}">链路检测</button>${v.applied?`<button data-action="diff" data-id="${i.id}">查看差异</button>`:''}<button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
  } else if(page==='tunnels') {
   content.innerHTML=header('连接看板','管理规则并检测本地目标：TCP 检查端口，HTTP/HTTPS 检查响应；UDP 无法可靠探测。','<button class="primary" data-action="new-tunnel">＋ 新建规则</button>')+
   `<div class="toolbar"><input id="search" placeholder="搜索规则、地址或实例…" aria-label="搜索规则" value="${esc(filter)}" ${probingAll?'disabled':'' }><select id="protocol" aria-label="按协议筛选" ${probingAll?'disabled':'' }><option value="">所有协议</option>${['tcp','udp','http','https','stcp','stcp-visitor'].map(t=>`<option ${protocol===t?'selected':''}>${t}</option>`).join('')}</select><button data-action="probe-visible" ${probingAll?'disabled':''}>${probingAll?'批量检测 '+(probeBatchProgress?.done||0)+'/'+(probeBatchProgress?.total||0):'检测当前筛选'}</button></div><section class="panel" id="tunnel-list">${filteredTable()}</section>`;
@@ -197,9 +202,70 @@ async function pollUpdate(){if(!data)return;const generation=authGeneration;try{
 function ensureSelected(){if(!data.state.instances.some(i=>i.id===selected))selected=data.state.instances[0]?.id||'';}
 function picker(){return `<select class="config-picker" id="instance-picker" aria-label="选择实例">${data.state.instances.length?data.state.instances.map(i=>`<option value="${i.id}" ${selected===i.id?'selected':''}>${esc(i.name)} · ${i.kind}</option>`).join(''):'<option>尚无实例</option>'}</select>`;}
 function filteredTable(){return tunnelTable(data.state.tunnels.filter(t=>(!protocol||t.type===protocol)&&`${t.name} ${t.localHost} ${t.remotePort} ${data.state.instances.find(i=>i.id===t.instanceId)?.name}`.toLowerCase().includes(filter.toLowerCase())));}
+const registrationLabels = {stopped:'未运行',disabled:'已停用',pending:'待应用', 'pending-stop':'待停止', 'not-reported':'不提供状态',unavailable:'状态不可用',registering:'注册中',registered:'已注册',failed:'注册失败'};
+function registrationText(item) {
+ if (!item) return '等待状态';
+ return (registrationLabels[item.state] || '状态未知') + (item.error ? ' · '+item.error : '') + (item.remoteAddr ? ' · '+item.remoteAddr : '') + (item.pending && item.state==='registered' ? ' · 实例配置待应用' : '');
+}
+function runtimeIdentity(runtime) {return [runtime?.state || 'stopped', runtime?.pid || 0, runtime?.started || '', runtime?.runId || ''].join('|');}
+function processSnapshot(state) {
+ const result=Object.create(null);
+ for (const instance of state?.state?.instances || []) result[instance.id]=runtimeIdentity(state.runtime?.[instance.id]);
+ return result;
+}
+function invalidateRegistrationForRuntime(previous, next) {
+ if (!previous || !next) return;
+ const before=processSnapshot(previous), after=processSnapshot(next);
+ for (const tunnel of previous.state.tunnels || []) {
+  if (before[tunnel.instanceId]===after[tunnel.instanceId]) continue;
+  delete registrations[tunnel.id];
+  const cell=document.querySelector(`[data-registration="${tunnel.id}"]`);
+  if (cell) cell.textContent='等待状态';
+ }
+}
+function registrationFor(tunnel) {
+ if (!data || registrationRevision!==data.revision || registrationProcesses[tunnel.instanceId]!==runtimeIdentity(data.runtime?.[tunnel.instanceId])) return null;
+ return registrations[tunnel.id];
+}
+function showHealth(report) {
+ if (!healthDialog) {
+  healthDialog=document.createElement('dialog');
+  healthDialog.innerHTML='<h2>链路检测</h2><p class="muted">分层结果不代表公网可达；导出报告包含网络地址。</p><pre></pre><div class="dialog-actions"><button type="button" data-health-close>关闭</button><button type="button" data-health-export>导出报告</button></div>';
+  document.body.appendChild(healthDialog);
+  healthDialog.querySelector('[data-health-close]').addEventListener('click',()=>healthDialog.close());
+  healthDialog.addEventListener('close',()=>scheduleRefresh(0));
+ }
+ const rows=[report.instance+' · '+report.kind, '已应用进程：'+report.runtime+(report.pending?' · 配置待应用':''), '草稿控制端口：'+report.endpoint.state+' '+report.endpoint.message];
+ for (const rule of report.rules) rows.push(rule.name+' · '+rule.type+'\n  已应用代理注册：'+registrationText(rule.registration)+'\n  草稿本地目标：'+rule.target.status+' · '+rule.target.message);
+ rows.push(report.note);
+ healthDialog.querySelector('pre').textContent=rows.join('\n\n');
+ healthDialog.querySelector('[data-health-export]').onclick=()=>download('kurumi-health.json',JSON.stringify(report,null,2));
+ stopRefreshPolling(); healthDialog.showModal();
+}
+function paintRegistrations() {
+ if (hasSelection()) return;
+ document.querySelectorAll('[data-registration]').forEach(el=>{
+  const tunnel=data?.state?.tunnels?.find(t=>t.id===el.dataset.registration);
+  const next=registrationText(tunnel ? registrationFor(tunnel) : null);
+  if (el.textContent!==next) el.textContent=next;
+ });
+}
+function refreshRegistration() {
+ if (!data || page!=='tunnels' || document.hidden || registrationRequest) return;
+ const generation=authGeneration, revision=data.revision, processes=processSnapshot(data);
+ const request=api('registration').then(result=>{
+  if (generation!==authGeneration || !data || revision!==data.revision || result.revision!==revision) return;
+  const current=processSnapshot(data), accepted=Object.create(null), incoming=result.tunnels || {};
+  for (const tunnel of data.state.tunnels || []) {
+   if (processes[tunnel.instanceId]===current[tunnel.instanceId] && Object.hasOwn(incoming,tunnel.id)) accepted[tunnel.id]=incoming[tunnel.id];
+  }
+  registrations=accepted;registrationRevision=revision;registrationProcesses=processes;paintRegistrations();
+ }).catch(()=>{if(generation===authGeneration && data && revision===data.revision) {registrations=Object.create(null);registrationRevision=null;paintRegistrations();}}).finally(()=>{if(registrationRequest===request)registrationRequest=null;});
+ registrationRequest=request;
+}
 function tunnelTable(rows) {
  if(!rows.length)return empty('这里还静悄悄的 ♡','先添加 frpc 实例，再创建 TCP、UDP、Web 或 STCP 规则。','<button data-action="new-tunnel">＋ 添加规则</button>');
- return `<div class="table-wrap"><table><thead><tr><th>服务 / 归属</th><th>协议</th><th>本地目标</th><th>远端 / 配对</th><th>配置意图</th><th>检测结果</th><th>操作</th></tr></thead><tbody>${rows.map(t=>`<tr><td><strong>${esc(t.name)}</strong><small>${esc(data.state.instances.find(i=>i.id===t.instanceId)?.name)}</small></td><td><span class="type-icon">${t.type.toUpperCase()}</span></td><td><code>${esc(t.localHost)}:${t.localPort}</code></td><td><code>${esc(t.type==='stcp-visitor'?t.serverName:t.type==='stcp'?'私密配对':t.type==='http'||t.type==='https'?t.domains.join(', '):t.remotePort)}</code></td><td><span class="pill ${t.enabled?'good':''}">${t.enabled?'期望启用':'期望停用'}</span></td><td class="probe-cell">${probeCell(t)}</td><td><div class="actions"><button data-action="probe" data-id="${t.id}" ${t.type==='udp'||probing[t.id]||probingAll?'disabled':''} ${t.type==='udp'?'title="UDP 不支持通用探测"':''}>${t.type==='udp'?'不支持':probing[t.id]?'检测中…':'检测目标'}</button><button data-action="edit-tunnel" data-id="${t.id}">编辑</button><button data-action="duplicate-tunnel" data-id="${t.id}">复制规则</button><button data-action="toggle" data-id="${t.id}">${t.enabled?'停用':'启用'}</button><button class="danger" data-action="delete-tunnel" data-id="${t.id}">删除</button></div></td></tr>`).join('')}</tbody></table></div>`;
+ return `<div class="table-wrap"><table><thead><tr><th>服务 / 归属</th><th>协议</th><th>本地目标</th><th>远端 / 配对</th><th>配置意图</th><th>代理注册</th><th>检测结果</th><th>操作</th></tr></thead><tbody>${rows.map(t=>`<tr><td><strong>${esc(t.name)}</strong><small>${esc(data.state.instances.find(i=>i.id===t.instanceId)?.name)}</small></td><td><span class="type-icon">${t.type.toUpperCase()}</span></td><td><code>${esc(t.localHost)}:${t.localPort}</code></td><td><code>${esc(t.type==='stcp-visitor'?t.serverName:t.type==='stcp'?'私密配对':t.type==='http'||t.type==='https'?t.domains.join(', '):t.remotePort)}</code></td><td><span class="pill ${t.enabled?'good':''}">${t.enabled?'期望启用':'期望停用'}</span></td><td data-registration="${t.id}">${esc(registrationText(registrationFor(t)))}</td><td class="probe-cell">${probeCell(t)}</td><td><div class="actions"><button data-action="probe" data-id="${t.id}" ${t.type==='udp'||probing[t.id]||probingAll?'disabled':''} ${t.type==='udp'?'title="UDP 不支持通用探测"':''}>${t.type==='udp'?'不支持':probing[t.id]?'检测中…':'检测目标'}</button><button data-action="edit-tunnel" data-id="${t.id}">编辑</button><button data-action="duplicate-tunnel" data-id="${t.id}">复制规则</button><button data-action="toggle" data-id="${t.id}">${t.enabled?'停用':'启用'}</button><button class="danger" data-action="delete-tunnel" data-id="${t.id}">删除</button></div></td></tr>`).join('')}</tbody></table></div>`;
 }
 function field(name,label,value='',type='text',extra=''){return `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;}
 function openEditor(kind,id) {
@@ -222,7 +288,7 @@ function updateFields(){
  for(const [q,v] of Object.entries(show)) document.querySelectorAll(q).forEach(el=>{el.hidden=!v;el.querySelectorAll('input,select').forEach(input=>input.disabled=!v);});
  f.elements.bandwidthKB.disabled=t==='stcp-visitor';
 }
-function navigate(to){if(!titles[to])return;page=to;location.hash=to;render();}
+function navigate(to){if(!titles[to])return;++navigationGeneration;page=to;location.hash=to;render();refreshRegistration();}
 function openBackupDialog(mode) {
  if (!['export','import'].includes(mode)) return;
  if (!backupDialogEl) {
@@ -298,6 +364,7 @@ $('#content').addEventListener('click',async e=>{
  if(action==='logs'){selected=id;navigate('logs');return;}
  b.disabled=true;
  try{
+  if(action==='health'){const generation=authGeneration, navigation=navigationGeneration, revision=data.revision, runtime=runtimeIdentity(data.runtime?.[id]), report=await api('health',{revision,id});if(generation===authGeneration&&navigation===navigationGeneration&&data&&report.revision===revision&&data.revision===revision&&runtime===runtimeIdentity(data.runtime?.[id])&&data.state.instances.some(i=>i.id===id)&&page==='instances'&&!dialog.open&&!diffDialog.open&&!backupDialogEl?.open&&!healthDialog?.open)showHealth(report);return;}
   if(action==='duplicate-instance'){
    const instance=data.state.instances.find(i=>i.id===id);
    if(!instance)throw new Error('源实例已不存在');
@@ -402,7 +469,7 @@ $('#content').addEventListener('click',async e=>{
  }catch(err){toast(err.message);}finally{b.disabled=false;}
 });
 $('#content').addEventListener('click',e=>{const b=e.target.closest('[data-backup-action]');if(b)openBackupDialog(b.dataset.backupAction);});
-window.addEventListener('hashchange',()=>{const p=location.hash.slice(1);if(titles[p]&&page!==p){page=p;render();}});
+window.addEventListener('hashchange',()=>{const p=location.hash.slice(1);if(titles[p]&&page!==p){++navigationGeneration;page=p;render();refreshRegistration();}});
 page=titles[location.hash.slice(1)]?location.hash.slice(1):'overview';
 // core.js consumes a launch ticket before the first authenticated state request.
 if(!/^#launch=([a-f0-9]{64})$/.test(location.hash))refresh(true);

@@ -122,6 +122,31 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#dialog').wait_for(state="hidden")
             page.locator('[data-page="instances"]').click()
             expect(page.locator('.instance-card')).to_contain_text('工作台启动时自动恢复')
+            page.evaluate("""() => {
+                window.__savedFetch = window.fetch;
+                window.fetch = (url, options) => url === '/api/health'
+                    ? new Promise(resolve => { const revision=JSON.parse(options.body).revision; window.__releaseHealth = () => resolve(new Response(JSON.stringify({revision,instance:'late',kind:'frpc',runtime:'stopped',endpoint:{state:'unreachable',message:'test'},rules:[],note:'test'}), {status:200,headers:{'Content-Type':'application/json'}})); })
+                    : window.__savedFetch(url, options);
+            }""")
+            page.locator('[data-action="health"]').first.click()
+            page.wait_for_function('() => typeof window.__releaseHealth === "function"')
+            page.locator('[data-page="config"]').click()
+            page.locator('[data-backup-action="export"]').click()
+            expect(page.locator('#backup-dialog')).to_be_visible()
+            page.evaluate('async () => { window.__releaseHealth(); await new Promise(resolve => setTimeout(resolve, 100)); }')
+            expect(page.locator('#backup-dialog')).to_be_visible()
+            expect(page.locator('dialog:has([data-health-close])')).to_have_count(0)
+            page.locator('[data-backup-cancel]').click()
+            page.evaluate('() => { window.fetch = window.__savedFetch; }')
+            page.locator('[data-page="instances"]').click()
+            page.locator('[data-action="health"]').first.click()
+            expect(page.locator('dialog:has([data-health-close])')).to_be_visible()
+            expect(page.locator('dialog:has([data-health-close]) pre')).to_contain_text('控制端口')
+            with page.expect_download() as report_download:
+                page.locator('[data-health-export]').click()
+            report_text=Path(report_download.value.path()).read_text(encoding='utf-8')
+            assert 'test-passphrase-123' not in report_text
+            page.locator('[data-health-close]').click()
             page.locator('[data-page="tunnels"]').click()
             page.locator('[data-action="new-tunnel"]').first.click()
             page.locator('#editor input[name="name"]').fill("desktop-rdp")
@@ -129,6 +154,57 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#editor input[name="remotePort"]').fill("13389")
             page.locator('#editor button[type="submit"]').click()
             page.locator('#dialog').wait_for(state="hidden")
+            expect(page.locator('[data-registration]').first).to_contain_text('未运行')
+            runtime_case = page.evaluate("""() => {
+                stopRefreshPolling();
+                const original=data, t=data.state.tunnels[0], running=structuredClone(data);
+                running.runtime[t.instanceId]={state:'running',pid:31415,started:'first',runId:'first-run'};
+                data=running; registrations=Object.create(null); registrations[t.id]={state:'registered'};
+                registrationRevision=data.revision; registrationProcesses=processSnapshot(data); paintRegistrations();
+                const cell=document.querySelector('[data-registration]'), before=cell.textContent;
+                const restarted=structuredClone(data); restarted.runtime[t.instanceId].runId='second-run';
+                invalidateRegistrationForRuntime(data,restarted); data=restarted;
+                const restartCleared=cell.textContent;
+                registrations[t.id]={state:'registered'}; paintRegistrations();
+                const restartLate=cell.textContent;
+                data=running; registrations[t.id]={state:'registered'}; registrationProcesses=processSnapshot(data); paintRegistrations();
+                const exited=structuredClone(data); exited.runtime[t.instanceId]={state:'exited',pid:0,started:'first',runId:'first-run'};
+                invalidateRegistrationForRuntime(data,exited); data=exited;
+                const cleared=cell.textContent;
+                registrations[t.id]={state:'registered'}; paintRegistrations();
+                const afterLate=cell.textContent;
+                data=original; registrations=Object.create(null); registrationRevision=null;
+                registrationProcesses=Object.create(null); render(); scheduleRefresh(0);
+                return {before,restartCleared,restartLate,cleared,afterLate};
+            }""")
+            assert runtime_case == {'before':'已注册','restartCleared':'等待状态','restartLate':'等待状态','cleared':'等待状态','afterLate':'等待状态'}, runtime_case
+            refresh_case = page.evaluate("""async () => {
+                stopRefreshPolling();
+                if (stateRequest) await stateRequest.promise;
+                if (registrationRequest) await registrationRequest;
+                stopRefreshPolling();
+                const original=data, originalFetch=window.fetch, t=data.state.tunnels[0];
+                const running=structuredClone(data); running.runtime[t.instanceId]={state:'running',pid:31415,started:'first',runId:'first-run'};
+                data=running; registrations=Object.create(null); registrations[t.id]={state:'registered'};
+                registrationRevision=data.revision; registrationProcesses=processSnapshot(data); render();
+                const exited=structuredClone(data); exited.runtime[t.instanceId]={state:'exited',pid:0,started:'first',runId:'first-run'};
+                let release;
+                window.fetch=(url,options)=>{
+                    if (url==='/api/registration') return new Promise(resolve=>{release=()=>resolve(new Response(JSON.stringify({revision:running.revision,tunnels:{[t.id]:{state:'registered'}}}),{status:200,headers:{'Content-Type':'application/json'}}));});
+                    if (url==='/api/state') return Promise.resolve(new Response(JSON.stringify(exited),{status:200,headers:{'Content-Type':'application/json'}}));
+                    return originalFetch(url,options);
+                };
+                refreshRegistration();
+                await refresh(false);
+                const afterExit=document.querySelector('[data-registration]').textContent;
+                release(); await registrationRequest;
+                const afterLate=document.querySelector('[data-registration]').textContent;
+                const staleCached=Object.hasOwn(registrations,t.id);
+                window.fetch=originalFetch; data=original; registrations=Object.create(null); registrationRevision=null;
+                registrationProcesses=Object.create(null); stateSnapshot=JSON.stringify(original); stateETag=''; render(); scheduleRefresh(0);
+                return {afterExit,afterLate,staleCached};
+            }""")
+            assert refresh_case == {'afterExit':'等待状态','afterLate':'等待状态','staleCached':False}, refresh_case
             page.locator('[data-action="new-tunnel"]').first.click()
             page.locator('#editor input[name="name"]').fill("conflict-test")
             page.locator('#editor input[name="remotePort"]').fill("13389")
@@ -181,6 +257,17 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#backup-form input[name="confirmRestore"]').check()
             page.locator('#backup-form button[type="submit"]').click()
             expect(page.locator('#toast')).to_contain_text('加密备份恢复成功')
+            expect(page.locator('#backup-dialog')).not_to_be_visible()
+            page.locator('[data-page="instances"]').click()
+            page.locator('[data-action="health"]').first.click()
+            expect(page.locator('dialog:has([data-health-close])')).to_be_visible()
+            page.locator('[data-health-close]').click()
+            expect(page.locator('dialog:has([data-health-close])')).not_to_be_visible()
+            page.locator('[data-page="config"]').click()
+            page.locator('[data-backup-action="export"]').click()
+            expect(page.locator('#backup-dialog')).to_be_visible()
+            page.locator('[data-backup-cancel]').click()
+            expect(page.locator('#backup-dialog')).not_to_be_visible()
             expect(page.locator("#config-output")).to_contain_text("redacted")
             assert "test-passphrase-123" not in page.locator('#config-output').text_content()
             expect(page.locator('#history-limit')).to_have_value('5')
