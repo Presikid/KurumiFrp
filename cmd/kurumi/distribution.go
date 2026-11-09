@@ -8,7 +8,7 @@ var distribution = "source"
 func defaultPaths() (string, string, string, error) {
 	switch distribution {
 	case "linux-system":
-		return "/var/lib/kurumifrp/data", "/var/lib/kurumifrp/cores", "auto", nil
+		return "/opt/kurumifrp/runtime/data", "/opt/kurumifrp/runtime/cores", "auto", nil
 	case "windows-installed":
 		root, err := windowsUserRoot()
 		if err != nil {

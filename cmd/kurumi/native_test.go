@@ -89,7 +89,7 @@ func TestDistributionPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if data != "/var/lib/kurumifrp/data" || cores != "/var/lib/kurumifrp/cores" || listen != "auto" {
+	if data != "/opt/kurumifrp/runtime/data" || cores != "/opt/kurumifrp/runtime/cores" || listen != "auto" {
 		t.Fatal("incorrect system package paths")
 	}
 	distribution = "source"

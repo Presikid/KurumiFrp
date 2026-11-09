@@ -59,10 +59,13 @@ def write(path, text, mode=0o644):
 
 
 def linux_tree(stage, binary):
-    target = stage / 'usr/bin/kurumifrp'
+    target = stage / 'opt/kurumifrp/kurumifrp'
     target.parent.mkdir(parents=True)
     shutil.copyfile(binary, target)
     target.chmod(0o755)
+    link = stage / 'usr/bin/kurumifrp'
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to('../../opt/kurumifrp/kurumifrp')
     write(stage / 'usr/lib/systemd/system/kurumifrp.service',
           (ROOT / 'packaging/linux/kurumifrp.service').read_text())
     for unit in ('kurumifrp-updater.service', 'kurumifrp-updater.path'):
@@ -105,7 +108,7 @@ Priority: optional
 Architecture: {arch}
 Maintainer: Presikid <67297065+Presikid@users.noreply.github.com>
 Installed-Size: {size}
-Depends: ca-certificates, passwd, procps, init-system-helpers (>= 1.54)
+Depends: ca-certificates, passwd, procps, util-linux, findutils, mawk | gawk, init-system-helpers (>= 1.54)
 Recommends: systemd
 Homepage: https://github.com/Presikid/KurumiFrp
 Description: Local frpc and frps management workbench
@@ -114,14 +117,15 @@ Description: Local frpc and frps management workbench
  Management listens only on loopback; no firewall rules are changed.
 ''')
         scripts = {
+            'preinst': 'case "${1:-}" in install|upgrade) pre_upgrade;; esac',
             'postinst': 'case "${1:-}" in configure) setup_state; start_workbench;; esac',
-            'prerm': 'case "${1:-}" in remove|upgrade|deconfigure) stop_workbench;; esac',
+            'prerm': 'case "${1:-}" in remove) lock_updater_for_purge; stop_workbench;; upgrade|deconfigure) stop_workbench;; esac',
             'postrm': 'case "${1:-}" in remove) remove_unit_state;; purge) remove_unit_state; purge_state;; esac',
         }
         for name, action in scripts.items():
             write(stage / 'DEBIAN' / name, maintainer(action), 0o755)
         md5s = ''.join(hashlib.md5(p.read_bytes()).hexdigest() + '  ' + p.relative_to(stage).as_posix() + '\n'
-                       for p in sorted((stage / 'usr').rglob('*')) if p.is_file())
+                       for top in ('usr', 'opt') for p in sorted((stage / top).rglob('*')) if p.is_file() and not p.is_symlink())
         write(stage / 'DEBIAN/md5sums', md5s)
         run(['dpkg-deb', '--root-owner-group', '--build', stage, OUT / f'kurumifrp_{VERSION}_{arch}.deb'])
         if deb_only:
@@ -140,10 +144,10 @@ License: LicenseRef-KurumiFRP-Unspecified
 URL: https://github.com/Presikid/KurumiFrp
 ExclusiveArch: x86_64 aarch64
 AutoReqProv: no
-Requires: ca-certificates, systemd, shadow-utils, procps-ng, coreutils
-Requires(pre): shadow-utils, coreutils
-Requires(preun): systemd, coreutils
-Requires(postun): shadow-utils, procps-ng, coreutils
+Requires: ca-certificates, systemd, shadow-utils, procps-ng, coreutils, util-linux, findutils, gawk
+Requires(pre): shadow-utils, procps-ng, coreutils, util-linux, findutils, gawk
+Requires(preun): systemd, coreutils, util-linux
+Requires(postun): shadow-utils, procps-ng, coreutils, util-linux, gawk
 %global debug_package %{{nil}}
 %global __os_install_post %{{nil}}
 %description
@@ -154,18 +158,22 @@ mkdir -p %{{buildroot}}
 cp -a %{{_sourcedir}}/payload/. %{{buildroot}}/
 %pre
 {common}
-setup_state
+pre_upgrade
 %posttrans
 {common}
+setup_state
 start_workbench
 %preun
 {common}
+if [ "$1" = 0 ]; then lock_updater_for_purge; fi
 stop_workbench
 %postun
 {common}
 if [ "$1" = 0 ]; then remove_unit_state; purge_state; elif systemd_active; then systemctl daemon-reload; fi
 %files
 /usr/bin/kurumifrp
+%dir /opt/kurumifrp
+/opt/kurumifrp/kurumifrp
 /usr/lib/systemd/system/kurumifrp.service
 /usr/lib/systemd/system/kurumifrp-updater.service
 /usr/lib/systemd/system/kurumifrp-updater.path
