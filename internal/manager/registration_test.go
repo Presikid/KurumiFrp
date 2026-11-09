@@ -73,6 +73,9 @@ func TestRegistrationAppliedDraftAndRedaction(t *testing.T) {
 	if item.State != "registered" || strings.Contains(body, "test-secret-1234") || strings.Contains(body, s.password) {
 		t.Fatalf("unsafe state %#v %s", item, body)
 	}
+	if got := safeStatusText(strings.Repeat("x", 4090)+"test-secret-1234", []string{"test-secret-1234"}); got != "[状态内容过长，已隐藏]" {
+		t.Fatalf("oversized status must be hidden: %q", got)
+	}
 	a.mu.Lock()
 	state = a.store.DB.State.clone()
 	state.Tunnels[0].LocalPort = 81
