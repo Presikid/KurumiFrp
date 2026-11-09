@@ -125,10 +125,11 @@ type embeddedRun struct {
 	done   chan struct{}
 	err    error // published by closing done
 
-	mu         sync.RWMutex
-	client     *embedded.Client
-	traffic    *clienttraffic.Run
-	proxyTypes map[string]string
+	mu           sync.RWMutex
+	client       *embedded.Client
+	traffic      *clienttraffic.Run
+	proxyTypes   map[string]string
+	finalTraffic TrafficSnapshot
 }
 
 func (r *embeddedRun) serve(ctx context.Context, target string, cfg RuntimeConfig, sink *xlog.Sink, output io.Writer) {
@@ -272,6 +273,16 @@ func (r *embeddedRun) runClient(ctx context.Context, instanceID string, config *
 		embeddedCleanupUnknown.Store(true)
 		return errors.New("内嵌客户端清理状态未知")
 	}
+	// The forwarding workers have stopped, so the last payload count is stable.
+	// Preserve it for the manager's final sample before the run is discarded.
+	if snapshot := run.Snapshot(); snapshot.Active {
+		r.mu.Lock()
+		r.finalTraffic = TrafficSnapshot{
+			SampledAt: time.Now().UTC(), Available: true,
+			ReceivedBytes: snapshot.Total.Download, SentBytes: snapshot.Total.Upload,
+		}
+		r.mu.Unlock()
+	}
 	if err != nil || status.Exit == embedded.ExitFailed || status.Exit == embedded.ExitUnexpected {
 		return errors.New("内嵌客户端意外退出")
 	}
@@ -319,8 +330,11 @@ func (r *embeddedRun) ReadProxyRegistration(ctx context.Context, name string) (P
 func (r *embeddedRun) ReadTraffic() TrafficSnapshot {
 	observation := TrafficSnapshot{SampledAt: time.Now().UTC()}
 	r.mu.RLock()
-	client, run := r.client, r.traffic
+	client, run, final := r.client, r.traffic, r.finalTraffic
 	r.mu.RUnlock()
+	if final.Available {
+		return final
+	}
 	if client == nil || run == nil || client.Status().State != embedded.ClientRunning {
 		return observation
 	}
