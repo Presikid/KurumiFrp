@@ -1,11 +1,11 @@
 package manager
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/Presikid/KurumiFrp/internal/core"
 	"github.com/Presikid/KurumiFrp/internal/update"
-	"github.com/Presikid/KurumiFrp/internal/version"
 	"io"
 	"io/fs"
 	"net"
@@ -29,6 +29,18 @@ type App struct {
 	auth     auth
 	procs    map[string]*process
 	assets   http.Handler
+
+	// Lifecycle reservations are protected by mu. Slow operations run without it.
+	operations    map[string]*runtimeOperation
+	operationWG   sync.WaitGroup
+	closing       bool
+	closeOnce     sync.Once
+	closeErr      error
+	stateCache    *stateResponseCache
+	activeProbes  int
+	startupDone   chan struct{}
+	startupCancel context.CancelFunc
+	startupErrors map[string]string
 }
 
 func New(dir, bin, addr string, assets fs.FS) (*App, error) {
@@ -87,7 +99,12 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	}); e != nil {
 		return nil, e
 	}
-	return &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: http.FileServer(http.FS(assets))}, nil
+	app := &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	ctx, cancel := context.WithCancel(context.Background())
+	app.startupCancel = cancel
+	instances := append([]Instance(nil), s.DB.State.Instances...)
+	go app.restoreAutoStart(ctx, instances)
+	return app, nil
 }
 func (a *App) SetDistribution(distribution string) {
 	a.updater = update.New(a.store.dir, update.DetectDistribution(distribution))
@@ -174,12 +191,24 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			reply(w, 200, map[string]bool{"ok": true})
 			return
 		}
+		if r.URL.Path == "/api/probe" && r.Method == "POST" {
+			a.probeAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/core" || strings.HasPrefix(r.URL.Path, "/api/core/") {
 			a.coreAPI(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/update/") {
 			a.updateAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/control" || r.URL.Path == "/api/validate" {
+			a.runtimeAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/state" && r.Method == "GET" {
+			a.handleState(w, r)
 			return
 		}
 		a.mu.Lock()
@@ -191,25 +220,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(405)
 		return
 	}
-	switch r.URL.Path {
-	case "/", "/app.js", "/core.js", "/style.css", "/core.css", "/kurumi.webp":
-		a.assets.ServeHTTP(w, r)
-	default:
-		http.NotFound(w, r)
-	}
+	a.assets.ServeHTTP(w, r)
 }
 func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		switch r.URL.Path {
-		case "/api/state":
-			history := []map[string]any{}
-			for _, h := range a.store.DB.History {
-				history = append(history, map[string]any{"revision": h.Revision, "at": h.At, "summary": h.Summary})
-			}
-			_, ec := a.binary("frpc")
-			_, es := a.binary("frps")
-			reply(w, 200, map[string]any{"version": version.Current, "revision": a.store.DB.Revision, "state": a.store.DB.State.public(), "runtime": a.statuses(), "history": history, "historyLimit": a.store.DB.HistoryLimit, "events": a.store.DB.Events, "binaries": map[string]bool{"frpc": ec == nil, "frps": es == nil}})
-			return
 		case "/api/export":
 			a.export(w, r)
 			return
@@ -220,6 +235,29 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			reply(w, 200, map[string]any{"toml": v.Text, "redacted": true})
+			return
+		case "/api/diff":
+			id := r.URL.Query().Get("id")
+			i, ok := a.store.DB.State.Instance(id)
+			if !ok {
+				fail(w, 404, fmt.Errorf("实例不存在"))
+				return
+			}
+			p := a.procs[id]
+			if p == nil || p.appliedConfig == "" {
+				fail(w, 409, fmt.Errorf("该实例尚无可比较的已应用配置；请先成功启动一次"))
+				return
+			}
+			current, err := a.store.render(id, false)
+			if err != nil {
+				fail(w, 400, err)
+				return
+			}
+			coreID := ""
+			if a.store.DB.ActiveCore != nil {
+				coreID = *a.store.DB.ActiveCore
+			}
+			reply(w, 200, compareConfig(i.ID, i.Name, a.store.DB.Revision, p.appliedConfig, current.Text, p.appliedSecretDigest != current.SecretDigest, p.coreID != coreID))
 			return
 		case "/api/logs":
 			lines := []string{}
@@ -401,41 +439,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-	case "/api/validate", "/api/control":
-		i, ok := a.store.DB.State.Instance(req.ID)
-		if !ok {
-			err = fmt.Errorf("实例不存在")
-			break
-		}
-		if r.URL.Path == "/api/control" && req.Action == "stop" {
-			err = a.stop(i.ID)
-			break
-		}
-		if r.URL.Path == "/api/control" && req.Action != "start" && req.Action != "restart" {
-			err = fmt.Errorf("未知操作")
-			break
-		}
-		var rendered Rendered
-		rendered, err = a.store.render(i.ID, false)
-		if err != nil {
-			break
-		}
-		var output string
-		output, err = a.verify(i, rendered)
-		if err != nil {
-			break
-		}
-		if r.URL.Path == "/api/validate" {
-			reply(w, 200, map[string]any{"ok": true, "output": output, "note": "仅验证配置，不证明网络连通"})
-			return
-		}
-		if req.Action == "restart" {
-			err = a.stop(i.ID)
-			if err != nil {
-				break
-			}
-		}
-		err = a.start(i, rendered)
+
 	default:
 		fail(w, 404, fmt.Errorf("接口不存在"))
 		return

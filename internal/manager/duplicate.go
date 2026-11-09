@@ -171,6 +171,7 @@ func duplicatedTunnel(src Tunnel, id, instanceID, name string) Tunnel {
 		ID: id, InstanceID: instanceID, Name: name, Type: src.Type,
 		LocalHost: src.LocalHost, LocalPort: src.LocalPort,
 		RemotePort: src.RemotePort, Domains: append([]string(nil), src.Domains...),
+		ProbePath: src.ProbePath, ProbeMethod: src.ProbeMethod,
 		ServerName: src.ServerName, Secret: src.Secret,
 		BandwidthKB: src.BandwidthKB, Enabled: false,
 	}

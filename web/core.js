@@ -4,12 +4,18 @@
 titles.core = '核心管理';
 const coreRenderBase = render;
 let coreStatus, coreRelease, coreReleases = [], coreError = '', coreLoading = false;
-render = function () { coreRenderBase(); if (data && page === 'core') mountCore(); };
+let coreStatusETag = '', coreStatusRequest = null, corePollTimer = null;
+let coreReleasesLoaded = false, coreReleaseCache = new Map();
+render = function () {
+ coreRenderBase();
+ if (data && page === 'core') mountCore();
+ else stopCorePolling();
+};
 const corePhase = {idle:'等待选择版本', metadata:'读取官方发布信息', downloading:'下载中', extracting:'校验通过，正在安全解压', installed:'下载完成，等待启用', failed:'下载失败，原核心未改变', cancelled:'下载已取消，原核心未改变'};
 const coreBusy = () => ['metadata','downloading','extracting'].includes(coreStatus?.job.state);
 const coreSize = n => (Number(n||0)/1048576).toFixed(1)+' MiB';
 function mountCore() {
- if ($('#core-screen')) {paintCoreStatus();return;}
+ if ($('#core-screen')) {paintCoreStatus();scheduleCorePoll(0);return;}
  $('#content').innerHTML = header('frp 核心管理','从官方发布中选择版本。识别的是运行本程序的主机，不是当前浏览器设备。') + `
  <div id="core-screen">
  <section class="hero core-hero"><div><p class="eyebrow">OFFICIAL RELEASES / VERIFIED DOWNLOADS</p><h2>选好版本，剩下的交给工作台。</h2><p>自动匹配平台 · SHA-256 校验 · 独立版本目录 · 明确切换，不覆盖运行中的程序</p></div><span class="core-download-icon" aria-hidden="true">↓</span></section>
@@ -26,7 +32,7 @@ function mountCore() {
  </div></section></div>
  <section class="panel"><div class="panel-title"><h3>已下载核心</h3><span class="muted">frpc + frps 成对管理</span></div><div class="panel-content" id="core-installed"></div></section>
  <p class="small-note">下载仅连接 GitHub 官方发布与其文件存储。网络受限时可为 KurumiFRP 启动进程配置 HTTPS_PROXY；不会自动使用第三方镜像或关闭证书校验。</p></div>`;
- $('#core-reload').onclick = loadCoreReleases;
+ $('#core-reload').onclick = () => loadCoreReleases(true);
  $('#core-version').onchange = () => loadCoreRelease($('#core-version').value);
  $('#core-asset').onchange = paintCoreAsset;
  $('#core-install').onclick = async () => {
@@ -42,11 +48,49 @@ function mountCore() {
   try {await api('core/activate',{id:b.dataset.coreActivate});toast('核心已启用；在运行实例页校验配置后启动');await pollCore();await refresh(true);}
   catch(e){toast(e.message);}finally{b.disabled=false;}
  };
- pollCore();loadCoreReleases();
+ scheduleCorePoll(0);loadCoreReleases();
+}
+function stopCorePolling() {
+ if (corePollTimer !== null) {
+  clearTimeout(corePollTimer);
+  corePollTimer = null;
+ }
+}
+function scheduleCorePoll(delay) {
+ stopCorePolling();
+ if (!data || page !== 'core' || document.hidden) return;
+ const wait = delay ?? (coreBusy() ? 1500 : 10000);
+ corePollTimer = setTimeout(() => {
+  corePollTimer = null;
+  pollCore();
+ }, wait);
 }
 async function pollCore() {
- if (!data || page!=='core')return;
- try{coreStatus=await api('core');paintCoreStatus();}catch(e){coreError=e.message;paintCoreStatus();}
+ if (!data || page !== 'core' || document.hidden) return;
+ if (coreStatusRequest) return coreStatusRequest;
+ const request = (async () => {
+  try {
+   const fresh = await api('core', undefined, {
+    conditional: true,
+    headers: coreStatusETag ? {'If-None-Match': coreStatusETag} : {}
+   });
+   if (fresh.value !== null) {
+    coreStatus = fresh.value;
+    coreStatusETag = fresh.etag;
+    paintCoreStatus();
+   }
+  } catch (e) {
+   coreError = e.message;
+   paintCoreStatus();
+  }
+ })();
+ coreStatusRequest = request;
+ try {
+  await request;
+ } finally {
+  if (coreStatusRequest === request) coreStatusRequest = null;
+  scheduleCorePoll();
+ }
 }
 function paintCoreStatus() {
  if (!$('#core-screen'))return;
@@ -62,28 +106,59 @@ function paintCoreStatus() {
  $('#core-installed').innerHTML=coreStatus.installed.length ? coreStatus.installed.map(v=>`<div class="core-installed-row"><div><b>${esc(v.tag)}</b><span class="pill ${v.id===coreStatus.active?'good':''}">${v.id===coreStatus.active?'当前启用':esc(v.platform)}</span><p class="small-note">${esc(v.installedAt)}<br>SHA-256 ${esc(v.archiveSHA256.slice(0,20))}…</p></div><button data-core-activate="${esc(v.id)}" ${v.id===coreStatus.active||running?'disabled':''}>${v.id===coreStatus.active?'已启用':running?'先停止实例':'启用此版本'}</button></div>`).join('') : empty('尚未下载核心','选择与你的主机匹配的版本。旧版手动放入 frp-dir 的文件仍然可用。');
  paintCoreAsset();
 }
-async function loadCoreReleases() {
- if(coreLoading)return;coreLoading=true;coreError='';
+async function loadCoreReleases(force=false) {
+ if(coreLoading)return;
+ if(!force && coreReleasesLoaded) {
+  try {await showCoreReleaseOptions(false);}
+  catch(e) {coreError=e.message;paintCoreStatus();}
+  return;
+ }
+ if(force)coreReleasesLoaded=false;
+ coreLoading=true;coreError='';
  try {
   coreReleases=await api('core/releases');
-  if(!$('#core-screen'))return;
-  const previous=coreRelease?.tag_name;
-  $('#core-version').innerHTML=coreReleases.map((r,i)=>`<option value="${esc(r.tag_name)}">${esc(r.tag_name)}${i===0?' · 最新稳定版':''}</option>`).join('');
   if(!coreReleases.length)throw new Error('没有可用的稳定版本');
-  if(coreReleases.some(r=>r.tag_name===previous))$('#core-version').value=previous;
-  await loadCoreRelease($('#core-version').value);
+  coreReleasesLoaded=true;
+  await showCoreReleaseOptions(force);
  }catch(e){coreError=e.message;}finally{coreLoading=false;paintCoreStatus();}
 }
+async function showCoreReleaseOptions(force=false) {
+ if(!$('#core-screen'))return;
+ const previous=coreRelease?.tag_name;
+ $('#core-version').innerHTML=coreReleases.map((r,i)=>`<option value="${esc(r.tag_name)}">${esc(r.tag_name)}${i===0?' · 最新稳定版':''}</option>`).join('');
+ if(!coreReleases.length)throw new Error('没有可用的稳定版本');
+ if(coreReleases.some(r=>r.tag_name===previous))$('#core-version').value=previous;
+ if(force)coreRelease=null;
+ const tag=$('#core-version').value;
+ if(coreRelease?.tag_name===tag) {
+  showCoreAssetOptions(coreRelease);
+  return;
+ }
+ await loadCoreRelease(tag,force);
+}
 let coreSelection=0;
-async function loadCoreRelease(tag) {
+function showCoreAssetOptions(release) {
+ const previous=$('#core-asset')?.value;
+ const options=release.assets.slice().sort((a,b)=>Number(b.compatible)-Number(a.compatible));
+ $('#core-asset').innerHTML=options.map(a=>`<option value="${esc(a.name)}">${esc(a.platform)}${a.compatible?' · 匹配本机':''} · ${coreSize(a.size)}</option>`).join('');
+ if(options.some(a=>a.name===previous))$('#core-asset').value=previous;
+ paintCoreAsset();
+}
+async function loadCoreRelease(tag,force=false) {
+ if(!force && coreRelease?.tag_name===tag) {coreSelection++;showCoreAssetOptions(coreRelease);return;}
+ if(!force && coreReleaseCache.has(tag)) {
+  coreSelection++;
+  coreRelease=coreReleaseCache.get(tag);
+  coreError='';
+  showCoreAssetOptions(coreRelease);
+  return;
+ }
  const generation=++coreSelection;coreRelease=null;paintCoreAsset();
  try {
   const r=await api('core/release?tag='+encodeURIComponent(tag));
   if(generation!==coreSelection||!$('#core-screen'))return;
-  coreRelease=r;coreError='';
-  const options=r.assets.slice().sort((a,b)=>Number(b.compatible)-Number(a.compatible));
-  $('#core-asset').innerHTML=options.map(a=>`<option value="${esc(a.name)}">${esc(a.platform)}${a.compatible?' · 匹配本机':''} · ${coreSize(a.size)}</option>`).join('');
-  paintCoreAsset();
+  coreRelease=r;coreReleaseCache.set(tag,r);coreError='';
+  showCoreAssetOptions(r);
  }catch(e){coreError=e.message;}paintCoreStatus();
 }
 function paintCoreAsset() {
@@ -94,7 +169,10 @@ function paintCoreAsset() {
  if(asset)$('#core-official').href=asset.browser_download_url;
  $('#core-asset-note').textContent=asset ? asset.installable ? `${asset.name} · 下载后进行 SHA-256 校验` : '此安装包不匹配本机或缺少校验信息，只提供官方下载入口。' : '等待版本信息；失败时可点击刷新重试。';
 }
-setInterval(()=>{if(!document.hidden)pollCore();},1500);
+document.addEventListener('visibilitychange', () => {
+ if (document.hidden) stopCorePolling();
+ else if (page === 'core') scheduleCorePoll(0);
+});
 if(location.hash==='#core'){page='core';render();}
 (async()=>{
  const match=/^#launch=([a-f0-9]{64})$/.exec(location.hash);

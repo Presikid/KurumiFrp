@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Presikid/KurumiFrp/internal/version"
 )
 
 func packageFixture(t *testing.T) (string, string) {
@@ -22,7 +24,7 @@ func packageFixture(t *testing.T) (string, string) {
 	if err := os.Mkdir(source, 0700); err != nil {
 		t.Fatal(err)
 	}
-	m := packageManifest{Product: productID, Version: "0.7.1.0", Platform: "linux_amd64", Files: map[string]string{}}
+	m := packageManifest{Product: productID, Version: version.Current, Platform: "linux_amd64", Files: map[string]string{}}
 	names, _ := packageNames(m.Platform)
 	for _, name := range names {
 		p := filepath.Join(source, name)
@@ -134,7 +136,7 @@ func TestMaintenanceChecksAuthAndShutdown(t *testing.T) {
 			w.Write([]byte(`{"ok":true}`))
 			return
 		}
-		w.Write([]byte(`{"version":"0.7.1.0"}`))
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": version.Current})
 	})
 	if err := checkRunning(dir, time.Millisecond); err != nil {
 		t.Fatal(err)
