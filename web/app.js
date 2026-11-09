@@ -69,7 +69,7 @@ function renderPreservingScroll() {
   const el = content.querySelectorAll(position.selector)[position.index];
   if (!el || (position.text !== null && previousSelected !== selected)) continue;
   // Keep the existing output while its asynchronous replacement is loading.
-  if (position.text !== null) el.textContent = position.text;
+   if (position.text !== null && (position.selector !== '#log-output' || (logSnapshot && logSnapshot.id === selected && logSnapshot.runId === logRunId(data, selected)))) el.textContent = position.text;
   el.scrollTop = position.top; el.scrollLeft = position.left;
  }
  content.scrollTop = top; content.scrollLeft = left; window.scrollTo(x,y);
@@ -89,7 +89,7 @@ async function refresh(silent = false) {
   try {
    const fresh = await api('state',undefined,{conditional:true,headers:stateETag ? {'If-None-Match':stateETag} : {},signal:request.controller.signal});
    if (generation !== authGeneration) return;
-   if (fresh.value !== null) {if (probeRevision !== fresh.value.revision) {probeResults = Object.create(null); probeRevision = fresh.value.revision;} invalidateRegistrationForRuntime(data, fresh.value); data = fresh.value; paintRegistrations(); stateSnapshot = JSON.stringify(data); stateETag = fresh.etag;}
+   if (fresh.value !== null) {if (probeRevision !== fresh.value.revision) {probeResults = Object.create(null); probeRevision = fresh.value.revision;} invalidateRegistrationForRuntime(data, fresh.value); invalidateLogsForRuntime(data, fresh.value); data = fresh.value; paintRegistrations(); stateSnapshot = JSON.stringify(data); stateETag = fresh.etag;}
    if (!data) return;
    $('#login').hidden = true; $('#app').hidden = false;
    if (!updateChecked) {updateChecked = true; checkUpdates(true);}
@@ -103,7 +103,8 @@ async function refresh(silent = false) {
    applyDeferredConfig();
    refreshRegistration();
    // Logs have a separate endpoint and can change even when state returns 304.
-   await refreshLogs(silent);
+   // A delayed log response must not block polling the process generation.
+   refreshLogs(silent);
   } catch(e) {if (generation === authGeneration && e.name !== 'AbortError' && !silent && data) toast(e.message);}
  })().finally(() => {
   if (stateRequest === request) stateRequest = null;
@@ -111,27 +112,43 @@ async function refresh(silent = false) {
  });
  return request.promise;
 }
+function logRunId(state, id) {return state?.runtime?.[id]?.runId || '';}
+function invalidateLogsForRuntime(previous, next) {
+ if (!previous || !next) return;
+ if (logRequest && logRequest.runId !== logRunId(next, logRequest.id)) {
+  const old = logRequest; logRequest = null; old.controller.abort();
+ }
+ if (logSnapshot && logSnapshot.runId !== logRunId(next, logSnapshot.id)) logSnapshot = null;
+ if (page === 'logs' && selected && logRunId(previous, selected) !== logRunId(next, selected)) {
+  const output = $('#log-output'); if (output) output.textContent = '正在读取…';
+ }
+}
 function refreshLogs(silent = true) {
  if (!data || page !== 'logs' || !selected) return Promise.resolve();
- const generation = authGeneration, id = selected;
- if (logRequest && logRequest.generation === generation && logRequest.id === id) return logRequest.promise;
+ const generation = authGeneration, navigation = navigationGeneration, id = selected, runId = logRunId(data, selected);
+ if (logRequest && logRequest.generation === generation && logRequest.navigation === navigation && logRequest.id === id && logRequest.runId === runId) return logRequest.promise;
  logRequest?.controller.abort();
- const request = {generation,id,controller:new AbortController()};
+ const request = {generation,navigation,id,runId,controller:new AbortController()};
  logRequest = request;
  request.promise = (async () => {
   try {
    const result = await api('logs?id='+encodeURIComponent(id),undefined,{signal:request.controller.signal});
-   if (logRequest !== request || generation !== authGeneration || page !== 'logs' || selected !== id) return;
-   logSnapshot = {id, lines: result.lines};
+   if (logRequest !== request || generation !== authGeneration || navigation !== navigationGeneration || page !== 'logs' || selected !== id || runId !== logRunId(data, id)) return;
+   if ((result.runId || '') !== runId) {
+    logSnapshot = null;
+    const output = $('#log-output'); if (output) output.textContent = '正在读取…';
+    return;
+   }
+   logSnapshot = {id, runId, lines: result.lines};
    // The filter is edited in place, so updating only the output does not disturb focus.
    if (canSilentRender() || (document.activeElement?.id === 'log-filter' && !hasSelection())) paintLogs();
-  } catch(e) {if (generation === authGeneration && e.name !== 'AbortError' && !silent && data) toast(e.message);}
+  } catch(e) {if (logRequest === request && generation === authGeneration && navigation === navigationGeneration && page === 'logs' && selected === id && e.name !== 'AbortError' && !silent && data) toast(e.message);}
  })().finally(() => {if (logRequest === request) logRequest = null;});
  return request.promise;
 }
 function paintLogs() {
  const output = $('#log-output');
- if (!output || !logSnapshot || logSnapshot.id !== selected) return;
+ if (!output || !logSnapshot || logSnapshot.id !== selected || logSnapshot.runId !== logRunId(data, selected)) return;
  const lines = logSnapshot.lines;
  const query = logFilter.toLocaleLowerCase();
  const matches = query ? lines.filter(line => line.toLocaleLowerCase().includes(query)) : lines;
@@ -402,7 +419,7 @@ $('#editor').addEventListener('submit',async e=>{
  try{await api('save',{revision:editRev,kind:editing.kind,value});dialog.close();toast('草稿已保存；运行中的实例未改变');await refresh();}catch(err){$('#form-error').textContent=err.message;}finally{b.disabled=false;}
 });
 $('#content').addEventListener('input',e=>{if(e.target.id==='search'){filter=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='log-filter'){logFilter=e.target.value;paintLogs();}});
-$('#content').addEventListener('change',e=>{if(e.target.id==='health-instance')healthSelected=e.target.value;if(e.target.id==='protocol'){protocol=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='instance-picker'){selected=e.target.value;render();}});
+$('#content').addEventListener('change',e=>{if(e.target.id==='health-instance')healthSelected=e.target.value;if(e.target.id==='protocol'){protocol=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='instance-picker'){++navigationGeneration;selected=e.target.value;render();}});
 $('#content').addEventListener('click',async e=>{
  const b=e.target.closest('button');if(!b||!data)return;if(b.dataset.go){navigate(b.dataset.go);return;}
  const action=b.dataset.action,id=b.dataset.id || (action==='health'?$('#health-instance')?.value:undefined);if(!action)return;

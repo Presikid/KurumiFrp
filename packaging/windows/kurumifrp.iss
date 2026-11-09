@@ -7,6 +7,12 @@
 #ifndef OutputPath
  #error OutputPath is required
 #endif
+#ifndef BundledAMD64SHA
+ #error BundledAMD64SHA is required
+#endif
+#ifndef BundledARM64SHA
+ #error BundledARM64SHA is required
+#endif
 
 [Setup]
 AppId=io.github.Presikid.KurumiFRP
@@ -78,6 +84,8 @@ english.StartFailed=Could not start KurumiFRP.
 chinesesimplified.StartFailed=无法启动 KurumiFRP。
 english.ReadinessFailed=The local API did not become ready. Setup.exe was retained; existing configuration was not deleted.
 chinesesimplified.ReadinessFailed=本机服务未能就绪。安装程序已保留，现有配置未被删除。
+english.BundledMismatch=This same-version installer contains a different bundled core. Install a newer application version instead; the current installation was not changed.
+chinesesimplified.BundledMismatch=此安装包与已安装的同版本程序所含预置核心不同。请安装更新的软件版本；现有安装未被修改。
 english.CleanupFailed=Setup finished, but its downloaded EXE could not be removed. You may delete that EXE manually.
 chinesesimplified.CleanupFailed=安装已完成，但无法删除下载的安装程序。你可以稍后手动删除。
 english.UninstallConfirm=Uninstall KurumiFRP for all users and permanently delete all accounts configurations, authentication keys, downloaded frp cores and application logs?
@@ -93,6 +101,8 @@ Name: cleanup; Description: "{cm:CleanupTask}"; GroupDescription: "{cm:CleanupGr
 [Files]
 Source: "{#PayloadDir}\amd64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: not IsArm64
 Source: "{#PayloadDir}\arm64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: IsArm64
+Source: "{#PayloadDir}\amd64\bundled\{#AppVersion}\*"; DestDir: "{app}\bundled\{#AppVersion}"; Flags: onlyifdoesntexist; Check: not IsArm64
+Source: "{#PayloadDir}\arm64\bundled\{#AppVersion}\*"; DestDir: "{app}\bundled\{#AppVersion}"; Flags: onlyifdoesntexist; Check: IsArm64
 Source: "{#PayloadDir}\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "kurumi.ico"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -136,7 +146,7 @@ begin
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var Code: Integer; App, Exe, RegisteredDir: String;
+var Code: Integer; App, Exe, RegisteredDir, PreviousVersion, ExpectedManifest: String;
 begin
   Result := '';
   App := ExpandConstant('{app}');
@@ -144,6 +154,13 @@ begin
   if not PlainDestination(App) then begin
     Result := ExpandConstant('{cm:LinkedPath}'); Exit;
   end;
+  if not PlainDestination(App + '\bundled\{#AppVersion}') or not PlainDestination(App + '\bundled\{#AppVersion}\frpc.exe') or not PlainDestination(App + '\bundled\{#AppVersion}\frps.exe') or not PlainDestination(App + '\bundled\{#AppVersion}\LICENSE') or not PlainDestination(App + '\bundled\{#AppVersion}\manifest.json') then begin
+    Result := ExpandConstant('{cm:LinkedPath}'); Exit;
+  end;
+  if FileExists(App + '\bundled') or FileExists(App + '\bundled\{#AppVersion}') or DirExists(App + '\bundled\{#AppVersion}\frpc.exe') or DirExists(App + '\bundled\{#AppVersion}\frps.exe') or DirExists(App + '\bundled\{#AppVersion}\LICENSE') or DirExists(App + '\bundled\{#AppVersion}\manifest.json') then begin
+    Result := ExpandConstant('{cm:UnmanagedDir}'); Exit;
+  end;
+  if DirExists(App + '\bundled\{#AppVersion}') and not FileExists(Exe) then begin Result := ExpandConstant('{cm:UnmanagedDir}'); Exit; end;
   if (DirExists(App + '\data') or FileExists(Exe)) and not FileExists(App + '\native-install.json') then begin
     Result := ExpandConstant('{cm:UnmanagedDir}'); Exit;
   end;
@@ -153,6 +170,19 @@ begin
     end;
     if CompareText(RemoveBackslash(RegisteredDir), RemoveBackslash(App)) <> 0 then begin
       Result := ExpandConstant('{cm:WrongInstallDir}'); Exit;
+    end;
+    if DirExists(App + '\bundled\{#AppVersion}') then begin
+      if not RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.Presikid.KurumiFRP_is1', 'DisplayVersion', PreviousVersion) or (PreviousVersion <> '{#AppVersion}') then begin Result := ExpandConstant('{cm:UnmanagedDir}'); Exit; end;
+      if not Exec(Exe, '--verify-bundled', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
+      if Code <> 0 then begin Result := ExpandConstant('{cm:UnmanagedDir}'); Exit; end;
+      if IsArm64 then ExpectedManifest := '{#BundledARM64SHA}' else ExpectedManifest := '{#BundledAMD64SHA}';
+      try
+        if Lowercase(GetSHA256OfFile(App + '\bundled\{#AppVersion}\manifest.json')) <> ExpectedManifest then begin
+          Result := ExpandConstant('{cm:BundledMismatch}'); Exit;
+        end;
+      except
+        Result := ExpandConstant('{cm:UnmanagedDir}'); Exit;
+      end;
     end;
     if not Exec(Exe, '--native-maintenance stop', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
     if Code <> 0 then Result := ExpandConstant('{cm:StopFailed}');
@@ -181,6 +211,8 @@ begin
   if CurStep = ssPostInstall then begin
     RemoveLegacyTranslationNotice();
     App := ExpandConstant('{app}'); Exe := App + '\kurumi.exe';
+    if not Exec(Exe, '--verify-bundled', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
+    if Code <> 0 then RaiseException('Bundled core verification failed; existing files were retained.');
     if not Exec(Exe, '--native-maintenance init', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
     if Code <> 0 then RaiseException(ExpandConstant('{cm:InitFailed}'));
     if not ExecAsOriginalUser(Exe, '', App, SW_HIDE, ewNoWait, Code) then RaiseException(ExpandConstant('{cm:StartFailed}'));

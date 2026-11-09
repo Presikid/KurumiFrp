@@ -3,13 +3,17 @@ import argparse
 import gzip
 import hashlib
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from bundled_frp import prepare as prepare_bundled_frp
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = (ROOT / 'VERSION').read_text().strip()
+if not re.fullmatch(r'[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}', VERSION):
+    raise ValueError('invalid package version')
 OUT = ROOT / 'dist-native'
 
 
@@ -27,8 +31,13 @@ def build(system, arch, dest):
         flags += ' -H=windowsgui'
     if system == 'linux' and arch == 'armhf':
         flags += ' -X github.com/Presikid/KurumiFrp/internal/core.armVariant=arm_hf'
+    platform = system + '_' + ('arm_hf' if arch == 'armhf' else arch)
+    digest = prepare_bundled_frp(platform, dest.parent / 'bundled' / VERSION)
+    flags += ' -X github.com/Presikid/KurumiFrp/internal/core.bundledManifestSHA=' + digest
+    flags += ' -X github.com/Presikid/KurumiFrp/internal/core.bundledVersion=' + VERSION
     run(['go', 'build', '-trimpath', '-ldflags=' + flags, '-o', dest, './cmd/kurumi'],
         env=dict(os.environ, GOOS=system, GOARCH=goarch, GOARM='7', CGO_ENABLED='0'))
+    return digest
 
 
 def windows():
@@ -41,14 +50,15 @@ def windows():
         raise SystemExit('Install Inno Setup 6.3+ on the build host, not end-user devices.')
     with tempfile.TemporaryDirectory(prefix='kurumi-setup-') as temp:
         stage = Path(temp)
-        for arch in ('amd64', 'arm64'):
-            build('windows', arch, stage / arch / 'kurumi.exe')
+        digests = {arch: build('windows', arch, stage / arch / 'kurumi.exe')
+                   for arch in ('amd64', 'arm64')}
         # The bundled language translation has its own attribution; include it
         # in the existing installation guide rather than creating a license folder.
         guide = (ROOT / 'docs/INSTALL.md').read_text(encoding='utf-8')
         notice = (ROOT / 'packaging/windows/ChineseSimplified-LICENSE.txt').read_text(encoding='utf-8')
         (stage / 'INSTALL.md').write_text(guide + '\n## 第三方组件声明\n\n简体中文安装界面翻译使用以下第三方许可；这不是 KurumiFRP 的项目许可。\n\n' + notice, encoding='utf-8')
         run([iscc, '/DAppVersion=' + VERSION, '/DPayloadDir=' + str(stage),
+             '/DBundledAMD64SHA=' + digests['amd64'], '/DBundledARM64SHA=' + digests['arm64'],
              '/DOutputPath=' + str(OUT), ROOT / 'packaging/windows/kurumifrp.iss'])
 
 
@@ -62,6 +72,7 @@ def linux_tree(stage, binary):
     target = stage / 'opt/kurumifrp/kurumifrp'
     target.parent.mkdir(parents=True)
     shutil.copyfile(binary, target)
+    shutil.copytree(binary.parent / 'bundled', target.parent / 'bundled')
     target.chmod(0o755)
     link = stage / 'usr/bin/kurumifrp'
     link.parent.mkdir(parents=True, exist_ok=True)
@@ -87,7 +98,7 @@ def linux_tree(stage, binary):
 
 
 def maintainer(action):
-    return '#!/bin/sh\n' + (ROOT / 'packaging/linux/lifecycle.sh').read_text() + '\n' + action + '\n'
+    return '#!/bin/sh\n' + (ROOT / 'packaging/linux/lifecycle.sh').read_text().replace('@PACKAGE_VERSION@', VERSION) + '\n' + action + '\n'
 
 
 def linux(arch, deb_only=False):
@@ -135,7 +146,7 @@ Description: Local frpc and frps management workbench
             (top / d).mkdir(parents=True)
         payload = top / 'SOURCES/payload'
         linux_tree(payload, binary)
-        common = (ROOT / 'packaging/linux/lifecycle.sh').read_text().replace('%', '%%')
+        common = (ROOT / 'packaging/linux/lifecycle.sh').read_text().replace('@PACKAGE_VERSION@', VERSION).replace('%', '%%')
         spec = f'''Name: kurumifrp
 Version: {VERSION}
 Release: 1
@@ -174,6 +185,7 @@ if [ "$1" = 0 ]; then remove_unit_state; purge_state; elif systemd_active; then 
 /usr/bin/kurumifrp
 %dir /opt/kurumifrp
 /opt/kurumifrp/kurumifrp
+/opt/kurumifrp/bundled
 /usr/lib/systemd/system/kurumifrp.service
 /usr/lib/systemd/system/kurumifrp-updater.service
 /usr/lib/systemd/system/kurumifrp-updater.path

@@ -293,10 +293,12 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			return
 		case "/api/logs":
 			lines := []string{}
+			runID := ""
 			if p := a.procs[r.URL.Query().Get("id")]; p != nil {
 				lines = p.logs.read()
+				runID = p.view().RunID
 			}
-			reply(w, 200, map[string]any{"lines": lines})
+			reply(w, 200, map[string]any{"lines": lines, "runId": runID})
 			return
 		default:
 			fail(w, 404, fmt.Errorf("接口不存在"))
