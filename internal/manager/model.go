@@ -24,6 +24,9 @@ type Instance struct {
 	NatHoleSTUNServer     string `json:"natHoleStunServer,omitempty"`
 	DNSServer             string `json:"dnsServer,omitempty"`
 	ClientTransport       string `json:"clientTransport,omitempty"`
+	LoginFailExit         bool   `json:"loginFailExit,omitempty"`
+	ClientTLSDisabled     bool   `json:"clientTLSDisabled,omitempty"`
+	ServerAllowPlaintext  bool   `json:"serverAllowPlaintext,omitempty"`
 	KCPBindPort           int    `json:"kcpBindPort,omitempty"`
 	QUICBindPort          int    `json:"quicBindPort,omitempty"`
 	TCPMuxHTTPConnectPort int    `json:"tcpmuxHTTPConnectPort,omitempty"`

@@ -21,6 +21,8 @@ const ProtocolEditor = (() => {
     <div class="client-field">${field('natHoleStunServer', 'NAT 穿透 STUN 地址（可选）', v.natHoleStunServer || '', 'text', 'placeholder="host:port"')}</div>
     <div class="client-field">${field('dnsServer', 'DNS 服务器 IP（可选）', v.dnsServer || '', 'text', 'placeholder="例如 1.1.1.1 或 [::1]:53"')}</div>
     <div class="client-field"><label>连接协议<select name="clientTransport">${['tcp','websocket','wss','kcp','quic'].map(protocol => `<option value="${protocol}" ${(v.clientTransport || 'tcp') === protocol ? 'selected' : ''}>${protocol.toUpperCase()}</option>`).join('')}</select></label></div>
+    <div class="client-field span-2">${check('loginFailExit', '首次登录失败时退出（关闭时持续重连）', v.loginFailExit)}</div>
+    <div class="client-field span-2">${check('clientTLSDisabled', '关闭客户端 TLS（WSS 和 QUIC 始终使用 TLS）', v.clientTLSDisabled)}</div>
     <div class="server-field">${field('kcpBindPort', 'KCP 监听端口（0 关闭）', v.kcpBindPort ?? 0, 'number', 'min="0" max="65535" step="1"')}</div>
     <div class="server-field">${field('quicBindPort', 'QUIC 监听端口（0 关闭）', v.quicBindPort ?? 0, 'number', 'min="0" max="65535" step="1"')}</div>
     <div class="server-field">${field('httpPort', 'HTTP 虚拟主机端口（0 关闭）', v.httpPort ?? 0, 'number', 'min="0" max="65535" step="1"')}</div>
@@ -28,6 +30,7 @@ const ProtocolEditor = (() => {
     <div class="server-field">${field('tcpmuxHTTPConnectPort', 'TCPMUX HTTP CONNECT 端口（0 关闭）', v.tcpmuxHTTPConnectPort ?? 0, 'number', 'min="0" max="65535" step="1"')}</div>
     <div class="server-field">${field('subDomainHost', '服务端子域名后缀（可选）', v.subDomainHost || '')}</div>
     <div class="server-field span-2">${check('tcpmuxPassthrough', '启用 TCPMUX 透传（需要设置 HTTP CONNECT 端口）', v.tcpmuxPassthrough)}</div>
+    <div class="server-field span-2">${check('serverAllowPlaintext', '允许不使用 TLS 的客户端连接', v.serverAllowPlaintext)}</div>
     <div class="span-2">${check('autoStart', '工作台启动时自动启动此实例', v.autoStart)}</div>
    </div>`;
  }
@@ -180,7 +183,7 @@ const ProtocolEditor = (() => {
    delete result.hasToken;
    Object.assign(result, {name:val('name').trim(), kind, host:val('host').trim(), port:+val('port'), token:val('token'), autoStart:f.autoStart.checked,
     httpPort:kind === 'frps' ? +val('httpPort') : 0, httpsPort:kind === 'frps' ? +val('httpsPort') : 0,
-    user:kind === 'frpc' ? val('user').trim() : '', natHoleStunServer:kind === 'frpc' ? val('natHoleStunServer').trim() : '', dnsServer:kind === 'frpc' ? val('dnsServer').trim() : '', clientTransport:kind === 'frpc' ? val('clientTransport') : '', kcpBindPort:kind === 'frps' ? +val('kcpBindPort') : 0, quicBindPort:kind === 'frps' ? +val('quicBindPort') : 0,
+    user:kind === 'frpc' ? val('user').trim() : '', natHoleStunServer:kind === 'frpc' ? val('natHoleStunServer').trim() : '', dnsServer:kind === 'frpc' ? val('dnsServer').trim() : '', clientTransport:kind === 'frpc' ? val('clientTransport') : '', loginFailExit:kind === 'frpc' && f.loginFailExit.checked, clientTLSDisabled:kind === 'frpc' && f.clientTLSDisabled.checked, serverAllowPlaintext:kind === 'frps' && f.serverAllowPlaintext.checked, kcpBindPort:kind === 'frps' ? +val('kcpBindPort') : 0, quicBindPort:kind === 'frps' ? +val('quicBindPort') : 0,
     tcpmuxHTTPConnectPort:kind === 'frps' ? +val('tcpmuxHTTPConnectPort') : 0,
     tcpmuxPassthrough:kind === 'frps' && f.tcpmuxPassthrough.checked, subDomainHost:kind === 'frps' ? val('subDomainHost').trim() : ''});
    return result;
