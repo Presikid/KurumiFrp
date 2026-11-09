@@ -345,6 +345,9 @@ func (a *App) startPrepared(i Instance, r Rendered, target, configPath, coreID s
 	if a.webhooks != nil {
 		a.webhooks.emitInstance("instance.up", i.ID, i.Kind)
 	}
+	if source, ok := instance.(RuntimeTrafficReader); ok {
+		go a.captureRuntimeTraffic(i.ID, config.RunID, p, source)
+	}
 	go func() {
 		err := instance.Wait()
 		status.cleanup()

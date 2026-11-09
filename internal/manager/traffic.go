@@ -69,6 +69,23 @@ type instanceTraffic struct {
 	Curve                  []TrafficPoint `json:"curve"`
 }
 
+// captureRuntimeTraffic samples only the runtime instance for this run.
+// RecordTrafficSnapshot rejects late observations after replacement or stop.
+func (a *App) captureRuntimeTraffic(instanceID, runID string, p *process, source RuntimeTrafficReader) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		_ = a.RecordTrafficSnapshot(instanceID, runID, source.ReadTraffic())
+		select {
+		case <-p.done:
+			return
+		case <-a.quit:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 // trafficSamples is protected by App.mu and is valid only for its runID.
 type trafficSamples struct {
 	runID   string

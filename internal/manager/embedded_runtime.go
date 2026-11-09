@@ -9,8 +9,10 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/Presikid/KurumiFrp/internal/embedded"
+	clienttraffic "github.com/fatedier/frp/client/traffic"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/util/xlog"
 )
@@ -123,6 +125,7 @@ type embeddedRun struct {
 
 	mu         sync.RWMutex
 	client     *embedded.Client
+	traffic    *clienttraffic.Run
 	proxyTypes map[string]string
 }
 
@@ -136,7 +139,7 @@ func (r *embeddedRun) serve(ctx context.Context, target string, cfg RuntimeConfi
 		}
 		r.cancel()
 		r.mu.Lock()
-		r.client, r.proxyTypes = nil, nil
+		r.client, r.traffic, r.proxyTypes = nil, nil, nil
 		r.mu.Unlock()
 		close(stopLogs)
 		<-logsDone
@@ -154,7 +157,7 @@ func (r *embeddedRun) serve(ctx context.Context, target string, cfg RuntimeConfi
 		r.err = runEmbeddedServer(ctx, config.server, sink)
 		return
 	}
-	r.err = r.runClient(ctx, config.client, sink)
+	r.err = r.runClient(ctx, cfg.InstanceID, config.client, sink)
 }
 
 func pumpEmbeddedLogs(sink *xlog.Sink, output io.Writer, stop <-chan struct{}, done chan<- struct{}) {
@@ -207,9 +210,29 @@ func runEmbeddedServer(ctx context.Context, config *v1.ServerConfig, sink *xlog.
 	return nil
 }
 
-func (r *embeddedRun) runClient(ctx context.Context, config *embedded.ClientConfig, sink *xlog.Sink) error {
+func (r *embeddedRun) runClient(ctx context.Context, instanceID string, config *embedded.ClientConfig, sink *xlog.Sink) error {
+	var book clienttraffic.Book
+	run, err := book.Begin(instanceID)
+	if err != nil {
+		return errors.New("无法初始化客户端流量统计")
+	}
+	defer run.Close()
+	proxies := make(map[string]string, len(config.Proxies))
+	visitors := make(map[string]string, len(config.Visitors))
+	for _, proxy := range config.Proxies {
+		name := proxy.GetBaseConfig().Name
+		proxies[name] = "proxy:" + name
+	}
+	for _, visitor := range config.Visitors {
+		name := visitor.GetBaseConfig().Name
+		visitors[name] = "visitor:" + name
+	}
+	bindings, err := clienttraffic.NewBindings(run, proxies, visitors)
+	if err != nil {
+		return errors.New("无法绑定客户端流量统计")
+	}
 	client, err := embedded.NewFRPClient(embedded.FRPClientOptions{
-		Common: config.Common, Proxies: config.Proxies, Visitors: config.Visitors, LogSink: sink,
+		Common: config.Common, Proxies: config.Proxies, Visitors: config.Visitors, LogSink: sink, Traffic: bindings,
 	})
 	if err != nil {
 		return errors.New("无法创建内嵌客户端")
@@ -234,7 +257,7 @@ func (r *embeddedRun) runClient(ctx context.Context, config *embedded.ClientConf
 		types[base.Name] = base.Type
 	}
 	r.mu.Lock()
-	r.client, r.proxyTypes = client, types
+	r.client, r.traffic, r.proxyTypes = client, run, types
 	r.mu.Unlock()
 
 	select {
@@ -286,4 +309,24 @@ func (r *embeddedRun) ReadProxyRegistration(ctx context.Context, name string) (P
 		return ProxyRegistrationStatus{}, false, nil
 	}
 	return ProxyRegistrationStatus{Name: name, Type: kind, Phase: status.Phase}, true, nil
+}
+
+// ReadTraffic reports the embedded client's payload counters for this run.
+// The server source remains unavailable until its protocol accounting agrees
+// with the manager's payload-only definition.
+func (r *embeddedRun) ReadTraffic() TrafficSnapshot {
+	observation := TrafficSnapshot{SampledAt: time.Now().UTC()}
+	r.mu.RLock()
+	client, run := r.client, r.traffic
+	r.mu.RUnlock()
+	if client == nil || run == nil || client.Status().State != embedded.ClientRunning {
+		return observation
+	}
+	snapshot := run.Snapshot()
+	if snapshot.Active {
+		observation.Available = true
+		observation.ReceivedBytes = snapshot.Total.Download
+		observation.SentBytes = snapshot.Total.Upload
+	}
+	return observation
 }
