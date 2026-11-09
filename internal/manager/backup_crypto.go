@@ -83,7 +83,7 @@ func encryptBackup(db Database, dataKey []byte, password string) (EncryptedBacku
 	if len(dataKey) != 32 {
 		return out, fmt.Errorf("invalid configuration encryption key")
 	}
-	db.Format = 3
+	db.Format = currentDatabaseFormat
 	db.Key = base64.RawStdEncoding.EncodeToString(dataKey)
 	plain, err := json.Marshal(db)
 	if err != nil {
@@ -161,8 +161,9 @@ func decryptBackup(backup EncryptedBackup, password string) (Database, error) {
 	if len(plain) > maxStateSize {
 		return db, fmt.Errorf("backup contents exceed the 128 MiB limit")
 	}
-	if err = json.Unmarshal(plain, &db); err != nil || db.Format != 3 {
-		return db, fmt.Errorf("invalid backup contents")
+	db, err = singleFileDatabase(plain)
+	if err != nil {
+		return db, fmt.Errorf("invalid or unsupported backup contents: %w", err)
 	}
 	return db, nil
 }

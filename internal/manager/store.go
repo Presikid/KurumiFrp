@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -39,16 +40,24 @@ type Database struct {
 	ActiveCore   *string    `json:"activeCore"`
 }
 type Store struct {
-	dir  string
-	key  []byte
-	DB   Database
-	refs map[uint64]string
+	dir string
+	key []byte
+	DB  Database
 }
 
+// Formats 1 and 2 used a separate master key; format 2 also used snapshot
+// files. Format 3 is a single file. Format 4 retains that layout but is an
+// explicit compatibility boundary for 0.8 configuration changes.
+const currentDatabaseFormat = 4
 const maxStateSize = 128 << 20
 const maxLegacyStateSize = 64 << 20
 const defaultHistoryLimit = 5
 const maxHistoryLimit = 100
+
+// Revisions travel as JSON numbers to the browser. Leave half of the exact
+// integer range available after an import, including malicious input.
+const maxJSONRevision uint64 = 1<<53 - 1
+const maxImportedHistoryRevision uint64 = maxJSONRevision / 2
 
 type snapshotRef struct {
 	Revision uint64 `json:"revision"`
@@ -65,6 +74,94 @@ type diskState struct {
 }
 
 var snapshotName = regexp.MustCompile(`^snapshot-[a-f0-9]{32}\.json$`)
+
+// Never silently discard fields in a stored configuration, backup, or typed
+// edit. A newer writer must bump the format or an older reader must reject it.
+func decodeStrictJSON(data []byte, dst any) error {
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.DisallowUnknownFields()
+	if err := d.Decode(dst); err != nil {
+		return err
+	}
+	if err := d.Decode(&struct{}{}); err != io.EOF {
+		return fmt.Errorf("expected exactly one JSON value")
+	}
+	return nil
+}
+
+func singleFileDatabase(data []byte) (Database, error) {
+	var db Database
+	if err := decodeStrictJSON(data, &db); err != nil {
+		return db, err
+	}
+	if db.Format != 3 && db.Format != currentDatabaseFormat {
+		return db, fmt.Errorf("unsupported single-file database format")
+	}
+	return db, nil
+}
+
+// Keep a verified copy of the exact old state before replacing it. Format 1/2
+// also depend on master.key and, for format 2, snapshots/: those files are
+// deliberately left in place by this version.
+func preserveMigrationSource(dir string, format int, data []byte) error {
+	f, err := os.CreateTemp(dir, fmt.Sprintf("state.before-format-4-from-%d-*.json.partial", format))
+	if err != nil {
+		return err
+	}
+	temp := f.Name()
+	defer os.Remove(temp)
+	if err = f.Chmod(0600); err == nil {
+		_, err = f.Write(data)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	matches, err := privateFileMatches(temp, data)
+	if err != nil {
+		return err
+	}
+	if !matches {
+		return fmt.Errorf("migration source copy did not match")
+	}
+	dest := strings.TrimSuffix(temp, ".partial")
+	if _, err = os.Lstat(dest); err == nil {
+		return fmt.Errorf("migration source copy already exists")
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err = os.Rename(temp, dest); err != nil {
+		return err
+	}
+	return syncMigrationDir(dir)
+}
+
+// Do not initialize an empty database if there are recognizable remnants of
+// an earlier migration, even when its state.json or master.key is missing.
+func checkMissingState(dir, keyPath string) error {
+	for _, path := range []string{keyPath, filepath.Join(dir, "snapshots")} {
+		if _, err := os.Lstat(path); err == nil {
+			return fmt.Errorf("state missing; existing data retained")
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "state.before-format-4-") {
+			return fmt.Errorf("state missing; migration source data retained")
+		}
+	}
+	return nil
+}
 
 func randomHex(n int) string {
 	b := make([]byte, n)
@@ -89,6 +186,56 @@ func privateFileLimit(path string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("file too large")
 	}
 	return os.ReadFile(path)
+}
+
+// Compare without holding an additional full-sized state file in memory.
+func privateFileMatches(path string, expected []byte) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("not a regular file: %s", path)
+	}
+	if info.Size() != int64(len(expected)) {
+		return false, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	buf := make([]byte, 32<<10)
+	for len(expected) > 0 {
+		n := len(buf)
+		if n > len(expected) {
+			n = len(expected)
+		}
+		if _, err = io.ReadFull(f, buf[:n]); err != nil {
+			return false, err
+		}
+		if !bytes.Equal(buf[:n], expected[:n]) {
+			return false, nil
+		}
+		expected = expected[n:]
+	}
+	var extra [1]byte
+	n, err := f.Read(extra[:])
+	if n == 0 && err == io.EOF {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func incrementRevision(db *Database) error {
+	if db.Revision >= maxJSONRevision {
+		return fmt.Errorf("配置版本号已达上限，无法安全修改")
+	}
+	db.Revision++
+	return nil
 }
 func atomicWrite(path string, b []byte) error {
 	f, e := os.CreateTemp(filepath.Dir(path), ".kurumi-*")
@@ -152,21 +299,19 @@ func newStore(dir string) (*Store, error) {
 	if st, e := os.Lstat(dir); e != nil || st.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("unsafe data directory")
 	}
-	s := &Store{dir: dir, refs: map[uint64]string{}}
+	s := &Store{dir: dir}
 	dbPath := filepath.Join(dir, "state.json")
 	keyPath := filepath.Join(dir, "master.key")
 	b, e := privateFileLimit(dbPath, maxStateSize)
 	if os.IsNotExist(e) {
-		if _, err := os.Lstat(keyPath); err == nil {
-			return nil, fmt.Errorf("state missing; existing master key retained")
-		} else if !os.IsNotExist(err) {
+		if err := checkMissingState(dir, keyPath); err != nil {
 			return nil, err
 		}
 		s.key = make([]byte, 32)
 		if _, e = rand.Read(s.key); e != nil {
 			return nil, e
 		}
-		s.DB = Database{Format: 3, Revision: 1, State: State{Instances: []Instance{}, Tunnels: []Tunnel{}}, History: []Snapshot{}, Events: []Event{}, HistoryLimit: defaultHistoryLimit}
+		s.DB = Database{Format: currentDatabaseFormat, Revision: 1, State: State{Instances: []Instance{}, Tunnels: []Tunnel{}}, History: []Snapshot{}, Events: []Event{}, HistoryLimit: defaultHistoryLimit}
 		return s, s.write(s.DB)
 	}
 	if e != nil {
@@ -178,34 +323,49 @@ func newStore(dir string) (*Store, error) {
 	if e = json.Unmarshal(b, &header); e != nil {
 		return nil, e
 	}
-	if header.Format == 3 {
-		if e = json.Unmarshal(b, &s.DB); e != nil {
-			return nil, e
-		}
-		s.key, e = base64.RawStdEncoding.DecodeString(s.DB.Key)
-	} else {
-		s.key, e = privateFile(keyPath)
-	}
-	if e != nil || len(s.key) != 32 {
-		return nil, fmt.Errorf("invalid or missing encryption key")
-	}
 	switch header.Format {
 	case 1:
-		if e = json.Unmarshal(b, &s.DB); e != nil {
-			return nil, e
+		if e = decodeStrictJSON(b, &s.DB); e != nil {
+			return nil, fmt.Errorf("cannot read format 1 state; original retained: %w", e)
+		}
+		s.key, e = privateFile(keyPath)
+		if e != nil || len(s.key) != 32 {
+			return nil, fmt.Errorf("invalid or missing encryption key; original retained")
+		}
+		if s.DB.Key != "" {
+			embeddedKey, err := base64.RawStdEncoding.DecodeString(s.DB.Key)
+			if err != nil || !bytes.Equal(embeddedKey, s.key) {
+				return nil, fmt.Errorf("conflicting legacy encryption keys; original retained")
+			}
 		}
 		if len(s.DB.History) > 30 {
 			return nil, fmt.Errorf("unsupported database")
 		}
-		// Preserve all existing snapshots until the user changes the limit.
-		s.DB.HistoryLimit = defaultHistoryLimit
-		if len(s.DB.History) > s.DB.HistoryLimit {
-			s.DB.HistoryLimit = len(s.DB.History)
+		var options struct {
+			HistoryLimit json.RawMessage `json:"historyLimit"`
+		}
+		if e = json.Unmarshal(b, &options); e != nil {
+			return nil, e
+		}
+		if len(options.HistoryLimit) != 0 {
+			if bytes.Equal(bytes.TrimSpace(options.HistoryLimit), []byte("null")) || s.DB.HistoryLimit < len(s.DB.History) || s.DB.HistoryLimit > maxHistoryLimit {
+				return nil, fmt.Errorf("invalid legacy history limit; original retained")
+			}
+		} else {
+			// Format 1 originally had no limit; retain all existing snapshots.
+			s.DB.HistoryLimit = defaultHistoryLimit
+			if len(s.DB.History) > s.DB.HistoryLimit {
+				s.DB.HistoryLimit = len(s.DB.History)
+			}
 		}
 	case 2:
 		var disk diskState
-		if e = json.Unmarshal(b, &disk); e != nil {
-			return nil, e
+		if e = decodeStrictJSON(b, &disk); e != nil {
+			return nil, fmt.Errorf("cannot read format 2 state; original retained: %w", e)
+		}
+		s.key, e = privateFile(keyPath)
+		if e != nil || len(s.key) != 32 {
+			return nil, fmt.Errorf("invalid or missing encryption key; original retained")
 		}
 		if disk.HistoryLimit < 0 || disk.HistoryLimit > maxHistoryLimit || len(disk.History) > disk.HistoryLimit {
 			return nil, fmt.Errorf("invalid history limit")
@@ -216,8 +376,9 @@ func newStore(dir string) (*Store, error) {
 			}
 		}
 		s.DB = Database{Format: 2, Revision: disk.Revision, State: disk.State, Events: disk.Events, History: []Snapshot{}, HistoryLimit: disk.HistoryLimit}
+		refs := map[uint64]bool{}
 		for _, ref := range disk.History {
-			if !snapshotName.MatchString(ref.File) || ref.Revision == 0 || ref.Revision >= disk.Revision || s.refs[ref.Revision] != "" {
+			if !snapshotName.MatchString(ref.File) || ref.Revision == 0 || ref.Revision >= disk.Revision || refs[ref.Revision] {
 				return nil, fmt.Errorf("invalid snapshot reference")
 			}
 			data, err := privateFileLimit(filepath.Join(dir, "snapshots", ref.File), maxLegacyStateSize)
@@ -225,24 +386,37 @@ func newStore(dir string) (*Store, error) {
 				return nil, err
 			}
 			var snap Snapshot
-			if err = json.Unmarshal(data, &snap); err != nil {
-				return nil, err
+			if err = decodeStrictJSON(data, &snap); err != nil {
+				return nil, fmt.Errorf("cannot read legacy snapshot; original retained: %w", err)
 			}
 			if snap.Revision != ref.Revision {
 				return nil, fmt.Errorf("snapshot revision mismatch")
 			}
-			s.refs[ref.Revision] = ref.File
+			refs[ref.Revision] = true
 			s.DB.History = append(s.DB.History, snap)
 		}
-	case 3:
+	case 3, currentDatabaseFormat:
+		s.DB, e = singleFileDatabase(b)
+		if e != nil {
+			return nil, fmt.Errorf("cannot read configuration; original retained: %w", e)
+		}
+		s.key, e = base64.RawStdEncoding.DecodeString(s.DB.Key)
 		if s.DB.HistoryLimit < 0 || s.DB.HistoryLimit > maxHistoryLimit || len(s.DB.History) > s.DB.HistoryLimit {
 			return nil, fmt.Errorf("invalid history limit")
 		}
 	default:
-		return nil, fmt.Errorf("unsupported database")
+		return nil, fmt.Errorf("unsupported database format %d; original retained", header.Format)
 	}
-	if s.DB.Revision < 1 {
-		return nil, fmt.Errorf("unsupported database")
+	if e != nil || len(s.key) != 32 {
+		return nil, fmt.Errorf("invalid or missing encryption key; original retained")
+	}
+	if s.DB.Revision < 1 || s.DB.Revision > maxJSONRevision {
+		return nil, fmt.Errorf("unsupported database revision; original retained")
+	}
+	for _, snapshot := range s.DB.History {
+		if snapshot.Revision > maxJSONRevision {
+			return nil, fmt.Errorf("unsupported snapshot revision; original retained")
+		}
 	}
 	if e = validate(s.DB.State); e != nil {
 		return nil, e
@@ -262,13 +436,25 @@ func newStore(dir string) (*Store, error) {
 					return nil, e
 				}
 			}
+			if t.HTTPPassword != "" {
+				if _, e = s.decrypt(t.HTTPPassword); e != nil {
+					return nil, e
+				}
+			}
 		}
 	}
-	if header.Format != 3 {
-		if e = s.write(s.DB); e != nil {
-			return nil, e
+	if header.Format != currentDatabaseFormat {
+		if e = preserveMigrationSource(dir, header.Format, b); e != nil {
+			return nil, fmt.Errorf("cannot preserve original configuration before migration: %w", e)
 		}
-		s.DB.Format = 3
+		matches, err := privateFileMatches(dbPath, b)
+		if err != nil || !matches {
+			return nil, fmt.Errorf("configuration changed during migration; original copy retained")
+		}
+		if e = s.write(s.DB); e != nil {
+			return nil, fmt.Errorf("cannot write migrated configuration; original copy retained: %w", e)
+		}
+		s.DB.Format = currentDatabaseFormat
 	}
 	return s, nil
 }
@@ -349,7 +535,7 @@ func snapshotDir(dir string, create bool) error {
 
 // The complete configuration and its history are committed in one atomic file.
 func (s *Store) write(db Database) error {
-	db.Format = 3
+	db.Format = currentDatabaseFormat
 	db.Key = base64.RawStdEncoding.EncodeToString(s.key)
 	b, err := json.MarshalIndent(db, "", "  ")
 	if err != nil {
@@ -360,16 +546,6 @@ func (s *Store) write(db Database) error {
 	}
 	if _, err = writeIfChanged(filepath.Join(s.dir, "state.json"), b); err != nil {
 		return err
-	}
-	if s.DB.Format != 3 {
-		for _, name := range s.refs {
-			_ = os.Remove(filepath.Join(s.dir, "snapshots", name))
-		}
-		if len(s.refs) > 0 {
-			_ = os.Remove(filepath.Join(s.dir, "snapshots"))
-		}
-		_ = os.Remove(filepath.Join(s.dir, "master.key"))
-		s.refs = map[uint64]string{}
 	}
 	return nil
 }
@@ -385,7 +561,9 @@ func (s *Store) commit(st State, summary string) error {
 	if len(db.History) > db.HistoryLimit {
 		db.History = db.History[len(db.History)-db.HistoryLimit:]
 	}
-	db.Revision++
+	if e := incrementRevision(&db); e != nil {
+		return e
+	}
 	db.State = st
 	db.Events = append(append([]Event{}, db.Events...), Event{now(), summary})
 	if len(db.Events) > 200 {
@@ -395,7 +573,7 @@ func (s *Store) commit(st State, summary string) error {
 		return e
 	}
 	s.DB = db
-	s.DB.Format = 3
+	s.DB.Format = currentDatabaseFormat
 	return nil
 }
 
@@ -409,7 +587,9 @@ func (s *Store) setHistoryLimit(limit int) error {
 	if len(db.History) > limit {
 		db.History = db.History[len(db.History)-limit:]
 	}
-	db.Revision++
+	if e := incrementRevision(&db); e != nil {
+		return e
+	}
 	db.Events = append(append([]Event{}, db.Events...), Event{now(), fmt.Sprintf("快照保留数量设置为 %d", limit)})
 	if len(db.Events) > 200 {
 		db.Events = db.Events[len(db.Events)-200:]
@@ -417,7 +597,7 @@ func (s *Store) setHistoryLimit(limit int) error {
 	if e := s.write(db); e != nil {
 		return e
 	}
-	db.Format = 3
+	db.Format = currentDatabaseFormat
 	s.DB = db
 	return nil
 }

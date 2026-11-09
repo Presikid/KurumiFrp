@@ -133,9 +133,12 @@ func duplicateServerPort(st State, sourcePort int) (int, error) {
 		if instance.HTTPSPort != 0 {
 			used[instance.HTTPSPort] = true
 		}
+		if instance.TCPMuxHTTPConnectPort != 0 {
+			used[instance.TCPMuxHTTPConnectPort] = true
+		}
 	}
 	for _, tunnel := range st.Tunnels {
-		if tunnel.Type == "stcp-visitor" && tunnel.Enabled {
+		if isVisitor(tunnel.Type) && visitorNetwork(tunnel.Type) == "tcp" && tunnel.Enabled && tunnel.LocalPort > 0 {
 			used[tunnel.LocalPort] = true
 		}
 	}
@@ -161,6 +164,9 @@ func duplicatedInstance(src Instance, id, name string) Instance {
 	return Instance{
 		ID: id, Name: name, Kind: src.Kind, Host: src.Host, Port: src.Port,
 		HTTPPort: src.HTTPPort, HTTPSPort: src.HTTPSPort, Token: src.Token,
+		User: src.User, NatHoleSTUNServer: src.NatHoleSTUNServer,
+		TCPMuxHTTPConnectPort: src.TCPMuxHTTPConnectPort, TCPMuxPassthrough: src.TCPMuxPassthrough,
+		SubDomainHost: src.SubDomainHost,
 	}
 }
 
@@ -174,6 +180,14 @@ func duplicatedTunnel(src Tunnel, id, instanceID, name string) Tunnel {
 		ProbePath: src.ProbePath, ProbeMethod: src.ProbeMethod,
 		ServerName: src.ServerName, Secret: src.Secret,
 		BandwidthKB: src.BandwidthKB, Enabled: false,
+		AllowUsers: append([]string(nil), src.AllowUsers...), ServerUser: src.ServerUser,
+		UseEncryption: src.UseEncryption, UseCompression: src.UseCompression,
+		Protocol: src.Protocol, KeepTunnelOpen: src.KeepTunnelOpen,
+		MaxRetriesAnHour: src.MaxRetriesAnHour, MinRetryInterval: src.MinRetryInterval,
+		FallbackTo: src.FallbackTo, FallbackTimeoutMs: src.FallbackTimeoutMs,
+		DisableAssistedAddrs: src.DisableAssistedAddrs,
+		Subdomain:            src.Subdomain, Multiplexer: src.Multiplexer, HTTPUser: src.HTTPUser,
+		HTTPPassword: src.HTTPPassword, RouteByHTTPUser: src.RouteByHTTPUser,
 	}
 }
 
@@ -197,6 +211,8 @@ func (a *App) duplicateInstance(sourceID string, includeTunnels bool) (string, i
 		}
 		copied.HTTPPort = 0
 		copied.HTTPSPort = 0
+		copied.TCPMuxHTTPConnectPort = 0
+		copied.TCPMuxPassthrough = false
 	}
 	st.Instances = append(st.Instances, copied)
 	count := 0
@@ -233,7 +249,11 @@ func (a *App) duplicateTunnel(sourceID, targetInstanceID string) (string, error)
 		return "", err
 	}
 	id := randomHex(8)
-	st.Tunnels = append(st.Tunnels, duplicatedTunnel(source, id, targetInstanceID, name))
+	clone := duplicatedTunnel(source, id, targetInstanceID, name)
+	if err := prepareVisitorTransfer(st, source, &clone); err != nil {
+		return "", err
+	}
+	st.Tunnels = append(st.Tunnels, clone)
 	if err := a.store.commit(st, "复制规则 "+source.Name+" 到 "+target.Name); err != nil {
 		return "", err
 	}

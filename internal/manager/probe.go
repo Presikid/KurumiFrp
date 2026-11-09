@@ -37,6 +37,11 @@ func probeTargetContext(parent context.Context, t Tunnel) ProbeResult {
 		result.Message = "检测已取消"
 		return stampProbe(result)
 	}
+	if supportsUnboundVisitor(t.Type) && t.LocalPort < 0 {
+		result.Status = "unsupported"
+		result.Message = "此 Visitor 仅接收回退连接，不监听本地端口"
+		return stampProbe(result)
+	}
 	if !hostOK(t.LocalHost) || !portOK(t.LocalPort) {
 		result.Status = "invalid"
 		result.Message = "本地目标地址或端口无效"
@@ -44,14 +49,14 @@ func probeTargetContext(parent context.Context, t Tunnel) ProbeResult {
 	}
 
 	result.Address = net.JoinHostPort(t.LocalHost, strconv.Itoa(t.LocalPort))
-	if t.Type == "udp" {
+	if t.Type == "udp" || t.Type == "sudp" || t.Type == "sudp-visitor" {
 		result.Status = "unsupported"
 		result.Message = "UDP 没有通用的连接握手；发送探测数据也无法可靠判断服务是否可用"
 		return stampProbe(result)
 	}
 
 	switch t.Type {
-	case "tcp", "stcp", "stcp-visitor":
+	case "tcp", "stcp", "xtcp", "tcpmux", "stcp-visitor", "xtcp-visitor":
 		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 		defer cancel()
 		started := time.Now()
@@ -69,8 +74,8 @@ func probeTargetContext(parent context.Context, t Tunnel) ProbeResult {
 		_ = conn.Close()
 		result.Status = "reachable"
 		result.LatencyMS = time.Since(started).Milliseconds()
-		if t.Type == "stcp-visitor" {
-			result.Message = "STCP Visitor 本地监听端口可连接；这不代表远端 STCP 服务或公网隧道可达"
+		if isVisitor(t.Type) {
+			result.Message = "Visitor 本地监听端口可连接；这不代表远端服务或公网隧道可达"
 		} else {
 			result.Message = "本地 TCP 端口可连接；这不代表 FRP 远端隧道已注册或公网可达"
 		}

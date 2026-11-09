@@ -58,6 +58,10 @@ func (a *App) coreAPI(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(405)
 		return
 	}
+	if _, ok := a.runtime.(*externalRuntime); !ok {
+		fail(w, http.StatusConflict, fmt.Errorf("当前运行后端不使用外部核心管理"))
+		return
+	}
 	var req struct {
 		Tag      string `json:"tag"`
 		Platform string `json:"platform"`

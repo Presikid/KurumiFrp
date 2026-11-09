@@ -29,6 +29,7 @@ type healthReport struct {
 	Instance   string         `json:"instance"`
 	Kind       string         `json:"kind"`
 	Runtime    string         `json:"runtime"`
+	RunID      string         `json:"runId,omitempty"`
 	Pending    bool           `json:"pending"`
 	ProbeScope string         `json:"probeScope"`
 	Endpoint   healthEndpoint `json:"endpoint"`
@@ -117,6 +118,11 @@ func (a *App) healthAPI(w http.ResponseWriter, r *http.Request) {
 				secrets = append(secrets, v)
 			}
 		}
+		if t.InstanceID == i.ID && t.HTTPPassword != "" {
+			if v, err := a.store.decrypt(t.HTTPPassword); err == nil {
+				secrets = append(secrets, v)
+			}
+		}
 	}
 	if p != nil {
 		p.logs.mu.Lock()
@@ -127,15 +133,14 @@ func (a *App) healthAPI(w http.ResponseWriter, r *http.Request) {
 	defer func() { a.mu.Lock(); a.activeHealth = false; a.mu.Unlock() }()
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	report := healthReport{Revision: req.Revision, CheckedAt: now(), Instance: safeStatusText(i.Name, secrets), Kind: i.Kind, Runtime: runtime.State, Pending: runtime.Pending, ProbeScope: "draft", Rules: []healthRule{}, Note: "端口与本地目标按当前草稿检测；进程与注册状态对应已应用配置。待应用时两者可能不同。检测不代表公网可达；报告含网络地址，请妥善保管。"}
+	report := healthReport{Revision: req.Revision, CheckedAt: now(), Instance: safeStatusText(i.Name, secrets), Kind: i.Kind, Runtime: runtime.State, RunID: runtime.RunID, Pending: runtime.Pending, ProbeScope: "draft", Rules: []healthRule{}, Note: "端口与本地目标按当前草稿检测；进程与注册状态对应已应用配置。待应用时两者可能不同。检测不代表公网可达；报告含网络地址，请妥善保管。"}
 	var tunnels []Tunnel
 	for _, t := range st.Tunnels {
 		if t.InstanceID == i.ID {
 			tunnels = append(tunnels, t)
 		}
 	}
-	var observed map[string]observedProxy
-	var observedErr error
+	var observed registrationReadings
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -147,9 +152,13 @@ func (a *App) healthAPI(w http.ResponseWriter, r *http.Request) {
 		defer a.releaseHealthProbe()
 		report.Endpoint = checkInstanceEndpoint(ctx, i)
 	}()
-	if p != nil && p.view().State == "running" && i.Kind == "frpc" {
+	queries := registrationQueries(tunnels)
+	if p != nil && runtime.State == "running" && i.Kind == "frpc" && len(queries) != 0 {
 		wg.Add(1)
-		go func() { defer wg.Done(); observed, observedErr = p.privateStatus.read(ctx) }()
+		go func() {
+			defer wg.Done()
+			observed = readRegistrations(ctx, p.registrationReader, p.privateStatus, queries)
+		}()
 	}
 	for _, t := range tunnels {
 		report.Rules = append(report.Rules, healthRule{ID: t.ID, Name: safeStatusText(t.Name, secrets), Type: t.Type, Target: ProbeResult{Status: "not-checked", Message: "未检测"}})
@@ -163,7 +172,7 @@ func (a *App) healthAPI(w http.ResponseWriter, r *http.Request) {
 				t := tunnels[index]
 				if !t.Enabled {
 					report.Rules[index].Target = ProbeResult{Status: "skipped", Message: "规则已停用"}
-				} else if t.Type == "stcp-visitor" {
+				} else if isVisitor(t.Type) {
 					report.Rules[index].Target = ProbeResult{Status: "unsupported", Message: "Visitor 监听端口不是远端服务"}
 				} else {
 					if !a.reserveHealthProbe() {
@@ -194,8 +203,8 @@ func (a *App) healthAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, fmt.Errorf("检测期间配置或进程已变化，请重试"))
 		return
 	}
-	if p != nil && p.view().State != runtime.State {
-		fail(w, 409, fmt.Errorf("检测期间进程状态已变化，请重试"))
+	if a.statuses()[i.ID] != runtime {
+		fail(w, 409, fmt.Errorf("检测期间实例运行状态或代次已变化，请重试"))
 		return
 	}
 	for n, t := range tunnels {
@@ -207,17 +216,17 @@ func (a *App) healthAPI(w http.ResponseWriter, r *http.Request) {
 		var applied [32]byte
 		var wasApplied, hasAppliedSignature bool
 		var reason string
-		running := p != nil && p.view().State == "running" && i.Kind == "frpc"
+		running := p != nil && runtime.State == "running" && i.Kind == "frpc"
 		if running {
 			_, wasApplied = p.appliedTunnels[t.ID]
 			applied, hasAppliedSignature = p.appliedTunnelSignatures[t.ID]
 			reason = p.monitorReason
 		}
 		item := classifyRegistration(registrationContext{
-			tunnel: t, pending: runtime.Pending, running: running,
+			tunnel: t, pending: runtime.Pending, running: running, runID: runtime.RunID,
 			wasApplied: wasApplied, appliedSignature: applied, hasAppliedSignature: hasAppliedSignature,
 			draftSignature: draftSignature, hasDraftSignature: hasDraftSignature,
-			observed: observed, observedErr: observedErr, reason: reason, secrets: secrets,
+			observed: observed.forTunnel(t), reason: reason, secrets: secrets,
 		})
 		row.Registration = item
 	}

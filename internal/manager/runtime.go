@@ -7,37 +7,39 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/Presikid/KurumiFrp/internal/childprocess"
 )
 
-// Runtime status reports process liveness, NOT proxy registration or service health.
+// RuntimeStatus reports instance liveness, not proxy registration or service
+// health. Generation counts successful starts of an ID during this App's
+// lifetime; RunID also distinguishes generations across App lifetimes.
 type RuntimeStatus struct {
-	State   string `json:"state"`
-	PID     int    `json:"pid"`
-	Started string `json:"started"`
-	RunID   string `json:"runId,omitempty"`
-	Exit    string `json:"exit"`
-	Applied string `json:"applied"`
-	Pending bool   `json:"pending"`
+	State      string `json:"state"`
+	PID        int    `json:"pid"`
+	Started    string `json:"started"`
+	RunID      string `json:"runId,omitempty"`
+	Generation uint64 `json:"generation,omitempty"`
+	Exit       string `json:"exit"`
+	Applied    string `json:"applied"`
+	Pending    bool   `json:"pending"`
 }
 type process struct {
-	mu                      sync.Mutex
-	cmd                     *exec.Cmd
-	done                    chan struct{}
-	status                  RuntimeStatus
-	logs                    *logBuffer
-	coreID                  string
-	appliedConfig           string
-	appliedSecretDigest     string
-	privateStatus           *privateStatus
+	mu                  sync.Mutex
+	instance            RuntimeInstance
+	done                chan struct{}
+	status              RuntimeStatus
+	logs                *logBuffer
+	coreID              string
+	appliedConfig       string
+	appliedSecretDigest string
+	privateStatus       *privateStatus
+	// Set before publication for an in-process client and kept for this run.
+	registrationReader      ProxyRegistrationReader
 	monitorReason           string
 	appliedTunnels          map[string]Tunnel
 	appliedTunnelSignatures map[string][32]byte
@@ -194,64 +196,45 @@ func (l *logBuffer) read() []string {
 	defer l.mu.Unlock()
 	return append([]string{}, l.lines...)
 }
-func (p *process) view() RuntimeStatus            { p.mu.Lock(); defer p.mu.Unlock(); return p.status }
-func (a *App) binary(kind string) (string, error) { return a.core.Binary(kind) }
-func childEnv(extra []string) []string {
-	out := []string{}
-	for _, v := range os.Environ() {
-		if !strings.HasPrefix(v, "KURUMI_") {
-			out = append(out, v)
-		}
-	}
-	return append(out, extra...)
+func (p *process) view() RuntimeStatus { p.mu.Lock(); defer p.mu.Unlock(); return p.status }
+
+func (a *App) resolveRuntime(kind string) (string, error) {
+	return a.runtime.Resolve(kind, a.activeCoreID())
 }
+
+func runtimeConfig(i Instance, r Rendered, configPath string) RuntimeConfig {
+	r.Env = append([]string(nil), r.Env...)
+	r.Secrets = append([]string(nil), r.Secrets...)
+	return RuntimeConfig{InstanceID: i.ID, Kind: i.Kind, Rendered: r, configPath: configPath}
+}
+
 func (a *App) verify(i Instance, r Rendered) (string, error) {
-	bin, e := a.binary(i.Kind)
+	target, e := a.resolveRuntime(i.Kind)
 	if e != nil {
 		return "", e
 	}
-	return a.verifyBinary(context.Background(), bin, r)
+	return a.verifyRuntime(context.Background(), target, i, r)
 }
-func (a *App) verifyBinary(parent context.Context, bin string, r Rendered) (string, error) {
-	f, e := os.CreateTemp(a.store.dir, "verify-*.toml")
-	if e != nil {
-		return "", e
-	}
-	defer os.Remove(f.Name())
-	if _, e = f.WriteString(r.Text); e != nil {
-		f.Close()
-		return "", e
-	}
-	if e = f.Close(); e != nil {
-		return "", e
-	}
+func (a *App) verifyRuntime(parent context.Context, target string, i Instance, r Rendered) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "verify", "-c", f.Name())
-	cmd.Dir = a.store.dir
-	childprocess.Configure(cmd)
-	cmd.Env = childEnv(r.Env)
-	buf := newLogBuffer(r.Secrets)
-	cmd.Stdout = buf
-	cmd.Stderr = buf
-	cmd.WaitDelay = 2 * time.Second
-	e = cmd.Run()
-	// A verifier may exit before a child that inherited its output pipe.
-	_ = childprocess.Kill(cmd)
-	buf.Write([]byte("\n"))
-	out := strings.Join(buf.read(), "\n")
+	output, err := a.runtime.Verify(ctx, target, runtimeConfig(i, r, ""))
+	output = redact(output, r.Secrets)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return out, fmt.Errorf("frp 配置检查超时")
+		return output, fmt.Errorf("frp 配置检查超时")
 	}
 	if ctx.Err() != nil {
-		return out, fmt.Errorf("frp 配置检查已取消")
+		return output, fmt.Errorf("frp 配置检查已取消")
 	}
-	if e != nil {
-		return out, fmt.Errorf("frp 拒绝配置：%s", out)
+	if err != nil {
+		return output, errors.New(redact(err.Error(), r.Secrets))
 	}
-	return out, nil
+	return output, nil
 }
 func (a *App) prepareRuntimeConfig(id string, r Rendered) (string, error) {
+	if _, ok := a.runtime.(*externalRuntime); !ok {
+		return "", nil
+	}
 	runtimeDir := filepath.Join(a.store.dir, "runtime")
 	if e := os.MkdirAll(runtimeDir, 0700); e != nil {
 		return "", e
@@ -272,7 +255,7 @@ func (a *App) start(i Instance, r Rendered) error {
 	if p := a.procs[i.ID]; p != nil && p.view().State == "running" {
 		return fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
-	path, e := a.binary(i.Kind)
+	target, e := a.resolveRuntime(i.Kind)
 	if e != nil {
 		return e
 	}
@@ -280,24 +263,19 @@ func (a *App) start(i Instance, r Rendered) error {
 	if e != nil {
 		return e
 	}
-	return a.startPrepared(i, r, path, configPath, a.activeCoreID(), nil)
+	return a.startPrepared(i, r, target, configPath, a.activeCoreID(), nil)
 }
 
 // a.mu protects the final launch/publication so a concurrent shutdown, core
-// switch or draft edit cannot pass between the snapshot check and cmd.Start.
-func (a *App) startPrepared(i Instance, r Rendered, path, configPath, coreID string, status *privateStatus) error {
+// switch or draft edit cannot pass between the snapshot check and Start.
+func (a *App) startPrepared(i Instance, r Rendered, target, configPath, coreID string, status *privateStatus) error {
 	if a.closing {
 		return fmt.Errorf("工作台正在关闭")
 	}
 	if p := a.procs[i.ID]; p != nil && p.view().State == "running" {
 		return fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
-	cmd := exec.Command(path, "-c", configPath)
-	childprocess.Configure(cmd)
-	cmd.Env = childEnv(r.Env)
-	cmd.Dir = filepath.Dir(configPath)
-	cmd.WaitDelay = 2 * time.Second
-	p := &process{cmd: cmd, done: make(chan struct{}), logs: newLogBuffer(r.Secrets), coreID: coreID, appliedConfig: r.Text, appliedSecretDigest: r.SecretDigest, privateStatus: status, monitorReason: r.MonitorReason, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
+	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), coreID: coreID, appliedConfig: r.Text, appliedSecretDigest: r.SecretDigest, privateStatus: status, monitorReason: r.MonitorReason, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
 	if status != nil {
 		p.appliedConfig = status.baseText
 	}
@@ -309,29 +287,43 @@ func (a *App) startPrepared(i Instance, r Rendered, path, configPath, coreID str
 			}
 		}
 	}
-	cmd.Stdout = p.logs
-	cmd.Stderr = p.logs
-	if e := cmd.Start(); e != nil {
-		return fmt.Errorf("无法启动 frp：%w", e)
+	config := runtimeConfig(i, r, configPath)
+	config.RunID = randomHex(8)
+	instance, err := a.runtime.Start(target, config, p.logs)
+	if err != nil {
+		return fmt.Errorf("无法启动 frp：%s", redact(err.Error(), r.Secrets))
+	}
+	if instance == nil {
+		return fmt.Errorf("无法启动 frp：运行后端未返回实例")
+	}
+	p.instance = instance
+	if reader, ok := instance.(ProxyRegistrationReader); ok && i.Kind == "frpc" {
+		p.registrationReader = reader
+		p.monitorReason = ""
+	}
+	pid := 0
+	if info, ok := instance.(RuntimePID); ok {
+		pid = info.PID()
 	}
 	if status != nil {
-		status.markStarted(cmd.Process.Pid)
+		status.markStarted(pid)
 	}
-	p.status = RuntimeStatus{State: "running", PID: cmd.Process.Pid, Started: now(), RunID: randomHex(8), Applied: r.Digest}
+	if a.generations == nil {
+		a.generations = make(map[string]uint64)
+	}
+	a.generations[i.ID]++
+	p.status = RuntimeStatus{State: "running", PID: pid, Started: now(), RunID: config.RunID, Generation: a.generations[i.ID], Applied: r.Digest}
 	a.procs[i.ID] = p
 	delete(a.startupErrors, i.ID)
 	go func() {
-		err := cmd.Wait()
-		// Clean the owned process group even when its leader exited first. Do
-		// this before publishing completion and allowing a replacement to start.
-		_ = childprocess.Kill(cmd)
+		err := instance.Wait()
 		status.cleanup()
 		p.logs.Write([]byte("\n"))
 		p.mu.Lock()
 		p.status.State = "exited"
 		p.status.PID = 0
 		if err != nil {
-			p.status.Exit = err.Error()
+			p.status.Exit = safeStatusText(err.Error(), r.Secrets)
 			if status != nil {
 				p.status.Exit += "；如日志显示本机状态端口被占用，可重新启动实例以重新分配端口"
 			}
@@ -353,38 +345,31 @@ func stopProcess(p *process) error {
 	if p == nil || p.view().State != "running" {
 		return nil
 	}
-	if p.cmd == nil || p.cmd.Process == nil {
-		return fmt.Errorf("无法访问托管进程")
+	if p.instance == nil {
+		return fmt.Errorf("无法访问托管实例")
 	}
-	_ = childprocess.Terminate(p.cmd)
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if err := p.instance.Stop(ctx); err != nil {
+		select {
+		case <-p.done:
+			return nil
+		default:
+		}
+		return fmt.Errorf("实例停止结果未知，未启动替代实例：%s", safeStatusText(err.Error(), p.logs.secrets))
+	}
+	// A successful stop request is not proof that Wait has returned.
 	select {
 	case <-p.done:
 		return nil
-	case <-timer.C:
-	}
-	_ = childprocess.Kill(p.cmd)
-	timer.Reset(3 * time.Second)
-	select {
-	case <-p.done:
-		return nil
-	case <-timer.C:
-		return fmt.Errorf("进程停止结果未知，未启动替代进程")
+	case <-ctx.Done():
+		return fmt.Errorf("实例停止结果未知，未启动替代实例")
 	}
 }
 func (a *App) statuses() map[string]RuntimeStatus {
 	out := map[string]RuntimeStatus{}
 	for _, i := range a.store.DB.State.Instances {
-		v := RuntimeStatus{State: "stopped"}
-		if p := a.procs[i.ID]; p != nil {
-			v = p.view()
-			r, e := a.store.render(i.ID, false)
-			v.Pending = e != nil || v.Applied != r.Digest || p.coreID != a.activeCoreID()
-		} else if message := a.startupErrors[i.ID]; i.AutoStart && message != "" {
-			v = RuntimeStatus{State: "autostart-failed", Exit: message}
-		}
-		out[i.ID] = v
+		out[i.ID] = a.observedRuntimeStatusLocked(i, a.observeRuntimeLocked(i))
 	}
 	return out
 }

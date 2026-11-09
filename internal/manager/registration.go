@@ -13,17 +13,22 @@ import (
 type registrationItem struct {
 	State      string `json:"state"`
 	Pending    bool   `json:"pending"`
+	RunID      string `json:"runId,omitempty"`
+	Phase      string `json:"phase,omitempty"`
 	RemoteAddr string `json:"remoteAddr,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
 
 type registrationSnapshot struct {
 	proc       *process
+	runtime    RuntimeStatus
 	status     *privateStatus
+	reader     ProxyRegistrationReader
 	applied    map[string]Tunnel
 	signatures map[string][32]byte
 	secrets    []string
 	reason     string
+	queries    []registrationQuery
 }
 
 func safeStatusText(s string, secrets []string) string {
@@ -87,27 +92,35 @@ func (a *App) registrationAPI(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		p := a.procs[i.ID]
-		if p == nil || p.view().State != "running" {
-			continue
+		client := registrationSnapshot{proc: p, runtime: runtimes[i.ID]}
+		if p != nil && client.runtime.State == "running" {
+			p.logs.mu.Lock()
+			client.secrets = append([]string(nil), p.logs.secrets...)
+			p.logs.mu.Unlock()
+			client.status, client.reader = p.privateStatus, p.registrationReader
+			client.applied, client.signatures, client.reason = p.appliedTunnels, p.appliedTunnelSignatures, p.monitorReason
 		}
-		p.logs.mu.Lock()
-		secrets := append([]string(nil), p.logs.secrets...)
-		p.logs.mu.Unlock()
-		clients[i.ID] = registrationSnapshot{proc: p, status: p.privateStatus, applied: p.appliedTunnels, signatures: p.appliedTunnelSignatures, secrets: secrets, reason: p.monitorReason}
+		clients[i.ID] = client
+	}
+	for _, tunnel := range state.Tunnels {
+		client, exists := clients[tunnel.InstanceID]
+		if query, ok := registrationQueryFor(tunnel); exists && client.runtime.State == "running" && ok {
+			client.queries = append(client.queries, query)
+			clients[tunnel.InstanceID] = client
+		}
 	}
 	a.mu.Unlock()
 	defer func() { a.mu.Lock(); a.activeRegistration = false; a.mu.Unlock() }()
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	type response struct {
-		values map[string]observedProxy
-		err    error
-	}
-	results := map[string]response{}
+	results := map[string]registrationReadings{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	limit := make(chan struct{}, 4)
 	for id, item := range clients {
+		if len(item.queries) == 0 {
+			continue
+		}
 		wg.Add(1)
 		go func(id string, item registrationSnapshot) {
 			defer wg.Done()
@@ -117,9 +130,9 @@ func (a *App) registrationAPI(w http.ResponseWriter, r *http.Request) {
 			case <-ctx.Done():
 				return
 			}
-			values, err := item.status.read(ctx)
+			values := readRegistrations(ctx, item.reader, item.status, item.queries)
 			mu.Lock()
-			results[id] = response{values: values, err: err}
+			results[id] = values
 			mu.Unlock()
 		}(id, item)
 	}
@@ -130,19 +143,35 @@ func (a *App) registrationAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, fmt.Errorf("读取期间配置已变化，请重试"))
 		return
 	}
+	for id, client := range clients {
+		if a.procs[id] != client.proc {
+			fail(w, http.StatusConflict, fmt.Errorf("读取期间实例运行代次已变化，请重试"))
+			return
+		}
+		if client.proc != nil {
+			current := client.proc.view()
+			if current.State != client.runtime.State || current.RunID != client.runtime.RunID {
+				fail(w, http.StatusConflict, fmt.Errorf("读取期间实例运行状态已变化，请重试"))
+				return
+			}
+		}
+	}
 	items := map[string]registrationItem{}
 	for _, tunnel := range state.Tunnels {
 		client, exists := clients[tunnel.InstanceID]
 		_, wasApplied := client.applied[tunnel.ID]
 		draft, hasDraftSignature := draftSignatures[tunnel.ID]
 		applied, hasAppliedSignature := client.signatures[tunnel.ID]
-		value := results[tunnel.InstanceID]
-		running := exists && a.procs[tunnel.InstanceID] == client.proc && client.proc.view().State == "running"
+		value, read := results[tunnel.InstanceID]
+		if !read && len(client.queries) != 0 {
+			value.err = fmt.Errorf("状态读取已取消或超时")
+		}
+		running := exists && client.proc != nil && client.runtime.State == "running"
 		item := classifyRegistration(registrationContext{
-			tunnel: tunnel, pending: runtimes[tunnel.InstanceID].Pending, running: running,
+			tunnel: tunnel, pending: runtimes[tunnel.InstanceID].Pending, running: running, runID: client.runtime.RunID,
 			wasApplied: wasApplied, appliedSignature: applied, hasAppliedSignature: hasAppliedSignature,
 			draftSignature: draft, hasDraftSignature: hasDraftSignature,
-			observed: value.values, observedErr: value.err, reason: client.reason, secrets: client.secrets,
+			observed: value.forTunnel(tunnel), reason: client.reason, secrets: client.secrets,
 		})
 		items[tunnel.ID] = item
 	}
@@ -152,18 +181,31 @@ func (a *App) registrationAPI(w http.ResponseWriter, r *http.Request) {
 type registrationContext struct {
 	tunnel                                 Tunnel
 	pending, running, wasApplied           bool
+	runID                                  string
 	appliedSignature, draftSignature       [32]byte
 	hasAppliedSignature, hasDraftSignature bool
-	observed                               map[string]observedProxy
-	observedErr                            error
+	observed                               proxyObservation
 	reason                                 string
 	secrets                                []string
 }
 
-// classifyRegistration describes only state attributable to the current applied process.
+func knownProxyPhase(s string) string {
+	if len(s) > 32 {
+		return ""
+	}
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case "new", "wait start", "start error", "running", "check failed", "closed":
+		return s
+	default:
+		return ""
+	}
+}
+
+// classifyRegistration describes only state attributable to the current applied run.
 func classifyRegistration(c registrationContext) registrationItem {
 	tunnel := c.tunnel
-	item := registrationItem{State: "stopped", Pending: c.pending}
+	item := registrationItem{State: "stopped", Pending: c.pending, RunID: c.runID}
 	if !tunnel.Enabled {
 		item.State = "disabled"
 		if c.running && c.wasApplied {
@@ -173,24 +215,35 @@ func classifyRegistration(c registrationContext) registrationItem {
 		item.State = "stopped"
 	} else if !c.wasApplied || !c.hasAppliedSignature || !c.hasDraftSignature || c.draftSignature != c.appliedSignature {
 		item.State = "pending"
-	} else if tunnel.Type == "stcp-visitor" {
+	} else if isVisitor(tunnel.Type) {
 		item.State = "not-reported"
-	} else if c.observedErr != nil || c.observed == nil {
+	} else if c.observed.err != nil {
 		item.State = "unavailable"
-		item.Error = c.reason
+		item.Error = safeStatusText(c.reason, c.secrets)
 		if item.Error == "" {
-			item.Error = "本机安全状态接口不可用或身份验证失败"
+			item.Error = "代理状态接口不可用"
 		}
-	} else if value, ok := c.observed[tunnel.Type+"\x00"+tunnel.Name]; !ok {
+	} else if !c.observed.found {
 		item.State = "registering"
-	} else if strings.EqualFold(value.Status, "running") {
-		item.State = "registered"
-		item.RemoteAddr = safeStatusText(value.RemoteAddr, c.secrets)
-	} else if value.Error != "" {
-		item.State = "failed"
-		item.Error = safeStatusText(value.Error, c.secrets)
 	} else {
-		item.State = "registering"
+		value := c.observed.status
+		item.Phase = knownProxyPhase(value.Phase)
+		switch {
+		case item.Phase == "":
+			item.State = "unavailable"
+			item.Error = "代理状态无法识别"
+		case item.Phase == "running":
+			item.State = "registered"
+			item.RemoteAddr = safeStatusText(value.RemoteAddr, c.secrets)
+			item.Error = safeStatusText(value.Error, c.secrets)
+		case value.Error != "" || item.Phase == "start error" || item.Phase == "check failed":
+			item.State = "failed"
+			item.Error = safeStatusText(value.Error, c.secrets)
+		case item.Phase == "closed":
+			item.State = "unavailable"
+		default:
+			item.State = "registering"
+		}
 	}
 	return item
 }

@@ -2,19 +2,19 @@ package manager
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"github.com/Presikid/KurumiFrp/internal/core"
 	"io"
 	"net/http"
 	"strconv"
+
+	"github.com/Presikid/KurumiFrp/internal/core"
 )
 
 // Exported files contain the data key and are therefore sensitive credentials.
 func (a *App) export(w http.ResponseWriter, r *http.Request) {
 	scope := r.URL.Query().Get("scope")
 	db := a.store.DB
-	db.Format = 3
+	db.Format = currentDatabaseFormat
 	db.Key = base64.RawStdEncoding.EncodeToString(a.store.key)
 	db.History = append([]Snapshot{}, db.History...)
 	switch scope {
@@ -54,10 +54,15 @@ func (a *App) export(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, db)
 }
 
+// importConfig is called with a.mu held for both plain and encrypted imports.
 func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 	revision, err := strconv.ParseUint(r.URL.Query().Get("revision"), 10, 64)
 	if err != nil || revision != a.store.DB.Revision {
 		fail(w, 409, fmt.Errorf("配置已更新，请刷新后重试"))
+		return
+	}
+	if err = a.canReplaceStateLocked(); err != nil {
+		fail(w, http.StatusConflict, err)
 		return
 	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxStateSize))
@@ -65,9 +70,9 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, fmt.Errorf("无法读取配置文件或文件超过大小限制"))
 		return
 	}
-	var db Database
-	if err = json.Unmarshal(data, &db); err != nil || db.Format != 3 {
-		fail(w, 400, fmt.Errorf("无效的单文件配置"))
+	db, err := singleFileDatabase(data)
+	if err != nil {
+		fail(w, 400, fmt.Errorf("无效或不受支持的单文件配置：%w", err))
 		return
 	}
 	key, err := base64.RawStdEncoding.DecodeString(db.Key)
@@ -81,12 +86,16 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	check := &Store{key: key}
 	revisions := map[uint64]bool{}
+	highestHistoryRevision := uint64(0)
 	for _, h := range db.History {
-		if h.Revision == 0 || h.Revision >= db.Revision || revisions[h.Revision] {
+		if h.Revision == 0 || h.Revision >= db.Revision || h.Revision > maxImportedHistoryRevision || revisions[h.Revision] {
 			fail(w, 400, fmt.Errorf("快照版本无效"))
 			return
 		}
 		revisions[h.Revision] = true
+		if h.Revision > highestHistoryRevision {
+			highestHistoryRevision = h.Revision
+		}
 	}
 	for _, state := range append([]State{db.State}, historyStates(db.History)...) {
 		if err = validate(state); err != nil {
@@ -106,16 +115,29 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
+			if t.HTTPPassword != "" {
+				if _, err = check.decrypt(t.HTTPPassword); err != nil {
+					fail(w, 400, err)
+					return
+				}
+			}
 		}
 	}
 	if err = validateVisitorListeners(a.store.DB.State, db.State); err != nil {
 		fail(w, 400, err)
 		return
 	}
-	if db.Revision < a.store.DB.Revision {
-		db.Revision = a.store.DB.Revision
+	// The imported current revision is an untrusted concurrency token. Keep
+	// snapshot labels intact, but allocate a fresh local revision above them.
+	db.Revision = a.store.DB.Revision
+	if db.Revision < highestHistoryRevision {
+		db.Revision = highestHistoryRevision
 	}
-	db.Revision++
+	if err = incrementRevision(&db); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	db.Format = currentDatabaseFormat
 	previousKey := a.store.key
 	a.store.key = key
 	if err = a.store.write(db); err != nil {
@@ -124,10 +146,13 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.store.DB = db
+	a.discardStoppedRuntimeLocked()
 	if err = a.core.UseConfigActive(*db.ActiveCore, func(id string) error {
 		next := a.store.DB
 		next.ActiveCore = &id
-		next.Revision++
+		if err := incrementRevision(&next); err != nil {
+			return err
+		}
 		if err := a.store.write(next); err != nil {
 			return err
 		}

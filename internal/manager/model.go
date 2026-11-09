@@ -10,33 +10,55 @@ import (
 )
 
 type Instance struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
-	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	HTTPPort  int    `json:"httpPort"`
-	HTTPSPort int    `json:"httpsPort"`
-	Token     string `json:"token,omitempty"`
-	HasToken  bool   `json:"hasToken,omitempty"`
-	AutoStart bool   `json:"autoStart,omitempty"`
+	ID                    string `json:"id"`
+	Name                  string `json:"name"`
+	Kind                  string `json:"kind"`
+	Host                  string `json:"host"`
+	Port                  int    `json:"port"`
+	HTTPPort              int    `json:"httpPort"`
+	HTTPSPort             int    `json:"httpsPort"`
+	Token                 string `json:"token,omitempty"`
+	HasToken              bool   `json:"hasToken,omitempty"`
+	AutoStart             bool   `json:"autoStart,omitempty"`
+	User                  string `json:"user,omitempty"`
+	NatHoleSTUNServer     string `json:"natHoleStunServer,omitempty"`
+	TCPMuxHTTPConnectPort int    `json:"tcpmuxHTTPConnectPort,omitempty"`
+	TCPMuxPassthrough     bool   `json:"tcpmuxPassthrough,omitempty"`
+	SubDomainHost         string `json:"subDomainHost,omitempty"`
 }
 type Tunnel struct {
-	ID          string   `json:"id"`
-	InstanceID  string   `json:"instanceId"`
-	Name        string   `json:"name"`
-	Type        string   `json:"type"`
-	LocalHost   string   `json:"localHost"`
-	LocalPort   int      `json:"localPort"`
-	RemotePort  int      `json:"remotePort"`
-	Domains     []string `json:"domains"`
-	ProbePath   string   `json:"probePath,omitempty"`
-	ProbeMethod string   `json:"probeMethod,omitempty"`
-	ServerName  string   `json:"serverName"`
-	Secret      string   `json:"secret,omitempty"`
-	HasSecret   bool     `json:"hasSecret,omitempty"`
-	BandwidthKB int      `json:"bandwidthKB"`
-	Enabled     bool     `json:"enabled"`
+	ID                   string   `json:"id"`
+	InstanceID           string   `json:"instanceId"`
+	Name                 string   `json:"name"`
+	Type                 string   `json:"type"`
+	LocalHost            string   `json:"localHost"`
+	LocalPort            int      `json:"localPort"`
+	RemotePort           int      `json:"remotePort"`
+	Domains              []string `json:"domains"`
+	ProbePath            string   `json:"probePath,omitempty"`
+	ProbeMethod          string   `json:"probeMethod,omitempty"`
+	ServerName           string   `json:"serverName"`
+	Secret               string   `json:"secret,omitempty"`
+	HasSecret            bool     `json:"hasSecret,omitempty"`
+	BandwidthKB          int      `json:"bandwidthKB"`
+	Enabled              bool     `json:"enabled"`
+	AllowUsers           []string `json:"allowUsers,omitempty"`
+	ServerUser           string   `json:"serverUser,omitempty"`
+	UseEncryption        bool     `json:"useEncryption,omitempty"`
+	UseCompression       bool     `json:"useCompression,omitempty"`
+	Protocol             string   `json:"protocol,omitempty"`
+	KeepTunnelOpen       bool     `json:"keepTunnelOpen,omitempty"`
+	MaxRetriesAnHour     int      `json:"maxRetriesAnHour,omitempty"`
+	MinRetryInterval     int      `json:"minRetryInterval,omitempty"`
+	FallbackTo           string   `json:"fallbackTo,omitempty"`
+	FallbackTimeoutMs    int      `json:"fallbackTimeoutMs,omitempty"`
+	DisableAssistedAddrs bool     `json:"disableAssistedAddrs,omitempty"`
+	Subdomain            string   `json:"subdomain,omitempty"`
+	Multiplexer          string   `json:"multiplexer,omitempty"`
+	HTTPUser             string   `json:"httpUser,omitempty"`
+	HTTPPassword         string   `json:"httpPassword,omitempty"`
+	HasHTTPPassword      bool     `json:"hasHTTPPassword,omitempty"`
+	RouteByHTTPUser      string   `json:"routeByHTTPUser,omitempty"`
 }
 type State struct {
 	Instances []Instance `json:"instances"`
@@ -63,6 +85,7 @@ func (s State) clone() State {
 	n := State{Instances: append([]Instance{}, s.Instances...), Tunnels: append([]Tunnel{}, s.Tunnels...)}
 	for j := range n.Tunnels {
 		n.Tunnels[j].Domains = append([]string{}, n.Tunnels[j].Domains...)
+		n.Tunnels[j].AllowUsers = append([]string(nil), n.Tunnels[j].AllowUsers...)
 	}
 	return n
 }
@@ -75,6 +98,8 @@ func (s State) public() State {
 	for j := range n.Tunnels {
 		n.Tunnels[j].HasSecret = n.Tunnels[j].Secret != ""
 		n.Tunnels[j].Secret = ""
+		n.Tunnels[j].HasHTTPPassword = n.Tunnels[j].HTTPPassword != ""
+		n.Tunnels[j].HTTPPassword = ""
 	}
 	return n
 }
@@ -124,61 +149,57 @@ func labelOK(s string) bool {
 }
 func portOK(n int) bool { return n >= 1 && n <= 65535 }
 
-// Unknown hostnames may resolve to different addresses over time, so treat
-// them conservatively. localhost may bind either IPv4 or IPv6 loopback.
+// Only treat numeric bindings as conflicting when overlap is certain. DNS
+// names and IPv4/IPv6 dual-stack behavior are not known from the draft.
 func listenerHostsOverlap(a, b string) bool {
-	isLocalhost := func(s string) bool {
-		return strings.EqualFold(strings.TrimSuffix(s, "."), "localhost")
-	}
 	ai, bi := net.ParseIP(a), net.ParseIP(b)
-	if isLocalhost(a) && bi != nil {
-		return bi.IsLoopback() || bi.IsUnspecified()
-	}
-	if isLocalhost(b) && ai != nil {
-		return ai.IsLoopback() || ai.IsUnspecified()
-	}
 	if ai == nil || bi == nil {
+		return false
+	}
+	if ai.Equal(bi) {
 		return true
 	}
-	return ai.IsUnspecified() || bi.IsUnspecified() || ai.Equal(bi)
+	return (ai.To4() != nil) == (bi.To4() != nil) && (ai.IsUnspecified() || bi.IsUnspecified())
 }
 
 // Collect conflicts without resolving DNS, so validation never depends on the network.
 func visitorListenerConflicts(s State) map[string]string {
 	type listener struct {
-		host string
-		port int
-		name string
-		id   string
+		host    string
+		port    int
+		name    string
+		id      string
+		network string
 	}
 	var listeners []listener
 	conflicts := map[string]string{}
 	for _, i := range s.Instances {
 		if i.Kind == "frps" {
-			// frps vhost listeners use the default wildcard address.
-			listeners = append(listeners, listener{i.Host, i.Port, i.Name, i.ID})
-			for _, p := range []int{i.HTTPPort, i.HTTPSPort} {
+			// With no proxyBindAddr override, frp binds vhosts to bindAddr.
+			listeners = append(listeners, listener{i.Host, i.Port, i.Name, i.ID, "tcp"})
+			for _, p := range []int{i.HTTPPort, i.HTTPSPort, i.TCPMuxHTTPConnectPort} {
 				if p != 0 {
-					listeners = append(listeners, listener{"0.0.0.0", p, i.Name, i.ID})
+					listeners = append(listeners, listener{i.Host, p, i.Name, i.ID, "tcp"})
 				}
 			}
 		}
 	}
 	for _, t := range s.Tunnels {
-		if !t.Enabled || t.Type != "stcp-visitor" {
+		if !t.Enabled || !isVisitor(t.Type) || t.LocalPort < 0 {
 			continue
 		}
+		network := visitorNetwork(t.Type)
 		for _, l := range listeners {
-			if l.port == t.LocalPort && listenerHostsOverlap(l.host, t.LocalHost) {
+			if l.network == network && l.port == t.LocalPort && listenerHostsOverlap(l.host, t.LocalHost) {
 				a, b := l.id, t.ID
 				if a > b {
 					a, b = b, a
 				}
-				key := fmt.Sprintf("%s/%s/%d", a, b, l.port)
-				conflicts[key] = fmt.Sprintf("本地 TCP 监听地址或端口冲突：%s / %s", l.name, t.Name)
+				key := fmt.Sprintf("%s/%s/%s/%d", a, b, network, l.port)
+				conflicts[key] = fmt.Sprintf("本地 %s 监听地址或端口冲突：%s / %s", strings.ToUpper(network), l.name, t.Name)
 			}
 		}
-		listeners = append(listeners, listener{t.LocalHost, t.LocalPort, t.Name, t.ID})
+		listeners = append(listeners, listener{t.LocalHost, t.LocalPort, t.Name, t.ID, network})
 	}
 	return conflicts
 }
@@ -201,6 +222,12 @@ func validate(s State) error {
 	labels := map[string]bool{}
 	ports := map[string]string{}
 	names := map[string]bool{}
+	type serverListener struct {
+		host string
+		port int
+		name string
+	}
+	var serverListeners []serverListener
 	claim := func(key, label string) error {
 		if old, ok := ports[key]; ok {
 			return fmt.Errorf("端口或域名冲突：%s / %s", old, label)
@@ -226,12 +253,15 @@ func validate(s State) error {
 		if i.Token == "" {
 			return fmt.Errorf("必须设置实例认证令牌")
 		}
-		if i.Kind == "frpc" && (i.HTTPPort != 0 || i.HTTPSPort != 0) {
+		if err := validateProtocolInstance(i); err != nil {
+			return err
+		}
+		if i.Kind == "frpc" && (i.HTTPPort != 0 || i.HTTPSPort != 0 || i.TCPMuxHTTPConnectPort != 0) {
 			return fmt.Errorf("客户端不能设置服务端虚拟主机端口")
 		}
 		if i.Kind == "frps" {
 			seen := map[int]bool{}
-			for _, p := range []int{i.Port, i.HTTPPort, i.HTTPSPort} {
+			for _, p := range []int{i.Port, i.HTTPPort, i.HTTPSPort, i.TCPMuxHTTPConnectPort} {
 				if p == 0 {
 					continue
 				}
@@ -239,10 +269,12 @@ func validate(s State) error {
 					return fmt.Errorf("服务端监听端口无效或重复")
 				}
 				seen[p] = true
-				// Conservative: local frps listeners may not share a TCP port, including wildcard binds.
-				if err := claim(fmt.Sprintf("listen/tcp/%d", p), i.Name); err != nil {
-					return err
+				for _, other := range serverListeners {
+					if other.port == p && listenerHostsOverlap(other.host, i.Host) {
+						return fmt.Errorf("端口或域名冲突：%s / %s", other.name, i.Name)
+					}
 				}
+				serverListeners = append(serverListeners, serverListener{i.Host, p, i.Name})
 			}
 		}
 	}
@@ -263,7 +295,7 @@ func validate(s State) error {
 			return fmt.Errorf("同一实例的规则名称不能重复")
 		}
 		names[key] = true
-		if !hostOK(t.LocalHost) || !portOK(t.LocalPort) {
+		if !hostOK(t.LocalHost) || (!portOK(t.LocalPort) && !(supportsUnboundVisitor(t.Type) && t.LocalPort < 0)) {
 			return fmt.Errorf("本地地址或端口无效")
 		}
 		if t.BandwidthKB < 0 || t.BandwidthKB > 10000000 {
@@ -300,26 +332,22 @@ func validate(s State) error {
 					}
 				}
 			}
-		case "stcp", "stcp-visitor":
-			if t.Secret == "" {
-				return fmt.Errorf("STCP 配对密钥不能为空")
-			}
-			if t.Type == "stcp-visitor" {
-				if !namePattern.MatchString(t.ServerName) {
-					return fmt.Errorf("Visitor 需要有效的服务端规则名")
-				}
-				if t.BandwidthKB != 0 {
-					return fmt.Errorf("Visitor 不支持此带宽字段")
-				}
+		case "stcp", "xtcp", "sudp", "stcp-visitor", "xtcp-visitor", "sudp-visitor", "tcpmux":
+			if err := validateProtocolTunnel(t, endpoint, claim); err != nil {
+				return err
 			}
 		default:
 			return fmt.Errorf("不支持的协议")
 		}
-		if t.Enabled && t.Type != "stcp-visitor" {
-			if err := claim(endpoint+"proxy/"+t.Name, t.Name); err != nil {
+		if t.Enabled && !isVisitor(t.Type) {
+			wireName := t.Name
+			if i.User != "" {
+				wireName = i.User + "." + wireName
+			}
+			if err := claim(endpoint+"proxy/"+wireName, t.Name); err != nil {
 				return err
 			}
 		}
 	}
-	return nil
+	return validateVisitorFallbacks(s)
 }

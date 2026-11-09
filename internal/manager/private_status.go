@@ -123,8 +123,12 @@ func (s *privateStatus) cleanup() {
 
 // Monitoring is optional: an unsupported core or unavailable status setup
 // must not prevent a valid user configuration from starting.
-func (a *App) preparePrivateStatus(ctx context.Context, binary string, instance Instance, base Rendered) (Rendered, *privateStatus, error) {
+func (a *App) preparePrivateStatus(ctx context.Context, target string, instance Instance, base Rendered) (Rendered, *privateStatus, error) {
 	if instance.Kind != "frpc" {
+		return base, nil, nil
+	}
+	if _, ok := a.runtime.(*externalRuntime); !ok {
+		base.MonitorReason = "当前运行后端尚未提供代理注册状态"
 		return base, nil, nil
 	}
 	s, err := newPrivateStatus(a.store.dir)
@@ -133,7 +137,7 @@ func (a *App) preparePrivateStatus(ctx context.Context, binary string, instance 
 		return base, nil, nil
 	}
 	runtime := s.runtimeConfig(base)
-	if _, err := a.verifyBinary(ctx, binary, runtime); err != nil {
+	if _, err := a.verifyRuntime(ctx, target, instance, runtime); err != nil {
 		s.cleanup()
 		if ctx.Err() != nil {
 			return base, nil, ctx.Err()
