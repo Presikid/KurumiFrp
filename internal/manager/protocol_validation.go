@@ -3,6 +3,7 @@ package manager
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"unicode"
@@ -98,8 +99,37 @@ func tcpMuxDomainOK(domain string) bool {
 	return hostOK(domain) && net.ParseIP(domain) == nil
 }
 
+// dnsServerAddress normalizes an IP literal and optional port for frpc.
+func dnsServerAddress(value string) (string, bool) {
+	if value == "" {
+		return "", true
+	}
+	host, port := value, "53"
+	if strings.HasPrefix(value, "[") && strings.HasSuffix(value, "]") {
+		host = value[1 : len(value)-1]
+	} else if _, err := netip.ParseAddr(value); err != nil {
+		var splitErr error
+		host, port, splitErr = net.SplitHostPort(value)
+		if splitErr != nil {
+			return "", false
+		}
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return "", false
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || !portOK(n) {
+		return "", false
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(n)), true
+}
+
 func validateProtocolInstance(i Instance) error {
 	if i.Kind == "frpc" {
+		if _, ok := dnsServerAddress(i.DNSServer); !ok {
+			return fmt.Errorf("DNS 服务器须为 IP 地址，可选端口")
+		}
 		if i.User != "" && !namePattern.MatchString(i.User) {
 			return fmt.Errorf("客户端用户名称无效")
 		}
@@ -114,8 +144,8 @@ func validateProtocolInstance(i Instance) error {
 			return fmt.Errorf("客户端不能设置服务端 TCPMUX 或子域名选项")
 		}
 	} else {
-		if i.User != "" || i.NatHoleSTUNServer != "" {
-			return fmt.Errorf("服务端不能设置客户端用户或 STUN 地址")
+		if i.User != "" || i.NatHoleSTUNServer != "" || i.DNSServer != "" {
+			return fmt.Errorf("服务端不能设置客户端用户、STUN 或 DNS 地址")
 		}
 		if i.TCPMuxPassthrough && i.TCPMuxHTTPConnectPort == 0 {
 			return fmt.Errorf("TCPMUX 透传需要设置 HTTP CONNECT 监听端口")

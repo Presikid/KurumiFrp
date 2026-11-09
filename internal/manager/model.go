@@ -22,6 +22,7 @@ type Instance struct {
 	AutoStart             bool   `json:"autoStart,omitempty"`
 	User                  string `json:"user,omitempty"`
 	NatHoleSTUNServer     string `json:"natHoleStunServer,omitempty"`
+	DNSServer             string `json:"dnsServer,omitempty"`
 	TCPMuxHTTPConnectPort int    `json:"tcpmuxHTTPConnectPort,omitempty"`
 	TCPMuxPassthrough     bool   `json:"tcpmuxPassthrough,omitempty"`
 	SubDomainHost         string `json:"subDomainHost,omitempty"`

@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-func renderProtocolInstance(b *strings.Builder, i Instance) {
+func renderProtocolInstance(b *strings.Builder, i Instance) error {
 	if i.Kind == "frpc" {
 		if i.User != "" {
 			fmt.Fprintf(b, "user = %s\n", quote(i.User))
@@ -13,7 +13,14 @@ func renderProtocolInstance(b *strings.Builder, i Instance) {
 		if i.NatHoleSTUNServer != "" {
 			fmt.Fprintf(b, "natHoleStunServer = %s\n", quote(i.NatHoleSTUNServer))
 		}
-		return
+		if i.DNSServer != "" {
+			address, ok := dnsServerAddress(i.DNSServer)
+			if !ok {
+				return fmt.Errorf("DNS 服务器须为 IP 地址，可选端口")
+			}
+			fmt.Fprintf(b, "dnsServer = %s\n", quote(address))
+		}
+		return nil
 	}
 	if i.TCPMuxHTTPConnectPort > 0 {
 		fmt.Fprintf(b, "tcpmuxHTTPConnectPort = %d\n", i.TCPMuxHTTPConnectPort)
@@ -24,6 +31,7 @@ func renderProtocolInstance(b *strings.Builder, i Instance) {
 	if i.SubDomainHost != "" {
 		fmt.Fprintf(b, "subDomainHost = %s\n", quote(i.SubDomainHost))
 	}
+	return nil
 }
 
 func renderStringArray(b *strings.Builder, key string, values []string) {
