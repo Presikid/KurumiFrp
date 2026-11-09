@@ -8,6 +8,7 @@ let probeResults = Object.create(null), probing = Object.create(null), probeRevi
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer, refreshTimer = null;
 let authGeneration = 0, stateETag = '', stateSnapshot = '', renderedSnapshot = '', renderedPage = '';
 let stateRequest = null, logRequest = null, deferredConfig = null;
+let logFilter = '', logSnapshot = null;
 let registrationRequest = null, registrations = Object.create(null), registrationRevision = null, registrationProcesses = Object.create(null);
 let registrationPaintPending = false;
 let navigationGeneration = 0;
@@ -52,7 +53,8 @@ function resetSession() {
  stopRefreshPolling();
  ++authGeneration; ++serial;
  stateRequest?.controller.abort(); logRequest?.controller.abort();
- stateRequest = null; logRequest = null; deferredConfig = null;
+ stateRequest = null; logRequest = null; deferredConfig = null; logFilter = ''; logSnapshot = null;
+ $('#log-output')?.replaceChildren(); $('#log-filter')?.remove();
  updateChecked = false; releases = []; updateStatus = ''; updateListError = ''; updateSelection = ''; updateSelectionLost = false; ++updateRequestSerial;
  if (updatePollTimer !== null) clearTimeout(updatePollTimer);
  updateStatusRequest?.controller.abort();
@@ -72,8 +74,8 @@ function renderPreservingScroll() {
  for (const position of positions) {
   const el = content.querySelectorAll(position.selector)[position.index];
   if (!el || (position.text !== null && previousSelected !== selected)) continue;
-  // Keep the existing output while its asynchronous replacement is loading.
-  if (position.text !== null) el.textContent = position.text;
+  // Configuration output is restored while its asynchronous replacement loads.
+  if (position.text !== null && position.selector !== '#log-output') el.textContent = position.text;
   el.scrollTop = position.top; el.scrollLeft = position.left;
  }
  content.scrollTop = top; content.scrollLeft = left; window.scrollTo(x,y);
@@ -93,7 +95,7 @@ async function refresh(silent = false) {
   try {
    const fresh = await api('state',undefined,{conditional:true,headers:stateETag ? {'If-None-Match':stateETag} : {},signal:request.controller.signal});
    if (generation !== authGeneration) return;
-   if (fresh.value !== null) {if (probeRevision !== fresh.value.revision) {probeResults = Object.create(null); probeRevision = fresh.value.revision;} invalidateRegistrationForRuntime(data, fresh.value); data = fresh.value; paintRegistrations(); stateSnapshot = JSON.stringify(data); stateETag = fresh.etag;}
+   if (fresh.value !== null) {if (probeRevision !== fresh.value.revision) {probeResults = Object.create(null); probeRevision = fresh.value.revision;} invalidateRegistrationForRuntime(data, fresh.value); invalidateLogsForRuntime(data, fresh.value); data = fresh.value; paintRegistrations(); stateSnapshot = JSON.stringify(data); stateETag = fresh.etag;}
    if (!data) return;
    $('#login').hidden = true; $('#app').hidden = false;
    if (!updateChecked) {updateChecked = true; checkUpdates(true);}
@@ -107,7 +109,8 @@ async function refresh(silent = false) {
    applyDeferredConfig();
    refreshRegistration();
    // Logs have a separate endpoint and can change even when state returns 304.
-   await refreshLogs(silent);
+   // A delayed log response must not block polling the process generation.
+   refreshLogs(silent);
   } catch(e) {if (generation === authGeneration && e.name !== 'AbortError' && !silent && data) toast(e.message);}
  })().finally(() => {
   if (stateRequest === request) stateRequest = null;
@@ -115,24 +118,51 @@ async function refresh(silent = false) {
  });
  return request.promise;
 }
+function logRunId(state, id) {return state?.runtime?.[id]?.runId || '';}
+function invalidateLogsForRuntime(previous, next) {
+ if (!previous || !next) return;
+ if (logRequest && logRequest.runId !== logRunId(next, logRequest.id)) {
+  const old = logRequest; logRequest = null; old.controller.abort();
+ }
+ if (logSnapshot && logSnapshot.runId !== logRunId(next, logSnapshot.id)) logSnapshot = null;
+ if (page === 'logs' && selected && logRunId(previous, selected) !== logRunId(next, selected)) {
+  const output = $('#log-output'); if (output) output.textContent = '正在读取…';
+ }
+}
 function refreshLogs(silent = true) {
  if (!data || page !== 'logs' || !selected) return Promise.resolve();
- const generation = authGeneration, id = selected;
- if (logRequest && logRequest.generation === generation && logRequest.id === id) return logRequest.promise;
+ const generation = authGeneration, navigation = navigationGeneration, id = selected, runId = logRunId(data, selected);
+ if (logRequest && logRequest.generation === generation && logRequest.navigation === navigation && logRequest.id === id && logRequest.runId === runId) return logRequest.promise;
  logRequest?.controller.abort();
- const request = {generation,id,controller:new AbortController()};
+ const request = {generation,navigation,id,runId,controller:new AbortController(),timedOut:false};
+ const timeout = setTimeout(()=>{request.timedOut=true;request.controller.abort();},10000);
  logRequest = request;
  request.promise = (async () => {
   try {
    const result = await api('logs?id='+encodeURIComponent(id),undefined,{signal:request.controller.signal});
-   if (generation !== authGeneration || page !== 'logs' || selected !== id || !canSilentRender()) return;
-   const output = $('#log-output'), text = result.lines.join('\n') || '没有日志。启动实例后，真实输出将显示在这里。';
-   if (!output || output.textContent === text) return;
-   const top = output.scrollTop, left = output.scrollLeft;
-   output.textContent = text; output.scrollTop = top; output.scrollLeft = left;
-  } catch(e) {if (generation === authGeneration && e.name !== 'AbortError' && !silent && data) toast(e.message);}
- })().finally(() => {if (logRequest === request) logRequest = null;});
+   if (logRequest !== request || generation !== authGeneration || navigation !== navigationGeneration || page !== 'logs' || selected !== id || runId !== logRunId(data, id)) return;
+   if ((result.runId || '') !== runId) {
+    logSnapshot = null;
+    const output = $('#log-output'); if (output) output.textContent = '正在读取…';
+    return;
+   }
+   logSnapshot = {id, runId, lines: result.lines};
+   // Updating only the output keeps controls focused and preserves selected text.
+   if (!hasSelection()) paintLogs();
+  } catch(e) {if (logRequest === request && generation === authGeneration && navigation === navigationGeneration && page === 'logs' && selected === id && (e.name !== 'AbortError' || request.timedOut) && !silent && data) toast(request.timedOut?'读取日志超时，请稍后重试':e.message);}
+ })().finally(() => {clearTimeout(timeout);if (logRequest === request) logRequest = null;});
  return request.promise;
+}
+function paintLogs() {
+ const output = $('#log-output');
+ if (!output || !logSnapshot || logSnapshot.id !== selected || logSnapshot.runId !== logRunId(data, selected)) return;
+ const lines = logSnapshot.lines;
+ const query = logFilter.toLocaleLowerCase();
+ const matches = query ? lines.filter(line => line.toLocaleLowerCase().includes(query)) : lines;
+ const text = matches.join('\n') || (lines.length && query ? '没有匹配的日志。' : '没有日志。启动实例后，真实输出将显示在这里。');
+ if (output.textContent === text) return;
+ const top = output.scrollTop, left = output.scrollLeft;
+ output.textContent = text; output.scrollTop = top; output.scrollLeft = left;
 }
 function applyDeferredConfig() {
  if (!deferredConfig || deferredConfig.serial !== serial || deferredConfig.id !== selected || page !== 'config' || !canSilentRender()) return;
@@ -208,8 +238,8 @@ function render() {
   $('#update-version').value=updateSelection;
  } else if(page==='logs') {
   ensureSelected(); content.innerHTML=header('运行记录','真实子进程输出与配置变更记录。进程日志仅保留当前会话最近 200 行。')+
-  `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>frp 标准输出</h3><span class="pill">自动刷新</span></div><div class="panel-content">${picker()}<pre id="log-output">正在读取…</pre></div></section><section class="panel"><div class="panel-title"><h3>配置变更</h3></div><div class="panel-content">${recent()}</div></section></div>`;
-  if(selected) refreshLogs(false); else $('#log-output').textContent='先创建一个实例。';
+  `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>frp 标准输出</h3><span class="pill">自动刷新</span></div><div class="panel-content">${picker()}<label class="config-picker">筛选当前日志<input id="log-filter" type="search" value="${esc(logFilter)}" placeholder="输入文字筛选（不区分大小写）"></label><pre id="log-output">正在读取…</pre></div></section><section class="panel"><div class="panel-title"><h3>配置变更</h3></div><div class="panel-content">${recent()}</div></section></div>`;
+  if(selected) {paintLogs(); refreshLogs(false);} else $('#log-output').textContent='先创建一个实例。';
  }
  renderedSnapshot = stateSnapshot; renderedPage = page;
 }
@@ -368,7 +398,7 @@ function paintRegistrations() {
   if (instance) {const next=instanceRegistrationText(instance);if(el.textContent!==next)el.textContent=next;}
  });
 }
-document.addEventListener('selectionchange',()=>{if(registrationPaintPending&&!hasSelection())paintRegistrations();});
+document.addEventListener('selectionchange',()=>{if(hasSelection())return;if(registrationPaintPending)paintRegistrations();if(page==='logs')paintLogs();});
 function refreshRegistration() {
  if (!data || !['tunnels','instances'].includes(page) || document.hidden || registrationRequest || healthChecking) return;
  const generation=authGeneration, revision=data.revision, processes=processSnapshot(data);
@@ -473,8 +503,8 @@ $('#editor').addEventListener('submit',async e=>{
  else {const type=val('type');value={id:editing.id,name:val('name').trim(),instanceId:val('instanceId'),type,localHost:val('localHost').trim(),localPort:+val('localPort'),remotePort:['tcp','udp'].includes(type)?+val('remotePort'):0,domains:['http','https'].includes(type)?val('domains').split(',').map(v=>v.trim()).filter(Boolean):[],probePath:['http','https'].includes(type)?(val('probePath').trim()||'/'):'',probeMethod:['http','https'].includes(type)?val('probeMethod'):'',serverName:type==='stcp-visitor'?val('serverName').trim():'',secret:type.startsWith('stcp')?val('secret'):'',bandwidthKB:type==='stcp-visitor'?0:+val('bandwidthKB'),enabled:f.elements.enabled.checked};}
  try{await api('save',{revision:editRev,kind:editing.kind,value});dialog.close();toast('草稿已保存；运行中的实例未改变');await refresh();}catch(err){$('#form-error').textContent=err.message;}finally{b.disabled=false;}
 });
-$('#content').addEventListener('input',e=>{if(e.target.id==='search'){filter=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}});
-$('#content').addEventListener('change',e=>{if(e.target.id==='health-instance')healthSelected=e.target.value;if(e.target.id==='protocol'){protocol=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='instance-picker'){selected=e.target.value;render();}if(e.target.id==='update-version'){updateSelection=e.target.value;updateSelectionLost=!updateCanInstall();if(updateSelectionLost)updateSelection='';paintUpdate();}});
+$('#content').addEventListener('input',e=>{if(e.target.id==='search'){filter=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='log-filter'){logFilter=e.target.value;paintLogs();}});
+$('#content').addEventListener('change',e=>{if(e.target.id==='health-instance')healthSelected=e.target.value;if(e.target.id==='protocol'){protocol=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='instance-picker'){++navigationGeneration;selected=e.target.value;render();}if(e.target.id==='update-version'){updateSelection=e.target.value;updateSelectionLost=!updateCanInstall();if(updateSelectionLost)updateSelection='';paintUpdate();}});
 $('#content').addEventListener('click',async e=>{
  const b=e.target.closest('button');if(!b||!data)return;if(b.dataset.go){navigate(b.dataset.go);return;}
  const action=b.dataset.action,id=b.dataset.id || (action==='health'?$('#health-instance')?.value:undefined);if(!action)return;
