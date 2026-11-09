@@ -92,15 +92,23 @@ jobs:
           python3 scripts/official-cores-smoke.py
       - name: Native Debian package and systemd lifecycle
         if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb
+          sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 GH_TOKEN="$GH_TOKEN" python3 scripts/linux-migration-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb
+          sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 GH_TOKEN="$GH_TOKEN" python3 scripts/linux-migration-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb --direct
       - name: Native RPM install and removal on Fedora
         if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          docker run --rm -v "$PWD:/src:ro" fedora:43 sh -ec '
-            dnf install -y python3 util-linux /src/dist-native/kurumifrp-$(cat /src/VERSION)-1.x86_64.rpm
+          docker run --rm -e GH_TOKEN -v "$PWD:/src:ro" fedora:43 sh -ec '
+            dnf install -y python3 util-linux cpio /src/dist-native/kurumifrp-$(cat /src/VERSION)-1.x86_64.rpm
             rpm -e kurumifrp
             KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 /src/scripts/native-linux-smoke.py /src/dist-native/kurumifrp-$(cat /src/VERSION)-1.x86_64.rpm
+            KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 /src/scripts/linux-migration-smoke.py /src/dist-native/kurumifrp-$(cat /src/VERSION)-1.x86_64.rpm
+            KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 /src/scripts/linux-migration-smoke.py /src/dist-native/kurumifrp-$(cat /src/VERSION)-1.x86_64.rpm --direct
           '
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -149,9 +157,13 @@ jobs:
           python3 scripts/core-smoke.py ./kurumi-live
       - name: Native ARM64 DEB lifecycle
         if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/package-native.py linux --arch arm64 --deb-only
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_$(cat VERSION)_arm64.deb
+          sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 GH_TOKEN="$GH_TOKEN" python3 scripts/linux-migration-smoke.py dist-native/kurumifrp_$(cat VERSION)_arm64.deb
+          sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 GH_TOKEN="$GH_TOKEN" python3 scripts/linux-migration-smoke.py dist-native/kurumifrp_$(cat VERSION)_arm64.deb --direct
       - name: Windows ARM64 real official frp
         if: runner.os == 'Windows'
         shell: pwsh

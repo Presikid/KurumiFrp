@@ -1,8 +1,10 @@
 """Native package lifecycle; run as root ONLY on disposable CI/container hosts."""
 import hashlib
+import fcntl
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,10 +17,11 @@ if os.geteuid() != 0 or os.environ.get('KURUMI_DISPOSABLE_PACKAGE_TEST') != '1':
     raise SystemExit('This test requires an explicitly disposable root environment.')
 package = Path(sys.argv[1]).resolve()
 is_deb = package.suffix == '.deb'
-base = Path('/var/lib/kurumifrp')
-meta = Path('/var/lib/kurumifrp-package')
+root = Path('/opt/kurumifrp')
+base = root/'runtime'
+meta = root/'meta'
 exe = Path('/usr/bin/kurumifrp')
-if base.exists() or meta.exists() or exe.exists() or subprocess.run(['getent','passwd','kurumifrp'],stdout=subprocess.DEVNULL).returncode == 0:
+if root.exists() or Path('/var/lib/kurumifrp').exists() or Path('/var/lib/kurumifrp-package').exists() or exe.exists() or subprocess.run(['getent','passwd','kurumifrp'],stdout=subprocess.DEVNULL).returncode == 0:
     raise SystemExit('A pre-existing installation/account was found. Nothing changed.')
 install = ['dpkg','-i',str(package)] if is_deb else ['rpm','-Uvh','--replacepkgs',str(package)]
 remove = ['dpkg','--remove','kurumifrp'] if is_deb else ['rpm','-e','kurumifrp']
@@ -57,8 +60,21 @@ try:
     before=keys()
     assert api('state')['version']==expected_version
     run(['dpkg','--verify','kurumifrp'] if is_deb else ['rpm','-V','kurumifrp'])
-    # Reinstall/upgrade path must stop and restart the owned manager, never purge data.
-    run(install)
+    # The real root updater invokes the package manager on a package in its
+    # private scratch directory. The upgrade must not delete its input.
+    stage = root/'root-tmp/update-in-progress'
+    stage.mkdir(mode=0o700)
+    staged_package = stage/package.name
+    shutil.copyfile(package, staged_package)
+    staged_digest = hashlib.sha256(staged_package.read_bytes()).hexdigest()
+    staged_install = ['dpkg','-i',str(staged_package)] if is_deb else ['rpm','-Uvh','--replacepkgs',str(staged_package)]
+    updater_lock = root/'root-tmp/.updater.lock'
+    with updater_lock.open('a') as lock:
+        updater_lock.chmod(0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        run(staged_install)  # Upgrade scripts must not deadlock on the updater's lock.
+    assert staged_package.exists() and hashlib.sha256(staged_package.read_bytes()).hexdigest() == staged_digest, 'upgrade removed its active input'
+    shutil.rmtree(stage)  # Same cleanup performed by the updater after package manager exit.
     ensure_running()
     assert before==keys(), 'upgrade rotated credentials'
     if is_deb:
@@ -91,7 +107,7 @@ try:
     api('control',{'revision':state['revision'],'id':iid,'action':'start'})
     child=api('state')['runtime'][iid]['pid']
     assert child>0
-    temproot=Path('/run/kurumifrp') if Path('/run/systemd/system').exists() else base/'tmp'
+    temproot=base/'tmp'
     for _ in range(50):
         probes=list(temproot.glob('session-*/frp-temp-probe'))
         if probes: break
@@ -102,7 +118,26 @@ try:
     with tempfile.TemporaryDirectory(prefix='kurumi-external-') as temp:
         outside=Path(temp)/'keep'; outside.write_text('unrelated data')
         (base/'cores/linked').symlink_to(temp,target_is_directory=True)
-        run(purge)
+        crashed = root/'root-tmp/update-crashed'
+        crashed.mkdir(mode=0o700)
+        (crashed/'old-package').write_text('simulated interrupted updater')
+        with updater_lock.open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            subprocess.run(purge, timeout=120, check=False)
+            assert crashed.exists() and base.exists() and (meta/'uid').exists(), 'concurrent purge damaged an active updater or user data'
+        unknown = root/'root-tmp/unrecognized'
+        unknown.write_text('do not remove unknown files')
+        lifecycle = Path(__file__).resolve().parents[1]/'packaging/linux/lifecycle.sh'
+        retry = purge if is_deb or subprocess.run(['rpm', '-q', 'kurumifrp'], stdout=subprocess.DEVNULL).returncode == 0 else ['sh', '-c', '. "$1"; purge_state', 'sh', str(lifecycle)]
+        subprocess.run(retry, timeout=120, check=False)
+        assert unknown.exists() and base.exists() and (meta/'uid').exists(), 'failed purge deleted user data or its ownership receipt'
+        assert subprocess.run(['getent', 'passwd', 'kurumifrp'], stdout=subprocess.DEVNULL).returncode == 0, 'failed purge deleted the account'
+        unknown.unlink()
+        if is_deb or subprocess.run(['rpm', '-q', 'kurumifrp'], stdout=subprocess.DEVNULL).returncode == 0:
+            run(purge)
+        else:
+            # RPM may already have removed the package despite a postun error.
+            run(['sh', '-c', '. "$1"; purge_state', 'sh', str(lifecycle)])
         for proc in processes:
             proc.wait(timeout=10)
         assert outside.read_text()=='unrelated data', 'external symlink target changed'
@@ -111,10 +146,24 @@ try:
         raise AssertionError('managed child survived package removal')
     except ProcessLookupError:
         pass
-    for p in (base,meta,exe,Path('/usr/lib/systemd/system/kurumifrp.service'),Path('/usr/share/doc/kurumifrp')):
+    for p in (root,base,meta,exe,Path('/usr/lib/systemd/system/kurumifrp.service'),Path('/usr/share/doc/kurumifrp')):
         assert not p.exists(), 'managed path remains: '+str(p)
-    if Path('/run/systemd/system').exists(): assert not Path('/run/kurumifrp').exists()
     assert subprocess.run(['getent','passwd','kurumifrp'],stdout=subprocess.DEVNULL).returncode!=0
+    # Reinstall, then simulate an interrupted purge after the service account
+    # and runtime disappeared but before root-owned metadata was removed.
+    run(install)
+    ensure_running()
+    run([str(exe), '--stop'])
+    if processes: processes[-1].wait(timeout=60)
+    uid = int(subprocess.check_output(['id', '-u', 'kurumifrp']))
+    gid = int(subprocess.check_output(['id', '-g', 'kurumifrp']))
+    intent = meta/'purge-intent'
+    intent.write_text(f'{uid}:{gid}\n'); intent.chmod(0o600)
+    shutil.rmtree(base)
+    shutil.rmtree(root/'root-tmp')
+    run(['userdel', 'kurumifrp'])
+    run(purge)
+    assert not root.exists(), 'interrupted purge did not resume'
     print('PASS: real native package install, upgrade/reinstall, authenticated readiness, state preservation, complete purge and external-file protection.')
 finally:
     if exe.exists():

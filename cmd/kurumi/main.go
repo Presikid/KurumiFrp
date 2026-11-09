@@ -44,9 +44,13 @@ func run() error {
 	token := flag.Bool("show-token", false, "print existing local access token and exit")
 	native := flag.String("native-maintenance", "", "native installer operation: init or purge")
 	systemUpdate := flag.Bool("system-update", false, "perform a verified Linux package update")
+	migrateLinux := flag.Bool("migrate-linux-legacy", false, "migrate an authenticated legacy Linux installation")
 	setup := flag.String("cleanup-setup", "", "exact native Setup executable to remove after successful installation")
 	digest := flag.String("cleanup-sha256", "", "expected Setup SHA-256")
 	flag.Parse()
+	if *migrateLinux {
+		return legacyLinuxMigration()
+	}
 	if *systemUpdate {
 		if distribution != "linux-system" {
 			return fmt.Errorf("system update requires a Linux system installation")
@@ -84,6 +88,9 @@ func run() error {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]string{"program": filepath.Dir(exe), "data": defaultData, "cores": defaultCore, "temporary": temporaryRoot(defaultData), "distribution": distribution})
+	}
+	if distribution == "linux-system" && (*dir != defaultData || *bin != defaultCore) {
+		return fmt.Errorf("installed builds keep runtime data under the installation directory; use a source build for custom paths")
 	}
 	if distribution == "windows-installed" {
 		if *dir != defaultData || *bin != defaultCore {

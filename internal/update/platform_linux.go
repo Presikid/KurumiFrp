@@ -14,7 +14,49 @@ import (
 	"time"
 )
 
-const updateRequest = "/var/lib/kurumifrp/update.request"
+const updateRequest = "/opt/kurumifrp/runtime/update.request"
+const updateScratch = "/opt/kurumifrp/root-tmp"
+
+func lockUpdateScratch() (*os.File, error) {
+	for p := updateScratch; ; p = filepath.Dir(p) {
+		info, err := os.Lstat(p)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("unsafe update directory: %s", p)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != 0 || info.Mode().Perm()&0022 != 0 || (p == updateScratch && info.Mode().Perm() != 0700) {
+			return nil, fmt.Errorf("unprotected update directory: %s", p)
+		}
+		if p == filepath.Dir(p) {
+			break
+		}
+	}
+	return openUpdateLock(updateScratch, 0, 0)
+}
+
+func openUpdateLock(scratch string, ownerUID, ownerGID uint32) (*os.File, error) {
+	path := filepath.Join(scratch, ".updater.lock")
+	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), path)
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || st.Uid != ownerUID || st.Gid != ownerGID || st.Nlink != 1 {
+		f.Close()
+		return nil, fmt.Errorf("unsafe update lock")
+	}
+	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("another update or purge is active: %w", err)
+	}
+	return f, nil
+}
 
 func packageDistribution() string {
 	if e := exec.Command("dpkg-query", "-W", "-f=${Status}", "kurumifrp").Run(); e == nil {
@@ -62,6 +104,11 @@ func PerformSystemUpdate() error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("system update requires root")
 	}
+	lock, e := lockUpdateScratch()
+	if e != nil {
+		return e
+	}
+	defer lock.Close()
 	fd, e := syscall.Open(updateRequest, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if e != nil {
 		return e
@@ -94,7 +141,7 @@ func PerformSystemUpdate() error {
 	if e != nil {
 		return e
 	}
-	dir, e := os.MkdirTemp("", "kurumi-update-root-")
+	dir, e := os.MkdirTemp(updateScratch, "update-")
 	if e != nil {
 		return e
 	}

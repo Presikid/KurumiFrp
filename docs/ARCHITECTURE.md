@@ -78,7 +78,7 @@ Windows 卸载脚本保留自身和所有权记录到其他文件清理完成，
 
 ## 0.4 原生发行
 
-Windows 采用 Inno Setup 原生引擎，不执行 PS1/CMD；安装器根据 CPU 选择 Go GUI 子系统程序。原生安装版将可变运行数据放在安装目录下受 ACL 保护的 `runtime/profiles/<SID>`，原生维护命令仅处理安装记录确认的 profiles 与指定摘要的 Setup.exe；安装引擎负责自身文件和系统集成项。首次升级会验证旧 ProgramData 安装回执、SID profile 回执和 NTFS ACL，再迁移 profile；同卷移动，跨卷复制后校验目录摘要，旧数据仅在新副本验证成功后删除。迁移标记阻止旧工作台重新启动，失败时保留源数据并阻止新版以空配置启动。Linux 通过 DEB/RPM 登记 /usr 文件和 systemd 服务，独立低权限账户持有 /var/lib/kurumifrp；root 专用账户所有权记录保存在独立目录。包维护脚本只处理固定目录，普通 remove/升级不等于 purge。
+Windows 采用 Inno Setup 原生引擎，不执行 PS1/CMD；安装器根据 CPU 选择 Go GUI 子系统程序。原生安装版将可变运行数据放在安装目录下受 ACL 保护的 `runtime/profiles/<SID>`，原生维护命令仅处理安装记录确认的 profiles 与指定摘要的 Setup.exe；安装引擎负责自身文件和系统集成项。首次升级会验证旧 ProgramData 安装回执、SID profile 回执和 NTFS ACL，再迁移 profile；同卷移动，跨卷复制后校验目录摘要，旧数据仅在新副本验证成功后删除。迁移标记阻止旧工作台重新启动，失败时保留源数据并阻止新版以空配置启动。Linux 通过 DEB/RPM 登记系统入口和 systemd 服务，程序与运行数据位于 /opt/kurumifrp。低权限账户持有 runtime，安装回执和 root 更新暂存独立保护；旧版数据经回执及完整性检查后迁移。普通 remove/升级不等于 purge。
 
 
 ## Local target diagnostics

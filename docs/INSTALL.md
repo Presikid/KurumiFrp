@@ -38,21 +38,21 @@ sudo dnf install ./kurumifrp-0.7.1.17-1.x86_64.rpm
 
 升级继续交给 APT/DNF。没有另外部署在线 APT/YUM 软件源，也未提供仓库 GPG 签名；这是上游发布的软件包，不表示已进入发行版官方仓库。附带 SHA-256 是完整性校验，不是独立身份签名。
 
-Linux 不照搬 Windows 的“一个安装文件夹”，而按文件性质分开：
+Linux 原生包将程序和运行数据放在 `/opt/kurumifrp`；命令入口、systemd 单元和系统手册由系统包管理器登记在标准位置。
 
 | 内容 | 位置 |
 |---|---|
-| 包管理器拥有的主程序 | `/usr/bin/kurumifrp` |
+| 包管理器拥有的主程序及命令入口 | `/opt/kurumifrp/kurumifrp`、`/usr/bin/kurumifrp`（链接） |
 | 服务单元 | `/usr/lib/systemd/system/kurumifrp.service` |
-| WebUI 管理的状态数据库、密钥、历史与生成配置 | `/var/lib/kurumifrp/data` |
-| 下载的核心及原子下载暂存 | `/var/lib/kurumifrp/cores` |
-| 应用和子进程运行临时文件 | systemd 管理的 `/run/kurumifrp/session-*` |
-| 包安装归属记录 | `/var/lib/kurumifrp-package` |
+| WebUI 管理的状态数据库、密钥、历史与生成配置 | `/opt/kurumifrp/runtime/data` |
+| 下载的核心及暂存 | `/opt/kurumifrp/runtime/cores` |
+| 应用和子进程运行临时文件 | `/opt/kurumifrp/runtime/tmp` |
+| 包安装归属记录及 root 更新暂存 | `/opt/kurumifrp/meta`、`/opt/kurumifrp/root-tmp` |
 | 文档和 man 手册 | `/usr/share/doc/kurumifrp`、`/usr/share/man` |
 
-没有 systemd 的显式手动运行使用 `/var/lib/kurumifrp/tmp`，不会回退到个人 HOME。`/var/lib` 内的是通过 WebUI 更新的状态数据库与生成内容，不是要求管理员手工编辑的 `/etc` 配置文件。目前没有单独的手工系统配置文件，因此不创建空的 `/etc/kurumifrp` 或无用途的缓存目录。
+升级旧版时会停止旧进程，验证安装回执并复制校验旧 `/var/lib/kurumifrp` 数据，再切换到新位置。旧版的 root 或服务账户所有、不可由组或其他用户写入的手工 `cores/frpc` 和 `cores/frps` 也会保留并校验；其他不明来源、链接、挂载点、目录冲突或残留进程会使迁移中止并保留数据。中断后如有未完成的临时目录，需要先核查；不要手动覆盖旧数据。
 
-系统服务由专用低权限 `kurumifrp` 账户运行；`ProtectHome=yes`、`ProtectSystem=strict` 保留，主要持久可写区只有专用状态目录，临时目录由 systemd 管理。停止后回收 RuntimeDirectory，不修改系统全局 TEMP/TMP 环境。没有开放低端口权限、修改防火墙或触碰现有网站。
+系统服务由专用低权限 `kurumifrp` 账户运行；`ProtectHome=yes`、`ProtectSystem=strict` 保留，服务账户只可写其运行目录，root 更新暂存由 root 独占。不修改系统全局 TEMP/TMP 环境，没有开放低端口权限、修改防火墙或触碰现有网站。
 
 ```sh
 systemctl status kurumifrp
@@ -95,7 +95,7 @@ sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 
 ## 从 0.4 或更早版本迁移
 
-以下是 0.5 发布时的历史迁移说明：当时安装器不会自动执行旧用户目录中的程序，也不会把旧数据不经确认提升为机器级安装。当前版本已改为自动迁移受安装回执、SID 和 ACL 验证的旧 ProgramData 数据；从旧版升级时不再手动把备份放回 ProgramData，而由当前安装器迁移到安装目录的 `runtime`。Linux 从 0.4 的原生包升级仍保留原 `/var/lib/kurumifrp` 数据。
+以下是 0.5 发布时的历史迁移说明：当时安装器不会自动执行旧用户目录中的程序，也不会把旧数据不经确认提升为机器级安装。当前版本已改为自动迁移受安装回执、SID 和 ACL 验证的旧 ProgramData 数据；从旧版升级时不再手动把备份放回 ProgramData，而由当前安装器迁移到安装目录的 `runtime`。
 
 ## 规范与验证
 

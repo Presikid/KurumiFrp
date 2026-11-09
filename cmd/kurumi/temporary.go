@@ -77,9 +77,6 @@ func prepareTemporary(data string) (func(), error) {
 }
 
 func temporaryRoot(data string) string {
-	if distribution == "linux-system" && os.Getenv("RUNTIME_DIRECTORY") == "/run/kurumifrp" {
-		return "/run/kurumifrp"
-	}
 	if distribution == "windows-installed" || distribution == "linux-system" {
 		return filepath.Join(filepath.Dir(data), "tmp")
 	}
