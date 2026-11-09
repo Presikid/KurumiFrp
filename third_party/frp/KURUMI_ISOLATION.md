@@ -57,14 +57,15 @@ that later construction or startup will succeed.
 The integrated server fork has per-service metrics, per-service 404 pages,
 tracked workers and accepted connections, and bounded shutdown with a way to
 await incomplete cleanup. Server tracking is per service, not proof that every
-old control generation or external dependency has drained. Importing the
-server adapter still runs server package initialization that mutates the process environment and golib's
-salt. Logging and dashboard assets also retain process-wide state. The server
-wrapper can return upstream errors and warnings; callers must not expose those
-blindly. The parser returns stage-only diagnostics and warnings because raw TOML
-can itself contain credentials. Shared crypto and logging changes still require
-real interoperability and concurrent runtime validation. Telemetry boundaries,
-instance log ownership, and the remaining manager wiring are documented in
-`docs/ENGINE_TRAFFIC_LOGS_INTEGRATION.md` at the repository root.
+old control generation or external dependency has drained. Server and client
+initialization no longer change the process environment or golib's crypto salt;
+the service uses a local legacy-frp cipher and each dashboard selects its own
+assets. Removing the QUIC environment overrides means quic-go uses its normal
+warning and ECN defaults, unless the process owner configures them explicitly.
+Some dependency logging is still process-global. The server wrapper can return
+upstream errors and warnings; callers must not expose those blindly. The parser
+returns stage-only diagnostics and warnings because raw TOML can itself contain
+credentials. Crypto, logging and cleanup changes still require real
+interoperability and concurrent runtime validation.
 The manager continues to use its existing external-process path; the draft
 bridge from the source snapshot is not included or enabled here.

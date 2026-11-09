@@ -29,7 +29,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -100,15 +99,6 @@ func (e *ConstructionCleanupError) WaitCleanup(ctx context.Context) error {
 type serveResult struct {
 	name string
 	err  error
-}
-
-func init() {
-	// Disable quic-go's receive buffer warning.
-	os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
-	// Disable quic-go's ECN support by default. It may cause issues on certain operating systems.
-	if os.Getenv("QUIC_GO_DISABLE_ECN") == "" {
-		os.Setenv("QUIC_GO_DISABLE_ECN", "true")
-	}
 }
 
 // Server service
