@@ -350,6 +350,11 @@ func (a *App) startPrepared(i Instance, r Rendered, target, configPath, coreID s
 	}
 	go func() {
 		err := instance.Wait()
+		if source, ok := instance.(RuntimeTrafficReader); ok {
+			if snapshot := source.ReadTraffic(); snapshot.Available {
+				_ = a.RecordTrafficSnapshot(i.ID, config.RunID, snapshot)
+			}
+		}
 		status.cleanup()
 		p.logs.Write([]byte("\n"))
 		p.mu.Lock()
