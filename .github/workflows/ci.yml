@@ -97,6 +97,12 @@ jobs:
         run: |
           stat -c '%n type=%F uid=%u gid=%g mode=%a' /opt
           findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS -T /opt
+          test -d /opt && test ! -L /opt && test "$(stat -c %u /opt)" = 0
+          for p in /opt/kurumifrp /var/lib/kurumifrp /var/lib/kurumifrp-package /usr/bin/kurumifrp; do test ! -e "$p" && test ! -L "$p"; done
+          ! getent passwd kurumifrp
+          opt_mode=$(stat -c %a /opt)
+          trap 'sudo chmod "$opt_mode" /opt' EXIT
+          sudo chmod 755 /opt
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 GH_TOKEN="$GH_TOKEN" python3 scripts/linux-migration-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 GH_TOKEN="$GH_TOKEN" python3 scripts/linux-migration-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb --direct
@@ -165,6 +171,12 @@ jobs:
           python3 scripts/package-native.py linux --arch arm64 --deb-only
           stat -c '%n type=%F uid=%u gid=%g mode=%a' /opt
           findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS -T /opt
+          test -d /opt && test ! -L /opt && test "$(stat -c %u /opt)" = 0
+          for p in /opt/kurumifrp /var/lib/kurumifrp /var/lib/kurumifrp-package /usr/bin/kurumifrp; do test ! -e "$p" && test ! -L "$p"; done
+          ! getent passwd kurumifrp
+          opt_mode=$(stat -c %a /opt)
+          trap 'sudo chmod "$opt_mode" /opt' EXIT
+          sudo chmod 755 /opt
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_$(cat VERSION)_arm64.deb
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 GH_TOKEN="$GH_TOKEN" python3 scripts/linux-migration-smoke.py dist-native/kurumifrp_$(cat VERSION)_arm64.deb
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 GH_TOKEN="$GH_TOKEN" python3 scripts/linux-migration-smoke.py dist-native/kurumifrp_$(cat VERSION)_arm64.deb --direct
@@ -212,6 +224,12 @@ jobs:
           python3 scripts/package-native.py linux --arch amd64 --deb-only
           stat -c '%n type=%F uid=%u gid=%g mode=%a' /opt
           findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS -T /opt
+          test -d /opt && test ! -L /opt && test "$(stat -c %u /opt)" = 0
+          for p in /opt/kurumifrp /var/lib/kurumifrp /var/lib/kurumifrp-package /usr/bin/kurumifrp; do test ! -e "$p" && test ! -L "$p"; done
+          ! getent passwd kurumifrp
+          opt_mode=$(stat -c %a /opt)
+          trap 'sudo chmod "$opt_mode" /opt' EXIT
+          sudo chmod 755 /opt
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb
   source-macos:
     runs-on: macos-latest

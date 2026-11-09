@@ -56,18 +56,10 @@ def keys():
 
 
 try:
-    # A package must refuse an unsafe parent before unpacking any payload.
     opt = Path('/opt')
     opt_stat = opt.lstat()
     opt_mode = stat.S_IMODE(opt_stat.st_mode)
     assert stat.S_ISDIR(opt_stat.st_mode) and opt_stat.st_uid == 0 and not opt_mode & 0o022, 'test requires a safe /opt before the negative test'
-    try:
-        opt.chmod(opt_mode | 0o002)
-        rejected = subprocess.run(install, timeout=120, check=False)
-        assert rejected.returncode != 0, 'package accepted a writable /opt'
-        assert not root.exists() and not root.is_symlink() and not exe.exists() and not exe.is_symlink(), 'package unpacked payload before checking /opt'
-    finally:
-        opt.chmod(opt_mode)
     run(install)
     ensure_running()
     before=keys()
@@ -162,6 +154,14 @@ try:
     for p in (root,base,meta,exe,Path('/usr/lib/systemd/system/kurumifrp.service'),Path('/usr/share/doc/kurumifrp')):
         assert not p.exists(), 'managed path remains: '+str(p)
     assert subprocess.run(['getent','passwd','kurumifrp'],stdout=subprocess.DEVNULL).returncode!=0
+    # A package must refuse an unsafe parent before unpacking any payload.
+    try:
+        opt.chmod(opt_mode | 0o002)
+        rejected = subprocess.run(install, timeout=120, check=False)
+        assert rejected.returncode != 0, 'package accepted a writable /opt'
+        assert not root.exists() and not root.is_symlink() and not exe.exists() and not exe.is_symlink(), 'package unpacked payload before checking /opt'
+    finally:
+        opt.chmod(opt_mode)
     # Reinstall, then simulate an interrupted purge after the service account
     # and runtime disappeared but before root-owned metadata was removed.
     run(install)
