@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 
 	frpclient "github.com/fatedier/frp/client"
 	clienttraffic "github.com/fatedier/frp/client/traffic"
@@ -32,7 +31,7 @@ var (
 // Do not mutate any input while NewFRPClient is copying it. The constructor
 // keeps its own copies. Proxies and visitors use their unprefixed config names.
 // Includes, store sources, frp admin/metrics servers, virtual net, OIDC and
-// token sources, QUIC, XTCP, upstream proxies, plugins and health checks
+// token sources, XTCP, upstream proxies, plugins and health checks
 // are unsupported. Scoped DNS accepts an IP literal. Input completed with
 // upstream Complete may already
 // contain an inherited http_proxy; use ParseClientConfig or
@@ -77,8 +76,7 @@ func prepareFRPClient(options FRPClientOptions) (*preparedFRPClient, error) {
 		common.WebServer.Port != 0 || common.MetricsServer.Port != 0 ||
 		len(common.IncludeConfigFiles) != 0 || common.Store.IsEnabled() ||
 		(common.Auth.Method != "" && common.Auth.Method != v1.AuthMethodToken) ||
-		common.Auth.TokenSource != nil || common.Transport.ProxyURL != "" ||
-		strings.EqualFold(common.Transport.Protocol, "quic") {
+		common.Auth.TokenSource != nil || common.Transport.ProxyURL != "" {
 		return nil, ErrFRPUnsupported
 	}
 	if err := frpclient.ValidateRestrictedNetworkConfig(&common); err != nil {
@@ -133,7 +131,7 @@ func prepareFRPClient(options FRPClientOptions) (*preparedFRPClient, error) {
 	}
 	// Keep preflight aligned with the service constructor's transport allowlist.
 	switch common.Transport.Protocol {
-	case "tcp", "kcp", "websocket", "wss":
+	case "tcp", "kcp", "quic", "websocket", "wss":
 	default:
 		return nil, ErrFRPUnsupported
 	}

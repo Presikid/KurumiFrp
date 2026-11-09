@@ -254,6 +254,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 		options.Common.Transport.ProxyURL != "" ||
 		(options.Common.Transport.Protocol != "tcp" &&
 			options.Common.Transport.Protocol != "kcp" &&
+			options.Common.Transport.Protocol != "quic" &&
 			options.Common.Transport.Protocol != "websocket" &&
 			options.Common.Transport.Protocol != "wss")) {
 		return nil, errors.New("configuration is not supported by the isolated client")

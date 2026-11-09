@@ -33,8 +33,8 @@ These lifecycle changes still require validation in the combined workspace and
 are not a runtime guarantee.
 
 The profile rejects virtual networking, admin and metrics servers, includes,
-store sources, OIDC and dynamic token sources, QUIC transport, XTCP,
-upstream proxies, client/visitor plugins, health checks, custom hooks and
+store sources, OIDC and dynamic token sources, XTCP, upstream proxies,
+client/visitor plugins, health checks, custom hooks and
 unsafe feature overrides. The adapter returns ErrFRPUnsupported for these
 options. Other upstream users retain normal configuration completion and use
 the process logger unless they explicitly supply an instance sink or logger.
@@ -47,7 +47,7 @@ used by senders. This is a source-level design, not proof that every dependency
 or error path has drained. The 05 RuntimeInstance.Wait contract requires
 resources to be safe to replace; do not claim that contract is met without
 independent verification. A local client and server have forwarded TCP data
-over TCP, WebSocket and KCP and stopped successfully. Other protocols,
+over TCP, WebSocket, KCP and QUIC and stopped successfully. Other protocols,
 concurrent runtimes and failure recovery remain unverified.
 
 ValidateFRPClient runs the same restricted configuration preparation as the
