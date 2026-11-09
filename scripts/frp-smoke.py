@@ -1,6 +1,7 @@
 """Real TCP/STCP roundtrips through official frps/frpc; uses disposable loopback ports.
 Usage: python3 scripts/frp-smoke.py ./kurumi /path/to/frp-dir
-This does not download or install software or touch an existing workspace.
+This does not download or install software. Native package CI may pass
+--existing ADDRESS DATA_DIR --disposable-package-test to test its disposable installation.
 """
 import json
 import os
@@ -31,6 +32,10 @@ class Echo(socketserver.BaseRequestHandler):
 
 binary = str(Path(sys.argv[1]).resolve())
 frp = str(Path(sys.argv[2]).resolve())
+existing = '--existing' in sys.argv[3:]
+if existing and (len(sys.argv) != 7 or sys.argv[3] != '--existing' or sys.argv[6] != '--disposable-package-test' or
+                 (os.environ.get('KURUMI_DISPOSABLE_PACKAGE_TEST') != '1' and not (os.name == 'nt' and os.environ.get('CI') == 'true'))):
+    raise SystemExit('Existing-workspace tests require an explicitly disposable package CI environment.')
 with tempfile.TemporaryDirectory(prefix="kurumi-frp-") as tmp, socketserver.ThreadingTCPServer(("127.0.0.1", 0), Echo) as echo:
     echo.daemon_threads = True
     threading.Thread(target=echo.serve_forever, daemon=True).start()
@@ -42,23 +47,24 @@ with tempfile.TemporaryDirectory(prefix="kurumi-frp-") as tmp, socketserver.Thre
                 used.add(p)
                 return p
     http_port, bind_port, remote_port, visitor_port = unique_port(), unique_port(), unique_port(), unique_port()
-    base = f"http://127.0.0.1:{http_port}"
+    base = 'http://' + sys.argv[4] if existing else f"http://127.0.0.1:{http_port}"
+    data_dir = Path(sys.argv[5]) if existing else Path(tmp)
     # frpc reads lowercase http_proxy directly and does not apply no_proxy.
     # This disposable integration fixture connects only to our loopback frps;
     # keep the runner's outbound HTTP proxy out of that local test connection.
     local_env = os.environ.copy()
     local_env.pop("http_proxy", None)
-    manager = subprocess.Popen([binary, "--data", tmp, "--frp-dir", frp, "--listen", f"127.0.0.1:{http_port}"], stdout=subprocess.DEVNULL, env=local_env)
+    manager = None if existing else subprocess.Popen([binary, "--data", tmp, "--frp-dir", frp, "--listen", f"127.0.0.1:{http_port}"], stdout=subprocess.DEVNULL, env=local_env)
     try:
         for _ in range(100):
             try:
                 urllib.request.urlopen(base, timeout=1).close()
                 break
             except OSError:
-                if manager.poll() is not None:
+                if manager is not None and manager.poll() is not None:
                     raise RuntimeError("manager exited")
                 time.sleep(.1)
-        token = (Path(tmp) / "access.token").read_text()
+        token = (data_dir / "access.token").read_text(encoding='utf-8')
         def api(path, body=None):
             request = urllib.request.Request(base + "/api/" + path,
                 data=json.dumps(body).encode() if body is not None else None,
@@ -72,6 +78,16 @@ with tempfile.TemporaryDirectory(prefix="kurumi-frp-") as tmp, socketserver.Thre
             return api("save", {"revision": api("state")["revision"], "kind": kind, "value": value})
         def control(id, action):
             return api("control", {"revision": api("state")["revision"], "id": id, "action": action})
+        if existing:
+            status = api('core')
+            assert status.get('bundledInUse'), 'packaged core is not selected'
+            initial = api('state')['state']
+            assert not initial['instances'] and not initial['tunnels'], 'existing test workspace must be empty'
+            packaged = Path(binary).parent / 'bundled' / (Path(__file__).resolve().parents[1] / 'VERSION').read_text(encoding='utf-8').strip()
+            suffix = '.exe' if os.name == 'nt' else ''
+            for kind in ('frpc', 'frps'):
+                version = subprocess.check_output([str(packaged / (kind + suffix)), '-v'], text=True, timeout=10).strip()
+                assert version.lstrip('v') == status['bundled']['tag'].lstrip('v'), (kind, version, status['bundled']['tag'])
         if not api("state")["binaries"]["frpc"]:
             installed = api("core")["installed"]
             if len(installed) != 1:
@@ -136,15 +152,21 @@ with tempfile.TemporaryDirectory(prefix="kurumi-frp-") as tmp, socketserver.Thre
                 for id in [server_id, client_id, visitor_id]:
                     print(json.dumps(api("logs?id=" + id), ensure_ascii=False))
                 raise AssertionError(f"TCP/STCP roundtrip failed on {target_port}")
-        for config in (Path(tmp) / "runtime").glob("*.toml"):
-            text = config.read_text()
+        for config in (data_dir / "runtime").glob("*.toml"):
+            text = config.read_text(encoding='utf-8')
             assert auth_secret not in text and pair_secret not in text
         control(visitor_id, "stop")
         control(client_id, "stop")
         control(server_id, "stop")
         assert all(v["state"] != "running" for v in api("state")["runtime"].values())
+        if existing:
+            state = api('state')['state']
+            for kind, values in [('tunnel', state['tunnels']), ('instance', state['instances'])]:
+                for value in values:
+                    api('delete', {'revision': api('state')['revision'], 'kind': kind, 'id': value['id']})
         print("PASS: official frps/frpc verify, complex credentials, TCP/STCP byte roundtrips and stop.")
     finally:
-        manager.terminate()
-        manager.wait(timeout=20)
+        if manager is not None:
+            manager.terminate()
+            manager.wait(timeout=20)
         echo.shutdown()

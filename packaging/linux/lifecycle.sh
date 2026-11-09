@@ -2,6 +2,7 @@
 set -eu
 umask 077
 ROOT=/opt/kurumifrp
+BUNDLED=$ROOT/bundled/@PACKAGE_VERSION@
 BASE=$ROOT/runtime
 META=$ROOT/meta
 PRIVATE=$ROOT/private
@@ -11,8 +12,25 @@ OLD_META=/var/lib/kurumifrp-package
 UNIT=kurumifrp.service
 
 plain() {
- for p in /opt "$ROOT" "$ROOT/kurumifrp" "$BASE" "$META" "$META/identity" "$META/migrating" "$META/.receipt.tmp" "$PRIVATE" "$ROOT/private.purging" "$ROOT/backups" "$BACKUP" /var /var/lib "$OLD" "$OLD_META" "$OLD_META/uid"; do
+ for p in /opt "$ROOT" "$ROOT/kurumifrp" "$ROOT/bundled" "$BUNDLED" "$BUNDLED/frpc" "$BUNDLED/frps" "$BUNDLED/LICENSE" "$BUNDLED/manifest.json" "$BASE" "$META" "$META/identity" "$META/migrating" "$META/.receipt.tmp" "$PRIVATE" "$ROOT/private.purging" "$ROOT/backups" "$BACKUP" /var /var/lib "$OLD" "$OLD_META" "$OLD_META/uid"; do
   [ ! -L "$p" ] || { echo "Refusing linked package state: $p" >&2; exit 1; }
+ done
+}
+bundle_targets_owned() {
+ for entry in "$ROOT/bundled" "$BUNDLED" "$BUNDLED/frpc" "$BUNDLED/frps" "$BUNDLED/LICENSE" "$BUNDLED/manifest.json"; do
+  [ -e "$entry" ] || [ -L "$entry" ] || continue
+  [ ! -L "$entry" ] && [ "$(stat -c %u "$entry")" = 0 ] || { echo "Unsafe bundled path retained: $entry" >&2; exit 1; }
+  case "$entry" in
+   "$ROOT/bundled"|"$BUNDLED") [ -d "$entry" ] || { echo "Unexpected bundled directory retained: $entry" >&2; exit 1; } ;;
+   *) [ -f "$entry" ] && [ "$(stat -c %h "$entry")" = 1 ] || { echo "Unsafe bundled file retained: $entry" >&2; exit 1; } ;;
+  esac
+  owned=0
+  if command -v dpkg-query >/dev/null 2>&1 && dpkg-query -S "$entry" 2>/dev/null | awk -F ': ' -v p="$entry" '$1 ~ /^kurumifrp(:[a-z0-9-]+)?$/ && $2 == p { found=1 } END { exit !found }'; then
+   owned=1
+  elif command -v rpm >/dev/null 2>&1 && [ "$(rpm -qf --qf '%{NAME}' "$entry" 2>/dev/null)" = kurumifrp ]; then
+   owned=1
+  fi
+  [ "$owned" = 1 ] || { echo "Unmanaged bundled file retained: $entry" >&2; exit 1; }
  done
 }
 write_receipt() {
@@ -128,6 +146,7 @@ legacy_package_targets_owned() {
 }
 pre_upgrade() {
  plain
+ bundle_targets_owned
  if [ ! -e "$META/identity" ]; then
   unclaimed_target_empty
   if [ ! -e "$OLD_META/uid" ]; then unclaimed_package_targets_empty; fi
