@@ -298,8 +298,8 @@ func NewService(options ServiceOptions) (*Service, error) {
 	visitorCfgs = config.CompleteVisitorConfigurers(visitorCfgs)
 	if options.Isolated {
 		for _, cfg := range proxyCfgs {
-			if cfg.GetBaseConfig().Plugin.Type != "" || cfg.GetBaseConfig().HealthCheck.Type != "" {
-				return nil, errors.New("proxy plugins and health checks are not supported by the isolated client")
+			if cfg.GetBaseConfig().Plugin.Type != "" {
+				return nil, errors.New("proxy plugins are not supported by the isolated client")
 			}
 		}
 		for _, cfg := range visitorCfgs {
@@ -631,7 +631,7 @@ func (svr *Service) UpdateAllConfigurer(proxyCfgs []v1.ProxyConfigurer, visitorC
 func (svr *Service) updateAllConfigurerLocked(proxyCfgs []v1.ProxyConfigurer, visitorCfgs []v1.VisitorConfigurer) error {
 	if svr.isolateLogs {
 		for _, cfg := range proxyCfgs {
-			if cfg == nil || cfg.GetBaseConfig() == nil || cfg.GetBaseConfig().Plugin.Type != "" || cfg.GetBaseConfig().HealthCheck.Type != "" {
+			if cfg == nil || cfg.GetBaseConfig() == nil || cfg.GetBaseConfig().Plugin.Type != "" {
 				return errors.New("proxy configuration is not supported by the isolated client")
 			}
 		}

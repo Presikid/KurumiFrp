@@ -55,6 +55,11 @@ const ProtocolEditor = (() => {
      <label>HTTP 检测方法<select name="probeMethod"><option value="" ${!v.probeMethod ? 'selected' : ''}>默认 · HEAD</option><option value="HEAD" ${v.probeMethod === 'HEAD' ? 'selected' : ''}>HEAD · 只检查响应头</option><option value="GET" ${v.probeMethod === 'GET' ? 'selected' : ''}>GET · 兼容只支持 GET 的接口</option></select></label>
      <p class="small-note span-2">仅用于 KurumiFRP 本地检测，不会写入 frp 配置；响应正文不会保存或显示。</p>
     </div>
+    <div class="health-check-field span-2"><label>代理自动健康检查<select name="healthCheckType"><option value="" ${!v.healthCheckType ? 'selected' : ''}>关闭</option><option value="tcp" ${v.healthCheckType === 'tcp' ? 'selected' : ''}>TCP 连接</option><option value="http" ${v.healthCheckType === 'http' ? 'selected' : ''}>HTTP 请求</option></select></label><small>失败达到设定次数后暂停代理，服务恢复后自动重新注册。</small></div>
+    <div class="health-http-field span-2">${field('healthCheckPath', 'HTTP 健康检查路径', v.healthCheckPath || '/', 'text', 'maxlength="512" placeholder="/health"')}</div>
+    <div class="health-check-options">${field('healthCheckTimeoutSeconds', '检查超时（秒，0 使用默认）', v.healthCheckTimeoutSeconds ?? 0, 'number', 'min="0" max="86400" step="1"')}</div>
+    <div class="health-check-options">${field('healthCheckIntervalSeconds', '检查间隔（秒，0 使用默认）', v.healthCheckIntervalSeconds ?? 0, 'number', 'min="0" max="604800" step="1"')}</div>
+    <div class="health-check-options">${field('healthCheckMaxFailed', '连续失败次数（0 使用默认）', v.healthCheckMaxFailed ?? 0, 'number', 'min="0" max="1000" step="1"')}</div>
     <div class="tcpmux-field">${field('subdomain', 'TCPMUX 子域名（可选）', v.subdomain || '')}</div>
     <div class="tcpmux-field"><label>多路复用器<select name="multiplexer"><option value="" ${!v.multiplexer ? 'selected' : ''}>默认 · httpconnect</option><option value="httpconnect" ${v.multiplexer === 'httpconnect' ? 'selected' : ''}>httpconnect</option></select></label></div>
     <p class="tcpmux-field small-note span-2">至少填写一个域名或子域名；域名支持 * 和 *.example.com。使用子域名时需在服务端配置子域名后缀。</p>
@@ -124,6 +129,10 @@ const ProtocolEditor = (() => {
   visible(form, '.port-field', ['tcp', 'udp'].includes(type));
   visible(form, '.domain-field', ['http', 'https', 'tcpmux'].includes(type));
   visible(form, '.probe-field', ['http', 'https'].includes(type));
+  visible(form, '.health-check-field', !visitor);
+  visible(form, '.health-check-options', !visitor && f.healthCheckType.value !== '');
+  visible(form, '.health-http-field', !visitor && f.healthCheckType.value === 'http');
+  f.healthCheckPath.required = !visitor && f.healthCheckType.value === 'http';
   visible(form, '.tcpmux-field', type === 'tcpmux');
   visible(form, '.visitor-field', visitor);
   visible(form, '.secret-field', paired);
@@ -172,6 +181,11 @@ const ProtocolEditor = (() => {
   delete result.hasSecret; delete result.hasHTTPPassword; delete result.secret; delete result.httpPassword;
   Object.assign(result, {name:val('name').trim(), instanceId:val('instanceId'), type, localHost:val('localHost').trim(), localPort:+val('localPort'),
    bandwidthKB:visitor ? 0 : +val('bandwidthKB'), enabled:f.enabled.checked, useEncryption:f.useEncryption.checked, useCompression:f.useCompression.checked});
+  const health = visitor ? '' : val('healthCheckType');
+  Object.assign(result, {healthCheckType:health, healthCheckPath:health === 'http' ? val('healthCheckPath').trim() : '',
+   healthCheckTimeoutSeconds:health ? +val('healthCheckTimeoutSeconds') : 0,
+   healthCheckIntervalSeconds:health ? +val('healthCheckIntervalSeconds') : 0,
+   healthCheckMaxFailed:health ? +val('healthCheckMaxFailed') : 0});
   if (['tcp', 'udp'].includes(type)) result.remotePort = +val('remotePort');
   if (['http', 'https', 'tcpmux'].includes(type)) result.domains = val('domains').split(',').map(s => s.trim()).filter(Boolean);
   if (['http', 'https'].includes(type)) { result.probePath = val('probePath').trim(); result.probeMethod = val('probeMethod'); }

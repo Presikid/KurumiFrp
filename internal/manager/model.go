@@ -41,6 +41,11 @@ type Tunnel struct {
 	Domains              []string `json:"domains"`
 	ProbePath            string   `json:"probePath,omitempty"`
 	ProbeMethod          string   `json:"probeMethod,omitempty"`
+	HealthCheckType      string   `json:"healthCheckType,omitempty"`
+	HealthCheckPath      string   `json:"healthCheckPath,omitempty"`
+	HealthCheckTimeout   int      `json:"healthCheckTimeoutSeconds,omitempty"`
+	HealthCheckInterval  int      `json:"healthCheckIntervalSeconds,omitempty"`
+	HealthCheckMaxFailed int      `json:"healthCheckMaxFailed,omitempty"`
 	ServerName           string   `json:"serverName"`
 	Secret               string   `json:"secret,omitempty"`
 	HasSecret            bool     `json:"hasSecret,omitempty"`
@@ -327,6 +332,9 @@ func validate(s State) error {
 		}
 		if t.BandwidthKB < 0 || t.BandwidthKB > 10000000 {
 			return fmt.Errorf("带宽限制须为 0-10000000 KB/s")
+		}
+		if err := validateRuleHealthCheck(t); err != nil {
+			return err
 		}
 		endpoint := strings.ToLower(i.Host) + fmt.Sprintf(":%d/", i.Port)
 		if ip := net.ParseIP(i.Host); ip != nil {

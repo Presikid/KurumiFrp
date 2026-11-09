@@ -34,10 +34,10 @@ are not a runtime guarantee.
 
 The profile rejects virtual networking, admin and metrics servers, includes,
 store sources, OIDC and dynamic token sources, upstream proxies,
-client/visitor plugins, health checks, custom hooks and
+client/visitor plugins, custom hooks and
 unsafe feature overrides. The adapter returns ErrFRPUnsupported for these
-options. XTCP is available in the development profile but still needs
-end-to-end NAT traversal and failure recovery verification. Other upstream users
+options. XTCP and proxy health checks are available in the development profile,
+but still need end-to-end and failure recovery verification. Other upstream users
 retain normal configuration completion and use the process logger unless they
 explicitly supply an instance sink or logger.
 

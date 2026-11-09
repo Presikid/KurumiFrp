@@ -188,7 +188,7 @@ func (pw *Wrapper) SetRunningStatus(remoteAddr string, respErr string) error {
 func (pw *Wrapper) Start() {
 	lifetime.Go(pw.ctx, pw.checkWorker)
 	if pw.monitor != nil {
-		lifetime.Go(pw.ctx, pw.monitor.Start)
+		pw.monitor.Start()
 	}
 }
 
