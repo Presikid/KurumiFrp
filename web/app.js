@@ -8,6 +8,7 @@ let data, page = 'overview', selected = '', filter = '', protocol = '', editing,
 let authGeneration = 0, stateETag = '', stateSnapshot = '', renderedSnapshot = '', renderedPage = '';
 let stateRequest = null, logRequest = null, deferredConfig = null;
 let registrationRequest = null, registrations = Object.create(null), registrationRevision = null, registrationProcesses = Object.create(null);
+let registrationPaintPending = false;
 let navigationGeneration = 0;
 let healthDialog = null;
 const dialog = $('#dialog');
@@ -51,7 +52,7 @@ function resetSession() {
  ++authGeneration; ++serial;
  stateRequest?.controller.abort(); logRequest?.controller.abort();
  stateRequest = null; logRequest = null; deferredConfig = null;
- registrationRequest = null; registrations = Object.create(null); registrationRevision = null; registrationProcesses = Object.create(null); ++navigationGeneration;
+ registrationRequest = null; registrations = Object.create(null); registrationRevision = null; registrationProcesses = Object.create(null); registrationPaintPending = false; ++navigationGeneration;
  stateETag = ''; stateSnapshot = ''; renderedSnapshot = ''; renderedPage = ''; data = null;
  probeResults = Object.create(null); probing = Object.create(null); probeRevision = null; probingAll = false; probeBatchProgress = null;
 }
@@ -220,7 +221,7 @@ function invalidateRegistrationForRuntime(previous, next) {
   if (before[tunnel.instanceId]===after[tunnel.instanceId]) continue;
   delete registrations[tunnel.id];
   const cell=document.querySelector(`[data-registration="${tunnel.id}"]`);
-  if (cell) cell.textContent='等待状态';
+  if (cell) {if (hasSelection()) registrationPaintPending=true; else cell.textContent='等待状态';}
  }
 }
 function registrationFor(tunnel) {
@@ -243,13 +244,15 @@ function showHealth(report) {
  stopRefreshPolling(); healthDialog.showModal();
 }
 function paintRegistrations() {
- if (hasSelection()) return;
+ if (hasSelection()) {registrationPaintPending=true;return;}
+ registrationPaintPending=false;
  document.querySelectorAll('[data-registration]').forEach(el=>{
   const tunnel=data?.state?.tunnels?.find(t=>t.id===el.dataset.registration);
   const next=registrationText(tunnel ? registrationFor(tunnel) : null);
   if (el.textContent!==next) el.textContent=next;
  });
 }
+document.addEventListener('selectionchange',()=>{if(registrationPaintPending&&!hasSelection())paintRegistrations();});
 function refreshRegistration() {
  if (!data || page!=='tunnels' || document.hidden || registrationRequest) return;
  const generation=authGeneration, revision=data.revision, processes=processSnapshot(data);

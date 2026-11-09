@@ -155,6 +155,26 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#editor button[type="submit"]').click()
             page.locator('#dialog').wait_for(state="hidden")
             expect(page.locator('[data-registration]').first).to_contain_text('未运行')
+            selection_case = page.evaluate("""async () => {
+                stopRefreshPolling();
+                if (stateRequest) await stateRequest.promise;
+                if (registrationRequest) await registrationRequest;
+                stopRefreshPolling();
+                const original=data, tunnel=data.state.tunnels[0], running=structuredClone(data);
+                running.runtime[tunnel.instanceId]={state:'running',pid:31415,started:'first',runId:'first-run'};
+                data=running; registrations=Object.create(null); registrations[tunnel.id]={state:'registered'};
+                registrationRevision=data.revision; registrationProcesses=processSnapshot(data); paintRegistrations();
+                const cell=document.querySelector('[data-registration]'), range=document.createRange();
+                range.selectNodeContents(cell); const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);
+                const exited=structuredClone(data);exited.runtime[tunnel.instanceId]={state:'exited',pid:0,started:'first',runId:'first-run'};
+                invalidateRegistrationForRuntime(data,exited);data=exited;paintRegistrations();
+                const whileSelected={text:cell.textContent,selection:selection.toString(),cached:Object.hasOwn(registrations,tunnel.id)};
+                selection.removeAllRanges();await new Promise(resolve=>setTimeout(resolve,100));
+                const afterRelease=cell.textContent;
+                data=original;registrations=Object.create(null);registrationRevision=null;registrationProcesses=Object.create(null);render();scheduleRefresh(0);
+                return {whileSelected,afterRelease};
+            }""")
+            assert selection_case == {'whileSelected':{'text':'已注册','selection':'已注册','cached':False},'afterRelease':'等待状态'}, selection_case
             runtime_case = page.evaluate("""() => {
                 stopRefreshPolling();
                 const original=data, t=data.state.tunnels[0], running=structuredClone(data);

@@ -18,6 +18,9 @@ func TestStatusRecoveryRequiresDeadProcessesAndOwnedFiles(t *testing.T) {
 		t.Skip("process namespace identity unavailable")
 	}
 	root := t.TempDir()
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
 	makeStatus := func(owner, child int) *privateStatus {
 		s, err := newPrivateStatus(root)
 		if err != nil {
@@ -75,6 +78,14 @@ func TestStatusRecoveryRequiresDeadProcessesAndOwnedFiles(t *testing.T) {
 	if b, err := os.ReadFile(target); err != nil || string(b) != "retain" {
 		t.Fatal("link target changed", err)
 	}
+	insecure := makeStatus(missingOwner, missingChild)
+	if err := os.Chmod(root, 0755); err != nil {
+		t.Fatal(err)
+	}
+	reapPrivateStatuses(root)
+	if _, err := os.Stat(insecure.dir); err != nil {
+		t.Fatal("insecure parent directory was cleaned", err)
+	}
 }
 
 func TestStatusRecoveryProcessHelper(t *testing.T) {
@@ -106,6 +117,9 @@ func TestStatusRecoveryAfterProcessCrash(t *testing.T) {
 	}
 	owner, child := start(), start()
 	root := t.TempDir()
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
 	s, err := newPrivateStatus(root)
 	if err != nil {
 		t.Fatal(err)
