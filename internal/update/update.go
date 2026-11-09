@@ -269,6 +269,8 @@ func (m *Manager) Start(tag string) error {
 		m.busy = false
 		if err != nil {
 			m.status = "更新失败：" + err.Error()
+		} else if m.distribution == "windows-installed" {
+			m.status = "更新请求已提交；更新完成后请以平时使用的账户手动打开工作台并确认版本"
 		} else {
 			m.status = "更新请求已提交；工作台可能暂时断开，请在重新打开后确认版本"
 		}

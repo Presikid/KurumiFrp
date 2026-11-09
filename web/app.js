@@ -555,7 +555,7 @@ $('#content').addEventListener('click',async e=>{
    const generation=authGeneration, tag=updateSelection;
    if(updateBusy())return;
    if(!updateCanInstall(tag)||$('#update-version').value!==tag){updateSelection='';updateSelectionLost=true;paintUpdate();throw new Error('所选版本不可用，请重新选择');}
-   if(!confirm(`更新到 ${tag}？更新将中断工作台和托管连接。`))return;
+   if(!confirm(`更新到 ${tag}？更新将中断工作台和托管连接。更新完成后请重新打开工作台并确认版本。`))return;
    updateInstalling=true;
    if(updatePollTimer!==null)clearTimeout(updatePollTimer);
    updatePollTimer=null; updateStatusRequest?.controller.abort(); updateStatusRequest=null;
