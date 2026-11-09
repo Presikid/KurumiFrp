@@ -68,7 +68,7 @@ func possibleProxyConflicts(s State) map[string]string {
 	}
 	conflicts := map[string]string{}
 	for _, tunnel := range s.Tunnels {
-		if !tunnel.Enabled || (tunnel.Type != "tcp" && tunnel.Type != "udp") {
+		if !tunnel.Enabled || tunnel.RemotePort == 0 || (tunnel.Type != "tcp" && tunnel.Type != "udp") {
 			continue
 		}
 		client, ok := instances[tunnel.InstanceID]
@@ -103,7 +103,7 @@ func possibleProxyConflicts(s State) map[string]string {
 		return ip != nil && ip.IsLoopback()
 	}
 	for n, left := range s.Tunnels {
-		if !left.Enabled || (left.Type != "tcp" && left.Type != "udp") {
+		if !left.Enabled || left.RemotePort == 0 || (left.Type != "tcp" && left.Type != "udp") {
 			continue
 		}
 		leftClient, ok := instances[left.InstanceID]

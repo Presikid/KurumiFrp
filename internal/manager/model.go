@@ -108,6 +108,8 @@ var idPattern = regexp.MustCompile(`^[a-f0-9]{16}$`)
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 var domainPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$`)
 
+const maxTunnelCount = 512
+
 func probePathOK(s string) bool {
 	if s == "" {
 		return true
@@ -215,7 +217,7 @@ func validateVisitorListeners(old, next State) error {
 }
 
 func validate(s State) error {
-	if len(s.Instances) > 64 || len(s.Tunnels) > 512 {
+	if len(s.Instances) > 64 || len(s.Tunnels) > maxTunnelCount {
 		return fmt.Errorf("最多支持 64 个实例、512 条规则")
 	}
 	ids := map[string]bool{}
@@ -307,10 +309,10 @@ func validate(s State) error {
 		}
 		switch t.Type {
 		case "tcp", "udp":
-			if !portOK(t.RemotePort) {
-				return fmt.Errorf("TCP/UDP 必须设置远端端口")
+			if t.RemotePort < 0 || t.RemotePort > 65535 {
+				return fmt.Errorf("TCP/UDP 远端端口须为 0-65535；0 表示动态分配")
 			}
-			if t.Enabled {
+			if t.Enabled && t.RemotePort != 0 {
 				if err := claim(endpoint+t.Type+fmt.Sprint(t.RemotePort), t.Name); err != nil {
 					return err
 				}

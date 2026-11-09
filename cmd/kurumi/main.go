@@ -216,6 +216,7 @@ func run() error {
 			return e
 		}
 	}
+	app.RequestShutdown()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return server.Shutdown(ctx)

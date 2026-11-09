@@ -91,6 +91,45 @@ func decodeStrictJSON(data []byte, dst any) error {
 	return nil
 }
 
+// Missing or null TCP/UDP ports used to be invalid. Do not reinterpret them as
+// explicit dynamic-allocation requests when loading current or historic data.
+// This also accepts an explicit zero written by the port-range development branch.
+func requireStoredRemotePorts(data []byte) error {
+	type portFields struct {
+		Type       string `json:"type"`
+		RemotePort *int   `json:"remotePort"`
+	}
+	type stateFields struct {
+		Tunnels []portFields `json:"tunnels"`
+	}
+	var contents struct {
+		State   stateFields `json:"state"`
+		History []struct {
+			State stateFields `json:"state"`
+		} `json:"history"`
+	}
+	if err := json.Unmarshal(data, &contents); err != nil {
+		return err
+	}
+	check := func(state stateFields) error {
+		for _, tunnel := range state.Tunnels {
+			if (tunnel.Type == "tcp" || tunnel.Type == "udp") && tunnel.RemotePort == nil {
+				return fmt.Errorf("TCP/UDP rule is missing an explicit remotePort")
+			}
+		}
+		return nil
+	}
+	if err := check(contents.State); err != nil {
+		return err
+	}
+	for _, snapshot := range contents.History {
+		if err := check(snapshot.State); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func singleFileDatabase(data []byte) (Database, error) {
 	var db Database
 	if err := decodeStrictJSON(data, &db); err != nil {
@@ -98,6 +137,9 @@ func singleFileDatabase(data []byte) (Database, error) {
 	}
 	if db.Format != 3 && db.Format != currentDatabaseFormat {
 		return db, fmt.Errorf("unsupported single-file database format")
+	}
+	if err := requireStoredRemotePorts(data); err != nil {
+		return db, err
 	}
 	return db, nil
 }
@@ -330,6 +372,9 @@ func newStore(dir string) (*Store, error) {
 		if e = decodeStrictJSON(b, &s.DB); e != nil {
 			return nil, fmt.Errorf("cannot read format 1 state; original retained: %w", e)
 		}
+		if e = requireStoredRemotePorts(b); e != nil {
+			return nil, fmt.Errorf("cannot read format 1 state; original retained: %w", e)
+		}
 		s.key, e = privateFile(keyPath)
 		if e != nil || len(s.key) != 32 {
 			return nil, fmt.Errorf("invalid or missing encryption key; original retained")
@@ -365,6 +410,9 @@ func newStore(dir string) (*Store, error) {
 		if e = decodeStrictJSON(b, &disk); e != nil {
 			return nil, fmt.Errorf("cannot read format 2 state; original retained: %w", e)
 		}
+		if e = requireStoredRemotePorts(b); e != nil {
+			return nil, fmt.Errorf("cannot read format 2 state; original retained: %w", e)
+		}
 		s.key, e = privateFile(keyPath)
 		if e != nil || len(s.key) != 32 {
 			return nil, fmt.Errorf("invalid or missing encryption key; original retained")
@@ -389,6 +437,9 @@ func newStore(dir string) (*Store, error) {
 			}
 			var snap Snapshot
 			if err = decodeStrictJSON(data, &snap); err != nil {
+				return nil, fmt.Errorf("cannot read legacy snapshot; original retained: %w", err)
+			}
+			if err = requireStoredRemotePorts(data); err != nil {
 				return nil, fmt.Errorf("cannot read legacy snapshot; original retained: %w", err)
 			}
 			if snap.Revision != ref.Revision {

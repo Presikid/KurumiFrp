@@ -9,7 +9,8 @@ let data, page = 'overview', selected = '', filter = '', protocol = '', editing,
 let authGeneration = 0, stateETag = '', stateSnapshot = '', renderedSnapshot = '', renderedPage = '', renderedRevision = null;
 let stateRequest = null, logRequest = null, configRequest = null, deferredConfig = null;
 let logFilter = '', logSnapshot = null;
-let registrationRequest = null, registrations = Object.create(null), registrationRevision = null, registrationProcesses = Object.create(null);
+let logStream = null, logPaintFrame = null, logAccessDenied = null;
+let registrationRequest = null, registrations = Object.create(null), registrationRevision = null, registrationProcesses = Object.create(null), registrationEpoch = 0, registrationExpiryTimer = null;
 let registrationPaintPending = false;
 let navigationGeneration = 0;
 let healthDialog = null, healthChecking = false, healthSelected = '';
@@ -18,6 +19,10 @@ const diffDialog = $('#diff-dialog');
 let backupDialogEl = null, backupRequest = null, importFileVersion = 0;
 let webhookDialogEl = null, webhookDialogGeneration = 0;
 let transferRequest = null, transferNotice = null;
+const authSignalKey = 'kurumi-auth-session-change';
+let lastAuthSignal = '';
+let authChannel = null;
+try {if (typeof BroadcastChannel === 'function') authChannel = new BroadcastChannel('kurumi-auth-session');} catch (_) { /* Storage events are a fallback. */ }
 const transferStorageKey = 'kurumi-transfer-status';
 try {
  const saved = /^(import|backup):(pending|uncertain|complete)$/.exec(sessionStorage.getItem(transferStorageKey) || '');
@@ -81,8 +86,8 @@ async function api(path, body, options = {}) {
  const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST',credentials:'same-origin',headers:{...(body === undefined ? {}:{'Content-Type':'application/json'}),...options.headers},body:body === undefined ? undefined:JSON.stringify(body),signal:options.signal});
  if (options.conditional && response.status === 304) return {value:null,etag:response.headers.get('ETag') || ''};
  const json = await response.json();
- if (!response.ok) {if(response.status === 401 && path !== 'login' && generation === authGeneration) showLogin(); throw new Error(json.error || `HTTP ${response.status}`);}
- if (path === 'login' || path === 'launch-login') resetSession();
+ if (!response.ok) {if(response.status === 401 && path !== 'login' && generation === authGeneration) showLogin(); const error = new Error(json.error || `HTTP ${response.status}`); error.status = response.status; throw error;}
+ if (path === 'login' || path === 'launch-login') {resetSession(); announceSessionChange();}
  return options.conditional ? {value:json,etag:response.headers.get('ETag') || ''} : json;
 }
 async function transferAPI(path, body) {
@@ -115,28 +120,45 @@ function cancelLogRequest() {
 function cancelConfigRequest() {
  const request = configRequest; configRequest = null; deferredConfig = null; request?.controller.abort();
 }
-function cancelPageRequests() {cancelLogRequest(); cancelConfigRequest();}
+function cancelPageRequests() {cancelLogRequest(); cancelConfigRequest(); stopLogStream(); logAccessDenied = null;}
 function resetSession() {
  stopRefreshPolling();
  Overview.reset();
  window.KurumiInstances.reset();
  ++authGeneration; ++serial;
  stateRequest?.controller.abort(); cancelPageRequests();
+ if (logPaintFrame !== null) cancelAnimationFrame(logPaintFrame);
+ logPaintFrame = null;
  if (backupRequest && !backupRequest.submitted) backupRequest.controller.abort();
  backupRequest = null;
  if (transferNotice?.detail) {transferNotice.detail='';paintTransferNotice();}
  stateRequest = null; logFilter = ''; logSnapshot = null;
- $('#log-output')?.replaceChildren(); $('#log-filter')?.remove();
+ $('#content').replaceChildren();
  updateChecked = false; releases = []; updateStatus = ''; updateListError = ''; updateSelection = ''; updateSelectionLost = false; ++updateRequestSerial;
  if (updatePollTimer !== null) clearTimeout(updatePollTimer);
  updateStatusRequest?.controller.abort();
  updatePollTimer = null; updateStatusRequest = null; updateInstalling = false; updateTaskRunning = false; updateStatusKnown = false; updateOptions = '';
- registrationRequest = null; registrations = Object.create(null); registrationRevision = null; registrationProcesses = Object.create(null); registrationPaintPending = false; healthChecking = false; healthSelected = ''; ++navigationGeneration;
+ registrationRequest = null; registrations = Object.create(null); registrationRevision = null; registrationProcesses = Object.create(null); ++registrationEpoch; clearTimeout(registrationExpiryTimer); registrationExpiryTimer = null; registrationPaintPending = false; healthChecking = false; healthSelected = ''; ++navigationGeneration;
  stateETag = ''; stateSnapshot = ''; renderedSnapshot = ''; renderedPage = ''; renderedRevision = null; data = null;
  probeResults = Object.create(null); probing = Object.create(null); probeRevision = null; probingAll = false; probeBatchProgress = null;
  RulesPage.reset(); filter = ''; protocol = '';
+ editing = null; $('#dialog-body').inert = false; $('#cancel').disabled = false; $('#editor button[type="submit"]').disabled = false;
 }
 function showLogin() {resetSession();updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; if (dialog.open) dialog.close(); if (diffDialog.open) diffDialog.close(); if (backupDialogEl?.open) backupDialogEl.close(); if (webhookDialogEl?.open) webhookDialogEl.close(); if (healthDialog?.open) healthDialog.close();}
+function announceSessionChange() {
+ const signal = `${Date.now()}:${Math.random()}`;
+ lastAuthSignal = signal;
+ try {authChannel?.postMessage(signal);} catch (_) { /* Storage events are a fallback. */ }
+ try {localStorage.setItem(authSignalKey, signal);} catch (_) { /* BroadcastChannel is a fallback. */ }
+}
+function receiveSessionChange(signal) {
+ if (typeof signal !== 'string' || !signal || signal === lastAuthSignal) return;
+ lastAuthSignal = signal;
+ showLogin();
+ refresh(true);
+}
+if (authChannel) authChannel.onmessage = event => receiveSessionChange(event.data);
+window.addEventListener('storage', event => {if (event.key === authSignalKey) receiveSessionChange(event.newValue);});
 function hasSelection() {return Boolean(window.getSelection()?.toString());}
 function canSilentRender() {const content=$('#content'), active=document.activeElement;return !dialog.open && !diffDialog.open && !backupDialogEl?.open && !webhookDialogEl?.open && !healthDialog?.open && !hasSelection() && (active===content || !content.contains(active));}
 function renderPreservingScroll() {
@@ -171,11 +193,11 @@ async function refresh(silent = false) {
    if (fresh.value !== null) {
     const revisionChanged = data && data.revision !== fresh.value.revision;
     if (probeRevision !== fresh.value.revision) {probeResults = Object.create(null); probeRevision = fresh.value.revision;}
-    invalidateRegistrationForRuntime(data, fresh.value); invalidateLogsForRuntime(data, fresh.value); data = fresh.value;
+    const runtimeChanged = invalidateRegistrationForRuntime(data, fresh.value); invalidateLogsForRuntime(data, fresh.value); data = fresh.value;
     if (RulesPage.syncRevision(data.revision)) toast('草稿版本已变化，规则选择已清空，请重新选择。');
     if (page === 'tunnels' && revisionChanged) paintRulesList();
     if (page === 'tunnels' && !hasSelection()) RulesPage.paintRuntime(rulesContext());
-    paintRegistrations(); stateSnapshot = JSON.stringify(data); stateETag = fresh.etag;
+    paintRegistrations(Boolean(revisionChanged || runtimeChanged)); stateSnapshot = JSON.stringify(data); stateETag = fresh.etag;
    }
    if (!data) return false;
    $('#login').hidden = true; $('#app').hidden = false;
@@ -189,6 +211,7 @@ async function refresh(silent = false) {
    else if (canSilentRender() && (renderedSnapshot !== stateSnapshot || renderedPage !== page)) renderPreservingScroll();
    applyDeferredConfig();
    refreshRegistration();
+   syncLogStream();
    // Logs have a separate endpoint and can change even when state returns 304.
    // A delayed log response must not block polling the process generation.
    refreshLogs(silent);
@@ -203,17 +226,20 @@ async function refresh(silent = false) {
 function logRunId(state, id) {return state?.runtime?.[id]?.runId || '';}
 function invalidateLogsForRuntime(previous, next) {
  if (!previous || !next) return;
- if (logRequest && logRequest.runId !== logRunId(next, logRequest.id)) {
-  const old = logRequest; logRequest = null; old.controller.abort();
- }
- if (logSnapshot && logSnapshot.runId !== logRunId(next, logSnapshot.id)) logSnapshot = null;
- if (page === 'logs' && selected && logRunId(previous, selected) !== logRunId(next, selected)) {
-  showLogMessage('正在读取日志', '实例运行状态已变化，正在获取新的运行输出。', '正在读取…');
+ const visible = id => next.state.instances.some(instance => instance.id === id);
+ const stale = entry => !visible(entry.id) || entry.runId !== logRunId(next, entry.id);
+ if (logRequest && stale(logRequest)) cancelLogRequest();
+ if (logStream && stale(logStream)) stopLogStream();
+ if (logSnapshot && stale(logSnapshot)) logSnapshot = null;
+ if (logAccessDenied && stale(logAccessDenied)) logAccessDenied = null;
+ if (page === 'logs' && selected && (!visible(selected) || logRunId(previous, selected) !== logRunId(next, selected))) {
+  showLogMessage(visible(selected) ? '正在读取日志' : '实例不可用', visible(selected) ? '实例运行状态已变化，正在获取新的运行输出。' : '实例已移除或当前会话无权查看。', visible(selected) ? '正在读取…' : '实例不可用');
  }
 }
 function refreshLogs(silent = true) {
- if (!data || page !== 'logs' || !selected) return Promise.resolve();
+ if (!data || page !== 'logs' || !selected || document.hidden || !data.state.instances.some(i=>i.id===selected)) return Promise.resolve();
  const generation = authGeneration, navigation = navigationGeneration, id = selected, runId = logRunId(data, selected);
+ if (logStream?.ready && logStream.id === id && logStream.runId === runId && logStream.generation === generation && logStream.navigation === navigation) return Promise.resolve();
  if (logRequest && logRequest.generation === generation && logRequest.navigation === navigation && logRequest.id === id && logRequest.runId === runId) return logRequest.promise;
  logRequest?.controller.abort();
  const request = {generation,navigation,id,runId,controller:new AbortController(),timedOut:false};
@@ -224,15 +250,25 @@ function refreshLogs(silent = true) {
    const result = await api('logs?id='+encodeURIComponent(id),undefined,{signal:request.controller.signal});
    if (logRequest !== request || generation !== authGeneration || navigation !== navigationGeneration || page !== 'logs' || selected !== id || runId !== logRunId(data, id)) return;
    if ((result.runId || '') !== runId) {
-    logSnapshot = null;
+    stopLogStream(); logSnapshot = null;
     showLogMessage('正在读取日志', '实例运行状态正在更新，请稍候。', '正在读取…');
+    refresh(true);
     return;
    }
+   if (!Array.isArray(result.lines) || result.lines.length > 200 || !result.lines.every(line=>typeof line === 'string')) throw new Error('日志响应无效');
+   logAccessDenied = null;
    logSnapshot = {id, runId, lines: result.lines};
    // Updating only the output keeps controls focused and preserves selected text.
-   if (!hasSelection()) paintLogs();
+   scheduleLogPaint();
+   syncLogStream();
   } catch(e) {
    if (logRequest === request && generation === authGeneration && navigation === navigationGeneration && page === 'logs' && selected === id && runId === logRunId(data, id) && (e.name !== 'AbortError' || request.timedOut) && data) {
+    if (e.status === 403) {
+     logAccessDenied = {id,runId}; logSnapshot = null; stopLogStream();
+     showLogMessage('无法查看日志', '当前会话没有查看此实例日志的权限。', '无查看权限');
+     paintLogStatus();
+     return;
+    }
     const message = request.timedOut ? '读取日志超时，请稍后重试。' : '读取日志失败，请稍后重试。';
     if (!logSnapshot || logSnapshot.id !== id || logSnapshot.runId !== runId) showLogMessage('暂时无法读取日志', message, '读取失败');
     else if ($('#log-count')) $('#log-count').textContent = '刷新失败 · 显示上次结果';
@@ -242,10 +278,100 @@ function refreshLogs(silent = true) {
  })().finally(() => {clearTimeout(timeout);if (logRequest === request) logRequest = null;});
  return request.promise;
 }
+function paintLogStatus() {
+ const status = $('#log-mode');
+ if (!status) return;
+ status.textContent = logAccessDenied?.id === selected && logAccessDenied.runId === logRunId(data, selected) ? '无查看权限' : logStream?.status || (selected ? '轮询更新' : '等待实例');
+}
+function stopLogStream() {
+ if (logStream) {
+  logStream.source?.close();
+  clearTimeout(logStream.retry);
+  clearTimeout(logStream.watchdog);
+  logStream = null;
+ }
+ paintLogStatus();
+}
+function syncLogStream() {
+ const instance = data?.state?.instances?.find(i=>i.id===selected);
+ const runtime = data?.runtime?.[selected];
+ if (page !== 'logs' || document.hidden || !instance || runtime?.state !== 'running' || !runtime.runId || (logAccessDenied?.id === selected && logAccessDenied.runId === runtime.runId) || typeof EventSource !== 'function') {
+  stopLogStream();
+  return;
+ }
+ const id = selected, runId = runtime.runId;
+ if (logStream && logStream.id === id && logStream.runId === runId && logStream.generation === authGeneration && logStream.navigation === navigationGeneration) {
+  paintLogStatus();
+  return;
+ }
+ stopLogStream();
+ const stream = {id,runId,generation:authGeneration,navigation:navigationGeneration,source:null,retry:null,watchdog:null,delay:1000,ready:false,ended:false,status:'连接实时日志…'};
+ logStream = stream;
+ connectLogStream(stream);
+}
+function connectLogStream(stream) {
+ if (logStream !== stream || stream.ended) return;
+ stream.status = '连接实时日志…';
+ paintLogStatus();
+ const query = new URLSearchParams({id:stream.id,runId:stream.runId});
+ let source;
+ try {source = new EventSource('/api/logs/stream?'+query.toString());}
+ catch (_) {retryLogStream(stream);return;}
+ stream.source = source;
+ const current = () => logStream === stream && stream.source === source && stream.generation === authGeneration && stream.navigation === navigationGeneration && page === 'logs' && selected === stream.id && data?.state?.instances?.some(i=>i.id===stream.id) && logRunId(data, stream.id) === stream.runId;
+ const touch = () => {
+  clearTimeout(stream.watchdog);
+  stream.watchdog = setTimeout(()=>{if(current())retryLogStream(stream);},30000);
+ };
+ const receive = (event, snapshot) => {
+  if (!current()) return;
+  let payload;
+  try {payload=JSON.parse(event.data);} catch (_) {retryLogStream(stream);return;}
+  if (!payload || payload.instanceId !== stream.id || payload.runId !== stream.runId || !Array.isArray(payload.lines) || payload.lines.length > 200 || !payload.lines.every(line=>typeof line === 'string')) {retryLogStream(stream);return;}
+  if (snapshot) {
+   cancelLogRequest();
+   logSnapshot = {id:stream.id,runId:stream.runId,lines:payload.lines};
+   stream.ready = true; stream.delay = 1000; stream.status = '实时更新';
+   paintLogStatus();
+  } else {
+   if (!stream.ready || !logSnapshot || logSnapshot.id !== stream.id || logSnapshot.runId !== stream.runId) {retryLogStream(stream);return;}
+   logSnapshot.lines = logSnapshot.lines.concat(payload.lines).slice(-200);
+  }
+  touch();
+  scheduleLogPaint();
+ };
+ source.addEventListener('snapshot', event=>receive(event,true));
+ source.addEventListener('lines', event=>receive(event,false));
+ source.addEventListener('heartbeat', ()=>{if(current())touch();});
+ source.addEventListener('end', event=>{
+  if (!current()) return;
+  let payload;
+  try {payload=JSON.parse(event.data);} catch (_) {retryLogStream(stream);return;}
+  if (!payload || payload.instanceId !== stream.id || payload.runId !== stream.runId) {retryLogStream(stream);return;}
+  source.close(); clearTimeout(stream.watchdog); stream.source=null; stream.ready=false; stream.ended=true; stream.status='实例已退出';
+  paintLogStatus(); refresh(true);
+ });
+ source.onerror = ()=>{if(current())retryLogStream(stream);};
+ touch();
+}
+function retryLogStream(stream) {
+ if (logStream !== stream || stream.ended || stream.retry !== null) return;
+ stream.source?.close(); stream.source=null; stream.ready=false;
+ clearTimeout(stream.watchdog); stream.watchdog=null;
+ stream.status='轮询更新 · 等待重连'; paintLogStatus();
+ refreshLogs(true);
+ refresh(true);
+ const delay=stream.delay; stream.delay=Math.min(stream.delay*2,30000);
+ stream.retry=setTimeout(()=>{stream.retry=null;connectLogStream(stream);},delay);
+}
+function scheduleLogPaint() {
+ if (hasSelection() || logPaintFrame !== null) return;
+ logPaintFrame = requestAnimationFrame(()=>{logPaintFrame=null;if (!hasSelection()) paintLogs();});
+}
 function showLogMessage(title, detail, count) {
  const output = $('#log-output'), empty = $('#log-empty');
  if (!output || !empty) return;
- output.hidden = true; empty.hidden = false;
+ output.replaceChildren(); output.hidden = true; empty.hidden = false;
  $('#log-empty-title').textContent = title; $('#log-empty-detail').textContent = detail;
  $('#log-empty-clear').hidden = true; $('#log-count').textContent = count;
 }
@@ -265,8 +391,8 @@ function paintLogs() {
  $('#log-empty-clear').hidden = !noMatch;
  const text = matches.join('\n');
  if (output.textContent === text) return;
- const top = output.scrollTop, left = output.scrollLeft;
- output.textContent = text; output.scrollTop = top; output.scrollLeft = left;
+ const top = output.scrollTop, left = output.scrollLeft, follow = output.scrollHeight - top - output.clientHeight < 36;
+ output.textContent = text; output.scrollTop = follow ? output.scrollHeight : top; output.scrollLeft = left;
 }
 function applyDeferredConfig() {
  if (!deferredConfig) return;
@@ -370,7 +496,7 @@ function render() {
   content.innerHTML=header('链路监测中心','选择实例，按需检查进程、控制端口、注册状态和本地目标。')+
    (data.state.instances.length?`<section class="panel"><div class="panel-content"><label>选择实例<select id="health-instance">${data.state.instances.map(i=>`<option value="${esc(i.id)}" ${i.id===healthSelected?'selected':''}>${esc(i.name)} · ${esc(i.kind)}</option>`).join('')}</select></label><p class="small-note">诊断不会修改配置或连接；导出报告包含网络地址。</p><button class="primary" data-action="health">开始诊断</button></div></section>`:empty('还没有可监测的实例','请先创建一个实例。','<button data-go="instances">运行实例</button>'));
  } else if(page==='tunnels') {
-  content.innerHTML=header('规则管理','管理连接规则、观察实例状态并检查本地目标。',`<button class="primary" data-action="new-tunnel" ${RulesPage.isUnavailable()?'disabled':''}>＋ 新建规则</button>`)+RulesPage.render(rulesContext());
+  content.innerHTML=header('规则管理','管理连接规则、观察实例状态并检查本地目标。',`<div class="actions"><button data-action="new-tunnel-batch" ${RulesPage.isUnavailable()?'disabled':''}>批量 / TCP+UDP</button><button class="primary" data-action="new-tunnel" ${RulesPage.isUnavailable()?'disabled':''}>＋ 新建规则</button></div>`)+RulesPage.render(rulesContext());
   RulesPage.paint(rulesContext());
   if(portWarnings) content.insertAdjacentHTML('afterbegin',portWarnings);
  } else if(page==='config') {
@@ -385,7 +511,7 @@ function render() {
   $('#update-version').value=updateSelection;
  } else if(page==='logs') {
   ensureSelected(); content.innerHTML=window.KurumiRecordsConfig.logs({selected,logFilter,header,picker,recent,esc});
-  if(selected) {paintLogs(); refreshLogs(false);}
+  if(selected) {paintLogs(); syncLogStream(); refreshLogs(false);} else stopLogStream();
  }
  renderedSnapshot = stateSnapshot; renderedPage = page; renderedRevision = data.revision;
 }
@@ -463,7 +589,7 @@ function refreshUpdateStatus(generation) {
  })();
  return request.promise;
 }
-function ensureSelected(){if(!data.state.instances.some(i=>i.id===selected)){cancelLogRequest();selected=data.state.instances[0]?.id||'';}}
+function ensureSelected(){if(!data.state.instances.some(i=>i.id===selected)){cancelLogRequest();stopLogStream();logSnapshot=null;logAccessDenied=null;selected=data.state.instances[0]?.id||'';}}
 function picker(){return `<select class="config-picker" id="instance-picker" aria-label="选择实例" ${data.state.instances.length?'':'disabled'}>${data.state.instances.length?data.state.instances.map(i=>`<option value="${esc(i.id)}" ${selected===i.id?'selected':''}>${esc(i.name)} · ${esc(i.kind)}</option>`).join(''):'<option value="">尚无实例</option>'}</select>`;}
 function rulesContext(){return {data,filter,protocol,probingAll,probing,probeBatchProgress,esc,empty,stateOf,registrationFor,registrationText,probeCell};}
 function paintRulesList(){
@@ -475,7 +601,7 @@ function paintRulesList(){
 const registrationLabels = {stopped:'实例未运行',disabled:'未应用此规则',pending:'草稿未应用', 'pending-stop':'旧配置含此规则，待应用停用', 'not-reported':'不提供注册状态',unavailable:'状态不可用',registering:'注册中',registered:'已注册',failed:'注册失败'};
 function registrationText(item) {
  if (!item) return '等待状态';
- return (registrationLabels[item.state] || '状态未知') + (item.error ? ' · '+item.error : '') + (item.remoteAddr ? ' · '+item.remoteAddr : '') + (item.pending && item.state==='registered' ? ' · 实例配置待应用' : '');
+ return (registrationLabels[item.state] || '状态未知') + (item.portPending ? ' · 动态端口待确认' : '') + (item.error ? ' · '+item.error : '') + (item.remoteAddr ? ' · 最近观察到 '+item.remoteAddr : '') + (item.pending && item.state==='registered' ? ' · 实例配置待应用' : '');
 }
 function runtimeIdentity(runtime) {return [runtime?.state || 'stopped', runtime?.pid || 0, runtime?.started || '', runtime?.runId || ''].join('|');}
 function processSnapshot(state) {
@@ -484,14 +610,15 @@ function processSnapshot(state) {
  return result;
 }
 function invalidateRegistrationForRuntime(previous, next) {
- if (!previous || !next) return;
+ if (!previous || !next) return false;
  const before=processSnapshot(previous), after=processSnapshot(next);
+ let changed=false;
  for (const tunnel of previous.state.tunnels || []) {
   if (before[tunnel.instanceId]===after[tunnel.instanceId]) continue;
+  changed=true;
   delete registrations[tunnel.id];
-  const cell=document.querySelector(`[data-registration="${tunnel.id}"]`);
-  if (cell) {if (hasSelection()) registrationPaintPending=true; else cell.textContent='等待状态';}
  }
+ return changed;
 }
 function registrationFor(tunnel) {
  if (!data || registrationRevision!==data.revision || registrationProcesses[tunnel.instanceId]!==runtimeIdentity(data.runtime?.[tunnel.instanceId])) return null;
@@ -501,16 +628,16 @@ function instanceRegistrationText(instance) {
  if (stateOf(instance.id).state !== 'running') return '代理未运行';
  const eligible=data.state.tunnels.filter(t=>t.instanceId===instance.id && t.enabled && !Protocols.isVisitor(t.type));
  const items=eligible.map(registrationFor);
- const count=items.filter(item=>item?.state==='registered').length;
- const unresolved=items.some(item=>!item || !['registered','failed'].includes(item.state));
- if (unresolved) return count ? `草稿规则已注册 ${count} · 其余待确认` : '注册状态待确认';
- return `草稿规则已注册 ${count}`+(stateOf(instance.id).pending?' · 实例待应用':'');
+ const count=items.filter(item=>item?.state==='registered'&&!item.portPending).length;
+ const unresolved=items.some(item=>!item || item.portPending || !['registered','failed'].includes(item.state));
+ if (unresolved) return count ? `观察到已注册 ${count} · 其余待确认` : '注册状态待确认';
+ return `观察到已注册 ${count}`+(stateOf(instance.id).pending?' · 实例待应用':'');
 }
 function healthSummary(rules) {
  const summary={registered:0,failed:0,unknown:0,notApplicable:0,targetResponded:0,targetUnreachable:0,targetOther:0};
  for (const rule of rules) {
   const state=rule.registration?.state;
-  if (state==='registered') summary.registered++;
+  if (state==='registered' && !rule.registration?.portPending) summary.registered++;
   else if (state==='failed') summary.failed++;
   else if (['disabled','not-reported'].includes(state)) summary.notApplicable++;
   else summary.unknown++;
@@ -530,15 +657,15 @@ function showHealth(report) {
  }
  const summary=healthSummary(report.rules);
  report.summary=summary;
- const rows=[report.instance+' · '+report.kind, '注册：已确认 '+summary.registered+' · 失败 '+summary.failed+' · 待确认 '+summary.unknown+' · 不适用 '+summary.notApplicable, '草稿本地目标：可响应 '+summary.targetResponded+' · 不可达 '+summary.targetUnreachable+' · 未检测或不适用 '+summary.targetOther, '实例运行状态：'+report.runtime+(report.pending?' · 配置待应用':''), '草稿控制端口：'+report.endpoint.state+' '+report.endpoint.message];
+ const rows=[report.instance+' · '+report.kind+' · 检测时间 '+time(report.checkedAt), '检测时注册：已注册 '+summary.registered+' · 失败 '+summary.failed+' · 待确认 '+summary.unknown+' · 不适用 '+summary.notApplicable, '草稿本地目标：可响应 '+summary.targetResponded+' · 不可达 '+summary.targetUnreachable+' · 未检测或不适用 '+summary.targetOther, '实例运行状态：'+report.runtime+(report.pending?' · 配置待应用':''), '草稿控制端口：'+report.endpoint.state+' '+report.endpoint.message];
  for (const rule of report.rules) rows.push(rule.name+' · '+rule.type+'\n  已应用代理注册：'+registrationText(rule.registration)+'\n  草稿本地目标：'+rule.target.status+' · '+rule.target.message);
  rows.push(report.note);
  healthDialog.querySelector('pre').textContent=rows.join('\n\n');
  healthDialog.querySelector('[data-health-export]').onclick=()=>download('kurumi-health.json',JSON.stringify(report,null,2));
  stopRefreshPolling(); healthDialog.showModal();
 }
-function paintRegistrations() {
- if (hasSelection()) {registrationPaintPending=true;return;}
+function paintRegistrations(force=false) {
+ if (!force && hasSelection()) {registrationPaintPending=true;return;}
  registrationPaintPending=false;
  document.querySelectorAll('[data-registration]').forEach(el=>{
   const tunnel=data?.state?.tunnels?.find(t=>t.id===el.dataset.registration);
@@ -553,15 +680,23 @@ function paintRegistrations() {
 document.addEventListener('selectionchange',()=>{if(hasSelection())return;if(registrationPaintPending)paintRegistrations();if(page==='tunnels'&&data)RulesPage.paintRuntime(rulesContext());if(page==='logs')paintLogs();if(page==='config')applyDeferredConfig();});
 function refreshRegistration() {
  if (!data || !['overview','tunnels','instances'].includes(page) || document.hidden || registrationRequest || healthChecking) return;
- const generation=authGeneration, revision=data.revision, processes=processSnapshot(data);
- const request=api('registration').then(result=>{
-  if (generation!==authGeneration || !data || revision!==data.revision || result.revision!==revision) return;
+ const generation=authGeneration, revision=data.revision, epoch=registrationEpoch, processes=processSnapshot(data), started=performance.now();
+ const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),15000);
+ const request=api('registration',undefined,{signal:controller.signal}).then(result=>{
+  if (generation!==authGeneration || epoch!==registrationEpoch || document.hidden || !data || revision!==data.revision || result.revision!==revision) return;
+  const remaining=15000-(performance.now()-started);
+  if (remaining<=0) return;
   const current=processSnapshot(data), accepted=Object.create(null), incoming=result.tunnels || {};
   for (const tunnel of data.state.tunnels || []) {
    if (processes[tunnel.instanceId]===current[tunnel.instanceId] && Object.hasOwn(incoming,tunnel.id)) accepted[tunnel.id]=incoming[tunnel.id];
   }
-  registrations=accepted;registrationRevision=revision;registrationProcesses=processes;paintRegistrations();
- }).catch(()=>{if(generation===authGeneration && data && revision===data.revision) {registrations=Object.create(null);registrationRevision=null;paintRegistrations();}}).finally(()=>{if(registrationRequest===request)registrationRequest=null;});
+  registrations=accepted;registrationRevision=revision;registrationProcesses=processes;paintRegistrations(true);
+  clearTimeout(registrationExpiryTimer);
+  registrationExpiryTimer=setTimeout(()=>{
+   if(generation!==authGeneration || epoch!==registrationEpoch || registrationRevision!==revision)return;
+   registrations=Object.create(null);registrationRevision=null;registrationProcesses=Object.create(null);registrationExpiryTimer=null;paintRegistrations(true);
+  },remaining);
+ }).catch(()=>{if(generation===authGeneration && epoch===registrationEpoch && data && revision===data.revision) {clearTimeout(registrationExpiryTimer);registrationExpiryTimer=null;registrations=Object.create(null);registrationRevision=null;registrationProcesses=Object.create(null);paintRegistrations(true);}}).finally(()=>{clearTimeout(timeout);if(registrationRequest===request){registrationRequest=null;if(epoch!==registrationEpoch && !document.hidden)refreshRegistration();}});
  registrationRequest=request;
 }
 function tunnelTable(rows) {
@@ -577,6 +712,14 @@ function openEditor(kind,id) {
  $('#form-error').textContent='';
  $('#dialog-body').innerHTML=kind==='instance'?ProtocolEditor.instance(old):ProtocolEditor.tunnel(old,clients);
  stopRefreshPolling();updateFields();dialog.showModal();
+}
+function openTunnelBatchEditor() {
+ const clients=data.state.instances.filter(i=>i.kind==='frpc');
+ if(!clients.length){toast('请先添加一个 frpc 客户端实例');return;}
+ editing={kind:'tunnel-batch',submitting:false};editRev=data.revision;
+ $('#form-error').textContent='';
+ $('#dialog-body').innerHTML=ProtocolEditor.batch(clients);
+ stopRefreshPolling();dialog.showModal();
 }
 function updateFields(){
  if(editing) ProtocolEditor.update($('#editor'),editing,data.state.tunnels);
@@ -705,20 +848,49 @@ function openBackupDialog(mode, scope='all', snapshot=0) {
 
 function download(name,text,type='application/json'){const u=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');try{a.href=u;a.download=name;document.body.appendChild(a);a.click();}finally{a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);}}
 $('#login-form').addEventListener('submit',async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;try{await api('login',{token:e.target.elements.token.value.trim()});e.target.reset();$('#login-error').textContent='';await refresh();}catch(err){$('#login-error').textContent=err.message;}finally{b.disabled=false;}});
-$('#logout').addEventListener('click',async()=>{try{await api('logout',{});showLogin();}catch(e){toast(e.message);}});
+$('#logout').addEventListener('click',async()=>{try{await api('logout',{});showLogin();announceSessionChange();}catch(e){toast(e.message);}});
 $('#refresh').addEventListener('click',()=>RulesPage.needsSync()?synchronizeRules():refresh());
 $('#theme').addEventListener('click',()=>{document.body.classList.toggle('dark');try{localStorage.setItem('kurumi-theme',document.body.classList.contains('dark')?'dark':'light');}catch(_){/* private browsing may deny storage */}});
 try{document.body.classList.toggle('dark',localStorage.getItem('kurumi-theme')==='dark');}catch(_){/* theme storage is optional */}
 $('#nav').addEventListener('click',e=>{const b=e.target.closest('[data-page]');if(b)navigate(b.dataset.page);});
-$('#cancel').addEventListener('click',()=>dialog.close());
+$('#cancel').addEventListener('click',()=>{if(!editing?.submitting)dialog.close();});
+dialog.addEventListener('cancel',e=>{if(editing?.submitting)e.preventDefault();});
 dialog.addEventListener('close',()=>scheduleRefresh(0));
 $('#diff-close').addEventListener('click',()=>diffDialog.close());
 diffDialog.addEventListener('close',()=>scheduleRefresh(0));
 $('#editor').addEventListener('change',updateFields);
 $('#editor').addEventListener('input',e=>{if(editing?.kind==='tunnel'&&e.target.name==='localPort')updateFields();});
 $('#editor').addEventListener('submit',async e=>{
- e.preventDefault();const f=e.target,b=f.querySelector('button[type="submit"]');b.disabled=true;
+ e.preventDefault();if(editing?.submitting)return;const f=e.target,b=f.querySelector('button[type="submit"]');b.disabled=true;
  $('#form-error').textContent='';
+ if(editing?.kind==='tunnel-batch'){
+  const current=editing, generation=authGeneration, controller=new AbortController();
+  const value=ProtocolEditor.batchValue(f), revision=editRev;
+  current.submitting=true;$('#dialog-body').inert=true;$('#cancel').disabled=true;
+  const timeout=setTimeout(()=>controller.abort(),20000);
+  const release=()=>{if(editing===current){current.submitting=false;$('#dialog-body').inert=false;$('#cancel').disabled=false;b.disabled=false;}};
+  try {
+   const result=await api('tunnels/batch',{revision,...value},{signal:controller.signal});
+   if(generation!==authGeneration)return;
+   RulesPage.clear();RulesPage.setNeedsSync(true);release();dialog.close();
+   const refreshed=await refresh();
+   if(generation!==authGeneration)return;
+   if(refreshed && data?.revision>=result.revision)RulesPage.setNeedsSync(false);
+   if(data && page==='tunnels')render();
+   toast(`已保存 ${result.created} 条规则草稿；${RulesPage.needsSync()?'请先刷新并核对草稿':'运行中的实例需重新应用'}。`);
+  } catch(err) {
+   if(generation!==authGeneration)return;
+   if(err.status===400){$('#form-error').textContent=err.message;return;}
+   RulesPage.clear();RulesPage.setNeedsSync(true);release();dialog.close();
+   if(data && page==='tunnels')render();
+   if(err.status===409)toast('草稿版本已变化；请刷新并核对后重新填写。');
+   else toast('批量创建结果尚未确认，服务端可能仍在处理。请稍后刷新并核对草稿，避免重复提交。');
+  } finally {
+   clearTimeout(timeout);
+   release();
+  }
+  return;
+ }
  try{const value=ProtocolEditor.value(f,editing);await api('save',{revision:editRev,kind:editing.kind,value});dialog.close();toast('草稿已保存；运行中的实例未改变');await refresh();}catch(err){$('#form-error').textContent=err.message;}finally{b.disabled=false;}
 });
 $('#content').addEventListener('input',e=>{if(e.target.id==='search'){filter=e.target.value;RulesPage.clear();paintRulesList();}if(e.target.id==='log-filter'){logFilter=e.target.value;paintLogs();}});
@@ -760,16 +932,17 @@ $('#content').addEventListener('click',async e=>{
  const originPage=page, requestGeneration=authGeneration;
  let instanceOperation=null;
  if(action==='refresh-rules'){await synchronizeRules();return;}
- if(['new-tunnel','edit-tunnel','duplicate-tunnel','delete-tunnel','toggle','probe'].includes(action)&&RulesPage.isUnavailable()){toast('批量操作正在处理或草稿需要刷新，请稍后再操作。');return;}
+ if(['new-tunnel','new-tunnel-batch','edit-tunnel','duplicate-tunnel','delete-tunnel','toggle','probe'].includes(action)&&RulesPage.isUnavailable()){toast('批量操作正在处理或草稿需要刷新，请稍后再操作。');return;}
  if(action==='clear-rule-selection'){RulesPage.clear();RulesPage.paint(rulesContext());return;}
  if(action==='batch-enable'||action==='batch-disable'){await batchRuleIntent(action==='batch-enable');return;}
  if(action==='new-instance'||action==='edit-instance'){openEditor('instance',id);return;}
+ if(action==='new-tunnel-batch'){openTunnelBatchEditor();return;}
  if(action==='new-tunnel'||action==='edit-tunnel'){openEditor('tunnel',id);return;}
  if(action==='logs'){selected=id;navigate('logs');return;}
  if(originPage==='instances' && id)window.KurumiInstances.clearError(id);
  b.disabled=true;
  try{
-   if(action==='refresh-logs'){await refreshLogs(false);return;}
+   if(action==='refresh-logs'){cancelLogRequest();stopLogStream();logAccessDenied=null;syncLogStream();await refreshLogs(false);return;}
   if(action==='webhook-settings'){await openWebhookDialog();return;}
   if(action==='health'){
    if (healthChecking || !id) return;
@@ -957,6 +1130,8 @@ page=titles[location.hash.slice(1)]?location.hash.slice(1):'overview';
 // core.js consumes a launch ticket before the first authenticated state request.
 if(!/^#launch=([a-f0-9]{64})$/.test(location.hash))refresh(true);
 document.addEventListener('visibilitychange', () => {
- if (document.hidden) stopRefreshPolling();
+ if (document.hidden) {
+  stopRefreshPolling();stopLogStream();cancelLogRequest();++registrationEpoch;clearTimeout(registrationExpiryTimer);registrationExpiryTimer=null;registrations=Object.create(null);registrationRevision=null;registrationProcesses=Object.create(null);paintRegistrations(true);
+ }
  else if (data && !dialog.open) refresh(true);
 });

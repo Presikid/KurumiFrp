@@ -71,10 +71,25 @@ func (a *auth) login(r *http.Request, token string) (string, error) {
 	if subtle.ConstantTimeCompare([]byte(token), []byte(a.token)) != 1 {
 		return "", fmt.Errorf("访问令牌不正确")
 	}
-	if len(a.sessions) >= 64 {
+	return a.newSessionLocked(r, now)
+}
+
+// Rotate the cookie presented by this browser only after successful login.
+// A stream using that old session is then rejected on its next recheck.
+func (a *auth) newSessionLocked(r *http.Request, now time.Time) (string, error) {
+	oldID := ""
+	if cookie, err := r.Cookie("kurumi_session"); err == nil {
+		if _, ok := a.sessions[cookie.Value]; ok {
+			oldID = cookie.Value
+		}
+	}
+	if len(a.sessions) >= 64 && oldID == "" {
 		return "", fmt.Errorf("会话数量达到上限")
 	}
 	sid := randomHex(32)
+	if oldID != "" {
+		delete(a.sessions, oldID)
+	}
 	a.sessions[sid] = now.Add(12 * time.Hour)
 	return sid, nil
 }

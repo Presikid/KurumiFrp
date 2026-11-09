@@ -59,11 +59,11 @@ window.KurumiRecordsConfig = (() => {
   `<div class="rc-page">
    <section class="rc-banner rc-banner-logs" aria-label="运行记录概览">
     <div><span class="rc-kicker">ACTIVITY / 运行记录</span><h2>每一条记录，都值得留意。</h2><p>按实例查看运行输出，用关键词快速定位信息。</p></div>
-    <div class="rc-banner-meta"><span>日志范围</span><strong>200</strong><small>当前会话最近 200 行</small></div>
+    <div class="rc-banner-meta"><span>日志范围</span><strong>200</strong><small>当前运行代次最近 200 行</small></div>
    </section>
    <div class="rc-logs-grid">
     <section class="panel rc-log-panel" aria-labelledby="logs-title">
-     <div class="panel-title"><div><h3 id="logs-title">实例运行日志</h3><p>输出会随状态轮询自动刷新</p></div><button data-action="refresh-logs" ${selected ? '' : 'disabled'}>刷新日志</button></div>
+     <div class="panel-title"><div><h3 id="logs-title">实例运行日志</h3><p id="log-mode" role="status">${selected ? '正在读取…' : '等待实例'}</p></div><button data-action="refresh-logs" ${selected ? '' : 'disabled'}>刷新日志</button></div>
      <div class="panel-content">
       <div class="rc-log-controls"><label>选择实例${picker()}</label><label>筛选当前日志<input id="log-filter" type="search" value="${esc(logFilter)}" placeholder="输入关键词，不区分大小写" ${selected ? '' : 'disabled'}></label><button data-action="clear-log-filter" ${logFilter ? '' : 'hidden'}>清除筛选</button></div>
       <div class="rc-output-heading"><span>运行输出</span><small id="log-count" aria-live="polite">${selected ? '正在读取…' : '尚无实例'}</small></div>
