@@ -135,6 +135,12 @@ func validateProtocolInstance(i Instance) error {
 		if _, ok := dnsServerAddress(i.DNSServer); !ok {
 			return fmt.Errorf("DNS 服务器须为 IP 地址，可选端口")
 		}
+		if i.ServerAllowPlaintext {
+			return fmt.Errorf("客户端不能设置服务端 TLS 选项")
+		}
+		if i.ClientTLSDisabled && (i.ClientTransport == "wss" || i.ClientTransport == "quic") {
+			return fmt.Errorf("WSS 和 QUIC 连接必须使用 TLS")
+		}
 		if i.User != "" && !namePattern.MatchString(i.User) {
 			return fmt.Errorf("客户端用户名称无效")
 		}
@@ -149,7 +155,7 @@ func validateProtocolInstance(i Instance) error {
 			return fmt.Errorf("客户端不能设置服务端 TCPMUX 或子域名选项")
 		}
 	} else {
-		if i.User != "" || i.NatHoleSTUNServer != "" || i.DNSServer != "" || i.ClientTransport != "" {
+		if i.User != "" || i.NatHoleSTUNServer != "" || i.DNSServer != "" || i.ClientTransport != "" || i.LoginFailExit || i.ClientTLSDisabled {
 			return fmt.Errorf("服务端不能设置客户端连接、用户、STUN 或 DNS 选项")
 		}
 		if i.TCPMuxPassthrough && i.TCPMuxHTTPConnectPort == 0 {
