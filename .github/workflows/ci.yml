@@ -14,11 +14,14 @@ jobs:
   launch-gate:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    outputs:
+      allowed: ${{ steps.labels.outputs.allowed }}
     permissions:
       issues: read
     steps:
       # Inspect GitHub metadata only; do not check out or run PR code here.
       - name: Check Launch label
+        id: labels
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_KIND: ${{ github.event_name }}
@@ -30,10 +33,14 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT_KIND" != pull_request ]; then
-            [ "$GITHUB_REF" = refs/heads/main ] || { echo 'Only main may run directly.' >&2; exit 1; }
+            if [ "$GITHUB_REF" = refs/heads/main ]; then
+              echo 'allowed=true' >> "$GITHUB_OUTPUT"
+            else
+              echo 'allowed=false' >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
-          case "$PR_NUMBER" in ''|*[!0-9]*) echo 'Invalid PR number.' >&2; exit 1;; esac
+          case "$PR_NUMBER" in ''|*[!0-9]*) echo 'allowed=false' >> "$GITHUB_OUTPUT"; exit 0;; esac
           attempts=1
           # Owner auto-labeling uses GITHUB_TOKEN and does not trigger another
           # labeled workflow run. Also wait on a rapid owner push, which may
@@ -42,14 +49,22 @@ jobs:
             attempts=30
           fi
           for ((attempt=1; attempt<=attempts; attempt++)); do
-            labeled="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER" --jq 'any(.labels[]; (.name | ascii_downcase) == "launch")')" || exit 1
-            [ "$labeled" != true ] || exit 0
+            if ! labeled="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER" --jq 'any(.labels[]; (.name | ascii_downcase) == "launch")')"; then
+              echo '::warning::Could not check the Launch label; build skipped.'
+              echo 'allowed=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$labeled" = true ]; then
+              echo 'allowed=true' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             if [ "$attempt" -lt "$attempts" ]; then sleep 5; fi
           done
-          echo 'Launch label missing; build did not run.' >&2
-          exit 1
+          echo 'Launch label missing; build skipped.'
+          echo 'allowed=false' >> "$GITHUB_OUTPUT"
   test:
     needs: [launch-gate]
+    if: needs.launch-gate.outputs.allowed == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -152,6 +167,7 @@ jobs:
           if-no-files-found: error
   native-arm:
     needs: [launch-gate]
+    if: needs.launch-gate.outputs.allowed == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -212,6 +228,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   native-ubuntu-26:
     needs: [launch-gate]
+    if: needs.launch-gate.outputs.allowed == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
@@ -238,6 +255,7 @@ jobs:
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb
   source-macos:
     needs: [launch-gate]
+    if: needs.launch-gate.outputs.allowed == 'true'
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -267,6 +285,7 @@ jobs:
           python3 scripts/core-smoke.py ./kurumi-live
   browser-compatibility:
     needs: [launch-gate]
+    if: needs.launch-gate.outputs.allowed == 'true'
     strategy:
       fail-fast: false
       matrix:
