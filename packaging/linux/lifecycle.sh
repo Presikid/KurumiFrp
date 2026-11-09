@@ -8,9 +8,17 @@ OLD_META=/var/lib/kurumifrp-package
 UNIT=kurumifrp.service
 umask 077
 plain() {
- for p in /opt "$ROOT" "$BASE" "$META" "$ROOT/root-tmp" "$META/uid" "$META/migration-intent" "$META/legacy-cleanup" "$META/purge-intent" /var /var/lib "$OLD_BASE" "$OLD_META" "$OLD_META/uid"; do
+ for p in /opt "$ROOT" "$ROOT/kurumifrp" "$BASE" "$META" "$ROOT/root-tmp" "$META/uid" "$META/migration-intent" "$META/legacy-cleanup" "$META/purge-intent" /var /var/lib "$OLD_BASE" "$OLD_META" "$OLD_META/uid"; do
   [ ! -L "$p" ] || { echo "Refusing linked package state: $p" >&2; exit 1; }
  done
+}
+safe_install_target() {
+ [ -d /opt ] && [ "$(stat -c %u /opt)" = 0 ] || { echo 'Unsafe /opt directory.' >&2; exit 1; }
+ opt_mode=$(stat -c %a /opt) || { echo 'Cannot inspect /opt permissions.' >&2; exit 1; }
+ [ "$((0$opt_mode & 0022))" -eq 0 ] || { echo 'Unsafe /opt directory.' >&2; exit 1; }
+ if [ -e "$ROOT" ]; then
+  [ -d "$ROOT" ] && [ "$(stat -c %u "$ROOT")" = 0 ] && [ "$(stat -c %a "$ROOT")" = 755 ] || { echo 'Unsafe installation directory.' >&2; exit 1; }
+ fi
 }
 systemd_active() { [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; }
 no_mounts() {
@@ -53,6 +61,7 @@ stop_workbench() {
 }
 pre_upgrade() {
  plain
+ safe_install_target
  if [ -e "$OLD_META/uid" ]; then
   [ "$(stat -c %u "$OLD_META")" = 0 ] && [ "$(stat -c %a "$OLD_META")" = 700 ] || { echo 'Untrusted legacy metadata.' >&2; exit 1; }
   receipt_uid "$OLD_META/uid"
@@ -62,7 +71,6 @@ pre_upgrade() {
   wait_account
   [ ! -e "$OLD_BASE/data/manager.lock" ] || { echo 'Legacy manager state unresolved.' >&2; exit 1; }
   # Establish the migration guard before the new service unit is unpacked.
-  [ "$(stat -c %u /opt)" = 0 ] && [ -z "$(find /opt -prune -perm /022 -print)" ] || { echo 'Unsafe /opt directory.' >&2; exit 1; }
   if [ ! -e "$ROOT" ]; then install -d -m 755 -o root -g root "$ROOT"; fi
   [ -d "$ROOT" ] && [ "$(stat -c %u "$ROOT")" = 0 ] && [ "$(stat -c %a "$ROOT")" = 755 ] || { echo 'Unsafe installation directory.' >&2; exit 1; }
   if [ ! -e "$META" ]; then install -d -m 700 -o root -g root "$META"; fi
@@ -83,7 +91,7 @@ pre_upgrade() {
 }
 setup_state() {
  plain
- [ "$(stat -c %u /opt)" = 0 ] && [ -z "$(find /opt -prune -perm /022 -print)" ] || { echo 'Unsafe /opt directory.' >&2; exit 1; }
+ safe_install_target
  [ "$(stat -c %u "$ROOT")" = 0 ] && [ "$(stat -c %a "$ROOT")" = 755 ] || { echo 'Unsafe installation directory.' >&2; exit 1; }
  for p in "$META" "$ROOT/root-tmp"; do
   if [ -e "$p" ]; then

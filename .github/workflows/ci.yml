@@ -87,7 +87,7 @@ jobs:
           python3 scripts/package-native.py linux
           python3 scripts/package-portable.py
           KURUMI_PORTABLE_TESTS=1 go test -count=1 ./internal/core -run TestBuiltPortableExecutableArchitectures
-          python3 scripts/portable-smoke.py
+          KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/portable-smoke.py
           python3 -m unittest discover -s scripts -p 'test_download_retry.py'
           python3 scripts/official-cores-smoke.py
       - name: Native Debian package and systemd lifecycle
@@ -95,6 +95,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          stat -c '%n type=%F uid=%u gid=%g mode=%a' /opt
+          findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS -T /opt
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 GH_TOKEN="$GH_TOKEN" python3 scripts/linux-migration-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 GH_TOKEN="$GH_TOKEN" python3 scripts/linux-migration-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb --direct
@@ -161,6 +163,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 scripts/package-native.py linux --arch arm64 --deb-only
+          stat -c '%n type=%F uid=%u gid=%g mode=%a' /opt
+          findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS -T /opt
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_$(cat VERSION)_arm64.deb
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 GH_TOKEN="$GH_TOKEN" python3 scripts/linux-migration-smoke.py dist-native/kurumifrp_$(cat VERSION)_arm64.deb
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 GH_TOKEN="$GH_TOKEN" python3 scripts/linux-migration-smoke.py dist-native/kurumifrp_$(cat VERSION)_arm64.deb --direct
@@ -206,6 +210,8 @@ jobs:
           go vet ./...
           go test -count=1 ./...
           python3 scripts/package-native.py linux --arch amd64 --deb-only
+          stat -c '%n type=%F uid=%u gid=%g mode=%a' /opt
+          findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS -T /opt
           sudo env KURUMI_DISPOSABLE_PACKAGE_TEST=1 python3 scripts/native-linux-smoke.py dist-native/kurumifrp_$(cat VERSION)_amd64.deb
   source-macos:
     runs-on: macos-latest

@@ -1,5 +1,7 @@
 """Start cross-compiled Linux workbenches under QEMU and check core selection."""
 import json
+import getpass
+import os
 import socket
 import subprocess
 import tarfile
@@ -18,7 +20,7 @@ EMULATORS = {
     "mips64": "qemu-mips64-static", "mips64le": "qemu-mips64el-static",
 }
 
-def exercise(binary, arch, emulator, root, label):
+def exercise(binary, arch, emulator, root, label, installed=False):
     actual = subprocess.check_output([emulator, str(binary), "--version"], text=True, timeout=30).strip()
     if actual != VERSION:
         raise RuntimeError(f"{label}: unexpected version {actual!r}")
@@ -27,9 +29,30 @@ def exercise(binary, arch, emulator, root, label):
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
+    command = [emulator, str(binary), "--data", str(data), "--frp-dir", str(cores),
+               "--listen", f"127.0.0.1:{port}"]
+    if installed:
+        if os.environ.get("KURUMI_DISPOSABLE_PACKAGE_TEST") != "1":
+            raise RuntimeError("installed package test requires an explicitly disposable host")
+        runtime = root / ("runtime-" + label)
+        runtime.mkdir()
+        data = runtime / "data"
+        # The installed executable intentionally rejects custom data paths. Give
+        # it its real paths in a private mount namespace backed by this temp dir.
+        mount_script = '''
+            mount --make-rprivate /
+            mount -t tmpfs -o mode=755 tmpfs /opt
+            mkdir -p /opt/kurumifrp/runtime
+            mount --bind "$1" /opt/kurumifrp/runtime
+            user=$2
+            shift 2
+            exec runuser -u "$user" -- "$@"
+        '''
+        command = ["sudo", "unshare", "--mount", "sh", "-ec", mount_script,
+                   "sh", str(runtime), getpass.getuser(), emulator, str(binary),
+                   "--listen", f"127.0.0.1:{port}"]
     process = subprocess.Popen(
-        [emulator, str(binary), "--data", str(data), "--frp-dir", str(cores),
-         "--listen", f"127.0.0.1:{port}"],
+        command,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     try:
         deadline = time.monotonic() + 30
@@ -76,4 +99,4 @@ with tempfile.TemporaryDirectory(prefix="kurumi-emulated-") as tmp:
             raise RuntimeError(f"unexpected Debian architecture: {actual_arch}")
         dest = root / ("extract-" + deb_arch)
         subprocess.run(["dpkg-deb", "-x", str(package), str(dest)], check=True)
-        exercise(dest / "usr/bin/kurumifrp", core_arch, EMULATORS[core_arch], root, "deb-" + deb_arch)
+        exercise(dest / "usr/bin/kurumifrp", core_arch, EMULATORS[core_arch], root, "deb-" + deb_arch, installed=True)
