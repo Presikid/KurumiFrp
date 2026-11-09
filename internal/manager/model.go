@@ -50,6 +50,7 @@ type Tunnel struct {
 	Secret               string   `json:"secret,omitempty"`
 	HasSecret            bool     `json:"hasSecret,omitempty"`
 	BandwidthKB          int      `json:"bandwidthKB"`
+	BandwidthMode        string   `json:"bandwidthMode,omitempty"`
 	Enabled              bool     `json:"enabled"`
 	AllowUsers           []string `json:"allowUsers,omitempty"`
 	ServerUser           string   `json:"serverUser,omitempty"`
@@ -332,6 +333,12 @@ func validate(s State) error {
 		}
 		if t.BandwidthKB < 0 || t.BandwidthKB > 10000000 {
 			return fmt.Errorf("带宽限制须为 0-10000000 KB/s")
+		}
+		if t.BandwidthMode != "" && t.BandwidthMode != "client" && t.BandwidthMode != "server" {
+			return fmt.Errorf("带宽限制位置仅支持客户端或服务端")
+		}
+		if isVisitor(t.Type) && t.BandwidthMode != "" {
+			return fmt.Errorf("Visitor 不支持带宽限制位置")
 		}
 		if err := validateRuleHealthCheck(t); err != nil {
 			return err

@@ -46,6 +46,7 @@ const ProtocolEditor = (() => {
     <p class="visitor-transfer-note small-note span-2" hidden>目标客户端可能连接不同的服务端，请核对目标服务。未填写服务端用户时，跨实例移动会保留源客户端的有效用户；如要清空已有的显式用户，请在移动后单独修改。若源和目标客户端用户都为空，之后更改目标客户端用户会改变默认服务用户。移动时 XTCP 不能携带回退：如原规则已有回退，请先在原实例单独清除，移动后再设置。</p>
     <label>协议<select name="type" ${lockedType ? 'disabled' : ''}>${types.map(type => `<option value="${esc(type)}" ${type === v.type ? 'selected' : ''}>${esc(type)}</option>`).join('')}</select>${lockedType ? '<small>当前暂不支持更改此规则的协议类型。</small>' : ''}</label>
     <div class="bandwidth-field">${field('bandwidthKB', '带宽上限（KB/s，0 不限）', v.bandwidthKB ?? 0, 'number', 'min="0" max="10000000" step="1"')}</div>
+    <div class="bandwidth-field"><label>限速位置<select name="bandwidthMode"><option value="client" ${(v.bandwidthMode || 'client') === 'client' ? 'selected' : ''}>客户端</option><option value="server" ${v.bandwidthMode === 'server' ? 'selected' : ''}>服务端</option></select></label></div>
     <label><span class="local-host-label">本地目标地址</span><input name="localHost" type="text" value="${esc(v.localHost)}" required></label>
     <label><span class="local-port-label">本地目标端口</span><input name="localPort" type="number" value="${esc(v.localPort)}" required min="1" max="65535" step="1" ${lockedPort ? 'readonly' : ''}><small class="unbound-note" hidden>负数表示仅接收回退连接，不监听本地端口。</small>${lockedPort ? '<small>当前暂不支持更改此规则的回退监听端口。</small>' : ''}</label>
     <div class="port-field">${field('remotePort', '远端端口（0 请求动态分配）', ['tcp', 'udp'].includes(v.type) ? (v.remotePort ?? '') : '', 'number', 'min="0" max="65535" step="1"')}</div>
@@ -93,6 +94,7 @@ const ProtocolEditor = (() => {
     <label>归属实例<select name="instanceId">${clients.map(i => `<option value="${esc(i.id)}">${esc(i.name)}</option>`).join('')}</select></label>
     <label>协议<select name="protocol"><option value="tcp+udp">TCP+UDP · 成对创建</option><option value="tcp">TCP</option><option value="udp">UDP</option></select></label>
     ${field('bandwidthKB', '每条规则的带宽上限（KB/s，0 不限）', 0, 'number', 'required min="0" max="10000000" step="1"')}
+    <label>限速位置<select name="bandwidthMode"><option value="client">客户端</option><option value="server">服务端</option></select></label>
     ${field('localHost', '本地目标地址', '127.0.0.1', 'text', 'required')}
     <label>本地端口列表<input name="localPorts" type="text" required maxlength="4096" placeholder="例如 8000-8002,8010"></label>
     <label class="span-2">远端端口列表<input name="remotePorts" type="text" required maxlength="4096" placeholder="例如 6000-6002,6010，或填 0 动态分配"></label>
@@ -105,7 +107,7 @@ const ProtocolEditor = (() => {
  function batchValue(form) {
   const f = form.elements, val = name => f[name].value;
   return {name:val('name').trim(), instanceId:val('instanceId'), protocol:val('protocol'), localHost:val('localHost').trim(),
-   localPorts:val('localPorts').trim(), remotePorts:val('remotePorts').trim(), bandwidthKB:+val('bandwidthKB'), enabled:f.enabled.checked};
+   localPorts:val('localPorts').trim(), remotePorts:val('remotePorts').trim(), bandwidthKB:+val('bandwidthKB'), bandwidthMode:val('bandwidthMode'), enabled:f.enabled.checked};
  }
 
  function visible(form, selector, show) {
@@ -180,7 +182,7 @@ const ProtocolEditor = (() => {
   const type = val('type'), visitor = Protocols.isVisitor(type), paired = Protocols.hasPairingSecret(type);
   delete result.hasSecret; delete result.hasHTTPPassword; delete result.secret; delete result.httpPassword;
   Object.assign(result, {name:val('name').trim(), instanceId:val('instanceId'), type, localHost:val('localHost').trim(), localPort:+val('localPort'),
-   bandwidthKB:visitor ? 0 : +val('bandwidthKB'), enabled:f.enabled.checked, useEncryption:f.useEncryption.checked, useCompression:f.useCompression.checked});
+   bandwidthKB:visitor ? 0 : +val('bandwidthKB'), bandwidthMode:visitor ? '' : val('bandwidthMode'), enabled:f.enabled.checked, useEncryption:f.useEncryption.checked, useCompression:f.useCompression.checked});
   const health = visitor ? '' : val('healthCheckType');
   Object.assign(result, {healthCheckType:health, healthCheckPath:health === 'http' ? val('healthCheckPath').trim() : '',
    healthCheckTimeoutSeconds:health ? +val('healthCheckTimeoutSeconds') : 0,

@@ -10,15 +10,16 @@ import (
 // A batch is expanded into ordinary tunnels, so existing rendering, history,
 // editing, exports and runtime status do not need a new persisted schema.
 type tunnelBatchRequest struct {
-	Revision    uint64 `json:"revision"`
-	Name        string `json:"name"`
-	InstanceID  string `json:"instanceId"`
-	Protocol    string `json:"protocol"`
-	LocalHost   string `json:"localHost"`
-	LocalPorts  string `json:"localPorts"`
-	RemotePorts string `json:"remotePorts"`
-	BandwidthKB int    `json:"bandwidthKB"`
-	Enabled     bool   `json:"enabled"`
+	Revision      uint64 `json:"revision"`
+	Name          string `json:"name"`
+	InstanceID    string `json:"instanceId"`
+	Protocol      string `json:"protocol"`
+	LocalHost     string `json:"localHost"`
+	LocalPorts    string `json:"localPorts"`
+	RemotePorts   string `json:"remotePorts"`
+	BandwidthKB   int    `json:"bandwidthKB"`
+	BandwidthMode string `json:"bandwidthMode,omitempty"`
+	Enabled       bool   `json:"enabled"`
 }
 
 // expandPortList preserves the order supplied by the user. Restrict both input
@@ -116,6 +117,9 @@ func (a *App) createTunnelBatch(req tunnelBatchRequest) (int, error) {
 	if req.BandwidthKB < 0 || req.BandwidthKB > 10000000 {
 		return 0, fmt.Errorf("带宽限制须为 0-10000000 KB/s")
 	}
+	if req.BandwidthMode != "" && req.BandwidthMode != "client" && req.BandwidthMode != "server" {
+		return 0, fmt.Errorf("带宽限制位置仅支持客户端或服务端")
+	}
 	var protocols []string
 	switch req.Protocol {
 	case "tcp", "udp":
@@ -167,7 +171,7 @@ func (a *App) createTunnelBatch(req tunnelBatchRequest) (int, error) {
 			st.Tunnels = append(st.Tunnels, Tunnel{
 				ID: randomHex(8), InstanceID: req.InstanceID, Name: generatedName,
 				Type: protocol, LocalHost: req.LocalHost, LocalPort: localPort,
-				RemotePort: remotePort, Domains: []string{}, BandwidthKB: req.BandwidthKB, Enabled: req.Enabled,
+				RemotePort: remotePort, Domains: []string{}, BandwidthKB: req.BandwidthKB, BandwidthMode: req.BandwidthMode, Enabled: req.Enabled,
 			})
 		}
 	}

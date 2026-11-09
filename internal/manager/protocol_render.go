@@ -113,7 +113,11 @@ func renderProtocolTunnel(b *strings.Builder, t Tunnel, secret func(string, stri
 			renderStringArray(b, "allowUsers", t.AllowUsers)
 		}
 		if t.BandwidthKB > 0 {
-			fmt.Fprintf(b, "transport.bandwidthLimit = \"%dKB\"\ntransport.bandwidthLimitMode = \"client\"\n", t.BandwidthKB)
+			mode := t.BandwidthMode
+			if mode == "" {
+				mode = "client"
+			}
+			fmt.Fprintf(b, "transport.bandwidthLimit = \"%dKB\"\ntransport.bandwidthLimitMode = %s\n", t.BandwidthKB, quote(mode))
 		}
 		if t.HealthCheckType != "" {
 			fmt.Fprintf(b, "healthCheck.type = %s\n", quote(t.HealthCheckType))
