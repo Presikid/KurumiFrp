@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -204,11 +205,21 @@ func TestInstallActivateAndTamper(t *testing.T) {
 	if e = os.WriteFile(bin+".new", []byte("corrupted"), 0700); e != nil {
 		t.Fatal(e)
 	}
-	if e = os.Rename(bin+".new", bin); e != nil {
-		t.Fatal(e)
+	// Windows may briefly deny replacement after the version probe exits.
+	// Retry only test setup; persistent permission errors still fail the test.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		e = os.Rename(bin+".new", bin)
+		if e == nil {
+			break
+		}
+		if runtime.GOOS != "windows" || !os.IsPermission(e) || time.Now().After(deadline) {
+			t.Fatal(e)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	if e = m.Activate(context.Background(), id); e == nil {
-		t.Fatal("tampered binary activated")
+	if e = m.Activate(context.Background(), id); e == nil || e.Error() != "installed binary checksum mismatch" {
+		t.Fatalf("expected checksum mismatch for tampered binary, got %v", e)
 	}
 	s, e = m.Status()
 	if e != nil || s.Active != id {
@@ -417,3 +428,4 @@ func TestCoreJobCompletes(t *testing.T) {
 	}
 	t.Fatal("job did not finish")
 }
+
