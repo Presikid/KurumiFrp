@@ -35,11 +35,14 @@ type Job struct {
 	Error       string `json:"error"`
 }
 type Status struct {
-	Host      string      `json:"host"`
-	Supported bool        `json:"supported"`
-	Active    string      `json:"active"`
-	Installed []Installed `json:"installed"`
-	Job       Job         `json:"job"`
+	Host         string      `json:"host"`
+	Supported    bool        `json:"supported"`
+	Active       string      `json:"active"`
+	Installed    []Installed `json:"installed"`
+	Job          Job         `json:"job"`
+	Bundled      *Bundled    `json:"bundled,omitempty"`
+	BundledInUse bool        `json:"bundledInUse"`
+	BundledError string      `json:"bundledError,omitempty"`
 }
 type Manager struct {
 	root           string
@@ -57,6 +60,9 @@ type Manager struct {
 	installedCache      []Installed
 	installedCacheAt    time.Time
 	installedCacheValid bool
+	bundled             *Bundled
+	bundledDir          string
+	bundledErr          error
 }
 
 var idRE = regexp.MustCompile(`^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}-(linux|windows|darwin)_(amd64|arm64|arm|arm_hf|riscv64|loong64|mips|mipsle|mips64|mips64le)-[a-f0-9]{16}$`)
@@ -72,7 +78,17 @@ func New(root string) (*Manager, error) {
 	if err = privateDir(filepath.Join(root, "versions")); err != nil {
 		return nil, err
 	}
-	return &Manager{root: root, client: newClient(), job: Job{State: "idle"}}, nil
+	m := &Manager{root: root, client: newClient(), job: Job{State: "idle"}}
+	if bundledManifestSHA != "" {
+		exe, e := os.Executable()
+		if e == nil && bundleVersionRE.MatchString(bundledVersion) {
+			m.bundledDir = filepath.Join(filepath.Dir(exe), "bundled", bundledVersion)
+			m.bundled, m.bundledErr = readBundled(m.bundledDir, bundledManifestSHA)
+		} else {
+			m.bundledErr = fmt.Errorf("invalid bundled core location")
+		}
+	}
+	return m, nil
 }
 func privateDir(path string) error {
 	if err := os.MkdirAll(path, 0700); err != nil {
@@ -235,6 +251,17 @@ func (m *Manager) Status() (Status, error) {
 		return s, err
 	}
 	s.Active = id
+	s.Bundled = m.bundled
+	if m.bundledErr != nil {
+		s.BundledError = "预置核心校验失败，请重新安装或选择其他核心"
+	}
+	if id == "" && m.bundled != nil {
+		manual, err := m.hasManualCore()
+		if err != nil {
+			return s, err
+		}
+		s.BundledInUse = !manual
+	}
 	s.Installed, err = m.installedLocked()
 	if err != nil {
 		return s, err
@@ -261,6 +288,19 @@ func (m *Manager) Binary(kind string) (string, error) {
 			return "", fmt.Errorf("active core platform mismatch")
 		}
 		dir = filepath.Join(dir, "versions", id)
+	} else {
+		manual, err := m.hasManualCore()
+		if err != nil {
+			return "", err
+		}
+		if !manual {
+			if m.bundledErr != nil {
+				return "", fmt.Errorf("预置核心校验失败: %w", m.bundledErr)
+			}
+			if m.bundled != nil {
+				dir = m.bundledDir
+			}
+		}
 	}
 	p := filepath.Join(dir, binaryName(kind, Host()))
 	st, err := os.Lstat(p)
@@ -268,6 +308,21 @@ func (m *Manager) Binary(kind string) (string, error) {
 		return "", fmt.Errorf("请在核心管理中下载安装 frp")
 	}
 	return p, nil
+}
+
+// Preserve a manually placed pair even if it is incomplete; never mix it with
+// a different bundled version or hide an unsafe file behind a fallback.
+func (m *Manager) hasManualCore() (bool, error) {
+	for _, kind := range []string{"frpc", "frps"} {
+		_, err := os.Lstat(filepath.Join(m.root, binaryName(kind, Host())))
+		if err == nil {
+			return true, nil
+		}
+		if !os.IsNotExist(err) {
+			return false, err
+		}
+	}
+	return false, nil
 }
 func (m *Manager) Start(tag, platform string) error {
 	if !validTag(tag) || platform != Host() || !supported(platform) {

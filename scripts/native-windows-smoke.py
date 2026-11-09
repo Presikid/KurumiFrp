@@ -101,6 +101,10 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
             assert Path(paths['temporary'])==profile/'tmp'
             subprocess.run([str(exe),'--check-running'],check=True,timeout=25)
             assert api('state')['version']==expected_version
+            if i == 0: assert api('core').get('bundledInUse'), 'packaged core is not available without a download'
+            if i == 0:
+                subprocess.run([sys.executable,str(Path(__file__).with_name('frp-smoke.py')),str(exe),str(profile/'cores'),
+                                '--existing',(profile/'data/listen.addr').read_text().strip(),str(profile/'data'),'--disposable-package-test'],check=True,timeout=120)
             wait_until(lambda:not source.exists())
             current=[(profile/'data/access.token').read_text(), json.loads((profile/'data/state.json').read_text())['key']]
             if before is not None: assert before==current, 'reinstall rotated secrets'

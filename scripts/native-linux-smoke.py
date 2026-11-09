@@ -67,6 +67,8 @@ try:
     run(install)
     ensure_running()
     before=keys()
+    assert api('core').get('bundledInUse'), 'packaged core is not available without a download'
+    run([sys.executable, str(Path(__file__).with_name('frp-smoke.py')), str(exe), str(base/'cores'), '--existing', (base/'data/listen.addr').read_text().strip(), str(base/'data'), '--disposable-package-test'])
     assert api('state')['version']==expected_version
     run(['dpkg','--verify','kurumifrp'] if is_deb else ['rpm','-V','kurumifrp'])
     # The real updater holds this lock while the package manager reads its input.
