@@ -190,10 +190,19 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 	validate := r.URL.Path == "/api/validate"
 	snapshot, op, status, err := a.beginRuntimeOperation(r.Context(), req, validate)
 	if err != nil {
+		if !validate && (req.Action == "start" || req.Action == "restart") && a.webhooks != nil {
+			a.webhooks.emitInstance("instance.start_failed", snapshot.instance.ID, snapshot.instance.Kind)
+		}
 		fail(w, status, err)
 		return
 	}
 	defer a.finishRuntimeOperation(req.ID, op)
+	started := false
+	defer func() {
+		if !validate && req.Action != "stop" && !started && op.ctx.Err() == nil && a.webhooks != nil {
+			a.webhooks.emitInstance("instance.start_failed", snapshot.instance.ID, snapshot.instance.Kind)
+		}
+	}()
 	if op.ctx.Err() != nil {
 		fail(w, http.StatusBadRequest, fmt.Errorf("操作已取消"))
 		return
@@ -233,7 +242,6 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
-	started := false
 	defer func() {
 		if !started {
 			private.cleanup()

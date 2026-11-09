@@ -66,6 +66,9 @@ func (a *App) recordAutoStartFailureLocked(ctx context.Context, req runtimeReque
 		a.startupErrors = make(map[string]string)
 	}
 	a.startupErrors[req.ID] = message
+	if a.webhooks != nil {
+		a.webhooks.emitInstance("instance.start_failed", latest.ID, latest.Kind)
+	}
 }
 
 func (a *App) restoreOne(snapshot runtimeSnapshot, op *runtimeOperation) error {

@@ -14,6 +14,7 @@ import (
 func (a *App) export(w http.ResponseWriter, r *http.Request) {
 	scope := r.URL.Query().Get("scope")
 	db := a.store.DB
+	db.Webhook = nil // Local notification credentials are not exported.
 	db.Format = currentDatabaseFormat
 	db.Key = base64.RawStdEncoding.EncodeToString(a.store.key)
 	db.History = append([]Snapshot{}, db.History...)
@@ -52,6 +53,39 @@ func (a *App) export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	reply(w, 200, db)
+}
+
+// Select the data for a password-encrypted export. The caller holds a.mu and
+// clones the selected data before releasing the lock.
+func selectExportScope(db Database, scope string, target uint64) (Database, error) {
+	db.History = append([]Snapshot{}, db.History...)
+	switch scope {
+	case "", "all":
+	case "config":
+		db.History = []Snapshot{}
+	case "snapshots", "snapshot":
+		if len(db.History) == 0 {
+			return Database{}, fmt.Errorf("没有可导出的快照")
+		}
+		if scope == "snapshot" {
+			matches := []Snapshot{}
+			for _, h := range db.History {
+				if h.Revision == target {
+					matches = append(matches, h)
+				}
+			}
+			if len(matches) == 0 {
+				return Database{}, fmt.Errorf("快照不存在")
+			}
+			db.History = matches
+		}
+		last := db.History[len(db.History)-1]
+		db.State = last.State.clone()
+		db.History = db.History[:len(db.History)-1]
+	default:
+		return Database{}, fmt.Errorf("无效的导出范围")
+	}
+	return db, nil
 }
 
 // importConfig is called with a.mu held for both plain and encrypted imports.
@@ -127,6 +161,28 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
+	// Ignore any imported destination. The imported key replaces the local key,
+	// so re-encrypt the existing local destination before committing either.
+	db.Webhook = nil
+	if a.store.DB.Webhook != nil {
+		local := *a.store.DB.Webhook
+		if err = validateStoredWebhook(a.store, &local); err != nil {
+			fail(w, 500, fmt.Errorf("本机通知设置无效，未导入配置"))
+			return
+		}
+		if local.URL != "" {
+			var target string
+			target, err = a.store.decrypt(local.URL)
+			if err == nil {
+				local.URL, err = check.encrypt(target)
+			}
+			if err != nil {
+				fail(w, 500, fmt.Errorf("无法迁移本机通知设置"))
+				return
+			}
+		}
+		db.Webhook = &local
+	}
 	// The imported current revision is an untrusted concurrency token. Keep
 	// snapshot labels intact, but allocate a fresh local revision above them.
 	db.Revision = a.store.DB.Revision
@@ -147,6 +203,10 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	a.store.DB = db
 	a.discardStoppedRuntimeLocked()
+	if a.webhooks != nil {
+		a.configureWebhook(db.webhookConfig())
+		a.webhooks.emitConfig(db.Revision)
+	}
 	if err = a.core.UseConfigActive(*db.ActiveCore, func(id string) error {
 		next := a.store.DB
 		next.ActiveCore = &id

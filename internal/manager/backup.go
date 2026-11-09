@@ -45,6 +45,8 @@ func (a *App) backupExport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Revision uint64 `json:"revision"`
 		Password string `json:"password"`
+		Scope    string `json:"scope"`
+		Snapshot uint64 `json:"snapshot"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, 400, err)
@@ -61,7 +63,15 @@ func (a *App) backupExport(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, fmt.Errorf("configuration changed; refresh and retry"))
 		return
 	}
-	db := cloneBackupDatabase(a.store.DB)
+	db, err := selectExportScope(a.store.DB, req.Scope, req.Snapshot)
+	if err != nil {
+		a.mu.Unlock()
+		fail(w, 400, err)
+		return
+	}
+	db = cloneBackupDatabase(db)
+	// Webhook destinations are local credentials, not portable backup data.
+	db.Webhook = nil
 	key := append([]byte(nil), a.store.key...)
 	a.mu.Unlock()
 	backup, err := encryptBackup(db, key, req.Password)

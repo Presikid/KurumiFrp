@@ -315,6 +315,9 @@ func (a *App) startPrepared(i Instance, r Rendered, target, configPath, coreID s
 	p.status = RuntimeStatus{State: "running", PID: pid, Started: now(), RunID: config.RunID, Generation: a.generations[i.ID], Applied: r.Digest}
 	a.procs[i.ID] = p
 	delete(a.startupErrors, i.ID)
+	if a.webhooks != nil {
+		a.webhooks.emitInstance("instance.up", i.ID, i.Kind)
+	}
 	go func() {
 		err := instance.Wait()
 		status.cleanup()
@@ -329,6 +332,9 @@ func (a *App) startPrepared(i Instance, r Rendered, target, configPath, coreID s
 			}
 		} else {
 			p.status.Exit = "exit 0"
+		}
+		if a.webhooks != nil {
+			a.webhooks.emitInstance("instance.down", i.ID, i.Kind)
 		}
 		p.mu.Unlock()
 		close(p.done)
@@ -377,6 +383,9 @@ func (a *App) Close() error {
 	a.closeOnce.Do(func() {
 		a.mu.Lock()
 		a.closing = true
+		if a.webhooks != nil {
+			a.webhooks.close()
+		}
 		if a.startupCancel != nil {
 			a.startupCancel()
 		}
