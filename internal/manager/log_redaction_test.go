@@ -24,7 +24,7 @@ func TestLogBufferChunkedWritesPreserveLineBoundaries(t *testing.T) {
 func TestLogRedactorMasksQuotedCredentials(t *testing.T) {
 	secret := "a-credential:\"\\\t<>&\u2028\u2029\x7f"
 	jsonText, _ := json.Marshal(secret)
-	for _, form := range []string{secret, quote(secret), string(jsonText), strconv.Quote(secret)} {
+	for _, form := range []string{secret, quote(secret), string(jsonText), strconv.Quote(secret), templateCredential(secret)} {
 		forms := []string{form}
 		if strings.HasPrefix(form, `"`) {
 			forms = append(forms, form[1:len(form)-1])
