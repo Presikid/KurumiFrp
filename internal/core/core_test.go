@@ -428,4 +428,3 @@ func TestCoreJobCompletes(t *testing.T) {
 	}
 	t.Fatal("job did not finish")
 }
-
