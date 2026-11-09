@@ -10,8 +10,13 @@ import (
 func TestDuplicateInstanceAndRules(t *testing.T) {
 	a := testApp(t)
 	original := seed(t, a)
-	source := Tunnel{ID: randomHex(8), InstanceID: original.ID, Name: "demo", Type: "tcp", LocalHost: "127.0.0.1", LocalPort: 8080, RemotePort: 6000, Enabled: true}
 	st := a.store.DB.State.clone()
+	st.Instances[0].AutoStart = true
+	if err := a.store.commit(st, "enable automatic startup for source"); err != nil {
+		t.Fatal(err)
+	}
+	source := Tunnel{ID: randomHex(8), InstanceID: original.ID, Name: "demo", Type: "tcp", LocalHost: "127.0.0.1", LocalPort: 8080, RemotePort: 6000, Enabled: true}
+	st = a.store.DB.State.clone()
 	st.Tunnels = append(st.Tunnels, source)
 	if err := a.store.commit(st, "seed duplicate rules"); err != nil {
 		t.Fatal(err)
@@ -32,7 +37,7 @@ func TestDuplicateInstanceAndRules(t *testing.T) {
 		t.Fatalf("unexpected clone response: %s", w.Body.String())
 	}
 	copyInstance, ok := a.store.DB.State.Instance(result.ID)
-	if !ok || copyInstance.Name == original.Name || copyInstance.Token != original.Token || copyInstance.Kind != original.Kind {
+	if !ok || copyInstance.Name == original.Name || copyInstance.Token != original.Token || copyInstance.Kind != original.Kind || copyInstance.AutoStart {
 		t.Fatal("bad instance clone")
 	}
 	found := false
@@ -60,7 +65,7 @@ func TestDuplicateTunnelToOtherClientAndNameSuffix(t *testing.T) {
 	a := testApp(t)
 	first := seed(t, a)
 	second := Instance{ID: randomHex(8), Name: "Standby", Kind: "frpc", Host: "127.0.0.2", Port: 7000, Token: first.Token}
-	src := Tunnel{ID: randomHex(8), InstanceID: first.ID, Name: "demo", Type: "http", LocalHost: "127.0.0.1", LocalPort: 8080, Domains: []string{"example.com"}, Enabled: true}
+	src := Tunnel{ID: randomHex(8), InstanceID: first.ID, Name: "demo", Type: "http", LocalHost: "127.0.0.1", LocalPort: 8080, Domains: []string{"example.com"}, ProbePath: "/health", ProbeMethod: "GET", Enabled: true}
 	state := a.store.DB.State.clone()
 	state.Instances = append(state.Instances, second)
 	state.Tunnels = append(state.Tunnels, src)
@@ -72,7 +77,7 @@ func TestDuplicateTunnelToOtherClientAndNameSuffix(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	copyTunnel := a.store.DB.State.Tunnels[len(a.store.DB.State.Tunnels)-1]
-	if copyTunnel.InstanceID != second.ID || copyTunnel.Enabled || copyTunnel.Name != "demo-copy" {
+	if copyTunnel.InstanceID != second.ID || copyTunnel.Enabled || copyTunnel.Name != "demo-copy" || copyTunnel.ProbePath != src.ProbePath || copyTunnel.ProbeMethod != src.ProbeMethod {
 		t.Fatal("bad rule clone")
 	}
 	copyTunnel.Domains[0] = "mutated.example"

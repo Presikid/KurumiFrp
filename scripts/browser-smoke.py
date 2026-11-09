@@ -39,11 +39,26 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
         with urllib.request.urlopen(base + "/kurumi.webp", timeout=5) as response:
             header = response.read(12)
             assert header[:4] == b"RIFF" and header[8:12] == b"WEBP", "theme image was not embedded and served"
+        with urllib.request.urlopen(base + "/app.js", timeout=5) as response:
+            asset_etag = response.headers.get("ETag")
+            assert response.headers.get("Cache-Control") == "private, no-cache"
+            assert asset_etag, "embedded script omitted ETag"
+        conditional_asset = urllib.request.Request(base + "/app.js", headers={"If-None-Match": asset_etag})
+        try:
+            urllib.request.urlopen(conditional_asset, timeout=5)
+            raise AssertionError("unchanged embedded asset did not return 304")
+        except urllib.error.HTTPError as error:
+            assert error.code == 304, f"conditional asset request returned {error.code}"
         with sync_playwright() as p:
-            launch = {"headless": True, "args": ["--no-sandbox"]}
+            engine = os.environ.get("KURUMI_BROWSER", "chromium")
+            if engine not in ("chromium", "firefox", "webkit"):
+                raise ValueError("unsupported browser engine: " + engine)
+            launch = {"headless": True}
+            if engine == "chromium":
+                launch["args"] = ["--no-sandbox"]
             if len(sys.argv) > 2:
                 launch["executable_path"] = sys.argv[2]
-            browser = p.chromium.launch(**launch)
+            browser = getattr(p, engine).launch(**launch)
             page = browser.new_page(viewport={"width": 1440, "height": 1000}, device_scale_factor=1)
             errors = []
             page.on("pageerror", lambda e: errors.append(str(e)))
@@ -58,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
                     response = opener.open(request, timeout=20)
                 except urllib.error.HTTPError as error:
                     response = error
-                return {"status": response.status, "body": response.read().decode()}
+                return {"status": response.status, "body": response.read().decode(), "headers": dict(response.headers)}
             if offline:
                 page.expose_function("testFetch", bridge)
             def load_page():
@@ -71,7 +86,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
                 page.set_content(html)
                 page.add_style_tag(content=(web / "style.css").read_text())
                 page.add_style_tag(content=(web / "core.css").read_text())
-                page.add_script_tag(content="window.fetch = async (p, o={}) => { const r = await window.testFetch(p, o); return new Response(r.body, {status:r.status,headers:{'Content-Type':'application/json'}}); };")
+                page.add_script_tag(content="window.fetch = async (p, o={}) => { const r = await window.testFetch(p, o); return new Response(r.status === 304 ? null : r.body, {status:r.status,headers:r.headers}); };")
                 page.add_script_tag(content=(web / "app.js").read_text())
                 page.add_script_tag(content=(web / "core.js").read_text())
             load_page()
@@ -83,16 +98,34 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#login-form input').fill(token)
             page.locator('#login-form button').click()
             page.locator('#app').wait_for(state="visible")
+            page.evaluate("""() => showDiff({instanceName:'fixture', addedCount:0, removedCount:0, added:[], removed:[]})""")
+            expect(page.locator('#diff-dialog')).to_be_visible()
+            expect(page.locator('#diff-content')).to_have_text('没有可显示的行变化')
+            page.locator('#diff-close').click()
+            page.evaluate("""() => showDiff({instanceName:'fixture', addedCount:1, removedCount:0, added:['<img src=x onerror=alert(1)>'], removed:[]})""")
+            expect(page.locator('#diff-content img')).to_have_count(0)
+            expect(page.locator('#diff-content')).to_contain_text('<img src=x onerror=alert(1)>')
+            page.locator('#diff-close').click()
             page.locator('[data-action="new-instance"]').first.click()
-            page.locator('#editor input[name="name"]').fill("Tokyo entry")
+            # Modal input should not trigger a full-viewport backdrop filter repaint.
+            backdrop_filter = page.locator('#dialog').evaluate(
+                "(dialog) => getComputedStyle(dialog, '::backdrop').getPropertyValue('backdrop-filter').trim()"
+            )
+            assert backdrop_filter in ("", "none"), f"modal backdrop unexpectedly applies a filter: {backdrop_filter}"
+            name_input = page.locator('#editor input[name="name"]')
+            name_input.press_sequentially("Tokyo entry", delay=5)
+            assert name_input.input_value() == "Tokyo entry"
             page.locator('#editor input[name="host"]').fill("127.0.0.1")
             page.locator('#editor input[name="token"]').fill("test-passphrase-123")
+            page.locator('#editor input[name="autoStart"]').check()
             page.locator('#editor button[type="submit"]').click()
             page.locator('#dialog').wait_for(state="hidden")
+            page.locator('[data-page="instances"]').click()
+            expect(page.locator('.instance-card')).to_contain_text('工作台启动时自动恢复')
             page.locator('[data-page="tunnels"]').click()
             page.locator('[data-action="new-tunnel"]').first.click()
             page.locator('#editor input[name="name"]').fill("desktop-rdp")
-            page.locator('#editor input[name="localPort"]').fill("3389")
+            page.locator('#editor input[name="localPort"]').fill(str(port))
             page.locator('#editor input[name="remotePort"]').fill("13389")
             page.locator('#editor button[type="submit"]').click()
             page.locator('#dialog').wait_for(state="hidden")
@@ -103,9 +136,33 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             expect(page.locator("#form-error")).not_to_have_text("")
             page.locator('#cancel').click()
             page.locator('[data-action="edit-tunnel"]').first.click()
-            page.locator('#editor input[name="localPort"]').fill("3390")
+            page.locator('#editor input[name="localPort"]').fill(str(port))
             page.locator('#editor button[type="submit"]').click()
             page.locator('#dialog').wait_for(state="hidden")
+            polling_checks = page.evaluate((Path(__file__).with_name("polling-regression.js")).read_text(encoding="utf-8"), {"token": token})
+            print("Polling regression passed: " + polling_checks)
+            page.locator('[data-page="tunnels"]').click()
+            page.locator('[data-action="probe"]').first.click()
+            expect(page.locator('.probe-cell .pill.good').first).to_contain_text("TCP 可连接")
+            page.locator('[data-action="new-tunnel"]').first.click()
+            page.locator('#editor input[name="name"]').fill("health-check")
+            page.locator('#editor select[name="type"]').select_option("http")
+            page.locator('#editor input[name="localPort"]').fill(str(port))
+            page.locator('#editor input[name="domains"]').fill("health.example.test")
+            page.locator('#editor input[name="probePath"]').fill("/healthz")
+            page.locator('#editor select[name="probeMethod"]').select_option("GET")
+            page.locator('#editor button[type="submit"]').click()
+            page.locator('#dialog').wait_for(state="hidden")
+            page.locator('[data-action="edit-tunnel"]').nth(1).click()
+            expect(page.locator('#editor input[name="probePath"]')).to_have_value("/healthz")
+            expect(page.locator('#editor select[name="probeMethod"]')).to_have_value("GET")
+            page.locator('#cancel').click()
+            page.locator('[data-action="probe"]').nth(1).click()
+            expect(page.locator('.probe-cell .pill.warn').first).to_contain_text("服务已响应")
+            expect(page.locator('tbody tr').nth(1).locator('.probe-cell .probe-meta')).to_contain_text("HTTP 403")
+            page.locator('[data-action="probe-visible"]').click()
+            expect(page.locator('.probe-cell .pill.good').first).to_contain_text("TCP 可连接")
+            expect(page.locator('.probe-cell .pill.warn').first).to_contain_text("服务已响应")
             page.locator('[data-page="overview"]').click()
             page.screenshot(path=str(shots / "overview.png"), full_page=True)
             page.locator('[data-page="config"]').click()
@@ -124,7 +181,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
                 page.locator('[data-action="export-data"]').click()
             exported_json = json.loads(Path(exported.value.path()).read_text(encoding='utf-8'))
             assert 'state' in exported_json and exported_json['history'] == [] and exported_json['key']
-            page.on('dialog', lambda dialog: dialog.accept())
+            page.on('dialog', lambda dialog: dialog.accept(dialog.default_value) if dialog.type == 'prompt' else dialog.accept())
             page.locator('#history-limit').fill('2')
             page.locator('[data-action="history-settings"]').click()
             expect(page.locator('#history-limit')).to_have_value('2')
@@ -148,7 +205,23 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
                 page.reload()
             page.locator('#app').wait_for(state="visible")
             page.locator('[data-page="tunnels"]').click()
-            assert page.locator('tbody tr').count() == 1
+            assert page.locator('tbody tr').count() == 2
+            page.locator('[data-action="edit-tunnel"]').nth(1).click()
+            expect(page.locator('#editor input[name="probePath"]')).to_have_value("/healthz")
+            expect(page.locator('#editor select[name="probeMethod"]')).to_have_value("GET")
+            page.locator('#cancel').click()
+            page.locator('[data-action="duplicate-tunnel"]').nth(1).click()
+            expect(page.locator('tbody tr')).to_have_count(3)
+            expect(page.locator('tbody tr').last).to_contain_text('health-check-copy')
+            expect(page.locator('tbody tr').last).to_contain_text('期望停用')
+            page.locator('[data-action="edit-tunnel"]').last.click()
+            expect(page.locator('#editor input[name="probePath"]')).to_have_value('/healthz')
+            expect(page.locator('#editor select[name="probeMethod"]')).to_have_value('GET')
+            page.locator('#cancel').click()
+            page.locator('[data-page="instances"]').click()
+            page.locator('[data-action="duplicate-instance"]').first.click()
+            expect(page.locator('.instance-card')).to_have_count(2)
+            expect(page.locator('.instance-card').last).to_contain_text('手动启动')
             assert not errors, errors
             browser.close()
             print(("Offline UI harness" if offline else "Browser smoke") + " passed: login, CRUD, conflicts, redaction, saved-state reads, responsive layout; no page errors.")

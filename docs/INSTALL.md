@@ -2,23 +2,23 @@
 
 ## Windows：Program Files 正式安装
 
-下载 `KurumiFRP-0.7.1.0-Setup.exe`，双击并允许 UAC 管理员授权。一个安装文件按系统选择 x64 或 ARM64。默认程序目录是 `C:\Program Files\KurumiFRP`（实际路径使用系统 Program Files 定义），注册到 HKLM 的“已安装的应用”，不是 AppData 内的当前用户安装。安装、打开和卸载均不依赖 PS1/CMD、Python、Go 或 Node.js。
+下载 `KurumiFRP-0.7.1.13-Setup.exe`，双击并允许 UAC 管理员授权。一个安装文件按系统选择 x64 或 ARM64。默认程序目录是 `C:\Program Files\KurumiFRP`（实际路径使用系统 Program Files 定义），注册到 HKLM 的“已安装的应用”，不是 AppData 内的当前用户安装。安装、打开和卸载均不依赖 PS1/CMD、Python、Go 或 Node.js。
 
 程序文件和可变数据分离：
 
 | 内容 | 位置 |
 |---|---|
 | 主程序、说明、安装登记、原生卸载器 | `%ProgramFiles%\KurumiFRP` |
-| 账户隔离的配置、令牌、密钥、历史 | `%ProgramData%\KurumiFRP\profiles\<Windows SID>\data` |
-| 下载的 frpc/frps 及版本清单 | 同一账户目录内的 `cores` |
-| 工作台及托管 frp 的运行临时文件 | 同一账户目录内的 `tmp\session-*` |
-| 机器级目录所有权记录 | `%ProgramData%\KurumiFRP\machine-install.json` |
+| 账户隔离的配置、令牌、密钥、历史 | `%ProgramFiles%\KurumiFRP\runtime\profiles\<Windows SID>\data` |
+| 下载的 frpc/frps 及版本清单 | `%ProgramFiles%\KurumiFRP\runtime\profiles\<Windows SID>\cores` |
+| 工作台及托管 frp 的运行临时文件 | `%ProgramFiles%\KurumiFRP\runtime\profiles\<Windows SID>\tmp\session-*` |
+| 机器级目录所有权记录 | `%ProgramFiles%\KurumiFRP\runtime\machine-install.json` |
 
-这是机器级安装、按 Windows 账户隔离的本机工作台，不是 Windows 系统服务。每个账户有独立配置、令牌和实例；应用自己的长期文件不另外放进该账户的 AppData/Documents。SID 是 Windows 安全标识，不是另建系统账户。普通用户对 Program Files 没有写权限；共享 ProgramData 根目录也不会被授予 Users 全量修改权限。用户只能创建并访问自己受 NTFS 权限保护的配置目录，系统和管理员仍拥有管理权限。路径通过 Windows Known Folder API 解析，不信任修改过的 ProgramData 环境变量。
+这是机器级安装、按 Windows 账户隔离的本机工作台，不是 Windows 系统服务。每个账户有独立配置、令牌和实例；应用自己的长期文件不另外放进该账户的 AppData/Documents。SID 是 Windows 安全标识，不是另建系统账户。普通用户对 Program Files 没有写权限；安装目录中的 `runtime` 根目录由管理员创建并保护；普通用户只能创建并访问自己受 NTFS 权限保护的 SID 子目录，系统和管理员仍拥有管理权限。运行时路径由当前可执行文件所在的安装目录解析，不依赖 AppData、ProgramData 或用户环境变量。
 
 安装向导可选公共桌面快捷方式、各用户登录时启动，以及成功后删除 Setup.exe。启动由安装器以原始用户身份执行，常规使用不要求持续管理员权限。快捷方式直接运行 `kurumi.exe --open`。选择登录启动会在各账户登录时启动其独立工作台；默认不勾选。管理端只选择 9000–9010 中的本机回环端口，不对公网开放。
 
-同一机器级安装覆盖升级会先停止各账户的托管实例，保留全部配置和密钥，再更新程序。卸载使用 Windows“设置 → 应用 → 已安装的应用 → KurumiFRP”，需要管理员授权，并明确确认删除所有账户的配置、密钥及核心。停止未确认、目录归属或访问权限不符时中止，不把局部清理当作成功。不会按进程名杀掉其他 frp，也不会跟随符号链接/junction 删除外部目标。
+同一机器级安装覆盖升级会先停止各账户的托管实例，保留全部配置和密钥，再更新程序。首次从旧版升级时，安装器会验证旧 `%ProgramData%\KurumiFRP` 的安装记录、目录 ACL 和各账户 SID 记录，然后把完整 profile（配置、令牌、主密钥、快照、核心和临时目录）迁移到新的 `runtime`。同卷优先移动，跨卷时复制并校验 SHA-256；成功后才清理旧目录。若发现归属不明、权限异常、符号链接/junction、文件冲突或旧进程无法停止，安装会中止并保留旧数据；此时不要手动删除旧目录，应重新运行安装器或先备份后排查。迁移完成前新版不会启动空白配置。卸载使用 Windows“设置 → 应用 → 已安装的应用 → KurumiFRP”，需要管理员授权，并明确确认删除所有账户的配置、密钥及核心。停止未确认、目录归属或访问权限不符时中止，不把局部清理当作成功。不会按进程名杀掉其他 frp，也不会跟随符号链接/junction 删除外部目标。
 
 安装成功并通过本机认证接口验证后，才安排清理本次准确路径、SHA-256 匹配的 Setup.exe。无法删除被持续占用的文件时保留它。Inno Setup 的解包/卸载工作目录仍可能使用系统 Temp；浏览器缓存、Cookie、主题存储、快捷方式、系统审计和安全软件记录也不属于应用数据根目录。不能宣称全系统零写入或取证无痕。
 
@@ -29,11 +29,11 @@
 Debian/Ubuntu 按架构下载 DEB，Fedora/RHEL 系按架构下载 RPM：
 
 ```sh
-sudo apt install ./kurumifrp_0.7.1.0_amd64.deb
-# ARM64 改为 kurumifrp_0.7.1.0_arm64.deb
+sudo apt install ./kurumifrp_0.7.1.13_amd64.deb
+# ARM64 改为 kurumifrp_0.7.1.13_arm64.deb
 
-sudo dnf install ./kurumifrp-0.7.1.0-1.x86_64.rpm
-# ARM64 改为 kurumifrp-0.7.1.0-1.aarch64.rpm
+sudo dnf install ./kurumifrp-0.7.1.13-1.x86_64.rpm
+# ARM64 改为 kurumifrp-0.7.1.13-1.aarch64.rpm
 ```
 
 升级继续交给 APT/DNF。没有另外部署在线 APT/YUM 软件源，也未提供仓库 GPG 签名；这是上游发布的软件包，不表示已进入发行版官方仓库。附带 SHA-256 是完整性校验，不是独立身份签名。
@@ -73,9 +73,19 @@ sudo dnf remove kurumifrp  # 此 RPM 的最终卸载会清除托管数据；升�
 DEB/RPM 不在包维护脚本里猜测、扫描并删除用户下载文件，不破坏包管理器缓存或事务记录。需要安装验证后删除当前包，可执行：
 
 ```sh
-file=kurumifrp_0.7.1.0_amd64.deb
+file=kurumifrp_0.7.1.13_amd64.deb
 sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 ```
+
+## 更多 Linux 架构
+
+除 amd64 和 arm64 外，发布页提供 armhf、riscv64 的 DEB；按系统架构选择对应文件。系统安装包按上面的方式安装和更新。
+
+还提供 KurumiFRP-版本-linux-架构.tar.gz 便携包，覆盖 ARM 基线版、ARM 硬浮点版、RISC-V 64、LoongArch 64，以及 MIPS 大小端 32/64 位。它们解压后无需安装：在可写目录运行 ./kurumifrp，用 ./kurumifrp --show-token 查看本机访问令牌。也可通过 --data 和 --frp-dir 指定数据和核心目录。管理页面默认只监听本机，通过 SSH 端口转发从其他设备访问。
+
+便携包不会注册系统服务，程序更新需先停止工作台，再下载相应架构的新版并手动替换可执行文件；配置与已下载核心保存在独立的数据和核心目录。ARM 基线包适合较老的 ARM 设备，arm_hf 包要求 ARMv7 硬浮点支持。MIPS 包按设备位数和大小端选择。
+
+这些新增架构的可执行文件经模拟器启动验证；模拟验证不等于在所有真实设备及发行版上完成安装、转发和性能验证。
 
 ## 临时文件与异常退出
 
@@ -85,7 +95,7 @@ sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 
 ## 从 0.4 或更早版本迁移
 
-0.5 不会自动执行旧用户目录中可能被篡改的程序，也不会把旧数据不经确认提升为机器级安装。检测到当前账户旧 HKCU 卸载项时阻止安装并提示迁移；不会扫描其他用户目录。先退出旧工作台并停止实例，完整备份旧版 data 和 cores（包括 access.token/master.key），使用旧卸载器移除原安装，然后安装 0.5。停止新工作台，将完整备份放入新账户对应的 ProgramData 子目录；不要覆盖 profile.json 和机器安装记录。Linux 从 0.4 的原生包升级保留原 `/var/lib/kurumifrp` 数据。
+以下是 0.5 发布时的历史迁移说明：当时安装器不会自动执行旧用户目录中的程序，也不会把旧数据不经确认提升为机器级安装。当前版本已改为自动迁移受安装回执、SID 和 ACL 验证的旧 ProgramData 数据；从旧版升级时不再手动把备份放回 ProgramData，而由当前安装器迁移到安装目录的 `runtime`。Linux 从 0.4 的原生包升级仍保留原 `/var/lib/kurumifrp` 数据。
 
 ## 规范与验证
 
