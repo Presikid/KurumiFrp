@@ -30,3 +30,16 @@ func TestEmbeddedHandlerServesNewNestedAsset(t *testing.T) {
 		t.Fatalf("conditional asset response: %d %q", cached.Code, cached.Body.String())
 	}
 }
+
+func TestAppRoutesEmbeddedNestedAssets(t *testing.T) {
+	a := testApp(t)
+	a.assets = newEmbeddedAssetHandler(fstest.MapFS{"nested/feature.js": &fstest.MapFile{Data: []byte("feature")}})
+	w := request(a, http.MethodGet, "/nested/feature.js", nil, "", "")
+	if w.Code != http.StatusOK || w.Body.String() != "feature" {
+		t.Fatalf("app asset response: %d %q", w.Code, w.Body.String())
+	}
+	w = request(a, http.MethodGet, "/nested/missing.js", nil, "", "")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("missing asset response: %d", w.Code)
+	}
+}

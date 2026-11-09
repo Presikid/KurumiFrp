@@ -98,6 +98,14 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('#login-form input').fill(token)
             page.locator('#login-form button').click()
             page.locator('#app').wait_for(state="visible")
+            page.evaluate("""() => showDiff({instanceName:'fixture', addedCount:0, removedCount:0, added:[], removed:[]})""")
+            expect(page.locator('#diff-dialog')).to_be_visible()
+            expect(page.locator('#diff-content')).to_have_text('没有可显示的行变化')
+            page.locator('#diff-close').click()
+            page.evaluate("""() => showDiff({instanceName:'fixture', addedCount:1, removedCount:0, added:['<img src=x onerror=alert(1)>'], removed:[]})""")
+            expect(page.locator('#diff-content img')).to_have_count(0)
+            expect(page.locator('#diff-content')).to_contain_text('<img src=x onerror=alert(1)>')
+            page.locator('#diff-close').click()
             page.locator('[data-action="new-instance"]').first.click()
             # Modal input should not trigger a full-viewport backdrop filter repaint.
             backdrop_filter = page.locator('#dialog').evaluate(

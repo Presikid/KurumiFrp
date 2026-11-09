@@ -29,12 +29,14 @@ type RuntimeStatus struct {
 	Pending bool   `json:"pending"`
 }
 type process struct {
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	done   chan struct{}
-	status RuntimeStatus
-	logs   *logBuffer
-	coreID string
+	mu                  sync.Mutex
+	cmd                 *exec.Cmd
+	done                chan struct{}
+	status              RuntimeStatus
+	logs                *logBuffer
+	coreID              string
+	appliedConfig       string
+	appliedSecretDigest string
 }
 type logBuffer struct {
 	mu       sync.Mutex
@@ -251,7 +253,7 @@ func (a *App) startPrepared(i Instance, r Rendered, path, configPath, coreID str
 	cmd.Env = childEnv(r.Env)
 	cmd.Dir = filepath.Dir(configPath)
 	cmd.WaitDelay = 2 * time.Second
-	p := &process{cmd: cmd, done: make(chan struct{}), logs: newLogBuffer(r.Secrets), coreID: coreID}
+	p := &process{cmd: cmd, done: make(chan struct{}), logs: newLogBuffer(r.Secrets), coreID: coreID, appliedConfig: r.Text, appliedSecretDigest: r.SecretDigest}
 	cmd.Stdout = p.logs
 	cmd.Stderr = p.logs
 	if e := cmd.Start(); e != nil {
