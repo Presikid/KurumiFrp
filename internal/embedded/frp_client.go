@@ -31,7 +31,7 @@ var (
 // Do not mutate any input while NewFRPClient is copying it. The constructor
 // keeps its own copies. Proxies and visitors use their unprefixed config names.
 // Includes, store sources, frp admin/metrics servers, virtual net, OIDC and
-// token sources, upstream proxies, plugins and health checks
+// token sources, upstream proxies and plugins
 // are unsupported. Scoped DNS accepts an IP literal. Input completed with
 // upstream Complete may already
 // contain an inherited http_proxy; use ParseClientConfig or
@@ -94,7 +94,7 @@ func prepareFRPClient(options FRPClientOptions) (*preparedFRPClient, error) {
 			return nil, ErrInvalidFRPConfig
 		}
 		base := proxy.GetBaseConfig()
-		if base.Plugin.Type != "" || base.HealthCheck.Type != "" {
+		if base.Plugin.Type != "" {
 			return nil, ErrFRPUnsupported
 		}
 		if _, exists := proxyNames[base.Name]; exists {

@@ -115,6 +115,21 @@ func renderProtocolTunnel(b *strings.Builder, t Tunnel, secret func(string, stri
 		if t.BandwidthKB > 0 {
 			fmt.Fprintf(b, "transport.bandwidthLimit = \"%dKB\"\ntransport.bandwidthLimitMode = \"client\"\n", t.BandwidthKB)
 		}
+		if t.HealthCheckType != "" {
+			fmt.Fprintf(b, "healthCheck.type = %s\n", quote(t.HealthCheckType))
+			if t.HealthCheckType == "http" {
+				fmt.Fprintf(b, "healthCheck.path = %s\n", quote(t.HealthCheckPath))
+			}
+			if t.HealthCheckTimeout > 0 {
+				fmt.Fprintf(b, "healthCheck.timeoutSeconds = %d\n", t.HealthCheckTimeout)
+			}
+			if t.HealthCheckInterval > 0 {
+				fmt.Fprintf(b, "healthCheck.intervalSeconds = %d\n", t.HealthCheckInterval)
+			}
+			if t.HealthCheckMaxFailed > 0 {
+				fmt.Fprintf(b, "healthCheck.maxFailed = %d\n", t.HealthCheckMaxFailed)
+			}
+		}
 	}
 	if t.UseEncryption {
 		fmt.Fprintln(b, "transport.useEncryption = true")

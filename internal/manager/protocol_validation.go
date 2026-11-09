@@ -162,6 +162,24 @@ func validateProtocolInstance(i Instance) error {
 	return nil
 }
 
+func validateRuleHealthCheck(t Tunnel) error {
+	if t.HealthCheckType != "" && t.HealthCheckType != "tcp" && t.HealthCheckType != "http" {
+		return fmt.Errorf("健康检查类型仅支持 TCP 或 HTTP")
+	}
+	if isVisitor(t.Type) && t.HealthCheckType != "" {
+		return fmt.Errorf("Visitor 不支持代理健康检查")
+	}
+	if t.HealthCheckTimeout < 0 || t.HealthCheckTimeout > 86400 ||
+		t.HealthCheckInterval < 0 || t.HealthCheckInterval > 604800 ||
+		t.HealthCheckMaxFailed < 0 || t.HealthCheckMaxFailed > 1000 {
+		return fmt.Errorf("健康检查间隔、超时或失败次数超出范围")
+	}
+	if t.HealthCheckType == "http" && (t.HealthCheckPath == "" || !probePathOK(t.HealthCheckPath)) {
+		return fmt.Errorf("HTTP 健康检查需要以 / 开头的有效路径")
+	}
+	return nil
+}
+
 func validateProtocolTunnel(t Tunnel, endpoint string, claim func(string, string) error) error {
 	if usesPairingSecret(t.Type) && t.Secret == "" {
 		return fmt.Errorf("%s 配对密钥不能为空", strings.ToUpper(t.Type))

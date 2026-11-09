@@ -24,7 +24,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fatedier/frp/client/internal/netx"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
+	"github.com/fatedier/frp/pkg/util/lifetime"
 	"github.com/fatedier/frp/pkg/util/xlog"
 )
 
@@ -105,7 +107,9 @@ func NewMonitor(ctx context.Context, cfg v1.HealthCheckConfig, addr string,
 }
 
 func (monitor *Monitor) Start() {
-	go monitor.checkWorker()
+	if !lifetime.Go(monitor.ctx, monitor.checkWorker) {
+		close(monitor.doneCh)
+	}
 }
 
 func (monitor *Monitor) Stop() {
@@ -192,8 +196,14 @@ func (monitor *Monitor) doTCPCheck(ctx context.Context) error {
 		return nil
 	}
 
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", monitor.addr)
+	var conn net.Conn
+	var err error
+	if network := netx.FromContext(ctx); network != nil {
+		conn, err = network.DialContext(ctx, "tcp", monitor.addr, 0, 0, false)
+	} else {
+		var d net.Dialer
+		conn, err = d.DialContext(ctx, "tcp", monitor.addr)
+	}
 	if err != nil {
 		return err
 	}
@@ -208,7 +218,18 @@ func (monitor *Monitor) doHTTPCheck(ctx context.Context) error {
 	}
 	req.Header = monitor.header
 	req.Host = monitor.header.Get("Host")
-	resp, err := http.DefaultClient.Do(req)
+	client := http.DefaultClient
+	if network := netx.FromContext(ctx); network != nil {
+		transport := &http.Transport{
+			DisableKeepAlives: true,
+			DialContext: func(ctx context.Context, networkType, address string) (net.Conn, error) {
+				return network.DialContext(ctx, networkType, address, 0, 0, false)
+			},
+		}
+		defer transport.CloseIdleConnections()
+		client = &http.Client{Transport: transport}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
