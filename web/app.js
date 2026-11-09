@@ -2,7 +2,8 @@
 const $ = (s) => document.querySelector(s);
 const esc = (v = '') => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const titles = {overview:'网络总览',tunnels:'连接看板',instances:'运行实例',health:'链路监测',config:'配置中心',logs:'运行记录',update:'软件更新'};
-let updateChecked = false, releases = [], updateStatus = '';
+let updateChecked = false, releases = [], updateStatus = '', updateListError = '', updateSelection = '', updateSelectionLost = false, updateRequestSerial = 0;
+let updateOptions = '', updateInstalling = false, updateTaskRunning = false, updateStatusKnown = false, updatePollTimer = null, updateStatusRequest = null;
 let probeResults = Object.create(null), probing = Object.create(null), probeRevision = null, probingAll = false, probeBatchProgress = null;
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer, refreshTimer = null;
 let authGeneration = 0, stateETag = '', stateSnapshot = '', renderedSnapshot = '', renderedPage = '';
@@ -52,6 +53,10 @@ function resetSession() {
  ++authGeneration; ++serial;
  stateRequest?.controller.abort(); logRequest?.controller.abort();
  stateRequest = null; logRequest = null; deferredConfig = null;
+ updateChecked = false; releases = []; updateStatus = ''; updateListError = ''; updateSelection = ''; updateSelectionLost = false; ++updateRequestSerial;
+ if (updatePollTimer !== null) clearTimeout(updatePollTimer);
+ updateStatusRequest?.controller.abort();
+ updatePollTimer = null; updateStatusRequest = null; updateInstalling = false; updateTaskRunning = false; updateStatusKnown = false; updateOptions = '';
  registrationRequest = null; registrations = Object.create(null); registrationRevision = null; registrationProcesses = Object.create(null); registrationPaintPending = false; healthChecking = false; healthSelected = ''; ++navigationGeneration;
  stateETag = ''; stateSnapshot = ''; renderedSnapshot = ''; renderedPage = ''; data = null;
  probeResults = Object.create(null); probing = Object.create(null); probeRevision = null; probingAll = false; probeBatchProgress = null;
@@ -168,6 +173,9 @@ function render() {
  const n = ++serial; $('#page-title').textContent=titles[page]; document.title=titles[page]+' · KurumiFRP';
  document.querySelectorAll('[data-page]').forEach(el=>el.classList.toggle('active',el.dataset.page===page));
  const content=$('#content');
+ if (page==='update' && renderedPage==='update' && $('#update-version')) {
+  paintUpdate(); renderedSnapshot = stateSnapshot; return;
+ }
  if(page==='overview') {
   const running=Object.values(data.runtime).filter(v=>v.state==='running').length;
   const pending=Object.values(data.runtime).filter(v=>v.pending).length;
@@ -194,7 +202,10 @@ function render() {
   content.querySelector('.page-head')?.insertAdjacentHTML('afterend', '<section class="panel"><div class="panel-title"><h3>密码加密备份与恢复</h3></div><div class="panel-content"><p>使用单独密码加密配置、历史快照和数据密钥，适合跨设备迁移。密码不会被工作台保存。</p><div class="actions"><button class="primary" data-backup-action="export">导出加密备份</button><button data-backup-action="import">恢复加密备份</button></div><p class="small-note">建议使用至少 16 个字符的强密码，并与备份文件分开保管。忘记密码无法恢复。备份不包含 frp 核心文件和本机管理令牌。</p></div></section>');
   if(selected) {const id=selected;api('config?id='+encodeURIComponent(id)).then(v=>{if(serial===n) {deferredConfig={serial:n,id,text:v.toml};applyDeferredConfig();}}).catch(e=>{if(serial===n && data)toast(e.message);});}
  } else if(page==='update') {
-  content.innerHTML=header('软件更新','从 GitHub 获取官方版本，选择可用的新版本进行更新。')+`<section class="panel"><div class="panel-content"><p>当前版本 ${esc(data.version)}。更新期间工作台和托管连接可能中断；Windows 需要管理员授权。</p><label>选择版本<select id="update-version">${releases.map(v=>`<option value="${esc(v.tag)}" ${v.newer&&v.available?'':'disabled'}>${v.newer&&v.available?'':'✕ '}${esc(v.tag)}${v.metadataFallback?' · 发布状态待确认':v.prerelease?' · 预览版':''}${v.newer?(v.available?'':' · 无可用安装包'):' · 暂不支持切换'}</option>`).join('')}</select></label><div class="actions"><button data-action="check-update">检查版本</button><button class="primary" data-action="install-update" ${releases.some(v=>v.newer&&v.available)?'':'disabled'}>更新所选版本</button></div><p class="small-note">${esc(updateStatus||'选择版本后将下载并校验官方安装包。')}</p></div></section>`;
+  reconcileUpdateSelection();
+  updateOptions = updateOptionsMarkup();
+  content.innerHTML=header('软件更新','从 GitHub 获取官方版本，选择可用的新版本进行更新。')+`<section class="panel"><div class="panel-content"><p>当前版本 <span id="update-current">${esc(data.version)}</span>。更新期间工作台和托管连接可能中断；Windows 需要管理员授权。</p><label>选择版本<select id="update-version">${updateOptions}</select></label><p id="update-selection-note" class="small-note" role="status" ${updateSelectionLost?'':'hidden'}>已选版本不再可用，请重新选择。</p><div class="actions"><button data-action="check-update">检查版本</button><button class="primary" data-action="install-update" ${updateCanInstall()&&!updateBusy()?'':'disabled'}>更新所选版本</button></div><p id="update-list-error" class="small-note" role="alert" ${updateListError?'':'hidden'}>${esc(updateListError)}</p><p id="update-status" class="small-note">${esc(updateStatus||'选择版本后将下载并校验官方安装包。')}</p></div></section>`;
+  $('#update-version').value=updateSelection;
  } else if(page==='logs') {
   ensureSelected(); content.innerHTML=header('运行记录','真实子进程输出与配置变更记录。进程日志仅保留当前会话最近 200 行。')+
   `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>frp 标准输出</h3><span class="pill">自动刷新</span></div><div class="panel-content">${picker()}<pre id="log-output">正在读取…</pre></div></section><section class="panel"><div class="panel-title"><h3>配置变更</h3></div><div class="panel-content">${recent()}</div></section></div>`;
@@ -202,8 +213,80 @@ function render() {
  }
  renderedSnapshot = stateSnapshot; renderedPage = page;
 }
-async function checkUpdates(promptUser=false){const generation=authGeneration;try{const v=await api('update/releases');if(generation!==authGeneration)return;releases=v.versions;updateStatus=v.status||'';if(page==='update'&&data)render();const latest=releases.find(v=>v.newer&&v.available);if(promptUser&&latest&&confirm(`发现新版本 ${latest.tag}。现在查看更新吗？`))navigate('update');}catch(e){if(generation!==authGeneration)return;updateStatus='无法获取版本列表：'+e.message;if(page==='update'&&data)render();}}
-async function pollUpdate(){if(!data)return;const generation=authGeneration;try{const v=await api('update/status');if(generation!==authGeneration)return;updateStatus=v.status;if(page==='update'&&data)render();if(updateStatus.startsWith('正在'))setTimeout(pollUpdate,2000);}catch(_){if(generation===authGeneration)updateStatus='工作台暂时不可用，请稍后刷新。';}}
+function updateCanInstall(tag=updateSelection) {return !!tag && releases.some(v=>v.tag===tag&&v.newer&&v.available);}
+function updateBusy() {return updateInstalling || updateTaskRunning || !updateStatusKnown;}
+function reconcileUpdateSelection() {
+ if (updateSelection && !updateCanInstall()) {updateSelection=''; updateSelectionLost=true;}
+ if (!updateSelection && !updateSelectionLost) updateSelection=releases.find(v=>v.newer&&v.available)?.tag || '';
+}
+function updateOptionsMarkup() {
+ return `<option value="" disabled>${updateSelectionLost?'已选版本不再可用，请重新选择':'请选择可用版本'}</option>`+
+  releases.map(v=>`<option value="${esc(v.tag)}" ${v.newer&&v.available?'':'disabled'}>${v.newer&&v.available?'':'✕ '}${esc(v.tag)}${v.metadataFallback?' · 发布状态待确认':v.prerelease?' · 预览版':''}${v.newer?(v.available?'':' · 无可用安装包'):' · 暂不支持切换'}</option>`).join('');
+}
+function paintUpdate() {
+ if (page!=='update' || !data) return;
+ const select=$('#update-version'); if (!select) return;
+ reconcileUpdateSelection();
+ const options=updateOptionsMarkup();
+ if (options!==updateOptions) {select.innerHTML=options; updateOptions=options; select.value=updateSelection;}
+ else if (document.activeElement!==select && select.value!==updateSelection) select.value=updateSelection;
+ $('#update-current').textContent=data.version;
+ $('#update-selection-note').hidden=!updateSelectionLost;
+ $('#content [data-action="install-update"]').disabled=updateBusy() || !updateCanInstall() || select.value!==updateSelection;
+ $('#update-list-error').textContent=updateListError;
+ $('#update-list-error').hidden=!updateListError;
+ $('#update-status').textContent=updateStatus || '选择版本后将下载并校验官方安装包。';
+}
+async function checkUpdates(promptUser=false) {
+ const generation=authGeneration, requestSerial=++updateRequestSerial;
+ refreshUpdateStatus(generation);
+ try {
+  const v=await api('update/releases');
+  if(generation!==authGeneration||requestSerial!==updateRequestSerial)return;
+  releases=v.versions; updateListError='';
+  paintUpdate();
+  const latest=releases.find(v=>v.newer&&v.available);
+  if(promptUser&&latest&&page!=='update'&&confirm(`发现新版本 ${latest.tag}。现在查看更新吗？`))navigate('update');
+ } catch(e) {
+  if(generation!==authGeneration||requestSerial!==updateRequestSerial)return;
+  updateListError='无法获取版本列表：'+e.message;
+  paintUpdate();
+ }
+}
+function scheduleUpdatePoll(generation, delay) {
+ if (updatePollTimer!==null) clearTimeout(updatePollTimer);
+ const timer=setTimeout(()=>{
+  if (updatePollTimer===timer) updatePollTimer=null;
+  if (generation===authGeneration) refreshUpdateStatus(generation);
+ },delay);
+ updatePollTimer=timer;
+}
+function refreshUpdateStatus(generation) {
+ if (!data || generation!==authGeneration || updateInstalling) return;
+ if (updateStatusRequest) return updateStatusRequest.promise;
+ if (updatePollTimer!==null) clearTimeout(updatePollTimer);
+ updatePollTimer=null;
+ const request={generation,controller:new AbortController(),timedOut:false};
+ const timeout=setTimeout(()=>{request.timedOut=true;request.controller.abort();},10000);
+ updateStatusRequest=request;
+ request.promise=(async()=>{
+  try {
+   const v=await api('update/status',undefined,{signal:request.controller.signal});
+   if(generation!==authGeneration||updateStatusRequest!==request)return;
+   updateStatus=v.status||''; updateStatusKnown=true; updateTaskRunning=updateStatus.startsWith('正在');
+  } catch(err) {
+   if(generation!==authGeneration||updateStatusRequest!==request||(err.name==='AbortError'&&!request.timedOut))return;
+   updateStatus='工作台暂时不可用，请稍后刷新。'; updateStatusKnown=false;
+  } finally {
+   clearTimeout(timeout);
+   if(updateStatusRequest===request) {
+    updateStatusRequest=null; paintUpdate();
+    if(generation===authGeneration&&(!updateStatusKnown||updateTaskRunning)) scheduleUpdatePoll(generation,updateStatusKnown?2000:5000);
+   }
+  }
+ })();
+ return request.promise;
+}
 function ensureSelected(){if(!data.state.instances.some(i=>i.id===selected))selected=data.state.instances[0]?.id||'';}
 function picker(){return `<select class="config-picker" id="instance-picker" aria-label="选择实例">${data.state.instances.length?data.state.instances.map(i=>`<option value="${i.id}" ${selected===i.id?'selected':''}>${esc(i.name)} · ${i.kind}</option>`).join(''):'<option>尚无实例</option>'}</select>`;}
 function filteredTable(){return tunnelTable(data.state.tunnels.filter(t=>(!protocol||t.type===protocol)&&`${t.name} ${t.localHost} ${t.remotePort} ${data.state.instances.find(i=>i.id===t.instanceId)?.name}`.toLowerCase().includes(filter.toLowerCase())));}
@@ -391,7 +474,7 @@ $('#editor').addEventListener('submit',async e=>{
  try{await api('save',{revision:editRev,kind:editing.kind,value});dialog.close();toast('草稿已保存；运行中的实例未改变');await refresh();}catch(err){$('#form-error').textContent=err.message;}finally{b.disabled=false;}
 });
 $('#content').addEventListener('input',e=>{if(e.target.id==='search'){filter=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}});
-$('#content').addEventListener('change',e=>{if(e.target.id==='health-instance')healthSelected=e.target.value;if(e.target.id==='protocol'){protocol=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='instance-picker'){selected=e.target.value;render();}});
+$('#content').addEventListener('change',e=>{if(e.target.id==='health-instance')healthSelected=e.target.value;if(e.target.id==='protocol'){protocol=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='instance-picker'){selected=e.target.value;render();}if(e.target.id==='update-version'){updateSelection=e.target.value;updateSelectionLost=!updateCanInstall();if(updateSelectionLost)updateSelection='';paintUpdate();}});
 $('#content').addEventListener('click',async e=>{
  const b=e.target.closest('button');if(!b||!data)return;if(b.dataset.go){navigate(b.dataset.go);return;}
  const action=b.dataset.action,id=b.dataset.id || (action==='health'?$('#health-instance')?.value:undefined);if(!action)return;
@@ -438,7 +521,27 @@ $('#content').addEventListener('click',async e=>{
    await refresh();return;
   }
   if(action==='check-update'){await checkUpdates();return;}
-  if(action==='install-update'){const tag=$('#update-version').value;if(!tag)throw new Error('没有可更新的版本');if(!confirm(`更新到 ${tag}？更新将中断工作台和托管连接。`))return;await api('update/install',{tag});updateStatus='正在检查并准备更新';render();setTimeout(pollUpdate,1000);return;}
+  if(action==='install-update'){
+   const generation=authGeneration, tag=updateSelection;
+   if(updateBusy())return;
+   if(!updateCanInstall(tag)||$('#update-version').value!==tag){updateSelection='';updateSelectionLost=true;paintUpdate();throw new Error('所选版本不可用，请重新选择');}
+   if(!confirm(`更新到 ${tag}？更新将中断工作台和托管连接。`))return;
+   updateInstalling=true;
+   if(updatePollTimer!==null)clearTimeout(updatePollTimer);
+   updatePollTimer=null; updateStatusRequest?.controller.abort(); updateStatusRequest=null;
+   try {
+    await api('update/install',{tag});
+    if(generation!==authGeneration||!data)return;
+    updateTaskRunning=true; updateStatusKnown=true; updateStatus='正在检查并准备更新';
+   } catch(err) {
+    if(generation!==authGeneration)return;
+    updateStatusKnown=false;
+    throw err;
+   } finally {
+    if(generation===authGeneration){updateInstalling=false;paintUpdate();scheduleUpdatePoll(generation,1000);}
+   }
+   return;
+  }
   if(action==='export-data'){const scope=$('#export-scope').value, revision=$('#export-snapshot').value;if(scope==='snapshot'&&!revision)throw new Error('没有可导出的快照');const query=new URLSearchParams({scope});if(scope==='snapshot')query.set('revision',revision);const result=await api('export?'+query);download(`kurumi-${scope}.json`,JSON.stringify(result,null,2));toast('配置文件已导出，请妥善保管');return;}
   if(action==='import-data'){const file=$('#import-file').files[0];if(!file)throw new Error('请选择配置文件');if(file.size>128*1024*1024)throw new Error('配置文件超过 128 MiB');if(!confirm('导入将替换当前配置和快照；运行中的实例需要重新应用。继续？'))return;let parsed;try{parsed=JSON.parse(await file.text());}catch(_){throw new Error('配置文件不是有效 JSON');}await api('import?revision='+data.revision,parsed);toast('导入成功，界面已刷新');await refresh();return;}
   if(action==='history-settings'){const input=$('#history-limit'), limit=Number(input.value);if(input.value===''||!Number.isInteger(limit)||limit<0||limit>100)throw new Error('快照数量须为 0–100');if(limit<data.history.length&&!confirm(`将删除 ${data.history.length-limit} 份最早快照，继续？`))return;await api('history-settings',{revision:data.revision,historyLimit:limit});toast('快照保留数量已更新');await refresh();return;}
@@ -513,7 +616,7 @@ $('#content').addEventListener('click',async e=>{
   else if(action==='toggle'){const t=data.state.tunnels.find(t=>t.id===id);await api('save',{revision:data.revision,kind:'tunnel',value:{...t,enabled:!t.enabled}});toast('启停意图已保存，请在实例页应用');}
   else if(action==='restore'){if(!confirm('恢复历史草稿？全部托管实例必须已停止，当前草稿也会保留为历史版本。'))return;await api('restore',{revision:data.revision,target:+b.dataset.target});toast('历史草稿已恢复，实例不会自动启动');}
   await refresh();
- }catch(err){toast(err.message);}finally{b.disabled=false;}
+ }catch(err){toast(err.message);}finally{if(action==='install-update')paintUpdate();else b.disabled=false;}
 });
 $('#content').addEventListener('click',e=>{const b=e.target.closest('[data-backup-action]');if(b)openBackupDialog(b.dataset.backupAction);});
 window.addEventListener('hashchange',()=>{const p=location.hash.slice(1);if(titles[p]&&page!==p){++navigationGeneration;page=p;render();refreshRegistration();}});
