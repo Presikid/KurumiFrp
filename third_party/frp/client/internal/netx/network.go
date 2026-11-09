@@ -25,6 +25,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	kcp "github.com/xtaci/kcp-go/v5"
 )
 
 type contextKey struct{}
@@ -234,6 +236,37 @@ func (n *Network) DialContext(ctx context.Context, network, address string, time
 	if err != nil {
 		return nil, err
 	}
+	return n.trackConn(conn)
+}
+
+// DialKCP resolves through this service and owns the resulting session.
+func (n *Network) DialKCP(ctx context.Context, address string) (net.Conn, error) {
+	ctx, end, err := n.begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer end()
+	ip, port, err := n.resolve(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+	addr := &net.UDPAddr{IP: ip.IP, Zone: ip.Zone, Port: port}
+	conn, err := kcp.DialWithOptions(addr.String(), nil, 10, 3)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	conn.SetStreamMode(true)
+	conn.SetWriteDelay(true)
+	conn.SetNoDelay(1, 20, 2, 1)
+	conn.SetWindowSize(128, 512)
+	conn.SetMtu(1350)
+	conn.SetACKNoDelay(false)
+	_ = conn.SetReadBuffer(4194304)
+	_ = conn.SetWriteBuffer(4194304)
 	return n.trackConn(conn)
 }
 
