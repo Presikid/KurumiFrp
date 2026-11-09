@@ -1,0 +1,5 @@
+This directory contains portions of frp v0.72.0 from https://github.com/fatedier/frp, authored by the frp contributors.
+
+The included source files retain their original copyright notices and are licensed under the Apache License, Version 2.0. A copy is provided in LICENSE in this directory.
+
+KurumiFRP maintains modifications for embedding, lifecycle management, instance-scoped logging and traffic statistics.

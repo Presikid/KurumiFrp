@@ -1,0 +1,119 @@
+// Copyright 2026 The KurumiFRP Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package traffic provides counters owned by individual runtime instances.
+package traffic
+
+import (
+	"math"
+	"sort"
+	"sync"
+)
+
+// ServerProxy contains bytes recorded at the forwarding boundary for one proxy
+// name and type. The forwarding implementation defines the exact byte scope.
+type ServerProxy struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Received uint64 `json:"received"`
+	Sent     uint64 `json:"sent"`
+}
+
+// ServerSnapshot is a point-in-time view of a server instance's counters.
+type ServerSnapshot struct {
+	Received uint64        `json:"received"`
+	Sent     uint64        `json:"sent"`
+	Proxies  []ServerProxy `json:"proxies"`
+}
+
+type serverProxyKey struct {
+	name, proxyType string
+}
+
+// ServerCounter is an in-memory counter for one server instance. Its zero
+// value is ready to use; create a separate counter for each instance. Counts
+// persist until the owner replaces the counter, including across proxy reconnects.
+type ServerCounter struct {
+	mu       sync.RWMutex
+	received uint64
+	sent     uint64
+	proxies  map[serverProxyKey]ServerProxy
+}
+
+// RecordTraffic records positive deltas. It can be called concurrently by the
+// forwarding goroutines. Received is towards the proxy, sent towards its user.
+func (c *ServerCounter) RecordTraffic(name, proxyType string, received, sent int64) {
+	if received <= 0 && sent <= 0 {
+		return
+	}
+	var in, out uint64
+	if received > 0 {
+		in = uint64(received)
+	}
+	if sent > 0 {
+		out = uint64(sent)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.proxies == nil {
+		c.proxies = make(map[serverProxyKey]ServerProxy)
+	}
+	key := serverProxyKey{name: name, proxyType: proxyType}
+	proxy := c.proxies[key]
+	proxy.Name, proxy.Type = name, proxyType
+	proxy.Received = addSaturating(proxy.Received, in)
+	proxy.Sent = addSaturating(proxy.Sent, out)
+	c.proxies[key] = proxy
+	c.received = addSaturating(c.received, in)
+	c.sent = addSaturating(c.sent, out)
+}
+
+func addSaturating(a, b uint64) uint64 {
+	if math.MaxUint64-a < b {
+		return math.MaxUint64
+	}
+	return a + b
+}
+
+// Snapshot copies counters atomically with respect to RecordTraffic. The
+// returned slice belongs to the caller and is ordered by proxy name and type.
+func (c *ServerCounter) Snapshot() ServerSnapshot {
+	c.mu.RLock()
+	snapshot := ServerSnapshot{
+		Received: c.received,
+		Sent:     c.sent,
+		Proxies:  make([]ServerProxy, 0, len(c.proxies)),
+	}
+	for _, proxy := range c.proxies {
+		snapshot.Proxies = append(snapshot.Proxies, proxy)
+	}
+	c.mu.RUnlock()
+	sort.Slice(snapshot.Proxies, func(i, j int) bool {
+		if snapshot.Proxies[i].Name == snapshot.Proxies[j].Name {
+			return snapshot.Proxies[i].Type < snapshot.Proxies[j].Type
+		}
+		return snapshot.Proxies[i].Name < snapshot.Proxies[j].Name
+	})
+	return snapshot
+}
+
+// Reset starts a new collection interval for the instance. Traffic arriving
+// concurrently after the reset is included in the new interval.
+func (c *ServerCounter) Reset() {
+	c.mu.Lock()
+	c.received, c.sent = 0, 0
+	c.proxies = nil
+	c.mu.Unlock()
+}
