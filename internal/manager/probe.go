@@ -3,7 +3,6 @@ package manager
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
@@ -31,17 +30,7 @@ func stampProbe(result ProbeResult) ProbeResult {
 	return result
 }
 
-func probeTarget(t Tunnel) ProbeResult {
-	return probeTargetWithRoots(t, nil)
-}
-
-// probeTargetWithRoots keeps production TLS verification enabled. The optional
-// root pool exists so tests can trust an ephemeral httptest certificate.
-func probeTargetWithRoots(t Tunnel, roots *x509.CertPool) ProbeResult {
-	return probeTargetContext(context.Background(), t, roots)
-}
-
-func probeTargetContext(parent context.Context, t Tunnel, roots *x509.CertPool) ProbeResult {
+func probeTargetContext(parent context.Context, t Tunnel) ProbeResult {
 	result := ProbeResult{Protocol: t.Type}
 	if parent.Err() != nil {
 		result.Status = "cancelled"
@@ -87,7 +76,7 @@ func probeTargetContext(parent context.Context, t Tunnel, roots *x509.CertPool) 
 		}
 		return stampProbe(result)
 	case "http", "https":
-		return probeHTTP(parent, t, result, roots)
+		return probeHTTP(parent, t, result)
 	default:
 		result.Status = "unsupported"
 		result.Message = "当前协议不支持本地目标探测"
@@ -95,7 +84,7 @@ func probeTargetContext(parent context.Context, t Tunnel, roots *x509.CertPool) 
 	}
 }
 
-func probeHTTP(parent context.Context, t Tunnel, result ProbeResult, roots *x509.CertPool) ProbeResult {
+func probeHTTP(parent context.Context, t Tunnel, result ProbeResult) ProbeResult {
 	host := t.LocalHost
 	if len(t.Domains) > 0 {
 		host = t.Domains[0]
@@ -157,7 +146,7 @@ func probeHTTP(parent context.Context, t Tunnel, result ProbeResult, roots *x509
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return dialer.DialContext(ctx, network, result.Address)
 		},
-		TLSClientConfig:       &tls.Config{ServerName: host, RootCAs: roots},
+		TLSClientConfig:       &tls.Config{ServerName: host},
 		TLSHandshakeTimeout:   1500 * time.Millisecond,
 		ResponseHeaderTimeout: 1500 * time.Millisecond,
 		DisableKeepAlives:     true,
@@ -239,7 +228,7 @@ func (a *App) probeAPI(w http.ResponseWriter, r *http.Request) {
 		a.mu.Unlock()
 	}()
 
-	result := probeTargetContext(r.Context(), tunnel, nil)
+	result := probeTargetContext(r.Context(), tunnel)
 
 	a.mu.Lock()
 	unchanged := req.Revision == a.store.DB.Revision

@@ -170,7 +170,7 @@ func (a *App) healthAPI(w http.ResponseWriter, r *http.Request) {
 						report.Rules[index].Target = ProbeResult{Status: "busy", Message: "检测任务过多，请重试"}
 						continue
 					}
-					report.Rules[index].Target = probeTargetContext(ctx, t, nil)
+					report.Rules[index].Target = probeTargetContext(ctx, t)
 					a.releaseHealthProbe()
 				}
 			}
