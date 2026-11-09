@@ -92,6 +92,9 @@ func (a *App) stateResponseLocked() (*stateResponseCache, error) {
 		next.runtimeFRPC = ec == nil
 		next.runtimeFRPS = es == nil
 		next.runtimeMode = "custom"
+		if backend, ok := a.runtime.(interface{ runtimeMode() string }); ok {
+			next.runtimeMode = backend.runtimeMode()
+		}
 	}
 	if a.store.DB.ActiveCore != nil {
 		next.coreID = *a.store.DB.ActiveCore

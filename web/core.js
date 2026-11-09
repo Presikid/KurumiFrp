@@ -15,6 +15,12 @@ const corePhase = {idle:'等待选择版本', metadata:'读取官方发布信息
 const coreBusy = () => ['metadata','downloading','extracting'].includes(coreStatus?.job.state);
 const coreSize = n => (Number(n||0)/1048576).toFixed(1)+' MiB';
 function mountCore() {
+ if (data?.runtimeBackend === 'embedded') {
+  stopCorePolling();
+  $('#content').innerHTML = header('内置核心', '当前版本直接运行内置核心，无需下载外部程序。') +
+   '<section class="panel"><div class="panel-content"><p>内置核心仍在开发，部分协议和功能暂不可用。</p></div></section>';
+  return;
+ }
  if ($('#core-screen')) {paintCoreStatus();scheduleCorePoll(0);return;}
  $('#content').innerHTML = header('frp 核心管理','从官方发布中选择版本。识别的是运行本程序的主机，不是当前浏览器设备。') + `
  <div id="core-screen">
