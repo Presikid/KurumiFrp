@@ -62,3 +62,22 @@ func TestLogRedactorMasksMultilineCredentialFragments(t *testing.T) {
 		t.Fatal("raw multiline credential fragments exposed:", got)
 	}
 }
+
+// An earlier credential may overlap the start of another credential rather
+// than merely being its prefix. Neither tail may remain visible.
+func TestLogRedactorMasksIntersectingCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		secrets    []string
+		line, want string
+	}{
+		{[]string{"abc", "bcdef"}, "x abcdef y", "x [REDACTED] y"},
+		{[]string{"aba"}, "ababa", "[REDACTED]"},
+		{[]string{"abc", "xyz"}, "abc / xyz", "[REDACTED] / [REDACTED]"},
+	} {
+		buf := newLogBuffer(tc.secrets)
+		_, _ = buf.Write([]byte(tc.line + "\n"))
+		if got := strings.Join(buf.read(), ""); got != tc.want {
+			t.Errorf("redacted %q = %q, want %q", tc.line, got, tc.want)
+		}
+	}
+}

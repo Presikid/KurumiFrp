@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,12 +48,14 @@ type logBuffer struct {
 	dropping bool
 	lines    []string
 	secrets  []string // immutable after the first Write; retained for literal fixtures
-	redactor *strings.Replacer
+	redactor *logRedactor
 }
 
 var ansi = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
-func newLogRedactor(secrets []string) *strings.Replacer {
+type logRedactor struct{ values []string }
+
+func newLogRedactor(secrets []string) *logRedactor {
 	values := make(map[string]struct{})
 	add := func(s string) {
 		if s != "" {
@@ -90,19 +91,48 @@ func newLogRedactor(secrets []string) *strings.Replacer {
 	for value := range values {
 		ordered = append(ordered, value)
 	}
-	// Replacer resolves matches at the same position by argument order. A short
-	// token must not consume the prefix of a longer credential and expose its tail.
-	sort.Slice(ordered, func(i, j int) bool {
-		if len(ordered[i]) == len(ordered[j]) {
-			return ordered[i] < ordered[j]
+	return &logRedactor{values: ordered}
+}
+
+// Replace masks the union of all matching spans. Matching against the original
+// line matters: replacing one credential first could hide the start of another
+// overlapping credential and leave the latter's tail visible.
+func (r *logRedactor) Replace(s string) string {
+	var boundaries []int
+	for _, value := range r.values {
+		for start := 0; start < len(s); {
+			i := strings.Index(s[start:], value)
+			if i < 0 {
+				break
+			}
+			i += start
+			if boundaries == nil {
+				boundaries = make([]int, len(s)+1)
+			}
+			boundaries[i]++
+			boundaries[i+len(value)]--
+			start = i + 1 // include overlapping occurrences of the same value
 		}
-		return len(ordered[i]) > len(ordered[j])
-	})
-	pairs := make([]string, 0, 2*len(ordered))
-	for _, value := range ordered {
-		pairs = append(pairs, value, "[REDACTED]")
 	}
-	return strings.NewReplacer(pairs...)
+	if boundaries == nil {
+		return s
+	}
+	var out strings.Builder
+	active := 0
+	masked := false
+	for i := 0; i < len(s); i++ {
+		active += boundaries[i]
+		if active > 0 {
+			if !masked {
+				out.WriteString("[REDACTED]")
+				masked = true
+			}
+		} else {
+			masked = false
+			out.WriteByte(s[i])
+		}
+	}
+	return out.String()
 }
 
 func redact(s string, secrets []string) string {
