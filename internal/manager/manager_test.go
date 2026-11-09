@@ -112,6 +112,41 @@ func TestHostAndCrossSite(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 }
+
+func TestEmbeddedAssetsSupportConditionalRequests(t *testing.T) {
+	a := testApp(t)
+	first := request(a, "GET", "/", nil, "", "")
+	if first.Code != http.StatusOK || first.Body.String() != "ok" {
+		t.Fatalf("index asset not served: %d %q", first.Code, first.Body.String())
+	}
+	etag := first.Header().Get("ETag")
+	if etag == "" || first.Header().Get("Cache-Control") != "private, no-cache" {
+		t.Fatalf("asset cache headers missing: %#v", first.Header())
+	}
+	r := httptest.NewRequest("GET", "http://127.0.0.1:9000/", nil)
+	r.Header.Set("If-None-Match", etag)
+	w := httptest.NewRecorder()
+	a.ServeHTTP(w, r)
+	if w.Code != http.StatusNotModified || w.Body.Len() != 0 {
+		t.Fatalf("conditional asset request = %d %q", w.Code, w.Body.String())
+	}
+
+	api := request(a, "GET", "/api/state", nil, a.AccessToken(), "")
+	if api.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("API response must remain non-cacheable")
+	}
+}
+
+func TestThemeArtworkIsServed(t *testing.T) {
+	a := testApp(t)
+	a.assets = newEmbeddedAssetHandler(fstest.MapFS{
+		"kurumi.webp": &fstest.MapFile{Data: []byte("artwork")},
+	})
+	w := request(a, "GET", "/kurumi.webp", nil, "", "")
+	if w.Code != http.StatusOK || w.Body.String() != "artwork" || w.Header().Get("ETag") == "" {
+		t.Fatalf("theme artwork not served with validator: %d", w.Code)
+	}
+}
 func TestLoginRateLimit(t *testing.T) {
 	a := testApp(t)
 	for j := 0; j < 10; j++ {

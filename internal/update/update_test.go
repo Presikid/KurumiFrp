@@ -13,17 +13,52 @@ import (
 type transportFunc func(*http.Request) (*http.Response, error)
 
 func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestFourPartVersionOrdering(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"v0.7.1.1", "v0.7.1.0", true},
+		{"v0.7.2.0", "v0.7.1.999", true},
+		{"v0.8.0.0", "v0.7.999.999", true},
+		{"v1.0.0.0", "v0.999.999.999", true},
+		{"v0.7.1.0", "v0.7.1", false},
+		{"v0.7.1", "v0.7.1.1", false},
+		{"v0.6.0", "v0.7.1.0", false},
+		{"v0.7.1.1;bad", "v0.7.1.0", false},
+		{"v0.7.1.1", "invalid", false},
+		{"v0.7.1.1000", "v0.7.1.999", true},
+		{"v0.7.1.65536", "v0.7.1.999", false},
+	}
+	for _, tc := range cases {
+		if got := newer(tc.a, tc.b); got != tc.want {
+			t.Errorf("newer(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+func TestFourPartReleaseSelection(t *testing.T) {
+	name := packageName("v0.7.1.1", "windows-installed")
+	a := Asset{Name: name, URL: "https://github.com/Presikid/KurumiFrp/releases/download/v0.7.1.1/" + name, Size: 3, Digest: "sha256:" + strings.Repeat("a", 64)}
+	if name != "KurumiFRP-0.7.1.1-Setup.exe" {
+		t.Fatal(name)
+	}
+	if _, ok := assetFor(release{Tag: "v0.7.1.1", Assets: []Asset{a}}, "windows-installed"); !ok {
+		t.Fatal("four-part release asset rejected")
+	}
+}
 func TestVersionsAndOfficialAsset(t *testing.T) {
-	if !newer("v0.7.0", current) || newer("v0.4.0", current) || tagRE.MatchString("v1.2.3;bad") {
+	if !newer("v0.8.0", current) || newer("v0.4.0", current) || tagRE.MatchString("v1.2.3;bad") {
 		t.Fatal("version comparison")
 	}
-	name := packageName("v0.7.0", "windows-installed")
-	a := Asset{Name: name, URL: "https://github.com/Presikid/KurumiFrp/releases/download/v0.7.0/" + name, Size: 3, Digest: "sha256:" + strings.Repeat("a", 64)}
-	if _, ok := assetFor(release{Tag: "v0.7.0", Assets: []Asset{a}}, "windows-installed"); !ok {
+	name := packageName("v0.8.0", "windows-installed")
+	a := Asset{Name: name, URL: "https://github.com/Presikid/KurumiFrp/releases/download/v0.8.0/" + name, Size: 3, Digest: "sha256:" + strings.Repeat("a", 64)}
+	if _, ok := assetFor(release{Tag: "v0.8.0", Assets: []Asset{a}}, "windows-installed"); !ok {
 		t.Fatal("official asset rejected")
 	}
 	a.URL = "https://example.com/evil"
-	if _, ok := assetFor(release{Tag: "v0.7.0", Assets: []Asset{a}}, "windows-installed"); ok {
+	if _, ok := assetFor(release{Tag: "v0.8.0", Assets: []Asset{a}}, "windows-installed"); ok {
 		t.Fatal("untrusted asset accepted")
 	}
 }
@@ -45,7 +80,7 @@ func TestDownloadChecksDigestAndSize(t *testing.T) {
 
 func TestReleaseListAndSelection(t *testing.T) {
 	m := New(t.TempDir(), "windows-installed")
-	jsonBody := `[{"tag_name":"v0.7.0","prerelease":true,"assets":[{"name":"KurumiFRP-0.7.0-Setup.exe","browser_download_url":"https://github.com/Presikid/KurumiFrp/releases/download/v0.7.0/KurumiFRP-0.7.0-Setup.exe","size":3,"digest":"sha256:` + strings.Repeat("a", 64) + `"}]}]`
+	jsonBody := `[{"tag_name":"v999.0.0.0","prerelease":true,"assets":[{"name":"KurumiFRP-999.0.0.0-Setup.exe","browser_download_url":"https://github.com/Presikid/KurumiFrp/releases/download/v999.0.0.0/KurumiFRP-999.0.0.0-Setup.exe","size":3,"digest":"sha256:` + strings.Repeat("a", 64) + `"}]}]`
 	m.client = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(jsonBody)), Header: make(http.Header)}, nil
 	})}
@@ -53,10 +88,37 @@ func TestReleaseListAndSelection(t *testing.T) {
 	if err != nil || len(versions) != 1 || !versions[0].Available || !versions[0].Newer {
 		t.Fatal(versions, err)
 	}
-	if _, err = m.selectAsset(context.Background(), "v0.7.0"); err != nil {
+	if _, err = m.selectAsset(context.Background(), "v999.0.0.0"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = m.selectAsset(context.Background(), "v0.4.0"); err == nil {
 		t.Fatal("downgrade accepted")
+	}
+}
+
+func TestVersionsSortNumerically(t *testing.T) {
+	m := New(t.TempDir(), "source")
+	jsonBody := `[
+		{"tag_name":"v0.7.1.9"},
+		{"tag_name":"v0.7.1.10"},
+		{"tag_name":"v0.7.2"},
+		{"tag_name":"v0.7.1.4"},
+		{"tag_name":"v0.7.1.5"}
+	]`
+	m.client = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(jsonBody)), Header: make(http.Header)}, nil
+	})}
+	versions, err := m.Versions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"v0.7.2", "v0.7.1.10", "v0.7.1.9", "v0.7.1.5", "v0.7.1.4"}
+	if len(versions) != len(want) {
+		t.Fatalf("got %d versions, want %d", len(versions), len(want))
+	}
+	for i, tag := range want {
+		if versions[i].Tag != tag {
+			t.Errorf("version %d = %q, want %q", i, versions[i].Tag, tag)
+		}
 	}
 }
