@@ -13,6 +13,8 @@
 // limitations under the License.
 // Modified by KurumiFRP to integrate client traffic accounting.
 
+// Modified by KurumiFRP: use the owning client's resolver and sockets.
+
 //go:build !frps
 
 // Modified by KurumiFRP: track restricted client SUDP work.
@@ -26,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fatedier/frp/client/internal/netx"
 	"github.com/fatedier/frp/client/traffic"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
@@ -61,7 +64,8 @@ func NewSUDPProxy(baseProxy *BaseProxy, cfg v1.ProxyConfigurer) Proxy {
 }
 
 func (pxy *SUDPProxy) Run() (err error) {
-	pxy.localAddr, err = net.ResolveUDPAddr("udp", net.JoinHostPort(pxy.cfg.LocalIP, strconv.Itoa(pxy.cfg.LocalPort)))
+	// KurumiFRP: resolve local services through the owning client service.
+	pxy.localAddr, err = netx.ResolveUDPAddr(pxy.ctx, net.JoinHostPort(pxy.cfg.LocalIP, strconv.Itoa(pxy.cfg.LocalPort)))
 	if err != nil {
 		return
 	}
@@ -210,5 +214,9 @@ func (pxy *SUDPProxy) InWorkConn(conn net.Conn, _ *msg.StartWorkConn) {
 		return
 	}
 
-	udp.ForwarderWithDone(pxy.ctx, pxy.localAddr, readCh, sendCh, int(pxy.clientCfg.UDPPacketSize), pxy.cfg.Transport.ProxyProtocolVersion, sessionDone)
+	udp.ForwarderWithDone(
+		pxy.ctx, pxy.localAddr, readCh, sendCh, int(pxy.clientCfg.UDPPacketSize),
+		pxy.cfg.Transport.ProxyProtocolVersion, sessionDone,
+		func(addr *net.UDPAddr) (net.Conn, error) { return netx.DialUDP(pxy.ctx, addr) },
+	)
 }

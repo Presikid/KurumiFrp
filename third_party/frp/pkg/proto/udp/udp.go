@@ -14,6 +14,7 @@
 
 // Modified by KurumiFRP: track restricted client UDP forwarding lifetimes.
 // Modified by KurumiFRP: report successful UDP writes to an instance observer.
+// Modified by KurumiFRP: allow service-owned UDP connections.
 
 package udp
 
@@ -126,16 +127,20 @@ func Forwarder(dstAddr *net.UDPAddr, readCh <-chan *msg.UDPPacket, sendCh chan<-
 
 // ForwarderWithContext joins the forwarding workers to the client scope.
 func ForwarderWithContext(ctx context.Context, dstAddr *net.UDPAddr, readCh <-chan *msg.UDPPacket, sendCh chan<- msg.Message, bufSize int, proxyProtocolVersion string) {
-	ForwarderWithDone(ctx, dstAddr, readCh, sendCh, bufSize, proxyProtocolVersion, nil)
+	ForwarderWithDone(ctx, dstAddr, readCh, sendCh, bufSize, proxyProtocolVersion, nil, nil)
 }
 
 // ForwarderWithDone ends a work session without closing its data channels.
-func ForwarderWithDone(ctx context.Context, dstAddr *net.UDPAddr, readCh <-chan *msg.UDPPacket, sendCh chan<- msg.Message, bufSize int, proxyProtocolVersion string, done <-chan struct{}) {
+func ForwarderWithDone(ctx context.Context, dstAddr *net.UDPAddr, readCh <-chan *msg.UDPPacket, sendCh chan<- msg.Message, bufSize int, proxyProtocolVersion string, done <-chan struct{}, dial func(*net.UDPAddr) (net.Conn, error)) {
 	var mu sync.RWMutex
-	udpConnMap := make(map[string]*net.UDPConn)
+	type udpConnection struct{ net.Conn }
+	udpConnMap := make(map[string]*udpConnection)
+	if dial == nil {
+		dial = func(addr *net.UDPAddr) (net.Conn, error) { return net.DialUDP("udp", nil, addr) }
+	}
 
 	// read from dstAddr and write to sendCh
-	writerFn := func(raddr *net.UDPAddr, udpConn *net.UDPConn) {
+	writerFn := func(raddr *net.UDPAddr, udpConn *udpConnection) {
 		addr := raddr.String()
 		defer func() {
 			mu.Lock()
@@ -150,7 +155,7 @@ func ForwarderWithDone(ctx context.Context, dstAddr *net.UDPAddr, readCh <-chan 
 		defer pool.PutBuf(buf)
 		for {
 			_ = udpConn.SetReadDeadline(time.Now().Add(30 * time.Second))
-			n, _, err := udpConn.ReadFromUDP(buf)
+			n, err := udpConn.Read(buf)
 			if err != nil {
 				return
 			}
@@ -173,8 +178,12 @@ func ForwarderWithDone(ctx context.Context, dstAddr *net.UDPAddr, readCh <-chan 
 	lifetime.Go(ctx, func() {
 		defer func() {
 			mu.Lock()
-			defer mu.Unlock()
+			conns := make([]net.Conn, 0, len(udpConnMap))
 			for _, conn := range udpConnMap {
+				conns = append(conns, conn)
+			}
+			mu.Unlock()
+			for _, conn := range conns {
 				_ = conn.Close()
 			}
 		}()
@@ -200,11 +209,13 @@ func ForwarderWithDone(ctx context.Context, dstAddr *net.UDPAddr, readCh <-chan 
 			udpConn, ok := udpConnMap[udpMsg.RemoteAddr.String()]
 			var release func()
 			if !ok {
-				udpConn, err = net.DialUDP("udp", nil, dstAddr)
+				var conn net.Conn
+				conn, err = dial(dstAddr)
 				if err != nil {
 					mu.Unlock()
 					continue
 				}
+				udpConn = &udpConnection{Conn: conn}
 				var tracked bool
 				release, tracked = lifetime.Track(ctx, udpConn)
 				if !tracked {

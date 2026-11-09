@@ -15,6 +15,8 @@
 
 // Modified by KurumiFRP: track restricted SUDP visitor workers.
 
+// Modified by KurumiFRP: use the owning client's resolver and sockets.
+
 package visitor
 
 import (
@@ -25,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fatedier/frp/client/internal/netx"
 	"github.com/fatedier/frp/client/traffic"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
@@ -40,6 +43,7 @@ type SUDPVisitor struct {
 	checkCloseCh chan struct{}
 	// udpConn is the listener of udp packet
 	udpConn    *net.UDPConn
+	closeUDP   func()
 	readCh     chan *msg.UDPPacket
 	sendCh     chan *msg.UDPPacket
 	activeConn net.Conn // protected by BaseVisitor.mu
@@ -51,20 +55,30 @@ type SUDPVisitor struct {
 func (sv *SUDPVisitor) Run() (err error) {
 	xl := xlog.FromContextSafe(sv.ctx)
 
-	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort)))
+	// KurumiFRP: resolve and register the socket before shutdown can finish.
+	udpConn, closeUDP, err := netx.ListenUDP(sv.ctx, net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort)))
 	if err != nil {
-		return fmt.Errorf("sudp ResolveUDPAddr error: %v", err)
+		return fmt.Errorf("listen sudp port error: %v", err)
 	}
-
-	sv.udpConn, err = net.ListenUDP("udp", addr)
-	if err != nil {
-		return fmt.Errorf("listen udp port %s error: %v", addr.String(), err)
+	sv.mu.Lock()
+	select {
+	case <-sv.checkCloseCh:
+		sv.mu.Unlock()
+		if closeUDP != nil {
+			closeUDP()
+		} else {
+			_ = udpConn.Close()
+		}
+		return context.Canceled
+	default:
+		sv.udpConn, sv.closeUDP = udpConn, closeUDP
 	}
+	sv.mu.Unlock()
 
 	sv.sendCh = make(chan *msg.UDPPacket, 1024)
 	sv.readCh = make(chan *msg.UDPPacket, 1024)
 
-	xl.Infof("sudp start to work, listen on %s", addr)
+	xl.Infof("sudp start to work, listen on %s", sv.udpConn.LocalAddr())
 
 	if !lifetime.Go(sv.ctx, sv.dispatcher) {
 		sv.Close()
@@ -267,9 +281,12 @@ func (sv *SUDPVisitor) Close() {
 	}
 	activeConn := sv.activeConn
 	udpConn := sv.udpConn
+	closeUDP := sv.closeUDP
 	sv.mu.Unlock()
 	sv.BaseVisitor.Close()
-	if udpConn != nil {
+	if closeUDP != nil {
+		closeUDP()
+	} else if udpConn != nil {
 		_ = udpConn.Close()
 	}
 	if activeConn != nil {

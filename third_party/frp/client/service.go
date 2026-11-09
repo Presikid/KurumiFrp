@@ -19,6 +19,8 @@
 
 // Modified by KurumiFRP: scope each restricted control generation.
 
+// Modified by KurumiFRP: isolate the embedded client's networking and lifecycle.
+
 package client
 
 import (
@@ -27,13 +29,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/samber/lo"
 
+	"github.com/fatedier/frp/client/internal/netx"
 	"github.com/fatedier/frp/client/proxy"
 	"github.com/fatedier/frp/client/traffic"
 	"github.com/fatedier/frp/pkg/auth"
@@ -145,6 +147,7 @@ func setServiceOptionsDefault(options *ServiceOptions) error {
 // Service is the client service that connects to frps and provides proxy services.
 type Service struct {
 	logBound bool
+	network  *netx.Network
 	ctlMu    sync.RWMutex
 	// Stores gracefulShutdownDuration independently from ctlMu, because the
 	// graceful shutdown wait may hold ctlMu for an arbitrary duration.
@@ -205,6 +208,19 @@ type Service struct {
 	handleWorkConnCb func(*v1.ProxyBaseConfig, net.Conn, *msg.StartWorkConn) bool
 }
 
+// ValidateRestrictedNetworkConfig checks the isolated network profile without
+// opening sockets. Callers should avoid exposing configuration values in errors.
+func ValidateRestrictedNetworkConfig(common *v1.ClientCommonConfig) error {
+	if common == nil {
+		return errors.New("client common configuration is required")
+	}
+	network, err := netx.New(common.DNSServer, common.Transport.ConnectServerLocalIP)
+	if err == nil {
+		network.Close()
+	}
+	return err
+}
+
 func NewService(options ServiceOptions) (*Service, error) {
 	if options.Isolated && (options.ConnectorCreator != nil || options.HandleWorkConnCb != nil ||
 		options.ParentLogger != nil || options.ClientSpec != nil || options.UnsafeFeatures != nil || options.ConfigFilePath != "") {
@@ -228,7 +244,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 	if err := setServiceOptionsDefault(&options); err != nil {
 		return nil, err
 	}
-	if options.Common.DNSServer != "" {
+	if !options.Isolated && options.Common.DNSServer != "" {
 		return nil, errors.New("custom DNS is not supported without changing the process resolver")
 	}
 	if options.Isolated && (options.Common.VirtualNet.Address != "" ||
@@ -236,11 +252,25 @@ func NewService(options ServiceOptions) (*Service, error) {
 		options.Common.Store.IsEnabled() || len(options.Common.IncludeConfigFiles) != 0 ||
 		options.Common.Auth.Method != v1.AuthMethodToken || options.Common.Auth.TokenSource != nil ||
 		options.Common.Transport.ProxyURL != "" ||
-		(strings.ToLower(options.Common.Transport.Protocol) != "tcp" &&
-			strings.ToLower(options.Common.Transport.Protocol) != "websocket" &&
-			strings.ToLower(options.Common.Transport.Protocol) != "wss")) {
+		(options.Common.Transport.Protocol != "tcp" &&
+			options.Common.Transport.Protocol != "websocket" &&
+			options.Common.Transport.Protocol != "wss")) {
 		return nil, errors.New("configuration is not supported by the isolated client")
 	}
+	var network *netx.Network
+	if options.Isolated {
+		var err error
+		network, err = netx.New(options.Common.DNSServer, options.Common.Transport.ConnectServerLocalIP)
+		if err != nil {
+			return nil, err
+		}
+	}
+	constructed := false
+	defer func() {
+		if !constructed && network != nil {
+			network.Close()
+		}
+	}()
 
 	authRuntime, err := auth.BuildClientAuth(&options.Common.Auth)
 	if err != nil {
@@ -322,6 +352,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 
 	s := &Service{
 		logBound:         options.Isolated || options.LogSink != nil || options.ParentLogger != nil,
+		network:          network,
 		ctx:              context.Background(),
 		done:             make(chan struct{}),
 		isolateLogs:      options.Isolated,
@@ -351,6 +382,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 	if options.Common.VirtualNet.Address != "" {
 		s.vnetController = vnet.NewControllerWithLogger(options.Common.VirtualNet, logger)
 	}
+	constructed = true
 	return s, nil
 }
 
@@ -368,6 +400,9 @@ func (svr *Service) Run(ctx context.Context) error {
 		return ErrServiceRunning
 	}
 	svr.started = true
+	if svr.network != nil {
+		ctx = netx.WithNetwork(ctx, svr.network)
+	}
 	xl := xlog.FromContextSafe(ctx)
 	if svr.logBound {
 		xl = svr.logger
@@ -375,9 +410,16 @@ func (svr *Service) Run(ctx context.Context) error {
 	svr.ctx = xlog.NewContext(ctx, xl)
 	svr.cancel = cancel
 	svr.lifecycleMu.Unlock()
+	if svr.network != nil {
+		stopNetworkClose := context.AfterFunc(ctx, svr.network.Close)
+		defer stopNetworkClose()
+	}
 	var reconnectDone <-chan struct{}
 	defer func() {
 		cancel(nil)
+		if svr.network != nil {
+			svr.network.Close()
+		}
 		if reconnectDone != nil {
 			<-reconnectDone
 		}
@@ -700,6 +742,9 @@ func (svr *Service) GracefulClose(d time.Duration) {
 }
 
 func (svr *Service) stop() {
+	if svr.network != nil {
+		svr.network.Close()
+	}
 	// Coordinate shutdown with reload/update paths that read source pointers.
 	svr.reloadMu.Lock()
 	if svr.aggregator != nil {
