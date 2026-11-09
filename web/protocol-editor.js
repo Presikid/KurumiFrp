@@ -47,6 +47,7 @@ const ProtocolEditor = (() => {
     <label>协议<select name="type" ${lockedType ? 'disabled' : ''}>${types.map(type => `<option value="${esc(type)}" ${type === v.type ? 'selected' : ''}>${esc(type)}</option>`).join('')}</select>${lockedType ? '<small>当前暂不支持更改此规则的协议类型。</small>' : ''}</label>
     <div class="bandwidth-field">${field('bandwidthKB', '带宽上限（KB/s，0 不限）', v.bandwidthKB ?? 0, 'number', 'min="0" max="10000000" step="1"')}</div>
     <div class="bandwidth-field"><label>限速位置<select name="bandwidthMode"><option value="client" ${(v.bandwidthMode || 'client') === 'client' ? 'selected' : ''}>客户端</option><option value="server" ${v.bandwidthMode === 'server' ? 'selected' : ''}>服务端</option></select></label></div>
+    <div class="proxy-protocol-field span-2"><label>PROXY 协议<select name="proxyProtocolVersion"><option value="" ${!v.proxyProtocolVersion ? 'selected' : ''}>关闭</option><option value="v1" ${v.proxyProtocolVersion === 'v1' ? 'selected' : ''}>v1</option><option value="v2" ${v.proxyProtocolVersion === 'v2' ? 'selected' : ''}>v2</option></select></label><small>目标服务必须支持所选版本；frp 取得来源地址时会传递连接信息。</small></div>
     <label><span class="local-host-label">本地目标地址</span><input name="localHost" type="text" value="${esc(v.localHost)}" required></label>
     <label><span class="local-port-label">本地目标端口</span><input name="localPort" type="number" value="${esc(v.localPort)}" required min="1" max="65535" step="1" ${lockedPort ? 'readonly' : ''}><small class="unbound-note" hidden>负数表示仅接收回退连接，不监听本地端口。</small>${lockedPort ? '<small>当前暂不支持更改此规则的回退监听端口。</small>' : ''}</label>
     <div class="port-field">${field('remotePort', '远端端口（0 请求动态分配）', ['tcp', 'udp'].includes(v.type) ? (v.remotePort ?? '') : '', 'number', 'min="0" max="65535" step="1"')}</div>
@@ -95,6 +96,7 @@ const ProtocolEditor = (() => {
     <label>协议<select name="protocol"><option value="tcp+udp">TCP+UDP · 成对创建</option><option value="tcp">TCP</option><option value="udp">UDP</option></select></label>
     ${field('bandwidthKB', '每条规则的带宽上限（KB/s，0 不限）', 0, 'number', 'required min="0" max="10000000" step="1"')}
     <label>限速位置<select name="bandwidthMode"><option value="client">客户端</option><option value="server">服务端</option></select></label>
+    <label>PROXY 协议<select name="proxyProtocolVersion"><option value="">关闭</option><option value="v1">v1</option><option value="v2">v2</option></select><small>目标服务必须支持所选版本。</small></label>
     ${field('localHost', '本地目标地址', '127.0.0.1', 'text', 'required')}
     <label>本地端口列表<input name="localPorts" type="text" required maxlength="4096" placeholder="例如 8000-8002,8010"></label>
     <label class="span-2">远端端口列表<input name="remotePorts" type="text" required maxlength="4096" placeholder="例如 6000-6002,6010，或填 0 动态分配"></label>
@@ -107,7 +109,7 @@ const ProtocolEditor = (() => {
  function batchValue(form) {
   const f = form.elements, val = name => f[name].value;
   return {name:val('name').trim(), instanceId:val('instanceId'), protocol:val('protocol'), localHost:val('localHost').trim(),
-   localPorts:val('localPorts').trim(), remotePorts:val('remotePorts').trim(), bandwidthKB:+val('bandwidthKB'), bandwidthMode:val('bandwidthMode'), enabled:f.enabled.checked};
+   localPorts:val('localPorts').trim(), remotePorts:val('remotePorts').trim(), bandwidthKB:+val('bandwidthKB'), bandwidthMode:val('bandwidthMode'), proxyProtocolVersion:val('proxyProtocolVersion'), enabled:f.enabled.checked};
  }
 
  function visible(form, selector, show) {
@@ -128,6 +130,7 @@ const ProtocolEditor = (() => {
   const type = f.type.value, visitor = Protocols.isVisitor(type), paired = Protocols.hasPairingSecret(type);
   form.querySelector('.visitor-transfer-note').hidden = !(editing.old && Protocols.isVisitor(editing.old.type) && visitor && f.instanceId.value !== editing.old.instanceId);
   visible(form, '.bandwidth-field', !visitor);
+  visible(form, '.proxy-protocol-field', !visitor);
   visible(form, '.port-field', ['tcp', 'udp'].includes(type));
   visible(form, '.domain-field', ['http', 'https', 'tcpmux'].includes(type));
   visible(form, '.probe-field', ['http', 'https'].includes(type));
@@ -182,7 +185,7 @@ const ProtocolEditor = (() => {
   const type = val('type'), visitor = Protocols.isVisitor(type), paired = Protocols.hasPairingSecret(type);
   delete result.hasSecret; delete result.hasHTTPPassword; delete result.secret; delete result.httpPassword;
   Object.assign(result, {name:val('name').trim(), instanceId:val('instanceId'), type, localHost:val('localHost').trim(), localPort:+val('localPort'),
-   bandwidthKB:visitor ? 0 : +val('bandwidthKB'), bandwidthMode:visitor ? '' : val('bandwidthMode'), enabled:f.enabled.checked, useEncryption:f.useEncryption.checked, useCompression:f.useCompression.checked});
+   bandwidthKB:visitor ? 0 : +val('bandwidthKB'), bandwidthMode:visitor ? '' : val('bandwidthMode'), proxyProtocolVersion:visitor ? '' : val('proxyProtocolVersion'), enabled:f.enabled.checked, useEncryption:f.useEncryption.checked, useCompression:f.useCompression.checked});
   const health = visitor ? '' : val('healthCheckType');
   Object.assign(result, {healthCheckType:health, healthCheckPath:health === 'http' ? val('healthCheckPath').trim() : '',
    healthCheckTimeoutSeconds:health ? +val('healthCheckTimeoutSeconds') : 0,
