@@ -2,7 +2,7 @@
 const $ = (s) => document.querySelector(s);
 const esc = (v = '') => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const titles = {overview:'网络总览',tunnels:'连接看板',instances:'运行实例',health:'链路监测',config:'配置中心',logs:'运行记录',update:'软件更新'};
-let updateChecked = false, releases = [], updateStatus = '';
+let updateChecked = false, releases = [], updateStatus = '', updateSelection = '', updateSelectionLost = false, updateRequestSerial = 0;
 let probeResults = Object.create(null), probing = Object.create(null), probeRevision = null, probingAll = false, probeBatchProgress = null;
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer, refreshTimer = null;
 let authGeneration = 0, stateETag = '', stateSnapshot = '', renderedSnapshot = '', renderedPage = '';
@@ -52,6 +52,7 @@ function resetSession() {
  ++authGeneration; ++serial;
  stateRequest?.controller.abort(); logRequest?.controller.abort();
  stateRequest = null; logRequest = null; deferredConfig = null;
+ updateChecked = false; releases = []; updateStatus = ''; updateSelection = ''; updateSelectionLost = false; ++updateRequestSerial;
  registrationRequest = null; registrations = Object.create(null); registrationRevision = null; registrationProcesses = Object.create(null); registrationPaintPending = false; healthChecking = false; healthSelected = ''; ++navigationGeneration;
  stateETag = ''; stateSnapshot = ''; renderedSnapshot = ''; renderedPage = ''; data = null;
  probeResults = Object.create(null); probing = Object.create(null); probeRevision = null; probingAll = false; probeBatchProgress = null;
@@ -194,7 +195,10 @@ function render() {
   content.querySelector('.page-head')?.insertAdjacentHTML('afterend', '<section class="panel"><div class="panel-title"><h3>密码加密备份与恢复</h3></div><div class="panel-content"><p>使用单独密码加密配置、历史快照和数据密钥，适合跨设备迁移。密码不会被工作台保存。</p><div class="actions"><button class="primary" data-backup-action="export">导出加密备份</button><button data-backup-action="import">恢复加密备份</button></div><p class="small-note">建议使用至少 16 个字符的强密码，并与备份文件分开保管。忘记密码无法恢复。备份不包含 frp 核心文件和本机管理令牌。</p></div></section>');
   if(selected) {const id=selected;api('config?id='+encodeURIComponent(id)).then(v=>{if(serial===n) {deferredConfig={serial:n,id,text:v.toml};applyDeferredConfig();}}).catch(e=>{if(serial===n && data)toast(e.message);});}
  } else if(page==='update') {
-  content.innerHTML=header('软件更新','从 GitHub 获取官方版本，选择可用的新版本进行更新。')+`<section class="panel"><div class="panel-content"><p>当前版本 ${esc(data.version)}。更新期间工作台和托管连接可能中断；Windows 需要管理员授权。</p><label>选择版本<select id="update-version">${releases.map(v=>`<option value="${esc(v.tag)}" ${v.newer&&v.available?'':'disabled'}>${v.newer&&v.available?'':'✕ '}${esc(v.tag)}${v.metadataFallback?' · 发布状态待确认':v.prerelease?' · 预览版':''}${v.newer?(v.available?'':' · 无可用安装包'):' · 暂不支持切换'}</option>`).join('')}</select></label><div class="actions"><button data-action="check-update">检查版本</button><button class="primary" data-action="install-update" ${releases.some(v=>v.newer&&v.available)?'':'disabled'}>更新所选版本</button></div><p class="small-note">${esc(updateStatus||'选择版本后将下载并校验官方安装包。')}</p></div></section>`;
+  const available = releases.filter(v=>v.newer&&v.available);
+  if(updateSelection && !available.some(v=>v.tag===updateSelection)){updateSelection='';updateSelectionLost=true;}
+  if(!updateSelection && !updateSelectionLost && available.length) updateSelection=available[0].tag;
+  content.innerHTML=header('软件更新','从 GitHub 获取官方版本，选择可用的新版本进行更新。')+`<section class="panel"><div class="panel-content"><p>当前版本 ${esc(data.version)}。更新期间工作台和托管连接可能中断；Windows 需要管理员授权。</p><label>选择版本<select id="update-version"><option value="" disabled ${updateSelection?'':'selected'}>${updateSelectionLost?'已选版本不再可用，请重新选择':'请选择可用版本'}</option>${releases.map(v=>`<option value="${esc(v.tag)}" ${v.tag===updateSelection?'selected':''} ${v.newer&&v.available?'':'disabled'}>${v.newer&&v.available?'':'✕ '}${esc(v.tag)}${v.metadataFallback?' · 发布状态待确认':v.prerelease?' · 预览版':''}${v.newer?(v.available?'':' · 无可用安装包'):' · 暂不支持切换'}</option>`).join('')}</select></label><div class="actions"><button data-action="check-update">检查版本</button><button class="primary" data-action="install-update" ${updateSelection?'':'disabled'}>更新所选版本</button></div><p class="small-note">${esc(updateStatus||'选择版本后将下载并校验官方安装包。')}</p></div></section>`;
  } else if(page==='logs') {
   ensureSelected(); content.innerHTML=header('运行记录','真实子进程输出与配置变更记录。进程日志仅保留当前会话最近 200 行。')+
   `<div class="grid-two"><section class="panel"><div class="panel-title"><h3>frp 标准输出</h3><span class="pill">自动刷新</span></div><div class="panel-content">${picker()}<pre id="log-output">正在读取…</pre></div></section><section class="panel"><div class="panel-title"><h3>配置变更</h3></div><div class="panel-content">${recent()}</div></section></div>`;
@@ -202,7 +206,7 @@ function render() {
  }
  renderedSnapshot = stateSnapshot; renderedPage = page;
 }
-async function checkUpdates(promptUser=false){const generation=authGeneration;try{const v=await api('update/releases');if(generation!==authGeneration)return;releases=v.versions;updateStatus=v.status||'';if(page==='update'&&data)render();const latest=releases.find(v=>v.newer&&v.available);if(promptUser&&latest&&confirm(`发现新版本 ${latest.tag}。现在查看更新吗？`))navigate('update');}catch(e){if(generation!==authGeneration)return;updateStatus='无法获取版本列表：'+e.message;if(page==='update'&&data)render();}}
+async function checkUpdates(promptUser=false){const generation=authGeneration, requestSerial=++updateRequestSerial;try{const v=await api('update/releases');if(generation!==authGeneration||requestSerial!==updateRequestSerial)return;releases=v.versions;updateStatus=v.status||'';if(page==='update'&&data)render();const latest=releases.find(v=>v.newer&&v.available);if(promptUser&&latest&&confirm(`发现新版本 ${latest.tag}。现在查看更新吗？`))navigate('update');}catch(e){if(generation!==authGeneration||requestSerial!==updateRequestSerial)return;updateStatus='无法获取版本列表：'+e.message;if(page==='update'&&data)render();}}
 async function pollUpdate(){if(!data)return;const generation=authGeneration;try{const v=await api('update/status');if(generation!==authGeneration)return;updateStatus=v.status;if(page==='update'&&data)render();if(updateStatus.startsWith('正在'))setTimeout(pollUpdate,2000);}catch(_){if(generation===authGeneration)updateStatus='工作台暂时不可用，请稍后刷新。';}}
 function ensureSelected(){if(!data.state.instances.some(i=>i.id===selected))selected=data.state.instances[0]?.id||'';}
 function picker(){return `<select class="config-picker" id="instance-picker" aria-label="选择实例">${data.state.instances.length?data.state.instances.map(i=>`<option value="${i.id}" ${selected===i.id?'selected':''}>${esc(i.name)} · ${i.kind}</option>`).join(''):'<option>尚无实例</option>'}</select>`;}
@@ -391,7 +395,7 @@ $('#editor').addEventListener('submit',async e=>{
  try{await api('save',{revision:editRev,kind:editing.kind,value});dialog.close();toast('草稿已保存；运行中的实例未改变');await refresh();}catch(err){$('#form-error').textContent=err.message;}finally{b.disabled=false;}
 });
 $('#content').addEventListener('input',e=>{if(e.target.id==='search'){filter=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}});
-$('#content').addEventListener('change',e=>{if(e.target.id==='health-instance')healthSelected=e.target.value;if(e.target.id==='protocol'){protocol=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='instance-picker'){selected=e.target.value;render();}});
+$('#content').addEventListener('change',e=>{if(e.target.id==='health-instance')healthSelected=e.target.value;if(e.target.id==='protocol'){protocol=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='instance-picker'){selected=e.target.value;render();}if(e.target.id==='update-version'){updateSelection=e.target.value;updateSelectionLost=false;$('#content [data-action="install-update"]').disabled=!updateSelection;}});
 $('#content').addEventListener('click',async e=>{
  const b=e.target.closest('button');if(!b||!data)return;if(b.dataset.go){navigate(b.dataset.go);return;}
  const action=b.dataset.action,id=b.dataset.id || (action==='health'?$('#health-instance')?.value:undefined);if(!action)return;
@@ -524,3 +528,5 @@ document.addEventListener('visibilitychange', () => {
  if (document.hidden) stopRefreshPolling();
  else if (data && !dialog.open) refresh(true);
 });
+
+
