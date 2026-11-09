@@ -34,7 +34,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fatedier/golib/crypto"
 	fmux "github.com/fatedier/yamux"
 	quic "github.com/quic-go/quic-go"
 	"github.com/samber/lo"
@@ -104,7 +103,6 @@ type serveResult struct {
 }
 
 func init() {
-	crypto.DefaultSalt = "frp"
 	// Disable quic-go's receive buffer warning.
 	os.Setenv("QUIC_GO_DISABLE_RECEIVE_BUFFER_WARNING", "true")
 	// Disable quic-go's ECN support by default. It may cause issues on certain operating systems.
@@ -395,7 +393,7 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 		protocols.SetHTTP1(true)
 		protocols.SetUnencryptedHTTP2(true)
 		server := &http.Server{
-			Addr:              address,
+			Addr: address,
 			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				done, ok := lifetime.Enter(r.Context())
 				if !ok {
@@ -405,7 +403,7 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 				defer done()
 				rp.ServeHTTP(w, r)
 			}),
-			BaseContext: func(net.Listener) context.Context { return svr.workCtx },
+			BaseContext:       func(net.Listener) context.Context { return svr.workCtx },
 			ReadHeaderTimeout: 60 * time.Second,
 			Protocols:         protocols,
 		}

@@ -87,7 +87,7 @@ func (vm *Manager) NewConn(name string, conn net.Conn, timestamp int64, signKey 
 
 		var rwc io.ReadWriteCloser = conn
 		if useEncryption {
-			if rwc, err = libio.WithEncryption(rwc, []byte(l.sk)); err != nil {
+			if rwc, err = netpkg.WithLegacyEncryption(rwc, []byte(l.sk)); err != nil {
 				err = fmt.Errorf("create encryption connection failed: %v", err)
 				return
 			}
