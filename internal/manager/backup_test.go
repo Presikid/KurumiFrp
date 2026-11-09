@@ -4,8 +4,13 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestBackupPBKDF2Vector(t *testing.T) {
@@ -16,6 +21,78 @@ func TestBackupPBKDF2Vector(t *testing.T) {
 	want, _ := hex.DecodeString("120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b")
 	if string(got) != string(want) {
 		t.Fatalf("PBKDF2 mismatch %x", got)
+	}
+	got, err = pbkdf2SHA256([]byte("password"), []byte("salt"), 2, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ = hex.DecodeString("ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43")
+	if string(got) != string(want) {
+		t.Fatalf("PBKDF2 iteration mismatch %x", got)
+	}
+}
+
+type notifyingReader struct {
+	reader  io.Reader
+	started chan struct{}
+	once    sync.Once
+}
+
+func (n *notifyingReader) Read(p []byte) (int, error) {
+	n.once.Do(func() { close(n.started) })
+	return n.reader.Read(p)
+}
+
+func TestBackupSlowUploadDoesNotBlockState(t *testing.T) {
+	a := testApp(t)
+	seed(t, a)
+	revision := a.store.DB.Revision
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	started := make(chan struct{})
+	r := httptest.NewRequest("POST", "http://127.0.0.1:9000/api/backup/import", &notifyingReader{reader: reader, started: started})
+	r.RemoteAddr = "127.0.0.1:12345"
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+a.AccessToken())
+	done := make(chan int, 1)
+	go func() { w := httptest.NewRecorder(); a.ServeHTTP(w, r); done <- w.Code }()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("upload handler did not start")
+	}
+	state := make(chan int, 1)
+	go func() { state <- request(a, "GET", "/api/state", nil, a.AccessToken(), "").Code }()
+	select {
+	case code := <-state:
+		if code != http.StatusOK {
+			t.Fatalf("state returned %d", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("slow backup upload blocked state")
+	}
+	if w := request(a, "POST", "/api/backup/export", map[string]any{"revision": a.store.DB.Revision, "password": "correct-horse-battery-staple"}, a.AccessToken(), ""); w.Code != http.StatusConflict {
+		t.Fatalf("concurrent backup returned %d", w.Code)
+	}
+	instance := a.store.DB.State.public().Instances[0]
+	instance.Name = "changed while uploading"
+	if w := request(a, "POST", "/api/save", map[string]any{"revision": revision, "kind": "instance", "value": instance}, a.AccessToken(), ""); w.Code != http.StatusOK {
+		t.Fatalf("save during upload returned %d: %s", w.Code, w.Body.String())
+	}
+	if err := json.NewEncoder(writer).Encode(map[string]any{"revision": revision, "password": "correct-horse-battery-staple", "backup": EncryptedBackup{}}); err != nil {
+		t.Fatal(err)
+	}
+	writer.Close()
+	select {
+	case code := <-done:
+		if code != http.StatusConflict {
+			t.Fatalf("stale restore returned %d", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("upload handler did not stop")
+	}
+	if a.store.DB.State.Instances[0].Name != instance.Name {
+		t.Fatal("stale backup changed state")
 	}
 }
 

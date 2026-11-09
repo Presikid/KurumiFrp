@@ -22,8 +22,22 @@ func TestCoreAPIRequiresAuth(t *testing.T) {
 			t.Fatal(p, r.Code)
 		}
 	}
-	if r := request(a, "GET", "/api/core", nil, a.AccessToken(), ""); r.Code != 200 {
-		t.Fatal(r.Code, r.Body.String())
+	first := request(a, "GET", "/api/core", nil, a.AccessToken(), "")
+	if first.Code != 200 {
+		t.Fatal(first.Code, first.Body.String())
+	}
+	etag := first.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("core status omitted ETag")
+	}
+	conditional := httptest.NewRequest("GET", "http://127.0.0.1:9000/api/core", nil)
+	conditional.RemoteAddr = "127.0.0.1:12345"
+	conditional.Header.Set("Authorization", "Bearer "+a.AccessToken())
+	conditional.Header.Set("If-None-Match", etag)
+	conditionalResponse := httptest.NewRecorder()
+	a.ServeHTTP(conditionalResponse, conditional)
+	if conditionalResponse.Code != 304 || conditionalResponse.Body.Len() != 0 {
+		t.Fatalf("conditional core status = %d %q", conditionalResponse.Code, conditionalResponse.Body.String())
 	}
 	if r := request(a, "POST", "/api/core/install", map[string]string{"tag": "../../evil", "platform": "bad"}, a.AccessToken(), ""); r.Code != 409 {
 		t.Fatal(r.Code)

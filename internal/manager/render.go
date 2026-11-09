@@ -2,25 +2,55 @@ package manager
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"strings"
 )
 
 type Rendered struct {
-	Text    string
-	Env     []string
-	Secrets []string
-	Digest  string
+	Text         string
+	Env          []string
+	Secrets      []string
+	SecretDigest string
+	Digest       string
 }
 
+// quote encodes a TOML 1.0 basic string. Unlike JSON, TOML forbids a
+// literal DEL (U+007F), so sharing encoding/json's string encoder is unsafe.
 func quote(s string) string {
 	var b strings.Builder
-	e := json.NewEncoder(&b)
-	e.SetEscapeHTML(false)
-	_ = e.Encode(s)
-	return strings.TrimSuffix(b.String(), "\n")
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	const hex = "0123456789ABCDEF"
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\b':
+			b.WriteString(`\b`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\f':
+			b.WriteString(`\f`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				b.WriteString(`\u00`)
+				b.WriteByte(hex[r>>4])
+				b.WriteByte(hex[r&15])
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
+
 func (s *Store) render(id string, preview bool) (Rendered, error) {
 	i, ok := s.DB.State.Instance(id)
 	if !ok {
@@ -36,6 +66,9 @@ func (s *Store) render(id string, preview bool) (Rendered, error) {
 		if preview {
 			return quote("<redacted>"), nil
 		}
+		// The template is deliberately UNQUOTED: its environment value is a
+		// complete TOML literal, not a shell argument or an unescaped password.
+		// frp expands it once; do not strip these quotes or add template quotes.
 		r.Env = append(r.Env, key+"="+quote(p))
 		r.Secrets = append(r.Secrets, p)
 		return "{{ .Envs." + key + " }}", nil
@@ -89,6 +122,7 @@ func (s *Store) render(id string, preview bool) (Rendered, error) {
 		}
 	}
 	r.Text = b.String()
+	r.SecretDigest = fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(r.Env, "\x00"))))
 	r.Digest = fmt.Sprintf("%x", sha256.Sum256([]byte(r.Text+strings.Join(r.Env, "\x00"))))
 	return r, nil
 }

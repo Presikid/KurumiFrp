@@ -10,6 +10,37 @@ import (
 	"strings"
 )
 
+// Limit expensive key derivation and large backup allocations per app.
+func (a *App) reserveBackup() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.activeBackup || a.closing {
+		return false
+	}
+	a.activeBackup = true
+	return true
+}
+
+func (a *App) releaseBackup() {
+	a.mu.Lock()
+	a.activeBackup = false
+	a.mu.Unlock()
+}
+
+func cloneBackupDatabase(db Database) Database {
+	db.State = db.State.clone()
+	db.History = append([]Snapshot(nil), db.History...)
+	for i := range db.History {
+		db.History[i].State = db.History[i].State.clone()
+	}
+	db.Events = append([]Event(nil), db.Events...)
+	if db.ActiveCore != nil {
+		id := *db.ActiveCore
+		db.ActiveCore = &id
+	}
+	return db
+}
+
 func (a *App) backupExport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Revision uint64 `json:"revision"`
@@ -19,11 +50,21 @@ func (a *App) backupExport(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
+	if !a.reserveBackup() {
+		fail(w, 409, fmt.Errorf("备份操作正在进行或工作台正在关闭"))
+		return
+	}
+	defer a.releaseBackup()
+	a.mu.Lock()
 	if req.Revision != a.store.DB.Revision {
+		a.mu.Unlock()
 		fail(w, 409, fmt.Errorf("configuration changed; refresh and retry"))
 		return
 	}
-	backup, err := encryptBackup(a.store.DB, a.store.key, req.Password)
+	db := cloneBackupDatabase(a.store.DB)
+	key := append([]byte(nil), a.store.key...)
+	a.mu.Unlock()
+	backup, err := encryptBackup(db, key, req.Password)
 	if err != nil {
 		fail(w, 400, err)
 		return
@@ -32,6 +73,11 @@ func (a *App) backupExport(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) backupImport(w http.ResponseWriter, r *http.Request) {
+	if !a.reserveBackup() {
+		fail(w, 409, fmt.Errorf("备份操作正在进行或工作台正在关闭"))
+		return
+	}
+	defer a.releaseBackup()
 	if strings.Split(r.Header.Get("Content-Type"), ";")[0] != "application/json" {
 		fail(w, 400, fmt.Errorf("application/json is required"))
 		return
@@ -51,7 +97,10 @@ func (a *App) backupImport(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, fmt.Errorf("request must contain exactly one JSON object"))
 		return
 	}
-	if req.Revision != a.store.DB.Revision {
+	a.mu.Lock()
+	validRevision := req.Revision == a.store.DB.Revision && !a.closing
+	a.mu.Unlock()
+	if !validRevision {
 		fail(w, 409, fmt.Errorf("configuration changed; refresh and retry"))
 		return
 	}
@@ -73,5 +122,11 @@ func (a *App) backupImport(w http.ResponseWriter, r *http.Request) {
 	clone.URL = &u
 	clone.Body = io.NopCloser(bytes.NewReader(plain))
 	clone.ContentLength = int64(len(plain))
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closing {
+		fail(w, 409, fmt.Errorf("工作台正在关闭"))
+		return
+	}
 	a.importConfig(w, clone)
 }
