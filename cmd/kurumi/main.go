@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Presikid/KurumiFrp/internal/core"
 	"github.com/Presikid/KurumiFrp/internal/manager"
 	"github.com/Presikid/KurumiFrp/internal/update"
 	"github.com/Presikid/KurumiFrp/internal/version"
@@ -37,6 +38,7 @@ func run() error {
 	paths := flag.Bool("paths", false, "show resolved native program, data, core and temporary paths")
 	open := flag.Bool("open", false, "open local WebUI with a one-time login ticket")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	verifyBundled := flag.Bool("verify-bundled", false, "verify the packaged offline core")
 	stop := flag.Bool("stop", false, "stop this data directory's manager and wait for owned frp processes")
 	check := flag.Bool("check-running", false, "verify the installed manager is responding")
 	archive := flag.String("cleanup-archive", "", "explicit original release archive, verified before deletion")
@@ -47,6 +49,9 @@ func run() error {
 	setup := flag.String("cleanup-setup", "", "exact native Setup executable to remove after successful installation")
 	digest := flag.String("cleanup-sha256", "", "expected Setup SHA-256")
 	flag.Parse()
+	if *verifyBundled {
+		return core.VerifyBundled()
+	}
 	if *systemUpdate {
 		if distribution != "linux-system" {
 			return fmt.Errorf("system update requires a Linux system installation")
