@@ -344,6 +344,9 @@ func validate(s State) error {
 		if t.ProxyProtocolVersion != "" && t.ProxyProtocolVersion != "v1" && t.ProxyProtocolVersion != "v2" {
 			return fmt.Errorf("PROXY 协议版本仅支持 v1 或 v2")
 		}
+		if (t.Type == "udp" || t.Type == "sudp") && t.ProxyProtocolVersion != "" {
+			return fmt.Errorf("当前 UDP 代理暂不支持配置 PROXY 协议")
+		}
 		if isVisitor(t.Type) && t.ProxyProtocolVersion != "" {
 			return fmt.Errorf("Visitor 不支持 PROXY 协议")
 		}
