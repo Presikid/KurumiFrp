@@ -1,7 +1,7 @@
 'use strict';
 const $ = (s) => document.querySelector(s);
 const esc = (v = '') => String(v ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const titles = {overview:'网络总览',tunnels:'连接看板',instances:'运行实例',config:'配置中心',logs:'运行记录',update:'软件更新'};
+const titles = {overview:'网络总览',tunnels:'连接看板',instances:'运行实例',health:'链路监测',config:'配置中心',logs:'运行记录',update:'软件更新'};
 let updateChecked = false, releases = [], updateStatus = '';
 let probeResults = Object.create(null), probing = Object.create(null), probeRevision = null, probingAll = false, probeBatchProgress = null;
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer, refreshTimer = null;
@@ -10,7 +10,7 @@ let stateRequest = null, logRequest = null, deferredConfig = null;
 let registrationRequest = null, registrations = Object.create(null), registrationRevision = null, registrationProcesses = Object.create(null);
 let registrationPaintPending = false;
 let navigationGeneration = 0;
-let healthDialog = null;
+let healthDialog = null, healthChecking = false, healthSelected = '';
 const dialog = $('#dialog');
 const diffDialog = $('#diff-dialog');
 let backupDialogEl = null;
@@ -52,7 +52,7 @@ function resetSession() {
  ++authGeneration; ++serial;
  stateRequest?.controller.abort(); logRequest?.controller.abort();
  stateRequest = null; logRequest = null; deferredConfig = null;
- registrationRequest = null; registrations = Object.create(null); registrationRevision = null; registrationProcesses = Object.create(null); registrationPaintPending = false; ++navigationGeneration;
+ registrationRequest = null; registrations = Object.create(null); registrationRevision = null; registrationProcesses = Object.create(null); registrationPaintPending = false; healthChecking = false; healthSelected = ''; ++navigationGeneration;
  stateETag = ''; stateSnapshot = ''; renderedSnapshot = ''; renderedPage = ''; data = null;
  probeResults = Object.create(null); probing = Object.create(null); probeRevision = null; probingAll = false; probeBatchProgress = null;
 }
@@ -88,7 +88,7 @@ async function refresh(silent = false) {
   try {
    const fresh = await api('state',undefined,{conditional:true,headers:stateETag ? {'If-None-Match':stateETag} : {},signal:request.controller.signal});
    if (generation !== authGeneration) return;
-   if (fresh.value !== null) {if (probeRevision !== fresh.value.revision) {probeResults = Object.create(null); probeRevision = fresh.value.revision;} invalidateRegistrationForRuntime(data, fresh.value); data = fresh.value; stateSnapshot = JSON.stringify(data); stateETag = fresh.etag;}
+   if (fresh.value !== null) {if (probeRevision !== fresh.value.revision) {probeResults = Object.create(null); probeRevision = fresh.value.revision;} invalidateRegistrationForRuntime(data, fresh.value); data = fresh.value; paintRegistrations(); stateSnapshot = JSON.stringify(data); stateETag = fresh.etag;}
    if (!data) return;
    $('#login').hidden = true; $('#app').hidden = false;
    if (!updateChecked) {updateChecked = true; checkUpdates(true);}
@@ -179,7 +179,11 @@ function render() {
  } else if(page==='instances') {
   content.innerHTML=header('运行实例','一个实例对应一个本机 frp 进程；远程服务器地址不代表远程管理权限。','<button class="primary" data-action="new-instance">＋ 新建实例</button>')+
   `<div class="notice">启动前会调用官方 frp verify。可以为每个实例单独启用工作台启动时自动恢复；失败原因会显示在实例卡片中。</div>`+
-  (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span><span>${i.autoStart?'工作台启动时自动恢复':'手动启动'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button><button data-action="duplicate-instance" data-id="${i.id}">复制实例</button><button data-action="health" data-id="${i.id}">链路检测</button>${v.applied?`<button data-action="diff" data-id="${i.id}">查看差异</button>`:''}<button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
+  (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span>${i.kind==='frpc'?`<span data-registration-count="${esc(i.id)}">${esc(instanceRegistrationText(i))}</span>`:''}<span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span><span>${i.autoStart?'工作台启动时自动恢复':'手动启动'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button><button data-action="duplicate-instance" data-id="${i.id}">复制实例</button><button data-action="health" data-id="${i.id}">链路检测</button>${v.applied?`<button data-action="diff" data-id="${i.id}">查看差异</button>`:''}<button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
+ } else if(page==='health') {
+  if (!data.state.instances.some(i=>i.id===healthSelected)) healthSelected=data.state.instances[0]?.id||'';
+  content.innerHTML=header('链路监测中心','选择实例，按需检查进程、控制端口、注册状态和本地目标。')+
+   (data.state.instances.length?`<section class="panel"><div class="panel-content"><label>选择实例<select id="health-instance">${data.state.instances.map(i=>`<option value="${esc(i.id)}" ${i.id===healthSelected?'selected':''}>${esc(i.name)} · ${esc(i.kind)}</option>`).join('')}</select></label><p class="small-note">诊断不会修改配置或连接；导出报告包含网络地址。</p><button class="primary" data-action="health">开始诊断</button></div></section>`:empty('还没有可监测的实例','请先创建一个实例。','<button data-go="instances">运行实例</button>'));
  } else if(page==='tunnels') {
   content.innerHTML=header('连接看板','管理规则并检测本地目标：TCP 检查端口，HTTP/HTTPS 检查响应；UDP 无法可靠探测。','<button class="primary" data-action="new-tunnel">＋ 新建规则</button>')+
   `<div class="toolbar"><input id="search" placeholder="搜索规则、地址或实例…" aria-label="搜索规则" value="${esc(filter)}" ${probingAll?'disabled':'' }><select id="protocol" aria-label="按协议筛选" ${probingAll?'disabled':'' }><option value="">所有协议</option>${['tcp','udp','http','https','stcp','stcp-visitor'].map(t=>`<option ${protocol===t?'selected':''}>${t}</option>`).join('')}</select><button data-action="probe-visible" ${probingAll?'disabled':''}>${probingAll?'批量检测 '+(probeBatchProgress?.done||0)+'/'+(probeBatchProgress?.total||0):'检测当前筛选'}</button></div><section class="panel" id="tunnel-list">${filteredTable()}</section>`;
@@ -228,6 +232,29 @@ function registrationFor(tunnel) {
  if (!data || registrationRevision!==data.revision || registrationProcesses[tunnel.instanceId]!==runtimeIdentity(data.runtime?.[tunnel.instanceId])) return null;
  return registrations[tunnel.id];
 }
+function instanceRegistrationText(instance) {
+ if (stateOf(instance.id).state !== 'running') return '代理未运行';
+ const eligible=data.state.tunnels.filter(t=>t.instanceId===instance.id && t.enabled && t.type!=='stcp-visitor');
+ const items=eligible.map(registrationFor);
+ const count=items.filter(item=>item?.state==='registered').length;
+ const unresolved=items.some(item=>!item || !['registered','failed'].includes(item.state));
+ if (unresolved) return count ? `草稿规则已注册 ${count} · 其余待确认` : '注册状态待确认';
+ return `草稿规则已注册 ${count}`+(stateOf(instance.id).pending?' · 实例待应用':'');
+}
+function healthSummary(rules) {
+ const summary={registered:0,failed:0,unknown:0,notApplicable:0,targetResponded:0,targetUnreachable:0,targetOther:0};
+ for (const rule of rules) {
+  const state=rule.registration?.state;
+  if (state==='registered') summary.registered++;
+  else if (state==='failed') summary.failed++;
+  else if (['disabled','not-reported'].includes(state)) summary.notApplicable++;
+  else summary.unknown++;
+  if (['healthy','reachable','responding','redirect'].includes(rule.target?.status)) summary.targetResponded++;
+  else if (rule.target?.status==='unreachable') summary.targetUnreachable++;
+  else summary.targetOther++;
+ }
+ return summary;
+}
 function showHealth(report) {
  if (!healthDialog) {
   healthDialog=document.createElement('dialog');
@@ -236,7 +263,9 @@ function showHealth(report) {
   healthDialog.querySelector('[data-health-close]').addEventListener('click',()=>healthDialog.close());
   healthDialog.addEventListener('close',()=>scheduleRefresh(0));
  }
- const rows=[report.instance+' · '+report.kind, '已应用进程：'+report.runtime+(report.pending?' · 配置待应用':''), '草稿控制端口：'+report.endpoint.state+' '+report.endpoint.message];
+ const summary=healthSummary(report.rules);
+ report.summary=summary;
+ const rows=[report.instance+' · '+report.kind, '注册：已确认 '+summary.registered+' · 失败 '+summary.failed+' · 待确认 '+summary.unknown+' · 不适用 '+summary.notApplicable, '草稿本地目标：可响应 '+summary.targetResponded+' · 不可达 '+summary.targetUnreachable+' · 未检测或不适用 '+summary.targetOther, '已应用进程：'+report.runtime+(report.pending?' · 配置待应用':''), '草稿控制端口：'+report.endpoint.state+' '+report.endpoint.message];
  for (const rule of report.rules) rows.push(rule.name+' · '+rule.type+'\n  已应用代理注册：'+registrationText(rule.registration)+'\n  草稿本地目标：'+rule.target.status+' · '+rule.target.message);
  rows.push(report.note);
  healthDialog.querySelector('pre').textContent=rows.join('\n\n');
@@ -251,10 +280,14 @@ function paintRegistrations() {
   const next=registrationText(tunnel ? registrationFor(tunnel) : null);
   if (el.textContent!==next) el.textContent=next;
  });
+ document.querySelectorAll('[data-registration-count]').forEach(el=>{
+  const instance=data?.state?.instances?.find(i=>i.id===el.dataset.registrationCount);
+  if (instance) {const next=instanceRegistrationText(instance);if(el.textContent!==next)el.textContent=next;}
+ });
 }
 document.addEventListener('selectionchange',()=>{if(registrationPaintPending&&!hasSelection())paintRegistrations();});
 function refreshRegistration() {
- if (!data || page!=='tunnels' || document.hidden || registrationRequest) return;
+ if (!data || !['tunnels','instances'].includes(page) || document.hidden || registrationRequest || healthChecking) return;
  const generation=authGeneration, revision=data.revision, processes=processSnapshot(data);
  const request=api('registration').then(result=>{
   if (generation!==authGeneration || !data || revision!==data.revision || result.revision!==revision) return;
@@ -358,16 +391,27 @@ $('#editor').addEventListener('submit',async e=>{
  try{await api('save',{revision:editRev,kind:editing.kind,value});dialog.close();toast('草稿已保存；运行中的实例未改变');await refresh();}catch(err){$('#form-error').textContent=err.message;}finally{b.disabled=false;}
 });
 $('#content').addEventListener('input',e=>{if(e.target.id==='search'){filter=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}});
-$('#content').addEventListener('change',e=>{if(e.target.id==='protocol'){protocol=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='instance-picker'){selected=e.target.value;render();}});
+$('#content').addEventListener('change',e=>{if(e.target.id==='health-instance')healthSelected=e.target.value;if(e.target.id==='protocol'){protocol=e.target.value;$('#tunnel-list').innerHTML=filteredTable();}if(e.target.id==='instance-picker'){selected=e.target.value;render();}});
 $('#content').addEventListener('click',async e=>{
  const b=e.target.closest('button');if(!b||!data)return;if(b.dataset.go){navigate(b.dataset.go);return;}
- const action=b.dataset.action,id=b.dataset.id;if(!action)return;
+ const action=b.dataset.action,id=b.dataset.id || (action==='health'?$('#health-instance')?.value:undefined);if(!action)return;
  if(action==='new-instance'||action==='edit-instance'){openEditor('instance',id);return;}
  if(action==='new-tunnel'||action==='edit-tunnel'){openEditor('tunnel',id);return;}
  if(action==='logs'){selected=id;navigate('logs');return;}
  b.disabled=true;
  try{
-  if(action==='health'){const generation=authGeneration, navigation=navigationGeneration, revision=data.revision, runtime=runtimeIdentity(data.runtime?.[id]), report=await api('health',{revision,id});if(generation===authGeneration&&navigation===navigationGeneration&&data&&report.revision===revision&&data.revision===revision&&runtime===runtimeIdentity(data.runtime?.[id])&&data.state.instances.some(i=>i.id===id)&&page==='instances'&&!dialog.open&&!diffDialog.open&&!backupDialogEl?.open&&!healthDialog?.open)showHealth(report);return;}
+  if(action==='health'){
+   if (healthChecking || !id) return;
+   healthChecking=true;
+   const generation=authGeneration, navigation=navigationGeneration, origin=page, revision=data.revision, runtime=runtimeIdentity(data.runtime?.[id]);
+   try {
+    if (registrationRequest) await registrationRequest;
+    if (generation!==authGeneration || navigation!==navigationGeneration || !data || revision!==data.revision) return;
+    const report=await api('health',{revision,id});
+    if(generation===authGeneration&&navigation===navigationGeneration&&data&&report.revision===revision&&data.revision===revision&&runtime===runtimeIdentity(data.runtime?.[id])&&data.state.instances.some(i=>i.id===id)&&page===origin&&['instances','health'].includes(origin)&&(origin!=='health'||$('#health-instance')?.value===id)&&!dialog.open&&!diffDialog.open&&!backupDialogEl?.open&&!healthDialog?.open)showHealth(report);
+   } finally {if (generation===authGeneration) healthChecking=false;}
+   return;
+  }
   if(action==='duplicate-instance'){
    const instance=data.state.instances.find(i=>i.id===id);
    if(!instance)throw new Error('源实例已不存在');
