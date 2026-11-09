@@ -16,11 +16,14 @@
 
 // Modified by KurumiFRP: join cancellation callbacks before releasing connector setup.
 
+// Modified by KurumiFRP: isolate and synchronize client connections.
+
 package client
 
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"strconv"
 	"strings"
@@ -32,6 +35,7 @@ import (
 	quic "github.com/quic-go/quic-go"
 	"github.com/samber/lo"
 
+	"github.com/fatedier/frp/client/internal/netx"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/proto/wire"
@@ -87,7 +91,9 @@ type defaultConnectorImpl struct {
 	cancel context.CancelFunc
 	mu     sync.Mutex
 	closed bool
+	opened bool
 	conns  map[*trackedConnectorConn]struct{}
+	ops    sync.WaitGroup
 
 	muxSession *fmux.Session
 	quicConn   *quic.Conn
@@ -113,12 +119,30 @@ type trackedConnectorConn struct {
 
 func (conn *trackedConnectorConn) Close() error {
 	conn.once.Do(func() {
+		conn.err = conn.Conn.Close()
 		conn.owner.mu.Lock()
 		delete(conn.owner.conns, conn)
 		conn.owner.mu.Unlock()
-		conn.err = conn.Conn.Close()
 	})
 	return conn.err
+}
+
+// KurumiFRP: synchronize connection publication with Close. Waiting for
+// admitted operations is required for the isolated connector's lifecycle.
+func (c *defaultConnectorImpl) beginOperation(open bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return net.ErrClosed
+	}
+	if open {
+		if c.opened {
+			return errors.New("connector has already been opened")
+		}
+		c.opened = true
+	}
+	c.ops.Add(1)
+	return nil
 }
 
 func (c *defaultConnectorImpl) track(conn net.Conn) (net.Conn, error) {
@@ -139,6 +163,10 @@ func (c *defaultConnectorImpl) track(conn net.Conn) (net.Conn, error) {
 // After the underlying connection is established, you can call Connect() to get a stream.
 // If TCPMux isn't enabled, the underlying connection is nil, you will get a new real TCP connection every time you call Connect().
 func (c *defaultConnectorImpl) Open() error {
+	if err := c.beginOperation(true); err != nil {
+		return err
+	}
+	defer c.ops.Done()
 	xl := xlog.FromContextSafe(c.ctx)
 
 	// special for quic
@@ -176,11 +204,24 @@ func (c *defaultConnectorImpl) Open() error {
 		if err != nil {
 			return err
 		}
+		c.mu.Lock()
+		if c.closed {
+			c.mu.Unlock()
+			_ = conn.CloseWithError(0, "")
+			return net.ErrClosed
+		}
 		c.quicConn = conn
+		c.mu.Unlock()
 		return nil
 	}
 
 	if !lo.FromPtr(c.cfg.Transport.TCPMux) {
+		c.mu.Lock()
+		closed := c.closed
+		c.mu.Unlock()
+		if closed {
+			return net.ErrClosed
+		}
 		return nil
 	}
 
@@ -199,26 +240,34 @@ func (c *defaultConnectorImpl) Open() error {
 		conn.Close()
 		return err
 	}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		_ = session.Close()
+		return net.ErrClosed
+	}
 	c.muxSession = session
+	c.mu.Unlock()
 	return nil
 }
 
 // Connect returns a stream from the underlying connection, or a new TCP connection if TCPMux isn't enabled.
 func (c *defaultConnectorImpl) Connect() (net.Conn, error) {
-	c.mu.Lock()
-	closed := c.closed
-	c.mu.Unlock()
-	if closed {
-		return nil, net.ErrClosed
+	if err := c.beginOperation(false); err != nil {
+		return nil, err
 	}
-	if c.quicConn != nil {
-		stream, err := c.quicConn.OpenStreamSync(c.ctx)
+	defer c.ops.Done()
+	c.mu.Lock()
+	quicConn, muxSession := c.quicConn, c.muxSession
+	c.mu.Unlock()
+	if quicConn != nil {
+		stream, err := quicConn.OpenStreamSync(c.ctx)
 		if err != nil {
 			return nil, err
 		}
-		return c.track(netpkg.QuicStreamToNetConn(stream, c.quicConn))
-	} else if c.muxSession != nil {
-		stream, err := c.muxSession.OpenStream()
+		return c.track(netpkg.QuicStreamToNetConn(stream, quicConn))
+	} else if muxSession != nil {
+		stream, err := muxSession.OpenStream()
 		if err != nil {
 			return nil, err
 		}
@@ -258,6 +307,10 @@ func (c *defaultConnectorImpl) realConnect() (net.Conn, error) {
 		}
 	}
 
+	// KurumiFRP: use this service's resolver and tracked sockets.
+	if network := netx.FromContext(c.ctx); network != nil {
+		return c.realConnectRestricted(network, tlsConfig)
+	}
 	proxyType, addr, auth, err := libnet.ParseProxyURL(c.cfg.Transport.ProxyURL)
 	if err != nil {
 		xl.Errorf("fail to parse proxy url")
@@ -266,9 +319,8 @@ func (c *defaultConnectorImpl) realConnect() (net.Conn, error) {
 	dialOptions := []libnet.DialOption{}
 	// DialContext's TCP dial respects cancellation, but several subsequent
 	// websocket/TLS hooks perform blocking I/O. Close the established socket if
-	// the service is cancelled while those hooks are still running. A proxy
-	// hook runs before public hooks in golib, so the isolated profile rejects
-	// proxy URLs until that earlier handshake is independently cancellable.
+	// the service is cancelled while those hooks are still running. This legacy
+	// path retains golib's proxy hook behavior for non-isolated callers.
 	var stopHandshakeClose func() bool
 	var handshakeCloseDone chan struct{}
 	dialOptions = append(dialOptions, libnet.WithAfterHook(libnet.AfterHook{
@@ -329,22 +381,26 @@ func (c *defaultConnectorImpl) realConnect() (net.Conn, error) {
 
 func (c *defaultConnectorImpl) Close() error {
 	c.closeOnce.Do(func() {
-		c.cancel()
 		c.mu.Lock()
 		c.closed = true
+		quicConn, muxSession := c.quicConn, c.muxSession
 		conns := make([]*trackedConnectorConn, 0, len(c.conns))
 		for conn := range c.conns {
 			conns = append(conns, conn)
 		}
 		c.mu.Unlock()
-		if c.quicConn != nil {
-			_ = c.quicConn.CloseWithError(0, "")
+		c.cancel()
+		if quicConn != nil {
+			_ = quicConn.CloseWithError(0, "")
 		}
-		if c.muxSession != nil {
-			_ = c.muxSession.Close()
+		if muxSession != nil {
+			_ = muxSession.Close()
 		}
 		for _, conn := range conns {
 			_ = conn.Close()
+		}
+		if netx.FromContext(c.ctx) != nil {
+			c.ops.Wait()
 		}
 	})
 	return nil

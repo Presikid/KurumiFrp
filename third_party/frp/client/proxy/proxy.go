@@ -19,6 +19,8 @@
 
 // Modified by KurumiFRP: track restricted proxy connections during shutdown.
 
+// Modified by KurumiFRP: use the owning client's resolver and sockets.
+
 package proxy
 
 import (
@@ -35,6 +37,7 @@ import (
 	libnet "github.com/fatedier/golib/net"
 	"golang.org/x/time/rate"
 
+	"github.com/fatedier/frp/client/internal/netx"
 	"github.com/fatedier/frp/client/traffic"
 	"github.com/fatedier/frp/pkg/config/types"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
@@ -208,13 +211,14 @@ func (pxy *BaseProxy) HandleTCPWorkConnection(workConn net.Conn, m *msg.StartWor
 			m.DstAddr = "127.0.0.1"
 		}
 		var err error
-		srcAddr, err = net.ResolveTCPAddr("tcp", net.JoinHostPort(m.SrcAddr, strconv.Itoa(int(m.SrcPort))))
+		// KurumiFRP: server-supplied names must use this service's resolver.
+		srcAddr, err = netx.ResolveTCPAddr(pxy.ctx, net.JoinHostPort(m.SrcAddr, strconv.Itoa(int(m.SrcPort))))
 		if err != nil {
 			xl.Warnf("resolve source address [%s] error: %v", m.SrcAddr, err)
 			_ = workConn.Close()
 			return
 		}
-		dstAddr, err = net.ResolveTCPAddr("tcp", net.JoinHostPort(m.DstAddr, strconv.Itoa(int(m.DstPort))))
+		dstAddr, err = netx.ResolveTCPAddr(pxy.ctx, net.JoinHostPort(m.DstAddr, strconv.Itoa(int(m.DstPort))))
 		if err != nil {
 			xl.Warnf("resolve destination address [%s] error: %v", m.DstAddr, err)
 			_ = workConn.Close()
@@ -259,10 +263,13 @@ func (pxy *BaseProxy) HandleTCPWorkConnection(workConn net.Conn, m *msg.StartWor
 		defer recycleFn()
 	}
 
-	localConn, err := libnet.DialContext(pxy.ctx,
-		net.JoinHostPort(baseCfg.LocalIP, strconv.Itoa(baseCfg.LocalPort)),
-		libnet.WithTimeout(10*time.Second),
-	)
+	address := net.JoinHostPort(baseCfg.LocalIP, strconv.Itoa(baseCfg.LocalPort))
+	var localConn net.Conn
+	if network := netx.FromContext(pxy.ctx); network != nil {
+		localConn, err = network.DialContext(pxy.ctx, "tcp", address, 10*time.Second, 0, false)
+	} else {
+		localConn, err = libnet.DialContext(pxy.ctx, address, libnet.WithTimeout(10*time.Second))
+	}
 	if err != nil {
 		workConn.Close()
 		xl.Errorf("connect to local service [%s:%d] error: %v", baseCfg.LocalIP, baseCfg.LocalPort, err)

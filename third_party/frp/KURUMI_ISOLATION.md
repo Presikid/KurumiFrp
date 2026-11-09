@@ -20,9 +20,9 @@ errors omit untrusted detail.
 Client package initialization no longer writes quic-go environment variables
 or golib's global salt. Legacy control, proxy and visitor streams and NAT-hole
 messages use a local fixed frp salt and the existing AES-CFB format. The client
-never assigns net.DefaultResolver: custom dnsServer is rejected for all client
-services until scoped resolution is implemented. Removing the QUIC environment
-overrides can change QUIC warnings and ECN behavior for non-isolated callers.
+never assigns net.DefaultResolver. The restricted client accepts an IP-literal
+dnsServer, optionally with a port. Removing the QUIC environment overrides can
+change QUIC warnings and ECN behavior for non-isolated callers.
 
 Run is single-use. Close before Run releases constructed resources; concurrent
 Close cancels and joins login/reconnect, prevents subsequent control
@@ -32,9 +32,9 @@ cancellation. Custom connectors and callbacks are not accepted in this profile.
 These lifecycle changes still require validation in the combined workspace and
 are not a runtime guarantee.
 
-The profile rejects custom DNS, virtual networking, admin and metrics servers,
-includes, store sources, OIDC and dynamic token sources, KCP/QUIC transport,
-XTCP, upstream proxies, client/visitor plugins, health checks, custom hooks and
+The profile rejects virtual networking, admin and metrics servers, includes,
+store sources, OIDC and dynamic token sources, KCP/QUIC transport, XTCP,
+upstream proxies, client/visitor plugins, health checks, custom hooks and
 unsafe feature overrides. The adapter returns ErrFRPUnsupported for these
 options. Other upstream users retain normal configuration completion and use
 the process logger unless they explicitly supply an instance sink or logger.

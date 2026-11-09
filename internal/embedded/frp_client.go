@@ -31,10 +31,10 @@ var (
 // FRPClientOptions supplies one instance's complete in-memory configuration.
 // Do not mutate any input while NewFRPClient is copying it. The constructor
 // keeps its own copies. Proxies and visitors use their unprefixed config names.
-// Includes, store sources, frp admin/metrics servers, custom DNS, virtual net,
-// OIDC and token sources, KCP, QUIC, XTCP, upstream proxy URLs, plugins and
-// health checks are not supported by
-// this restricted adapter. Input completed with upstream Complete may already
+// Includes, store sources, frp admin/metrics servers, virtual net, OIDC and
+// token sources, KCP, QUIC, XTCP, upstream proxies, plugins and health checks
+// are unsupported. Scoped DNS accepts an IP literal. Input completed with
+// upstream Complete may already
 // contain an inherited http_proxy; use ParseClientConfig or
 // CompleteWithoutProxyEnvironment before passing a completed configuration.
 type FRPClientOptions struct {
@@ -73,12 +73,15 @@ func prepareFRPClient(options FRPClientOptions) (*preparedFRPClient, error) {
 	if err := json.Unmarshal(data, &common); err != nil {
 		return nil, ErrInvalidFRPConfig
 	}
-	if common.DNSServer != "" || common.VirtualNet.Address != "" ||
+	if common.VirtualNet.Address != "" ||
 		common.WebServer.Port != 0 || common.MetricsServer.Port != 0 ||
 		len(common.IncludeConfigFiles) != 0 || common.Store.IsEnabled() ||
 		(common.Auth.Method != "" && common.Auth.Method != v1.AuthMethodToken) ||
 		common.Auth.TokenSource != nil || common.Transport.ProxyURL != "" ||
 		strings.EqualFold(common.Transport.Protocol, "quic") || strings.EqualFold(common.Transport.Protocol, "kcp") {
+		return nil, ErrFRPUnsupported
+	}
+	if err := frpclient.ValidateRestrictedNetworkConfig(&common); err != nil {
 		return nil, ErrFRPUnsupported
 	}
 
@@ -129,7 +132,7 @@ func prepareFRPClient(options FRPClientOptions) (*preparedFRPClient, error) {
 		return nil, ErrInvalidFRPConfig
 	}
 	// Keep preflight aligned with the service constructor's transport allowlist.
-	switch strings.ToLower(common.Transport.Protocol) {
+	switch common.Transport.Protocol {
 	case "tcp", "websocket", "wss":
 	default:
 		return nil, ErrFRPUnsupported

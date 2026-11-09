@@ -14,6 +14,8 @@
 // Modified by KurumiFRP to integrate client traffic accounting.
 // Modified by KurumiFRP: track restricted STCP visitor workers.
 
+// Modified by KurumiFRP: use the owning client's resolver and sockets.
+
 package visitor
 
 import (
@@ -23,6 +25,7 @@ import (
 
 	libio "github.com/fatedier/golib/io"
 
+	"github.com/fatedier/frp/client/internal/netx"
 	"github.com/fatedier/frp/client/traffic"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/util/lifetime"
@@ -37,7 +40,8 @@ type STCPVisitor struct {
 
 func (sv *STCPVisitor) Run() (err error) {
 	if sv.cfg.BindPort > 0 {
-		sv.l, err = net.Listen("tcp", net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort)))
+		// KurumiFRP: resolve and own the listener in this service's scope.
+		sv.l, err = netx.ListenTCP(sv.ctx, net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort)))
 		if err != nil {
 			return
 		}
