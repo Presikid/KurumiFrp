@@ -274,6 +274,9 @@ func classifyRegistration(c registrationContext) registrationItem {
 		case value.Error != "" || item.Phase == "start error" || item.Phase == "check failed":
 			item.State = "failed"
 			item.Error = safeStatusText(value.Error, c.secrets)
+			if item.Phase == "check failed" && item.Error == "" {
+				item.Error = "本地目标未通过自动健康检查"
+			}
 		case item.Phase == "closed":
 			item.State = "unavailable"
 		default:
@@ -282,3 +285,4 @@ func classifyRegistration(c registrationContext) registrationItem {
 	}
 	return item
 }
+
