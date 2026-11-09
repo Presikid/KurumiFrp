@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
+import urllib.error
 from download_retry import get
 
 TAG = "v0.72.0"
@@ -18,7 +19,15 @@ EMULATORS = {
     "mips64": "qemu-mips64-static", "mips64le": "qemu-mips64el-static",
 }
 
-release = json.loads(get(API, 4 << 20))
+try:
+    release = json.loads(get(API, 4 << 20))
+except urllib.error.HTTPError as error:
+    if error.code not in (403, 429):
+        raise
+    # Exact upstream metadata is pinned for this test version. The downloaded
+    # archives still have to match both the byte size and SHA-256 below.
+    release = json.loads((Path(__file__).resolve().parents[1] / 'internal/core/upstream-v0.72.0.json').read_text(encoding='utf-8'))
+    print('GitHub API restricted; using pinned official metadata for v0.72.0', flush=True)
 if release["tag_name"] != TAG or release["draft"] or release["prerelease"]:
     raise RuntimeError("unexpected upstream release")
 assets = {asset["name"]: asset for asset in release["assets"]}

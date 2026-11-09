@@ -136,6 +136,54 @@ func TestCatalogSelection(t *testing.T) {
 		t.Fatal("foreign download URL accepted")
 	}
 }
+
+func TestPinnedMetadataFallbackOnAPILimit(t *testing.T) {
+	m, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Close)
+	m.client = &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 403, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+	})}
+	list, err := m.Releases(context.Background())
+	if err != nil || len(list) != 1 || list[0].Tag != "v0.72.0" || !list[0].PinnedFallback {
+		t.Fatalf("fallback list: %#v %v", list, err)
+	}
+	r, err := m.Release(context.Background(), "v0.72.0")
+	if err != nil || !r.PinnedFallback {
+		t.Fatalf("fallback metadata: %#v %v", r, err)
+	}
+	a, err := choose(r, Host())
+	if err != nil || !digestRE.MatchString(a.Digest) || a.Size <= 0 || a.Size > MaxArchive {
+		t.Fatalf("fallback asset: %#v %v", a, err)
+	}
+	if _, err = m.Release(context.Background(), "v0.71.1"); err == nil {
+		t.Fatal("unverified old version accepted")
+	}
+	for _, asset := range r.Assets {
+		if !digestRE.MatchString(asset.Digest) || asset.Size <= 0 || asset.Size > MaxArchive || !strings.HasPrefix(asset.URL, "https://github.com/fatedier/frp/releases/download/v0.72.0/") {
+			t.Fatalf("unsafe asset: %#v", asset)
+		}
+	}
+}
+
+func TestPinnedFallbackRejectsAlteredDownload(t *testing.T) {
+	m, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Close)
+	m.client = &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "api.github.com" {
+			return &http.Response{StatusCode: 403, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("tampered")), Header: make(http.Header)}, nil
+	})}
+	if _, err = m.install(context.Background(), "v0.72.0", Host()); err == nil {
+		t.Fatal("accepted altered archive")
+	}
+}
 func TestInstallActivateAndTamper(t *testing.T) {
 	m, _ := fixtureManager(t, false)
 	id, e := m.install(context.Background(), "v0.72.0", Host())
