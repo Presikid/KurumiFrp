@@ -34,8 +34,8 @@ const (
 // Server owns exactly one upstream Service. Its lifecycle is single-use; create a
 // new Server for a subsequent start. Do not copy a Server after first use.
 //
-// Upstream logging, web assets, its default crypto salt, and some environment
-// settings are still process-global. This wrapper does not isolate them.
+// Some upstream and dependency logging remains process-global. This wrapper
+// does not attribute every log or guarantee that all dependency workers exit.
 type Server struct {
 	mu      sync.Mutex
 	config  *v1.ServerConfig
