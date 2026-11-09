@@ -554,6 +554,9 @@ func migrateLegacyWindowsProfiles(legacyRoot, runtimeRoot, install string) error
 	if err != nil {
 		return fmt.Errorf("old ProgramData installation ownership or permissions could not be verified; old data was retained: %w", err)
 	}
+	if err = verifyRuntimeProfiles(runtimeRoot); err != nil {
+		return fmt.Errorf("cannot verify runtime profiles: %w", err)
+	}
 	marker := filepath.Join(legacyRoot, ".uninstalling")
 	if !hasMarker {
 		file, createErr := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
@@ -571,9 +574,6 @@ func migrateLegacyWindowsProfiles(legacyRoot, runtimeRoot, install string) error
 		}
 	}
 
-	if err = verifyRuntimeProfiles(runtimeRoot); err != nil {
-		return fmt.Errorf("cannot verify runtime profiles: %w", err)
-	}
 	oldProfiles := filepath.Join(legacyRoot, "profiles")
 	var entries []os.DirEntry
 	if hasProfiles {
