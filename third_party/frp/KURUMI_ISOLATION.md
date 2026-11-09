@@ -46,8 +46,9 @@ work. UDP and SUDP sessions signal cancellation without closing channels still
 used by senders. This is a source-level design, not proof that every dependency
 or error path has drained. The 05 RuntimeInstance.Wait contract requires
 resources to be safe to replace; do not claim that contract is met without
-independent verification. No real client/server interoperability or concurrent
-runtime verification has been performed for the combined changes.
+independent verification. A local client and server have forwarded TCP data
+over both TCP and WebSocket and stopped successfully. Other protocols,
+concurrent runtimes and failure recovery remain unverified.
 
 ValidateFRPClient runs the same restricted configuration preparation as the
 constructor without creating a service. It neither claims nor validates an

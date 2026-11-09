@@ -23,6 +23,9 @@ type Instance struct {
 	User                  string `json:"user,omitempty"`
 	NatHoleSTUNServer     string `json:"natHoleStunServer,omitempty"`
 	DNSServer             string `json:"dnsServer,omitempty"`
+	ClientTransport       string `json:"clientTransport,omitempty"`
+	KCPBindPort           int    `json:"kcpBindPort,omitempty"`
+	QUICBindPort          int    `json:"quicBindPort,omitempty"`
 	TCPMuxHTTPConnectPort int    `json:"tcpmuxHTTPConnectPort,omitempty"`
 	TCPMuxPassthrough     bool   `json:"tcpmuxPassthrough,omitempty"`
 	SubDomainHost         string `json:"subDomainHost,omitempty"`
@@ -185,6 +188,11 @@ func visitorListenerConflicts(s State) map[string]string {
 					listeners = append(listeners, listener{i.Host, p, i.Name, i.ID, "tcp"})
 				}
 			}
+			for _, p := range []int{i.KCPBindPort, i.QUICBindPort} {
+				if p != 0 {
+					listeners = append(listeners, listener{i.Host, p, i.Name, i.ID, "udp"})
+				}
+			}
 		}
 	}
 	for _, t := range s.Tunnels {
@@ -230,7 +238,7 @@ func validate(s State) error {
 		port int
 		name string
 	}
-	var serverListeners []serverListener
+	var serverListeners, serverUDPListeners []serverListener
 	claim := func(key, label string) error {
 		if old, ok := ports[key]; ok {
 			return fmt.Errorf("端口或域名冲突：%s / %s", old, label)
@@ -259,8 +267,8 @@ func validate(s State) error {
 		if err := validateProtocolInstance(i); err != nil {
 			return err
 		}
-		if i.Kind == "frpc" && (i.HTTPPort != 0 || i.HTTPSPort != 0 || i.TCPMuxHTTPConnectPort != 0) {
-			return fmt.Errorf("客户端不能设置服务端虚拟主机端口")
+		if i.Kind == "frpc" && (i.HTTPPort != 0 || i.HTTPSPort != 0 || i.TCPMuxHTTPConnectPort != 0 || i.KCPBindPort != 0 || i.QUICBindPort != 0) {
+			return fmt.Errorf("客户端不能设置服务端监听端口")
 		}
 		if i.Kind == "frps" {
 			seen := map[int]bool{}
@@ -278,6 +286,22 @@ func validate(s State) error {
 					}
 				}
 				serverListeners = append(serverListeners, serverListener{i.Host, p, i.Name})
+			}
+			seenUDP := map[int]bool{}
+			for _, p := range []int{i.KCPBindPort, i.QUICBindPort} {
+				if p == 0 {
+					continue
+				}
+				if !portOK(p) || seenUDP[p] {
+					return fmt.Errorf("服务端 UDP 监听端口无效或重复")
+				}
+				seenUDP[p] = true
+				for _, other := range serverUDPListeners {
+					if other.port == p && listenerHostsOverlap(other.host, i.Host) {
+						return fmt.Errorf("UDP 监听端口冲突：%s / %s", other.name, i.Name)
+					}
+				}
+				serverUDPListeners = append(serverUDPListeners, serverListener{i.Host, p, i.Name})
 			}
 		}
 	}

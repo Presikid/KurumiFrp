@@ -7,6 +7,9 @@ import (
 
 func renderProtocolInstance(b *strings.Builder, i Instance) error {
 	if i.Kind == "frpc" {
+		if i.ClientTransport != "" && i.ClientTransport != "tcp" {
+			fmt.Fprintf(b, "transport.protocol = %s\n", quote(i.ClientTransport))
+		}
 		if i.User != "" {
 			fmt.Fprintf(b, "user = %s\n", quote(i.User))
 		}
@@ -21,6 +24,12 @@ func renderProtocolInstance(b *strings.Builder, i Instance) error {
 			fmt.Fprintf(b, "dnsServer = %s\n", quote(address))
 		}
 		return nil
+	}
+	if i.KCPBindPort > 0 {
+		fmt.Fprintf(b, "kcpBindPort = %d\n", i.KCPBindPort)
+	}
+	if i.QUICBindPort > 0 {
+		fmt.Fprintf(b, "quicBindPort = %d\n", i.QUICBindPort)
 	}
 	if i.TCPMuxHTTPConnectPort > 0 {
 		fmt.Fprintf(b, "tcpmuxHTTPConnectPort = %d\n", i.TCPMuxHTTPConnectPort)
