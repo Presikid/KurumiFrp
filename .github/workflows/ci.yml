@@ -179,9 +179,25 @@ jobs:
           for arch in arm arm_hf riscv64 loong64 mips mipsle mips64 mips64le; do
             test -s "dist-native/KurumiFRP-${version}-linux-${arch}.tar.gz"
           done
-          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo 'Existing release retained; bump VERSION for another release.'
-            exit 0
+          # List releases to include drafts and fail closed on API errors.
+          release_pages="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100")" || { echo '::error::Release lookup failed; publication stopped.'; exit 1; }
+          release_state="$(jq -er --arg tag "v$version" '[.[][] | select(.tag_name == $tag) | .draft] | if length == 0 then "missing" elif any(.[]; . == true) then "draft" elif all(.[]; . == false) then "published" else error("invalid release metadata") end' <<< "$release_pages")" || { echo '::error::Unable to determine release state.'; exit 1; }
+          case "$release_state" in
+            draft) echo "::error::Draft release v$version exists; resolve it manually."; exit 1 ;;
+            published) echo 'Existing release retained; bump VERSION for another release.'; exit 0 ;;
+            missing) ;;
+            *) echo '::error::Unknown release state; publication stopped.'; exit 1 ;;
+          esac
+          tag="v$version"
+          tag_refs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" --jq '.[] | .ref')" || { echo '::error::Tag lookup failed; publication stopped.'; exit 1; }
+          if grep -Fxq "refs/tags/$tag" <<< "$tag_refs"; then
+            echo "::error::Tag $tag already exists; resolve it manually."
+            exit 1
           fi
-          gh release create "v$version" dist-native/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "KurumiFrp $version" --notes-file "docs/RELEASE_$version.md" --prerelease
+          # Atomically create the tag at this run's commit; never move an existing tag.
+          if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$tag" -f "sha=$GITHUB_SHA" >/dev/null; then
+            echo "::error::Could not create tag $tag at $GITHUB_SHA; publication stopped."
+            exit 1
+          fi
+          gh release create "$tag" dist-native/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "KurumiFrp $version" --notes-file "docs/RELEASE_$version.md" --prerelease
 
