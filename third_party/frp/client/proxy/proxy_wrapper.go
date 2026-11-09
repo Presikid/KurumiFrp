@@ -25,8 +25,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/fatedier/golib/errors"
-
 	"github.com/fatedier/frp/client/event"
 	"github.com/fatedier/frp/client/health"
 	"github.com/fatedier/frp/client/traffic"
@@ -204,7 +202,6 @@ func (pw *Wrapper) Stop() {
 	pw.mu.Lock()
 	defer pw.mu.Unlock()
 	close(pw.closeCh)
-	close(pw.healthNotifyCh)
 	pw.pxy.Close()
 	if pw.monitor != nil {
 		pw.monitor.Stop()
@@ -275,24 +272,20 @@ func (pw *Wrapper) checkWorker() {
 func (pw *Wrapper) statusNormalCallback() {
 	xl := pw.xl
 	atomic.StoreUint32(&pw.health, healthOK)
-	_ = errors.PanicToError(func() {
-		select {
-		case pw.healthNotifyCh <- struct{}{}:
-		default:
-		}
-	})
+	select {
+	case pw.healthNotifyCh <- struct{}{}:
+	default:
+	}
 	xl.Infof("health check success")
 }
 
 func (pw *Wrapper) statusFailedCallback() {
 	xl := pw.xl
 	atomic.StoreUint32(&pw.health, healthFailed)
-	_ = errors.PanicToError(func() {
-		select {
-		case pw.healthNotifyCh <- struct{}{}:
-		default:
-		}
-	})
+	select {
+	case pw.healthNotifyCh <- struct{}{}:
+	default:
+	}
 	xl.Infof("health check failed")
 }
 
@@ -354,3 +347,4 @@ func (pw *Wrapper) GetStatus() *WorkingStatus {
 	}
 	return ps
 }
+
