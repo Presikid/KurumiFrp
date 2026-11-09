@@ -124,6 +124,9 @@ func (a *App) createTunnelBatch(req tunnelBatchRequest) (int, error) {
 	if req.ProxyProtocolVersion != "" && req.ProxyProtocolVersion != "v1" && req.ProxyProtocolVersion != "v2" {
 		return 0, fmt.Errorf("PROXY 协议版本仅支持 v1 或 v2")
 	}
+	if (req.Protocol == "udp" || req.Protocol == "tcp+udp") && req.ProxyProtocolVersion != "" {
+		return 0, fmt.Errorf("当前包含 UDP 规则的批量创建暂不支持 PROXY 协议")
+	}
 	var protocols []string
 	switch req.Protocol {
 	case "tcp", "udp":

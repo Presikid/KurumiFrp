@@ -96,7 +96,7 @@ const ProtocolEditor = (() => {
     <label>协议<select name="protocol"><option value="tcp+udp">TCP+UDP · 成对创建</option><option value="tcp">TCP</option><option value="udp">UDP</option></select></label>
     ${field('bandwidthKB', '每条规则的带宽上限（KB/s，0 不限）', 0, 'number', 'required min="0" max="10000000" step="1"')}
     <label>限速位置<select name="bandwidthMode"><option value="client">客户端</option><option value="server">服务端</option></select></label>
-    <label>PROXY 协议<select name="proxyProtocolVersion"><option value="">关闭</option><option value="v1">v1</option><option value="v2">v2</option></select><small>目标服务必须支持所选版本。</small></label>
+    <div class="batch-proxy-protocol-field"><label>PROXY 协议<select name="proxyProtocolVersion"><option value="">关闭</option><option value="v1">v1</option><option value="v2">v2</option></select></label><small>目标服务必须支持所选版本；当前仅用于 TCP 规则。</small></div>
     ${field('localHost', '本地目标地址', '127.0.0.1', 'text', 'required')}
     <label>本地端口列表<input name="localPorts" type="text" required maxlength="4096" placeholder="例如 8000-8002,8010"></label>
     <label class="span-2">远端端口列表<input name="remotePorts" type="text" required maxlength="4096" placeholder="例如 6000-6002,6010，或填 0 动态分配"></label>
@@ -109,7 +109,7 @@ const ProtocolEditor = (() => {
  function batchValue(form) {
   const f = form.elements, val = name => f[name].value;
   return {name:val('name').trim(), instanceId:val('instanceId'), protocol:val('protocol'), localHost:val('localHost').trim(),
-   localPorts:val('localPorts').trim(), remotePorts:val('remotePorts').trim(), bandwidthKB:+val('bandwidthKB'), bandwidthMode:val('bandwidthMode'), proxyProtocolVersion:val('proxyProtocolVersion'), enabled:f.enabled.checked};
+   localPorts:val('localPorts').trim(), remotePorts:val('remotePorts').trim(), bandwidthKB:+val('bandwidthKB'), bandwidthMode:val('bandwidthMode'), proxyProtocolVersion:val('protocol') === 'tcp' ? val('proxyProtocolVersion') : '', enabled:f.enabled.checked};
  }
 
  function visible(form, selector, show) {
@@ -121,7 +121,10 @@ const ProtocolEditor = (() => {
 
  function update(form, editing, tunnels) {
   const f = form.elements;
-  if (editing.kind === 'tunnel-batch') return;
+  if (editing.kind === 'tunnel-batch') {
+   visible(form, '.batch-proxy-protocol-field', f.protocol.value === 'tcp');
+   return;
+  }
   if (editing.kind === 'instance') {
    visible(form, '.client-field', f.kind.value === 'frpc');
    visible(form, '.server-field', f.kind.value === 'frps');
@@ -130,7 +133,7 @@ const ProtocolEditor = (() => {
   const type = f.type.value, visitor = Protocols.isVisitor(type), paired = Protocols.hasPairingSecret(type);
   form.querySelector('.visitor-transfer-note').hidden = !(editing.old && Protocols.isVisitor(editing.old.type) && visitor && f.instanceId.value !== editing.old.instanceId);
   visible(form, '.bandwidth-field', !visitor);
-  visible(form, '.proxy-protocol-field', !visitor);
+  visible(form, '.proxy-protocol-field', !visitor && !['udp', 'sudp'].includes(type));
   visible(form, '.port-field', ['tcp', 'udp'].includes(type));
   visible(form, '.domain-field', ['http', 'https', 'tcpmux'].includes(type));
   visible(form, '.probe-field', ['http', 'https'].includes(type));
@@ -185,7 +188,7 @@ const ProtocolEditor = (() => {
   const type = val('type'), visitor = Protocols.isVisitor(type), paired = Protocols.hasPairingSecret(type);
   delete result.hasSecret; delete result.hasHTTPPassword; delete result.secret; delete result.httpPassword;
   Object.assign(result, {name:val('name').trim(), instanceId:val('instanceId'), type, localHost:val('localHost').trim(), localPort:+val('localPort'),
-   bandwidthKB:visitor ? 0 : +val('bandwidthKB'), bandwidthMode:visitor ? '' : val('bandwidthMode'), proxyProtocolVersion:visitor ? '' : val('proxyProtocolVersion'), enabled:f.enabled.checked, useEncryption:f.useEncryption.checked, useCompression:f.useCompression.checked});
+   bandwidthKB:visitor ? 0 : +val('bandwidthKB'), bandwidthMode:visitor ? '' : val('bandwidthMode'), proxyProtocolVersion:visitor || ['udp', 'sudp'].includes(type) ? '' : val('proxyProtocolVersion'), enabled:f.enabled.checked, useEncryption:f.useEncryption.checked, useCompression:f.useCompression.checked});
   const health = visitor ? '' : val('healthCheckType');
   Object.assign(result, {healthCheckType:health, healthCheckPath:health === 'http' ? val('healthCheckPath').trim() : '',
    healthCheckTimeoutSeconds:health ? +val('healthCheckTimeoutSeconds') : 0,

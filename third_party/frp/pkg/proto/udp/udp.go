@@ -200,9 +200,24 @@ func ForwarderWithDone(ctx context.Context, dstAddr *net.UDPAddr, readCh <-chan 
 				}
 				udpMsg = packet
 			}
+			if udpMsg == nil || udpMsg.RemoteAddr == nil {
+				continue
+			}
 			buf, err := GetContent(udpMsg)
 			if err != nil {
 				continue
+			}
+			// Datagram receivers parse a separate PROXY header on every packet.
+			// Do not send an unframed packet if its header cannot be built.
+			if proxyProtocolVersion != "" {
+				ppBuf, err := netpkg.BuildProxyProtocolHeader(udpMsg.RemoteAddr, dstAddr, proxyProtocolVersion)
+				if err != nil {
+					continue
+				}
+				finalBuf := make([]byte, len(ppBuf)+len(buf))
+				copy(finalBuf, ppBuf)
+				copy(finalBuf[len(ppBuf):], buf)
+				buf = finalBuf
 			}
 
 			mu.Lock()
@@ -225,18 +240,6 @@ func ForwarderWithDone(ctx context.Context, dstAddr *net.UDPAddr, readCh <-chan 
 				udpConnMap[udpMsg.RemoteAddr.String()] = udpConn
 			}
 			mu.Unlock()
-
-			// Add proxy protocol header if configured (only for the first packet of a new connection)
-			if !ok && proxyProtocolVersion != "" && udpMsg.RemoteAddr != nil {
-				ppBuf, err := netpkg.BuildProxyProtocolHeader(udpMsg.RemoteAddr, dstAddr, proxyProtocolVersion)
-				if err == nil {
-					// Prepend proxy protocol header to the UDP payload
-					finalBuf := make([]byte, len(ppBuf)+len(buf))
-					copy(finalBuf, ppBuf)
-					copy(finalBuf[len(ppBuf):], buf)
-					buf = finalBuf
-				}
-			}
 
 			_, err = udpConn.Write(buf)
 			if err != nil {
