@@ -39,17 +39,24 @@ func run() error {
 	open := flag.Bool("open", false, "open local WebUI with a one-time login ticket")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	verifyBundled := flag.Bool("verify-bundled", false, "verify the packaged offline core")
+	installDir := flag.String("install-dir", "", "installer maintenance target")
 	stop := flag.Bool("stop", false, "stop this data directory's manager and wait for owned frp processes")
 	check := flag.Bool("check-running", false, "verify the installed manager is responding")
 	archive := flag.String("cleanup-archive", "", "explicit original release archive, verified before deletion")
 	cleanup := flag.String("cleanup-package", "", "remove a verified extracted release payload after installation")
 	token := flag.Bool("show-token", false, "print existing local access token and exit")
-	native := flag.String("native-maintenance", "", "native installer operation: init or purge")
+	native := flag.String("native-maintenance", "", "native installer maintenance operation")
 	systemUpdate := flag.Bool("system-update", false, "perform a verified Linux package update")
 	setup := flag.String("cleanup-setup", "", "exact native Setup executable to remove after successful installation")
 	digest := flag.String("cleanup-sha256", "", "expected Setup SHA-256")
 	flag.Parse()
 	if *verifyBundled {
+		if *installDir != "" {
+			if err := validateMaintenanceTarget(*installDir); err != nil {
+				return err
+			}
+			return core.VerifyBundledAt(*installDir)
+		}
 		return core.VerifyBundled()
 	}
 	if *systemUpdate {
@@ -63,7 +70,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		return installedOperation(exe, *native)
+		return installedOperation(exe, *native, *installDir)
 	}
 	if *setup != "" {
 		exe, err := os.Executable()

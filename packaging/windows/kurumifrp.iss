@@ -21,7 +21,8 @@ AppVersion={#AppVersion}
 AppPublisher=Presikid
 AppPublisherURL=https://github.com/Presikid/KurumiFrp
 DefaultDirName={commonpf}\KurumiFRP
-UsePreviousAppDir=no
+UsePreviousAppDir=yes
+UninstallLogMode=new
 SetupMutex=Global\KurumiFRPSetupMachine
 DefaultGroupName=KurumiFRP
 PrivilegesRequired=admin
@@ -50,21 +51,21 @@ VersionInfoProductName=KurumiFRP
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 
+[Messages]
+english.FinishedLabel=KurumiFRP was installed. Sign in to the account you normally use and open KurumiFRP from the Start menu without administrator privileges.
+english.FinishedLabelNoIcons=KurumiFRP was installed. Sign in to the account you normally use and open KurumiFRP without administrator privileges.
+chinesesimplified.FinishedLabel=KurumiFRP 已安装。请登录平时使用的 Windows 账户，通过开始菜单以普通权限手动打开 KurumiFRP。
+chinesesimplified.FinishedLabelNoIcons=KurumiFRP 已安装。请登录平时使用的 Windows 账户，以普通权限手动打开 KurumiFRP。
+
 [CustomMessages]
 english.ShortcutGroup=Shortcuts:
 english.StartupGroup=Startup:
-english.CleanupGroup=Installer cleanup:
 english.DesktopTask=Create a desktop shortcut
 english.AutostartTask=Start a private workbench when each user signs in
-english.CleanupTask=Delete this Setup file after successful installation
-english.OpenApp=Open KurumiFRP
 chinesesimplified.ShortcutGroup=快捷方式：
 chinesesimplified.StartupGroup=启动选项：
-chinesesimplified.CleanupGroup=安装包清理：
 chinesesimplified.DesktopTask=创建桌面快捷方式
 chinesesimplified.AutostartTask=用户登录时启动各自的工作台
-chinesesimplified.CleanupTask=安装成功后删除本次安装程序
-chinesesimplified.OpenApp=打开 KurumiFRP
 
 english.LegacyInstall=A legacy per-user installation is present. Back up its data and cores and remove it before installing the machine-wide edition. No legacy data was changed.
 chinesesimplified.LegacyInstall=检测到旧版用户级安装。请先备份配置与核心并卸载旧版，再安装当前版本。旧数据未被修改。
@@ -72,33 +73,32 @@ english.LinkedPath=Linked installation directories are not supported. No files w
 chinesesimplified.LinkedPath=不支持链接或快捷方式指向的安装目录。未修改任何文件。
 english.UnmanagedDir=This directory contains an old script installation or unmanaged files. Choose a new directory. See INSTALL.md for migration.
 chinesesimplified.UnmanagedDir=此目录包含旧版安装或未受管理的文件。请选择新目录，迁移方法请参阅 INSTALL.md。
-english.UnregisteredExe=An executable exists here but no machine installation is registered. Choose a clean directory.
-chinesesimplified.UnregisteredExe=此处已有程序文件，但未发现已注册的机器级安装。请选择干净的目录。
-english.WrongInstallDir=The existing executable is not in the registered machine installation. No executable was run.
-chinesesimplified.WrongInstallDir=现有程序不在已注册的安装目录中。未运行任何程序。
+english.UnregisteredExe=No machine installation is registered, or the selected directory is not empty. Existing files were retained.
+chinesesimplified.UnregisteredExe=未找到有效的机器级安装登记，或所选目录不是空目录。现有文件已保留。
+english.WrongInstallDir=The selected directory differs from the registered machine installation. Choose the registered directory; existing data was retained.
+chinesesimplified.WrongInstallDir=所选目录与已注册的机器级安装目录不同。请选择已注册目录，原有数据已保留。
+english.UnsafeTarget=The installation directory, its permissions, or its existing data could not be verified. Use a protected local directory and inspect the existing data. Nothing was migrated or deleted.
+chinesesimplified.UnsafeTarget=无法确认安装目录、访问权限或现有数据的安全性。请检查原数据并使用受保护的本地目录；未迁移或删除原数据。
+english.UnsafeTemp=Setup needs its temporary directory on a local volume with persistent ACLs and no linked path. Nothing was migrated or deleted.
+chinesesimplified.UnsafeTemp=安装程序的临时目录必须位于支持持久 ACL 的本地卷，路径不能包含链接。未迁移或删除原数据。
 english.StopFailed=The running workbench could not be stopped safely. Existing data was retained.
 chinesesimplified.StopFailed=无法安全停止正在运行的工作台。现有数据已保留。
 english.InitFailed=Installation receipt could not be initialized. Setup.exe was retained.
 chinesesimplified.InitFailed=无法初始化安装记录，安装程序已保留。
-english.StartFailed=Could not start KurumiFRP.
-chinesesimplified.StartFailed=无法启动 KurumiFRP。
-english.ReadinessFailed=The local API did not become ready. Setup.exe was retained; existing configuration was not deleted.
-chinesesimplified.ReadinessFailed=本机服务未能就绪。安装程序已保留，现有配置未被删除。
+english.ManualStart=Installation completed. Sign in to your usual Windows account and open KurumiFRP without administrator privileges.
+chinesesimplified.ManualStart=安装完成。请登录平时使用的 Windows 账户，以普通权限手动打开 KurumiFRP。
 english.BundledMismatch=This same-version installer contains a different bundled core. Install a newer application version instead; the current installation was not changed.
 chinesesimplified.BundledMismatch=此安装包与已安装的同版本程序所含预置核心不同。请安装更新的软件版本；现有安装未被修改。
-english.CleanupFailed=Setup finished, but its downloaded EXE could not be removed. You may delete that EXE manually.
-chinesesimplified.CleanupFailed=安装已完成，但无法删除下载的安装程序。你可以稍后手动删除。
-english.UninstallConfirm=Uninstall KurumiFRP for all users and permanently delete all accounts configurations, authentication keys, downloaded frp cores and application logs?
-chinesesimplified.UninstallConfirm=是否为所有用户卸载 KurumiFRP，并永久删除各账户的配置、密钥、已下载核心和应用记录？
-english.PurgeFailed=Shutdown or data removal was not confirmed. Uninstall stopped; retry after resolving the error. No process was killed by name.
-chinesesimplified.PurgeFailed=未能确认程序已停止或数据已删除。卸载已中止，请排除问题后重试。
+english.UninstallConfirm=Close the workbench and its connections for every account before uninstalling. Application files will be removed; account data will be retained. Continue?
+chinesesimplified.UninstallConfirm=卸载前请关闭所有账户的工作台及连接。卸载会移除程序文件，保留各账户的数据。是否继续？
 
 [Tasks]
 Name: desktopicon; Description: "{cm:DesktopTask}"; GroupDescription: "{cm:ShortcutGroup}"
 Name: autostart; Description: "{cm:AutostartTask}"; GroupDescription: "{cm:StartupGroup}"; Flags: unchecked
-Name: cleanup; Description: "{cm:CleanupTask}"; GroupDescription: "{cm:CleanupGroup}"
 
 [Files]
+Source: "{#PayloadDir}\amd64\kurumi.exe"; DestName: "maintenance-amd64.exe"; Flags: dontcopy noencryption
+Source: "{#PayloadDir}\arm64\kurumi.exe"; DestName: "maintenance-arm64.exe"; Flags: dontcopy noencryption
 Source: "{#PayloadDir}\amd64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: not IsArm64
 Source: "{#PayloadDir}\arm64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: IsArm64
 Source: "{#PayloadDir}\amd64\bundled\{#AppVersion}\*"; DestDir: "{app}\bundled\{#AppVersion}"; Flags: onlyifdoesntexist; Check: not IsArm64
@@ -112,19 +112,19 @@ Name: "{group}\Uninstall KurumiFRP"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\KurumiFRP"; Filename: "{app}\kurumi.exe"; Parameters: "--open"; WorkingDir: "{app}"; IconFilename: "{app}\kurumi.ico"; Tasks: desktopicon
 Name: "{commonstartup}\KurumiFRP"; Filename: "{app}\kurumi.exe"; WorkingDir: "{app}"; Tasks: autostart
 
-[Run]
-Filename: "{app}\kurumi.exe"; Parameters: "--open"; Description: "{cm:OpenApp}"; Flags: postinstall nowait skipifsilent
-
-[UninstallDelete]
-Type: files; Name: "{app}\native-install.json"
-Type: files; Name: "{app}\.uninstalling"
-
 [Code]
 var
-  Ready: Boolean;
+  Helper: String;
 
 function GetFileAttributesW(lpFileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
+function GetDriveTypeW(Root: String): LongWord;
+  external 'GetDriveTypeW@kernel32.dll stdcall';
+function QueryDosDeviceW(DeviceName, TargetPath: String; MaxLength: LongWord): LongWord;
+  external 'QueryDosDeviceW@kernel32.dll stdcall';
+function GetVolumeInformationW(Root, VolumeName: String; VolumeNameSize: LongWord;
+  var Serial, MaxComponent, Flags: LongWord; FileSystemName: String; FileSystemNameSize: LongWord): Boolean;
+  external 'GetVolumeInformationW@kernel32.dll stdcall';
 
 function PlainDestination(Path: String): Boolean;
 var Attr: LongWord; Parent: String;
@@ -139,14 +139,61 @@ begin
   end;
 end;
 
+function SafeTempVolume(Path: String): Boolean;
+var Drive, Mapping, Prefix, Suffix: String; Kind, Serial, MaxComponent, Flags: LongWord; I: Integer;
+begin
+  Result := False;
+  Drive := ExtractFileDrive(Path);
+  if (Length(Drive) <> 2) or not PlainDestination(Path) then Exit;
+  SetLength(Mapping, 1024);
+  if QueryDosDeviceW(Drive, Mapping, Length(Mapping)) = 0 then Exit;
+  I := Pos(#0, Mapping);
+  if I = 0 then Exit;
+  Mapping := Copy(Mapping, 1, I - 1);
+  Prefix := '\Device\HarddiskVolume';
+  if CompareText(Copy(Mapping, 1, Length(Prefix)), Prefix) <> 0 then Exit;
+  Suffix := Copy(Mapping, Length(Prefix) + 1, Length(Mapping));
+  if Suffix = '' then Exit;
+  for I := 1 to Length(Suffix) do
+    if (Suffix[I] < '0') or (Suffix[I] > '9') then Exit;
+  Drive := Drive + '\';
+  Kind := GetDriveTypeW(Drive);
+  if (Kind <> 2) and (Kind <> 3) then Exit;
+  if GetVolumeInformationW(Drive, '', 0, Serial, MaxComponent, Flags, '', 0) then
+    Result := (Flags and 8) <> 0;
+end;
+
+function EmptyDirectory(Path: String): Boolean;
+var Entry: TFindRec;
+begin
+  Result := not DirExists(Path);
+  if Result then Exit;
+  if not FindFirst(Path + '\*', Entry) then Exit;
+  Result := True;
+  try
+    repeat
+      if (Entry.Name <> '.') and (Entry.Name <> '..') then begin Result := False; Break; end;
+    until not FindNext(Entry);
+  finally
+    FindClose(Entry);
+  end;
+end;
+
 function InitializeSetup(): Boolean;
 begin
   Result := not RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.Presikid.KurumiFRP_is1');
-  if not Result then MsgBox(ExpandConstant('{cm:LegacyInstall}'), mbError, MB_OK);
+  if not Result then SuppressibleMsgBox(ExpandConstant('{cm:LegacyInstall}'), mbError, MB_OK, IDOK);
+end;
+
+function RunHelper(Args: String): Boolean;
+var Code: Integer;
+begin
+  Result := ExecAndLogOutput(Helper, Args + ' --install-dir "' + ExpandConstant('{app}') + '"',
+    ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, Code, nil) and (Code = 0);
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var Code: Integer; App, Exe, RegisteredDir, PreviousVersion, ExpectedManifest: String;
+var App, Exe, RegisteredDir, PreviousVersion, ExpectedManifest, HelperName: String; Registered, Reinstall: Boolean;
 begin
   Result := '';
   App := ExpandConstant('{app}');
@@ -160,21 +207,42 @@ begin
   if FileExists(App + '\bundled') or FileExists(App + '\bundled\{#AppVersion}') or DirExists(App + '\bundled\{#AppVersion}\frpc.exe') or DirExists(App + '\bundled\{#AppVersion}\frps.exe') or DirExists(App + '\bundled\{#AppVersion}\LICENSE') or DirExists(App + '\bundled\{#AppVersion}\manifest.json') then begin
     Result := ExpandConstant('{cm:UnmanagedDir}'); Exit;
   end;
-  if DirExists(App + '\bundled\{#AppVersion}') and not FileExists(Exe) then begin Result := ExpandConstant('{cm:UnmanagedDir}'); Exit; end;
+  if DirExists(App + '\bundled\{#AppVersion}') and not FileExists(Exe) and not FileExists(App + '\native-install.json') then begin Result := ExpandConstant('{cm:UnmanagedDir}'); Exit; end;
   if (DirExists(App + '\data') or FileExists(Exe)) and not FileExists(App + '\native-install.json') then begin
     Result := ExpandConstant('{cm:UnmanagedDir}'); Exit;
   end;
-  if FileExists(Exe) then begin
-    if not RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.Presikid.KurumiFRP_is1', 'InstallLocation', RegisteredDir) then begin
-      Result := ExpandConstant('{cm:UnregisteredExe}'); Exit;
-    end;
+  Registered := RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.Presikid.KurumiFRP_is1', 'InstallLocation', RegisteredDir);
+  if Registered then begin
     if CompareText(RemoveBackslash(RegisteredDir), RemoveBackslash(App)) <> 0 then begin
       Result := ExpandConstant('{cm:WrongInstallDir}'); Exit;
     end;
+  end else begin
+    if RegKeyExists(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.Presikid.KurumiFRP_is1') then begin
+      Result := ExpandConstant('{cm:UnregisteredExe}'); Exit;
+    end;
+  end;
+  Reinstall := not Registered and not EmptyDirectory(App);
+  if Reinstall and not FileExists(App + '\native-install.json') then begin
+    Result := ExpandConstant('{cm:UnregisteredExe}'); Exit;
+  end;
+  if not SafeTempVolume(ExpandConstant('{tmp}')) then begin
+    Result := ExpandConstant('{cm:UnsafeTemp}'); Exit;
+  end;
+  if IsArm64 then HelperName := 'maintenance-arm64.exe' else HelperName := 'maintenance-amd64.exe';
+  ExtractTemporaryFile(HelperName);
+  Helper := ExpandConstant('{tmp}\') + HelperName;
+  if Reinstall then begin
+    if not RunHelper('--native-maintenance preflight-existing') then begin
+      Result := ExpandConstant('{cm:UnsafeTarget}'); Exit;
+    end;
+  end else if not RunHelper('--native-maintenance preflight') then begin
+    Result := ExpandConstant('{cm:UnsafeTarget}'); Exit;
+  end;
+  if Registered or Reinstall then begin
     if DirExists(App + '\bundled\{#AppVersion}') then begin
-      if not RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.Presikid.KurumiFRP_is1', 'DisplayVersion', PreviousVersion) or (PreviousVersion <> '{#AppVersion}') then begin Result := ExpandConstant('{cm:UnmanagedDir}'); Exit; end;
-      if not Exec(Exe, '--verify-bundled', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
-      if Code <> 0 then begin Result := ExpandConstant('{cm:UnmanagedDir}'); Exit; end;
+      if Registered then begin
+        if not RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.Presikid.KurumiFRP_is1', 'DisplayVersion', PreviousVersion) or (PreviousVersion <> '{#AppVersion}') then begin Result := ExpandConstant('{cm:UnmanagedDir}'); Exit; end;
+      end;
       if IsArm64 then ExpectedManifest := '{#BundledARM64SHA}' else ExpectedManifest := '{#BundledAMD64SHA}';
       try
         if Lowercase(GetSHA256OfFile(App + '\bundled\{#AppVersion}\manifest.json')) <> ExpectedManifest then begin
@@ -183,67 +251,23 @@ begin
       except
         Result := ExpandConstant('{cm:UnmanagedDir}'); Exit;
       end;
+      if not RunHelper('--verify-bundled') then begin Result := ExpandConstant('{cm:UnmanagedDir}'); Exit; end;
     end;
-    if not Exec(Exe, '--native-maintenance stop', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
-    if Code <> 0 then Result := ExpandConstant('{cm:StopFailed}');
-  end;
-end;
-
-procedure RemoveLegacyTranslationNotice();
-var P, D: String;
-begin
-  D := ExpandConstant('{app}\licenses');
-  P := D + '\ChineseSimplified-LICENSE.txt';
-  if FileExists(P) and PlainDestination(P) then begin
-    try
-      if Lowercase(GetSHA256OfFile(P)) = '02f0dd3b98833040147d01daf91243c24392a33ddced674152220b5216782c6a' then begin
-        if DeleteFile(P) then RemoveDir(D);
-      end;
-    except
-      Log('Legacy translation notice could not be removed; it was retained.');
-    end;
+    if not RunHelper('--native-maintenance stop') then Result := ExpandConstant('{cm:StopFailed}');
   end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
-var Code: Integer; App, Exe: String;
 begin
   if CurStep = ssPostInstall then begin
-    RemoveLegacyTranslationNotice();
-    App := ExpandConstant('{app}'); Exe := App + '\kurumi.exe';
-    if not Exec(Exe, '--verify-bundled', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
-    if Code <> 0 then RaiseException('Bundled core verification failed; existing files were retained.');
-    if not Exec(Exe, '--native-maintenance init', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
-    if Code <> 0 then RaiseException(ExpandConstant('{cm:InitFailed}'));
-    if not ExecAsOriginalUser(Exe, '', App, SW_HIDE, ewNoWait, Code) then RaiseException(ExpandConstant('{cm:StartFailed}'));
-    if not ExecAsOriginalUser(Exe, '--check-running', App, SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
-    if Code <> 0 then RaiseException(ExpandConstant('{cm:ReadinessFailed}'));
-    Ready := True;
+    if not RunHelper('--verify-bundled') then RaiseException('Bundled core verification failed; account data was retained.');
+    if not RunHelper('--native-maintenance init') then RaiseException(ExpandConstant('{cm:InitFailed}'));
   end;
-end;
-
-procedure DeinitializeSetup();
-var Code: Integer; Source, Args: String;
-begin
-  if Ready and WizardIsTaskSelected('cleanup') then begin
-    Source := ExpandConstant('{srcexe}');
-    Args := '--cleanup-setup "' + Source + '" --cleanup-sha256 ' + Lowercase(GetSHA256OfFile(Source));
-    if not ExecAsOriginalUser(ExpandConstant('{app}\kurumi.exe'), Args, ExpandConstant('{app}'), SW_HIDE, ewNoWait, Code) then
-      MsgBox(ExpandConstant('{cm:CleanupFailed}'), mbInformation, MB_OK);
-  end;
+  if (CurStep = ssDone) and WizardSilent then Log(ExpandConstant('{cm:ManualStart}'));
 end;
 
 function InitializeUninstall(): Boolean;
 begin
   Result := True;
   if not UninstallSilent then Result := MsgBox(ExpandConstant('{cm:UninstallConfirm}'), mbConfirmation, MB_YESNO) = IDYES;
-end;
-
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var Code: Integer;
-begin
-  if CurUninstallStep = usUninstall then begin
-    if not Exec(ExpandConstant('{app}\kurumi.exe'), '--native-maintenance purge', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then Code := -1;
-    if Code <> 0 then RaiseException(ExpandConstant('{cm:PurgeFailed}'));
-  end;
 end;
