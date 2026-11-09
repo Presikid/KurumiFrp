@@ -34,6 +34,9 @@ window.KurumiRecordsConfig = (() => {
     <div class="panel-title"><div><h3 id="webhook-title">Webhook 通知</h3><p>可选发送实例状态和草稿变更，默认关闭。</p></div><button data-action="webhook-settings">通知设置</button></div>
     <div class="panel-content"><p class="small-note">仅支持公网 HTTPS，不发送配置内容、密钥或日志。通知地址仅保存在本机；导入及恢复保留本机设置，新设备需要重新设置。旧版导出文件可能包含通知地址，请按凭据保管。</p></div>
    </section>
+   <section class="panel" aria-labelledby="toml-import-title">
+    <div class="panel-title"><div><h3 id="toml-import-title">导入 frp TOML</h3><p>先预览可保留的配置，再追加为新实例草稿。</p></div><button data-action="import-toml">选择 TOML</button></div>
+   </section>
    <section class="panel rc-backup" aria-labelledby="backup-title">
     <div class="rc-backup-symbol" aria-hidden="true">✦</div><div class="rc-backup-copy"><h3 id="backup-title">密码加密备份与恢复</h3><p>使用单独的密码保护配置、历史快照和数据密钥，适合迁移到其他设备。</p><small>建议使用至少 16 个字符的密码，并与文件分开保管。密码不会被保存，忘记后无法恢复；备份不包含 frp 核心文件和本机管理令牌。</small></div>
     <div class="rc-backup-actions"><button class="primary" data-backup-action="export">导出加密备份</button><button data-backup-action="import">恢复加密备份</button></div>

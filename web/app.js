@@ -107,7 +107,7 @@ function stopRefreshPolling() {
 }
 function scheduleRefresh(delay) {
  stopRefreshPolling();
- if (!data || document.hidden || dialog.open || diffDialog.open || backupDialogEl?.open || webhookDialogEl?.open || healthDialog?.open) return;
+ if (!data || document.hidden || dialog.open || diffDialog.open || backupDialogEl?.open || webhookDialogEl?.open || healthDialog?.open || window.KurumiTOMLImport.isOpen()) return;
  const wait = delay ?? (Object.values(data.runtime || {}).some(v => v.state === 'running') ? 5000 : 10000);
  refreshTimer = setTimeout(() => {
   refreshTimer = null;
@@ -144,7 +144,7 @@ function resetSession() {
  RulesPage.reset(); filter = ''; protocol = '';
  editing = null; $('#dialog-body').inert = false; $('#cancel').disabled = false; $('#editor button[type="submit"]').disabled = false;
 }
-function showLogin() {resetSession();updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; if (dialog.open) dialog.close(); if (diffDialog.open) diffDialog.close(); if (backupDialogEl?.open) backupDialogEl.close(); if (webhookDialogEl?.open) webhookDialogEl.close(); if (healthDialog?.open) healthDialog.close();}
+function showLogin() {resetSession();updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; if (dialog.open) dialog.close(); if (diffDialog.open) diffDialog.close(); if (backupDialogEl?.open) backupDialogEl.close(); if (webhookDialogEl?.open) webhookDialogEl.close(); if (healthDialog?.open) healthDialog.close(); window.KurumiTOMLImport.close();}
 function announceSessionChange() {
  const signal = `${Date.now()}:${Math.random()}`;
  lastAuthSignal = signal;
@@ -160,7 +160,7 @@ function receiveSessionChange(signal) {
 if (authChannel) authChannel.onmessage = event => receiveSessionChange(event.data);
 window.addEventListener('storage', event => {if (event.key === authSignalKey) receiveSessionChange(event.newValue);});
 function hasSelection() {return Boolean(window.getSelection()?.toString());}
-function canSilentRender() {const content=$('#content'), active=document.activeElement;return !dialog.open && !diffDialog.open && !backupDialogEl?.open && !webhookDialogEl?.open && !healthDialog?.open && !hasSelection() && (active===content || !content.contains(active));}
+function canSilentRender() {const content=$('#content'), active=document.activeElement;return !dialog.open && !diffDialog.open && !backupDialogEl?.open && !webhookDialogEl?.open && !healthDialog?.open && !window.KurumiTOMLImport.isOpen() && !hasSelection() && (active===content || !content.contains(active));}
 function renderPreservingScroll() {
  const x = window.scrollX, y = window.scrollY, previousSelected = selected, content = $('#content');
  const top = content.scrollTop, left = content.scrollLeft;
@@ -207,7 +207,7 @@ async function refresh(silent = false) {
     if ($('#revision').textContent !== revision) $('#revision').textContent = revision;
     $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
    }
-   if (!silent && !dialog.open && !diffDialog.open && !backupDialogEl?.open && !webhookDialogEl?.open && !healthDialog?.open) render();
+   if (!silent && !dialog.open && !diffDialog.open && !backupDialogEl?.open && !webhookDialogEl?.open && !healthDialog?.open && !window.KurumiTOMLImport.isOpen()) render();
    else if (canSilentRender() && (renderedSnapshot !== stateSnapshot || renderedPage !== page)) renderPreservingScroll();
    applyDeferredConfig();
    refreshRegistration();
@@ -938,6 +938,12 @@ $('#content').addEventListener('click',async e=>{
  if(action==='new-instance'||action==='edit-instance'){openEditor('instance',id);return;}
  if(action==='new-tunnel-batch'){openTunnelBatchEditor();return;}
  if(action==='new-tunnel'||action==='edit-tunnel'){openEditor('tunnel',id);return;}
+ if(action==='import-toml'){
+  window.KurumiTOMLImport.open({api, transfer:transferAPI, state:()=>data, generation:()=>authGeneration,
+   blocked:transferBlocked, begin:beginTransfer, finish:finishTransfer, toast,
+   stop:stopRefreshPolling, schedule:()=>scheduleRefresh(0)});
+  return;
+ }
  if(action==='logs'){selected=id;navigate('logs');return;}
  if(originPage==='instances' && id)window.KurumiInstances.clearError(id);
  b.disabled=true;
@@ -952,7 +958,7 @@ $('#content').addEventListener('click',async e=>{
     if (registrationRequest) await registrationRequest;
     if (generation!==authGeneration || navigation!==navigationGeneration || !data || revision!==data.revision) return;
     const report=await api('health',{revision,id});
-    if(generation===authGeneration&&navigation===navigationGeneration&&data&&report.revision===revision&&data.revision===revision&&runtime===runtimeIdentity(data.runtime?.[id])&&data.state.instances.some(i=>i.id===id)&&page===origin&&['instances','health'].includes(origin)&&(origin!=='health'||$('#health-instance')?.value===id)&&!dialog.open&&!diffDialog.open&&!backupDialogEl?.open&&!webhookDialogEl?.open&&!healthDialog?.open)showHealth(report);
+    if(generation===authGeneration&&navigation===navigationGeneration&&data&&report.revision===revision&&data.revision===revision&&runtime===runtimeIdentity(data.runtime?.[id])&&data.state.instances.some(i=>i.id===id)&&page===origin&&['instances','health'].includes(origin)&&(origin!=='health'||$('#health-instance')?.value===id)&&!dialog.open&&!diffDialog.open&&!backupDialogEl?.open&&!webhookDialogEl?.open&&!healthDialog?.open&&!window.KurumiTOMLImport.isOpen())showHealth(report);
    } finally {if (generation===authGeneration) healthChecking=false;}
    return;
   }
