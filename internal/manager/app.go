@@ -21,6 +21,7 @@ type App struct {
 	quit     chan struct{}
 	quitOnce sync.Once
 	core     *core.Manager
+	runtime  RuntimeBackend
 	updater  *update.Manager
 	mu       sync.Mutex
 	store    *Store
@@ -28,25 +29,34 @@ type App struct {
 	addr     string
 	auth     auth
 	procs    map[string]*process
+	traffic  map[string]*trafficSamples // protected by mu, keyed by instance and run ID
 	assets   http.Handler
 
 	// Lifecycle reservations are protected by mu. Slow operations run without it.
-	operations         map[string]*runtimeOperation
-	operationWG        sync.WaitGroup
-	closing            bool
-	closeOnce          sync.Once
-	closeErr           error
-	stateCache         *stateResponseCache
-	activeProbes       int
-	activeBackup       bool
-	activeRegistration bool
-	activeHealth       bool
-	startupDone        chan struct{}
-	startupCancel      context.CancelFunc
-	startupErrors      map[string]string
+	operations          map[string]*runtimeOperation
+	operationWG         sync.WaitGroup
+	closing             bool
+	closeOnce           sync.Once
+	closeErr            error
+	stateCache          *stateResponseCache
+	activeProbes        int
+	activeBackup        bool
+	activeRegistration  bool
+	activeHealth        bool
+	startupDone         chan struct{}
+	startupCancel       context.CancelFunc
+	startupErrors       map[string]string
+	autoStartSuppressed map[string]bool
+	generations         map[string]uint64
 }
 
 func New(dir, bin, addr string, assets fs.FS) (*App, error) {
+	return NewWithRuntime(dir, bin, addr, assets, nil)
+}
+
+// NewWithRuntime installs the backend before restoring AutoStart instances.
+// A nil backend retains the existing external-core behavior of New.
+func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend) (*App, error) {
 	if e := loopbackListen(addr); e != nil {
 		return nil, e
 	}
@@ -94,7 +104,9 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	if e = cores.UseConfigActive(*s.DB.ActiveCore, func(id string) error {
 		db := s.DB
 		db.ActiveCore = &id
-		db.Revision++
+		if err := incrementRevision(&db); err != nil {
+			return err
+		}
 		if err := s.write(db); err != nil {
 			return err
 		}
@@ -103,7 +115,10 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	}); e != nil {
 		return nil, e
 	}
-	app := &App{quit: make(chan struct{}), core: cores, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	if backend == nil {
+		backend = &externalRuntime{core: cores, dir: s.dir}
+	}
+	app := &App{quit: make(chan struct{}), core: cores, runtime: backend, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	ctx, cancel := context.WithCancel(context.Background())
 	app.startupCancel = cancel
 	instances := append([]Instance(nil), s.DB.State.Instances...)
@@ -239,6 +254,14 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		if r.URL.Path == "/api/traffic" {
+			if r.Method != http.MethodGet {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			a.trafficAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/state" && r.Method == "GET" {
 			a.handleState(w, r)
 			return
@@ -317,6 +340,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		a.duplicateAPI(w, r)
 		return
 	}
+	if r.URL.Path == "/api/tunnels/batch-enabled" {
+		a.batchTunnelEnabledAPI(w, r)
+		return
+	}
 	var req struct {
 		Revision     uint64          `json:"revision"`
 		Kind         string          `json:"kind"`
@@ -347,10 +374,19 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		switch req.Kind {
 		case "instance":
 			var v Instance
-			if err = json.Unmarshal(req.Value, &v); err != nil {
+			if err = decodeStrictJSON(req.Value, &v); err != nil {
 				break
 			}
 			old, exists := st.Instance(v.ID)
+			if exists {
+				// Older editors omit newer protocol fields. Preserve omitted values
+				// while treating an omitted or empty credential as "keep".
+				v = old
+				v.Token = ""
+				if err = json.Unmarshal(req.Value, &v); err != nil {
+					break
+				}
+			}
 			if v.ID == "" {
 				v.ID = randomHex(8)
 			} else if !exists {
@@ -380,19 +416,50 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				st.Instances = append(st.Instances, v)
 			}
 		case "tunnel":
-			var v Tunnel
-			if err = json.Unmarshal(req.Value, &v); err != nil {
+			var edit struct {
+				Tunnel
+				ClearHTTPPassword bool `json:"clearHTTPPassword,omitempty"`
+			}
+			if err = decodeStrictJSON(req.Value, &edit); err != nil {
 				break
 			}
+			v := edit.Tunnel
 			old, exists := st.Tunnel(v.ID)
+			if exists {
+				v = old
+				v.Secret = ""
+				v.HTTPPassword = ""
+				if err = json.Unmarshal(req.Value, &v); err != nil {
+					break
+				}
+			}
 			if v.ID == "" {
 				v.ID = randomHex(8)
 			} else if !exists {
 				err = fmt.Errorf("规则不存在")
 				break
 			}
+			if exists && ((!legacyEditorProtocol(old.Type) && v.Type != old.Type) ||
+				(old.Type == "stcp-visitor" && old.LocalPort < 0 && (v.Type != old.Type || v.LocalPort != old.LocalPort))) {
+				err = fmt.Errorf("当前暂不支持更改此规则的协议类型或回退监听端口")
+				break
+			}
+			if exists {
+				if err = prepareVisitorTransfer(st, old, &v); err != nil {
+					break
+				}
+			}
 			v.HasSecret = false
-			if v.Secret == "" {
+			v.HasHTTPPassword = false
+			if !usesPairingSecret(v.Type) {
+				// A previously imported state may contain an unused encrypted
+				// value. Preserve it on same-type edits until explicitly changed.
+				if exists && old.Type == v.Type {
+					v.Secret = old.Secret
+				} else {
+					v.Secret = ""
+				}
+			} else if v.Secret == "" {
 				v.Secret = old.Secret
 			} else {
 				v.Secret, err = a.store.encrypt(v.Secret)
@@ -400,8 +467,25 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 			}
-			if v.Type != "stcp" && v.Type != "stcp-visitor" {
-				v.Secret = ""
+			if edit.ClearHTTPPassword && v.HTTPPassword != "" {
+				err = fmt.Errorf("不能同时设置和清除 TCPMUX 密码")
+				break
+			}
+			if edit.ClearHTTPPassword {
+				v.HTTPPassword = ""
+			} else if v.Type != "tcpmux" {
+				if exists && old.Type == v.Type {
+					v.HTTPPassword = old.HTTPPassword
+				} else {
+					v.HTTPPassword = ""
+				}
+			} else if v.HTTPPassword != "" {
+				v.HTTPPassword, err = a.store.encrypt(v.HTTPPassword)
+				if err != nil {
+					break
+				}
+			} else if exists && old.Type == "tcpmux" {
+				v.HTTPPassword = old.HTTPPassword
 			}
 			if exists {
 				for j := range st.Tunnels {
@@ -422,9 +506,19 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		st := a.store.DB.State.clone()
 		found := false
 		if req.Kind == "instance" {
-			if p := a.procs[req.ID]; p != nil && p.view().State == "running" {
-				err = fmt.Errorf("请先停止实例")
+			if a.closing || a.operations[req.ID] != nil {
+				err = fmt.Errorf("实例操作尚未结束，请稍后重试")
 				break
+			}
+			if p := a.procs[req.ID]; p != nil {
+				select {
+				case <-p.done:
+				default:
+					err = fmt.Errorf("请先停止实例并等待其完全退出")
+				}
+				if err != nil {
+					break
+				}
 			}
 			for _, t := range st.Tunnels {
 				if t.InstanceID == req.ID {
@@ -455,21 +549,26 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			err = fmt.Errorf("对象不存在")
 		} else {
 			err = a.store.commit(st, "删除 "+req.Kind+" 草稿")
-		}
-	case "/api/restore":
-		for _, p := range a.procs {
-			if p.view().State == "running" {
-				err = fmt.Errorf("恢复历史前请停止所有托管实例")
-				break
+			if err == nil && req.Kind == "instance" {
+				delete(a.procs, req.ID)
+				delete(a.traffic, req.ID)
+				delete(a.startupErrors, req.ID)
+				delete(a.autoStartSuppressed, req.ID)
+				delete(a.generations, req.ID)
+				a.stateCache = nil
 			}
 		}
-		if err != nil {
+	case "/api/restore":
+		if err = a.canReplaceStateLocked(); err != nil {
 			break
 		}
 		err = fmt.Errorf("历史版本不存在")
 		for _, h := range a.store.DB.History {
 			if h.Revision == req.Target {
 				err = a.store.commit(h.State.clone(), fmt.Sprintf("恢复草稿版本 %d", h.Revision))
+				if err == nil {
+					a.discardStoppedRuntimeLocked()
+				}
 				break
 			}
 		}
@@ -481,6 +580,13 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fail(w, 400, err)
 		return
+	}
+	// A removed instance, or one whose auto-start was disabled, no longer has
+	// an applicable automatic-restoration failure.
+	for id := range a.startupErrors {
+		if i, exists := a.store.DB.State.Instance(id); !exists || !i.AutoStart {
+			delete(a.startupErrors, id)
+		}
 	}
 	reply(w, 200, map[string]any{"ok": true, "revision": a.store.DB.Revision})
 }

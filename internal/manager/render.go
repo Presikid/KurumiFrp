@@ -96,6 +96,7 @@ func (s *Store) render(id string, preview bool) (Rendered, error) {
 	} else {
 		fmt.Fprintf(&b, "serverAddr = %s\nserverPort = %d\nloginFailExit = false\ntransport.tls.enable = true\n", quote(i.Host), i.Port)
 	}
+	renderProtocolInstance(&b, i)
 	v, e := secret(i.Token, "KURUMI_AUTH_TOML")
 	if e != nil {
 		return r, e
@@ -105,30 +106,8 @@ func (s *Store) render(id string, preview bool) (Rendered, error) {
 		if t.InstanceID != id || !t.Enabled {
 			continue
 		}
-		if t.Type == "stcp-visitor" {
-			fmt.Fprintf(&b, "\n[[visitors]]\nname = %s\ntype = \"stcp\"\nserverName = %s\nbindAddr = %s\nbindPort = %d\n", quote(t.Name), quote(t.ServerName), quote(t.LocalHost), t.LocalPort)
-		} else {
-			fmt.Fprintf(&b, "\n[[proxies]]\nname = %s\ntype = %s\nlocalIP = %s\nlocalPort = %d\n", quote(t.Name), quote(t.Type), quote(t.LocalHost), t.LocalPort)
-			if t.Type == "tcp" || t.Type == "udp" {
-				fmt.Fprintf(&b, "remotePort = %d\n", t.RemotePort)
-			}
-			if t.Type == "http" || t.Type == "https" {
-				a := []string{}
-				for _, d := range t.Domains {
-					a = append(a, quote(d))
-				}
-				fmt.Fprintf(&b, "customDomains = [%s]\n", strings.Join(a, ", "))
-			}
-			if t.BandwidthKB > 0 {
-				fmt.Fprintf(&b, "transport.bandwidthLimit = \"%dKB\"\ntransport.bandwidthLimitMode = \"client\"\n", t.BandwidthKB)
-			}
-		}
-		if t.Type == "stcp" || t.Type == "stcp-visitor" {
-			v, e := secret(t.Secret, "KURUMI_SECRET_"+t.ID)
-			if e != nil {
-				return r, e
-			}
-			fmt.Fprintf(&b, "secretKey = %s\n", v)
+		if err := renderProtocolTunnel(&b, t, secret); err != nil {
+			return r, err
 		}
 	}
 	r.Text = b.String()

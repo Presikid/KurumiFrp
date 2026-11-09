@@ -1,0 +1,237 @@
+package manager
+
+import (
+	"fmt"
+	"net"
+	"strconv"
+	"strings"
+	"unicode"
+)
+
+func isVisitor(kind string) bool {
+	return kind == "stcp-visitor" || kind == "xtcp-visitor" || kind == "sudp-visitor"
+}
+
+// Preserve the effective namespace when an existing Visitor changes client.
+// A fallback name is local to its client, so it must be configured separately
+// after the move instead of being silently rebound to a same-named Visitor.
+func prepareVisitorTransfer(s State, original Tunnel, next *Tunnel) error {
+	if original.InstanceID == next.InstanceID || !isVisitor(original.Type) || !isVisitor(next.Type) {
+		return nil
+	}
+	source, ok := s.Instance(original.InstanceID)
+	if !ok || source.Kind != "frpc" {
+		return fmt.Errorf("源规则所属的客户端实例不存在")
+	}
+	target, ok := s.Instance(next.InstanceID)
+	if !ok || target.Kind != "frpc" {
+		return fmt.Errorf("目标必须是已保存的 frpc 客户端实例")
+	}
+	if original.Type == "xtcp-visitor" && original.FallbackTo != "" {
+		return fmt.Errorf("含回退目标的 XTCP Visitor 暂不支持跨实例移动或复制；请先清除待移动规则或停用副本的回退，再在目标实例设置")
+	}
+	if next.Type == "xtcp-visitor" && next.FallbackTo != "" {
+		return fmt.Errorf("跨实例移动时请保持 XTCP 回退目标为空，移动后再在目标实例设置")
+	}
+	if next.ServerUser != "" {
+		return nil
+	}
+	if original.ServerUser != "" {
+		return fmt.Errorf("跨实例移动时不能同时清空已有服务端用户；请先移动，再单独修改服务端用户")
+	}
+	if source.User == "" && target.User != "" {
+		return fmt.Errorf("源 Visitor 的服务名没有用户前缀，目标客户端用户非空时无法保留该目标；请将目标客户端用户留空或明确选择其他服务")
+	}
+	// frp uses the current client's user when serverUser is omitted.
+	next.ServerUser = source.User
+	return nil
+}
+
+// Older editors can only represent these protocol types. Keep newer types
+// stable until the editor can intentionally represent them.
+func legacyEditorProtocol(kind string) bool {
+	switch kind {
+	case "tcp", "udp", "http", "https", "stcp", "stcp-visitor":
+		return true
+	default:
+		return false
+	}
+}
+
+func supportsUnboundVisitor(kind string) bool {
+	return kind == "stcp-visitor" || kind == "xtcp-visitor"
+}
+
+func visitorNetwork(kind string) string {
+	if kind == "sudp-visitor" {
+		return "udp"
+	}
+	return "tcp"
+}
+
+func usesPairingSecret(kind string) bool {
+	switch kind {
+	case "stcp", "xtcp", "sudp", "stcp-visitor", "xtcp-visitor", "sudp-visitor":
+		return true
+	}
+	return false
+}
+
+// These values are emitted into frp's template-expanded configuration.
+func protocolTextOK(s string) bool {
+	if len(s) > 1024 {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || r == '{' || r == '}' {
+			return false
+		}
+	}
+	return true
+}
+
+func tcpMuxDomainOK(domain string) bool {
+	if domain == "*" {
+		return true
+	}
+	domain = strings.TrimPrefix(domain, "*.")
+	return hostOK(domain) && net.ParseIP(domain) == nil
+}
+
+func validateProtocolInstance(i Instance) error {
+	if i.Kind == "frpc" {
+		if i.User != "" && !namePattern.MatchString(i.User) {
+			return fmt.Errorf("客户端用户名称无效")
+		}
+		if i.NatHoleSTUNServer != "" {
+			host, port, err := net.SplitHostPort(i.NatHoleSTUNServer)
+			n, parseErr := strconv.Atoi(port)
+			if err != nil || parseErr != nil || !hostOK(host) || !portOK(n) {
+				return fmt.Errorf("STUN 地址须为有效的主机名或 IP 加端口")
+			}
+		}
+		if i.TCPMuxPassthrough || i.SubDomainHost != "" {
+			return fmt.Errorf("客户端不能设置服务端 TCPMUX 或子域名选项")
+		}
+	} else {
+		if i.User != "" || i.NatHoleSTUNServer != "" {
+			return fmt.Errorf("服务端不能设置客户端用户或 STUN 地址")
+		}
+		if i.TCPMuxPassthrough && i.TCPMuxHTTPConnectPort == 0 {
+			return fmt.Errorf("TCPMUX 透传需要设置 HTTP CONNECT 监听端口")
+		}
+		if i.SubDomainHost != "" && (!hostOK(i.SubDomainHost) || net.ParseIP(i.SubDomainHost) != nil) {
+			return fmt.Errorf("服务端子域名后缀无效")
+		}
+	}
+	return nil
+}
+
+func validateProtocolTunnel(t Tunnel, endpoint string, claim func(string, string) error) error {
+	if usesPairingSecret(t.Type) && t.Secret == "" {
+		return fmt.Errorf("%s 配对密钥不能为空", strings.ToUpper(t.Type))
+	}
+	if isVisitor(t.Type) {
+		if !namePattern.MatchString(t.ServerName) || (t.ServerUser != "" && !namePattern.MatchString(t.ServerUser)) {
+			return fmt.Errorf("Visitor 需要有效的服务端规则名和用户名称")
+		}
+		if t.BandwidthKB != 0 {
+			return fmt.Errorf("Visitor 不支持此带宽字段")
+		}
+	} else if t.Type != "tcpmux" {
+		if len(t.AllowUsers) > 64 {
+			return fmt.Errorf("允许访问的用户最多 64 个")
+		}
+		for _, user := range t.AllowUsers {
+			// An empty entry is an explicit frp user with no prefix; an empty
+			// list instead means only the proxy owner's user is allowed.
+			if user != "" && user != "*" && !namePattern.MatchString(user) {
+				return fmt.Errorf("允许访问的用户名称无效")
+			}
+		}
+	}
+	if t.Type == "xtcp-visitor" {
+		if t.Protocol != "" && t.Protocol != "quic" && t.Protocol != "kcp" {
+			return fmt.Errorf("XTCP Visitor 协议仅支持 quic 或 kcp")
+		}
+		if t.MaxRetriesAnHour < 0 || t.MaxRetriesAnHour > 1000000 || t.MinRetryInterval < 0 || t.MinRetryInterval > 2147483 || t.FallbackTimeoutMs < 0 || t.FallbackTimeoutMs > 2000000000 {
+			return fmt.Errorf("XTCP 重试或回退参数超出范围")
+		}
+		if t.FallbackTo != "" && !namePattern.MatchString(t.FallbackTo) {
+			return fmt.Errorf("XTCP 回退 Visitor 名称无效")
+		}
+	}
+	if t.Type != "tcpmux" {
+		return nil
+	}
+	if t.Multiplexer != "" && t.Multiplexer != "httpconnect" {
+		return fmt.Errorf("TCPMUX 仅支持 httpconnect")
+	}
+	if len(t.Domains) > 16 || (len(t.Domains) == 0 && t.Subdomain == "") {
+		return fmt.Errorf("TCPMUX 需要自定义域名或子域名，最多 16 个自定义域名")
+	}
+	if t.Subdomain != "" && (!hostOK(t.Subdomain) || strings.Contains(t.Subdomain, ".") || net.ParseIP(t.Subdomain) != nil) {
+		return fmt.Errorf("TCPMUX 子域名无效")
+	}
+	if !protocolTextOK(t.HTTPUser) || !protocolTextOK(t.RouteByHTTPUser) {
+		return fmt.Errorf("TCPMUX 用户名无效")
+	}
+	if t.HTTPPassword != "" && t.HTTPUser == "" {
+		return fmt.Errorf("TCPMUX 密码需要设置 HTTP 用户名")
+	}
+	for _, domain := range t.Domains {
+		if !tcpMuxDomainOK(domain) {
+			return fmt.Errorf("TCPMUX 域名无效")
+		}
+		if t.Enabled {
+			if err := claim(endpoint+"tcpmux/domain/"+strings.ToLower(domain)+"/"+t.RouteByHTTPUser, t.Name); err != nil {
+				return err
+			}
+		}
+	}
+	if t.Enabled && t.Subdomain != "" {
+		return claim(endpoint+"tcpmux/subdomain/"+strings.ToLower(t.Subdomain)+"/"+t.RouteByHTTPUser, t.Name)
+	}
+	return nil
+}
+
+// Only enabled rules are wired together. Disabled drafts may be assembled in
+// any order, but an enabled chain must terminate at a TCP-capable visitor.
+func validateVisitorFallbacks(s State) error {
+	visitors := make(map[string]Tunnel)
+	for _, t := range s.Tunnels {
+		if t.Enabled && isVisitor(t.Type) {
+			visitors[t.InstanceID+"/"+t.Name] = t
+		}
+	}
+	marks := make(map[string]uint8)
+	var visit func(string) error
+	visit = func(key string) error {
+		if marks[key] == 1 {
+			return fmt.Errorf("XTCP Visitor 回退链不能形成循环")
+		}
+		if marks[key] == 2 {
+			return nil
+		}
+		marks[key] = 1
+		t := visitors[key]
+		if t.Type == "xtcp-visitor" && t.FallbackTo != "" {
+			next := t.InstanceID + "/" + t.FallbackTo
+			target, ok := visitors[next]
+			if !ok || !supportsUnboundVisitor(target.Type) {
+				return fmt.Errorf("XTCP 回退目标必须是同一实例中已启用的 STCP 或 XTCP Visitor")
+			}
+			if err := visit(next); err != nil {
+				return err
+			}
+		}
+		marks[key] = 2
+		return nil
+	}
+	for key := range visitors {
+		if err := visit(key); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -20,10 +20,53 @@ type runtimeRequest struct {
 type runtimeSnapshot struct {
 	instance Instance
 	rendered Rendered
-	binary   string
+	target   string
 	coreID   string
 	revision uint64
 	process  *process
+}
+
+// A state replacement must not detach a live instance or reuse its ID for a
+// different configuration. Call only with a.mu held.
+func (a *App) canReplaceStateLocked() error {
+	if a.closing {
+		return fmt.Errorf("工作台正在关闭")
+	}
+	if a.startupDone != nil {
+		select {
+		case <-a.startupDone:
+		default:
+			return fmt.Errorf("请等待自动恢复结束后再导入或恢复配置")
+		}
+	}
+	if len(a.operations) != 0 {
+		return fmt.Errorf("请等待实例操作结束后再导入或恢复配置")
+	}
+	for _, p := range a.procs {
+		if p == nil {
+			continue
+		}
+		select {
+		case <-p.done:
+		default:
+			return fmt.Errorf("请先停止全部运行实例后再导入或恢复配置")
+		}
+	}
+	return nil
+}
+
+// Called only after a successful state replacement and canReplaceStateLocked.
+// In-flight readers may temporarily hold their own references to old runs.
+func (a *App) discardStoppedRuntimeLocked() {
+	clear(a.procs)
+	clear(a.traffic)
+	clear(a.startupErrors)
+	for id := range a.generations {
+		if _, exists := a.store.DB.State.Instance(id); !exists {
+			delete(a.generations, id)
+		}
+	}
+	a.stateCache = nil
 }
 
 // Reserve one operation per instance. A duplicate request fails promptly instead
@@ -32,6 +75,13 @@ type runtimeSnapshot struct {
 func (a *App) beginRuntimeOperation(parent context.Context, req runtimeRequest, validate bool) (runtimeSnapshot, *runtimeOperation, int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.beginRuntimeOperationLocked(parent, req, validate)
+}
+
+// beginRuntimeOperationLocked requires a.mu. Automatic restoration uses it to
+// reserve an operation and publish an immediate failure without a race against
+// a concurrent manual operation.
+func (a *App) beginRuntimeOperationLocked(parent context.Context, req runtimeRequest, validate bool) (runtimeSnapshot, *runtimeOperation, int, error) {
 	var snapshot runtimeSnapshot
 	if a.closing {
 		return snapshot, nil, http.StatusServiceUnavailable, fmt.Errorf("工作台正在关闭")
@@ -53,16 +103,27 @@ func (a *App) beginRuntimeOperation(parent context.Context, req runtimeRequest, 
 	if !validate && req.Action == "start" && p != nil && p.view().State == "running" {
 		return snapshot, nil, http.StatusBadRequest, fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
+	if !validate && req.Action == "stop" && a.startupDone != nil {
+		select {
+		case <-a.startupDone:
+		default:
+			if a.autoStartSuppressed == nil {
+				a.autoStartSuppressed = make(map[string]bool)
+			}
+			a.autoStartSuppressed[req.ID] = true
+		}
+		delete(a.startupErrors, req.ID)
+	}
 	snapshot = runtimeSnapshot{instance: i, revision: req.Revision, coreID: a.activeCoreID(), process: p}
 	if validate || req.Action != "stop" {
 		var err error
 		snapshot.rendered, err = a.store.render(req.ID, false)
 		if err != nil {
-			return snapshot, nil, http.StatusBadRequest, err
+			return snapshot, nil, http.StatusBadRequest, fmt.Errorf("无法生成实例配置：%w", err)
 		}
-		snapshot.binary, err = a.binary(i.Kind)
+		snapshot.target, err = a.resolveRuntime(i.Kind)
 		if err != nil {
-			return snapshot, nil, http.StatusBadRequest, err
+			return snapshot, nil, http.StatusBadRequest, fmt.Errorf("无法使用所选 frp 核心：%w", err)
 		}
 	}
 	ctx, cancel := context.WithCancel(parent)
@@ -109,8 +170,8 @@ func (a *App) checkRuntimeSnapshot(ctx context.Context, snapshot runtimeSnapshot
 	if err != nil || rendered.Digest != snapshot.rendered.Digest {
 		return http.StatusConflict, fmt.Errorf("操作期间实例配置已变化，请重新验证后应用")
 	}
-	binary, err := a.binary(snapshot.instance.Kind)
-	if err != nil || binary != snapshot.binary {
+	target, err := a.resolveRuntime(snapshot.instance.Kind)
+	if err != nil || target != snapshot.target {
 		return http.StatusConflict, fmt.Errorf("操作期间核心已变化，请重新验证后应用")
 	}
 	return http.StatusOK, nil
@@ -149,7 +210,7 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	output, err := a.verifyBinary(op.ctx, snapshot.binary, snapshot.rendered)
+	output, err := a.verifyRuntime(op.ctx, snapshot.target, snapshot.instance, snapshot.rendered)
 	if err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
@@ -167,7 +228,7 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusOK, map[string]any{"ok": true, "output": output, "note": "仅验证配置，不证明网络连通"})
 		return
 	}
-	runtimeRendered, private, err := a.preparePrivateStatus(op.ctx, snapshot.binary, snapshot.instance, snapshot.rendered)
+	runtimeRendered, private, err := a.preparePrivateStatus(op.ctx, snapshot.target, snapshot.instance, snapshot.rendered)
 	if err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
@@ -205,7 +266,7 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	status, err = a.checkRuntimeSnapshot(op.ctx, snapshot)
 	if err == nil {
-		err = a.startPrepared(snapshot.instance, runtimeRendered, snapshot.binary, configPath, snapshot.coreID, private)
+		err = a.startPrepared(snapshot.instance, runtimeRendered, snapshot.target, configPath, snapshot.coreID, private)
 		if err != nil {
 			status = http.StatusBadRequest
 		} else {

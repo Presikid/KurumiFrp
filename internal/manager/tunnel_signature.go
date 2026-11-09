@@ -25,12 +25,9 @@ func (s *Store) tunnelSignature(t Tunnel) ([32]byte, error) {
 	if idx < 0 {
 		return [32]byte{}, fmt.Errorf("规则未启用")
 	}
-	credential := ""
-	if t.Type == "stcp" || t.Type == "stcp-visitor" {
-		credential, err = s.decrypt(t.Secret)
-		if err != nil {
-			return [32]byte{}, err
-		}
-	}
-	return sha256.Sum256([]byte(r.Text[idx:] + "\x00" + credential)), nil
+	// The user prefixes the wire proxy name, even though it is rendered in the
+	// instance header. A user change must invalidate the applied signature.
+	// The first rendered secret is the instance token; the remainder belong
+	// to this tunnel and may include a pairing key or a TCPMUX password.
+	return sha256.Sum256([]byte(i.User + "\x00" + r.Text[idx:] + "\x00" + strings.Join(r.Secrets[1:], "\x00"))), nil
 }

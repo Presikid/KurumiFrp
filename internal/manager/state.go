@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/Presikid/KurumiFrp/internal/version"
@@ -14,22 +15,27 @@ import (
 // needs no mutation counter that a future save, import, or exit path can forget
 // to increment. Log lines are a separate /api/logs resource.
 type stateProcessSnapshot struct {
-	status RuntimeStatus
-	coreID string
+	status       RuntimeStatus
+	coreID       string
+	startupError string
+	present      bool
 }
 
 type stateResponseCache struct {
-	revision uint64
-	coreID   string
-	frpc     bool
-	frps     bool
-	procs    map[string]stateProcessSnapshot
-	body     []byte
-	etag     string
+	revision    uint64
+	coreID      string
+	frpc        bool
+	frps        bool
+	runtimeFRPC bool
+	runtimeFRPS bool
+	runtimeMode string
+	procs       map[string]stateProcessSnapshot
+	body        []byte
+	etag        string
 }
 
 func (c *stateResponseCache) matches(next *stateResponseCache) bool {
-	if c == nil || c.revision != next.revision || c.coreID != next.coreID || c.frpc != next.frpc || c.frps != next.frps || len(c.procs) != len(next.procs) {
+	if c == nil || c.revision != next.revision || c.coreID != next.coreID || c.frpc != next.frpc || c.frps != next.frps || c.runtimeFRPC != next.runtimeFRPC || c.runtimeFRPS != next.runtimeFRPS || c.runtimeMode != next.runtimeMode || len(c.procs) != len(next.procs) {
 		return false
 	}
 	for id, p := range next.procs {
@@ -40,23 +46,60 @@ func (c *stateResponseCache) matches(next *stateResponseCache) bool {
 	return true
 }
 
+// Both the response cache and other status consumers use the same observation.
+// These helpers require a.mu; process liveness is sampled under the process lock.
+func (a *App) observeRuntimeLocked(i Instance) stateProcessSnapshot {
+	var observed stateProcessSnapshot
+	if p := a.procs[i.ID]; p != nil {
+		observed.status, observed.coreID, observed.present = p.view(), p.coreID, true
+	}
+	if i.AutoStart {
+		observed.startupError = a.startupErrors[i.ID]
+	}
+	return observed
+}
+
+func (a *App) observedRuntimeStatusLocked(i Instance, observed stateProcessSnapshot) RuntimeStatus {
+	v := RuntimeStatus{State: "stopped"}
+	if observed.present {
+		v = observed.status
+		rendered, err := a.store.render(i.ID, false)
+		v.Pending = err != nil || v.Applied != rendered.Digest || observed.coreID != a.activeCoreID()
+	}
+	if observed.startupError != "" && v.State != "running" {
+		v.State, v.Exit = "autostart-failed", observed.startupError
+	}
+	return v
+}
+
 // stateResponseLocked requires a.mu. Cached bytes and their key are immutable
 // after publication, so response writes can safely happen outside the lock.
 func (a *App) stateResponseLocked() (*stateResponseCache, error) {
-	_, ec := a.binary("frpc")
-	_, es := a.binary("frps")
+	_, ec := a.core.Binary("frpc")
+	_, es := a.core.Binary("frps")
 	next := &stateResponseCache{
-		revision: a.store.DB.Revision,
-		frpc:     ec == nil,
-		frps:     es == nil,
-		procs:    make(map[string]stateProcessSnapshot),
+		revision:    a.store.DB.Revision,
+		frpc:        ec == nil,
+		frps:        es == nil,
+		runtimeFRPC: ec == nil,
+		runtimeFRPS: es == nil,
+		runtimeMode: "external",
+		procs:       make(map[string]stateProcessSnapshot),
+	}
+	if _, external := a.runtime.(*externalRuntime); !external {
+		_, ec = a.resolveRuntime("frpc")
+		_, es = a.resolveRuntime("frps")
+		next.runtimeFRPC = ec == nil
+		next.runtimeFRPS = es == nil
+		next.runtimeMode = "custom"
 	}
 	if a.store.DB.ActiveCore != nil {
 		next.coreID = *a.store.DB.ActiveCore
 	}
 	for _, i := range a.store.DB.State.Instances {
-		if p := a.procs[i.ID]; p != nil {
-			next.procs[i.ID] = stateProcessSnapshot{status: p.view(), coreID: p.coreID}
+		observed := a.observeRuntimeLocked(i)
+		if observed.present || observed.startupError != "" {
+			next.procs[i.ID] = observed
 		}
 	}
 	if a.stateCache.matches(next) {
@@ -64,27 +107,32 @@ func (a *App) stateResponseLocked() (*stateResponseCache, error) {
 	}
 	runtime := make(map[string]RuntimeStatus, len(a.store.DB.State.Instances))
 	for _, i := range a.store.DB.State.Instances {
-		v := RuntimeStatus{State: "stopped"}
-		if p, ok := next.procs[i.ID]; ok {
-			v = p.status
-			rendered, err := a.store.render(i.ID, false)
-			v.Pending = err != nil || v.Applied != rendered.Digest || p.coreID != next.coreID
-		}
-		runtime[i.ID] = v
+		runtime[i.ID] = a.observedRuntimeStatusLocked(i, next.procs[i.ID])
 	}
 	history := make([]map[string]any, 0, len(a.store.DB.History))
 	for _, h := range a.store.DB.History {
 		history = append(history, map[string]any{"revision": h.Revision, "at": h.At, "summary": h.Summary})
 	}
+	warnings := make([]string, 0)
+	for _, warning := range possibleProxyConflicts(a.store.DB.State) {
+		warnings = append(warnings, warning)
+	}
+	sort.Strings(warnings)
+	if len(warnings) > 10 {
+		warnings = append(warnings[:10], "还有其他可能的端口冲突，请检查全部规则。")
+	}
 	body, err := json.Marshal(map[string]any{
-		"version":      version.Current,
-		"revision":     a.store.DB.Revision,
-		"state":        a.store.DB.State.public(),
-		"runtime":      runtime,
-		"history":      history,
-		"historyLimit": a.store.DB.HistoryLimit,
-		"events":       a.store.DB.Events,
-		"binaries":     map[string]bool{"frpc": next.frpc, "frps": next.frps},
+		"version":          version.Current,
+		"revision":         a.store.DB.Revision,
+		"state":            a.store.DB.State.public(),
+		"portWarnings":     warnings,
+		"runtime":          runtime,
+		"runtimeBackend":   next.runtimeMode,
+		"runtimeAvailable": map[string]bool{"frpc": next.runtimeFRPC, "frps": next.runtimeFRPS},
+		"history":          history,
+		"historyLimit":     a.store.DB.HistoryLimit,
+		"events":           a.store.DB.Events,
+		"binaries":         map[string]bool{"frpc": next.frpc, "frps": next.frps},
 	})
 	if err != nil {
 		return nil, err
