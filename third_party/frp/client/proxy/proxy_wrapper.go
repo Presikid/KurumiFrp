@@ -49,6 +49,12 @@ const (
 	ProxyPhaseClosed      = "closed"
 )
 
+const (
+	healthOK uint32 = iota
+	healthFailed
+	healthPending
+)
+
 var (
 	statusCheckInterval = 3 * time.Second
 	waitResponseTimeout = 20 * time.Second
@@ -142,7 +148,9 @@ func newWrapper(
 	}
 
 	if baseInfo.HealthCheck.Type != "" && baseInfo.LocalPort > 0 {
-		pw.health = 1 // means failed
+		// Do not register the proxy until the first successful check, and do
+		// not report a failure until the configured threshold has been reached.
+		pw.health = healthPending
 		addr := net.JoinHostPort(baseInfo.LocalIP, strconv.Itoa(baseInfo.LocalPort))
 		pw.monitor = health.NewMonitor(pw.ctx, baseInfo.HealthCheck, addr,
 			pw.statusNormalCallback, pw.statusFailedCallback)
@@ -222,7 +230,8 @@ func (pw *Wrapper) checkWorker() {
 	for {
 		// check proxy status
 		now := time.Now()
-		if atomic.LoadUint32(&pw.health) == 0 {
+		switch atomic.LoadUint32(&pw.health) {
+		case healthOK:
 			pw.mu.Lock()
 			if pw.Phase == ProxyPhaseNew ||
 				pw.Phase == ProxyPhaseCheckFailed ||
@@ -241,12 +250,15 @@ func (pw *Wrapper) checkWorker() {
 				})
 			}
 			pw.mu.Unlock()
-		} else {
+		case healthFailed:
 			pw.mu.Lock()
-			if pw.Phase == ProxyPhaseRunning || pw.Phase == ProxyPhaseWaitStart {
-				pw.close()
+			if pw.Phase == ProxyPhaseNew || pw.Phase == ProxyPhaseRunning || pw.Phase == ProxyPhaseWaitStart || pw.Phase == ProxyPhaseStartErr {
+				if pw.Phase == ProxyPhaseRunning || pw.Phase == ProxyPhaseWaitStart {
+					pw.close()
+				}
 				xl.Tracef("change status from [%s] to [%s]", pw.Phase, ProxyPhaseCheckFailed)
 				pw.Phase = ProxyPhaseCheckFailed
+				pw.Err = ""
 			}
 			pw.mu.Unlock()
 		}
@@ -262,7 +274,7 @@ func (pw *Wrapper) checkWorker() {
 
 func (pw *Wrapper) statusNormalCallback() {
 	xl := pw.xl
-	atomic.StoreUint32(&pw.health, 0)
+	atomic.StoreUint32(&pw.health, healthOK)
 	_ = errors.PanicToError(func() {
 		select {
 		case pw.healthNotifyCh <- struct{}{}:
@@ -274,7 +286,7 @@ func (pw *Wrapper) statusNormalCallback() {
 
 func (pw *Wrapper) statusFailedCallback() {
 	xl := pw.xl
-	atomic.StoreUint32(&pw.health, 1)
+	atomic.StoreUint32(&pw.health, healthFailed)
 	_ = errors.PanicToError(func() {
 		select {
 		case pw.healthNotifyCh <- struct{}{}:
