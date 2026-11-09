@@ -60,3 +60,9 @@ type RuntimeInstance interface {
 type RuntimePID interface {
 	PID() int
 }
+
+// RuntimeTrafficReader reports observations for one generation. It must return
+// promptly; unavailable measurements must not be represented as zero.
+type RuntimeTrafficReader interface {
+	ReadTraffic() TrafficSnapshot
+}
