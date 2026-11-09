@@ -166,6 +166,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="$(cat VERSION)"
+          if [ ! -f "docs/RELEASE_$version.md" ]; then
+            echo "No release notes for $version; package build only."
+            exit 0
+          fi
           [[ "$version" =~ ^[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}$ ]]
           IFS=. read -r a b c d <<< "$version"
           for part in "$a" "$b" "$c" "$d"; do (( 10#$part <= 65535 )); done
