@@ -38,6 +38,7 @@ type App struct {
 	closeErr      error
 	stateCache    *stateResponseCache
 	activeProbes  int
+	activeBackup  bool
 	startupDone   chan struct{}
 	startupCancel context.CancelFunc
 	startupErrors map[string]string
@@ -205,6 +206,18 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.URL.Path == "/api/control" || r.URL.Path == "/api/validate" {
 			a.runtimeAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/backup/export" || r.URL.Path == "/api/backup/import" {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			if r.URL.Path == "/api/backup/export" {
+				a.backupExport(w, r)
+			} else {
+				a.backupImport(w, r)
+			}
 			return
 		}
 		if r.URL.Path == "/api/state" && r.Method == "GET" {

@@ -21,7 +21,7 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 
 ## 下载安装
 
-前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.13、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
+前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.14、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
 
 **Windows 10 / 11**
 
@@ -30,13 +30,13 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 **Debian / Ubuntu**
 
 ```sh
-sudo apt install ./kurumifrp_0.7.1.13_amd64.deb
+sudo apt install ./kurumifrp_0.7.1.14_amd64.deb
 ```
 
 **Fedora / RHEL 系**
 
 ```sh
-sudo dnf install ./kurumifrp-0.7.1.13-1.x86_64.rpm
+sudo dnf install ./kurumifrp-0.7.1.14-1.x86_64.rpm
 ```
 
 Linux 安装包会配置 systemd 服务；ARM64 请下载对应架构的包。安装、升级、卸载及旧版迁移的步骤见 [安装说明](docs/INSTALL.md)。目前安装包尚未进行商业代码签名，也没有在线 APT/YUM 软件源。
@@ -69,6 +69,8 @@ frp 核心支持自动安装官方 Windows、Linux 各架构及 macOS amd64 / ar
 ## 备份与迁移
 
 在「配置中心」可以导出当前配置、全部快照或单个快照，也可以导入配置文件。实例、规则、密钥和快照等工作台数据统一保存在一个 `state.json` 中。
+
+也可以使用单独密码导出加密备份，并在其他设备恢复。密码不会被保存，遗失后无法恢复；使用方式见[加密备份说明](docs/BACKUP.md)。
 
 **导出文件包含恢复配置所需的密钥，请像密码一样保管，不要公开分享。** 导入后界面会刷新，但已经运行的实例需要重新启动才能使用新配置。导出文件不包含 frp 核心程序，换机器后请另行安装适合目标系统的核心。
 
