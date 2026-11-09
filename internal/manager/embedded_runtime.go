@@ -29,6 +29,8 @@ type embeddedRuntime struct{}
 // only the restricted feature set documented in third_party/frp/KURUMI_ISOLATION.md.
 func NewEmbeddedRuntime() RuntimeBackend { return &embeddedRuntime{} }
 
+func (*embeddedRuntime) runtimeMode() string { return "embedded" }
+
 func (*embeddedRuntime) Resolve(kind, _ string) (string, error) {
 	if embeddedCleanupUnknown.Load() {
 		return "", errors.New("内嵌核心清理状态未知，请重启工作台")

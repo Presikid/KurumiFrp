@@ -67,6 +67,11 @@ const Overview = (() => {
   const tunnels = snapshot.state.tunnels;
   const events = snapshot.events || [];
   const binaries = snapshot.binaries || {};
+  const embedded = snapshot.runtimeBackend === 'embedded';
+  const coreRows = embedded
+   ? '<div class="check-row"><span>内置核心</span><span class="pill good">已启用</span></div>'
+   : `<div class="check-row"><span>frpc 二进制</span><span class="pill ${binaries.frpc?'good':'warn'}">${binaries.frpc?'已找到':'未安装'}</span></div><div class="check-row"><span>frps 二进制</span><span class="pill ${binaries.frps?'good':'warn'}">${binaries.frps?'已找到':'未安装'}</span></div>`;
+  const coreNote = embedded ? '内置核心仍在开发，部分协议和功能暂不可用。' : '指定 frp-dir 中的二进制属于受信任程序；请仅放入官方或自行审计的版本。';
   const {escape, header, badge, instanceRegistrationText, tunnelTable} = helpers;
   if (!instances.some(instance => instance.id === trafficInstance)) trafficInstance = instances[0]?.id || '';
   trafficContext = {series:trafficByInstance, escape};
@@ -74,8 +79,8 @@ const Overview = (() => {
   const pending = instances.filter(instance => snapshot.runtime[instance.id]?.pending).length;
   const enabled = tunnels.filter(tunnel => tunnel.enabled).length;
   const metrics = [
-   [instances.length, '本机实例', `${running} 个进程运行中`],
-   [running, '进程运行中', '不代表链路已经连通'],
+   [instances.length, '本机实例', `${running} 个实例运行中`],
+   [running, '实例运行中', '不代表链路已经连通'],
    [tunnels.length, '草稿规则', `${enabled} 条期望启用，不等于已注册`],
    [pending, '实例配置待应用', '保存草稿不会改变当前运行配置']
   ];
@@ -91,10 +96,10 @@ const Overview = (() => {
   return header('网络总览', '查看本机实例、草稿规则和最近配置事件。', '<div class="overview-head-actions"><button data-action="new-tunnel">＋ 新建规则</button><button class="primary" data-action="new-instance">＋ 新建实例</button></div>') +
    `<section class="hero overview-hero"><div><p class="eyebrow">KURUMI / CONNECTION WORKSPACE</p><h2>每一条连接，都有迹可循。</h2><p>查看实例运行情况，确认规则状态，再决定何时应用配置。</p></div><div class="hero-graphic" aria-hidden="true"><span class="hero-stamp">KURUMI<br>FRP</span></div></section>` +
    `<section class="metrics overview-metrics" aria-label="状态摘要">${metrics.map(([value, label, note]) => `<div class="metric"><span class="label">${label}</span><strong>${value}</strong><small>${note}</small></div>`).join('')}</section>` +
-   `<div class="overview-grid"><section class="panel overview-instances"><div class="panel-title"><div><h3>运行实例</h3><small>进程状态 · 草稿地址与规则</small></div><button class="quiet" data-go="instances">全部实例 →</button></div>${instances.length ? `<div class="overview-instance-list">${instanceRows}</div>${instances.length > 5 ? `<p class="overview-more">显示前 5 个，共 ${instances.length} 个实例。</p>` : ''}` : '<div class="overview-empty"><strong>还没有运行实例</strong><p>先创建一个客户端或服务端实例。</p><button data-action="new-instance">＋ 新建实例</button></div>'}</section>
+   `<div class="overview-grid"><section class="panel overview-instances"><div class="panel-title"><div><h3>运行实例</h3><small>实例状态 · 草稿地址与规则</small></div><button class="quiet" data-go="instances">全部实例 →</button></div>${instances.length ? `<div class="overview-instance-list">${instanceRows}</div>${instances.length > 5 ? `<p class="overview-more">显示前 5 个，共 ${instances.length} 个实例。</p>` : ''}` : '<div class="overview-empty"><strong>还没有运行实例</strong><p>先创建一个客户端或服务端实例。</p><button data-action="new-instance">＋ 新建实例</button></div>'}</section>
    <section class="panel overview-traffic"><div class="panel-title"><div><h3>实例流量</h3><small>接收与发送速率</small></div><span class="pill">每实例</span></div><div class="overview-traffic-body"><label for="overview-traffic-instance">选择实例</label><select id="overview-traffic-instance" ${instances.length ? '' : 'disabled'}>${trafficOptions || '<option value="">暂无实例</option>'}</select><div id="overview-traffic-chart">${trafficChart(selectedTraffic(), escape)}</div></div></section></div>` +
    `<section class="panel overview-rules"><div class="panel-title"><div><h3>连接规则</h3><small>草稿配置 · ${tunnels.length > 5 ? `显示前 5 条，共 ${tunnels.length} 条` : `共 ${tunnels.length} 条`}</small></div><button class="quiet" data-go="tunnels">全部规则 →</button></div>${tunnelTable(tunnels.slice(0, 5))}</section>` +
-   `<section class="panel"><div class="panel-title"><h3>环境与边界</h3><span class="pill accent">LOCAL</span></div><div class="panel-content"><div class="check-row"><span>frpc 二进制</span><span class="pill ${binaries.frpc?'good':'warn'}">${binaries.frpc?'已找到':'未安装'}</span></div><div class="check-row"><span>frps 二进制</span><span class="pill ${binaries.frps?'good':'warn'}">${binaries.frps?'已找到':'未安装'}</span></div><div class="check-row"><span>配置保存</span><span class="pill good">本地持久化</span></div><div class="check-row"><span>远端设备管理</span><span class="pill">尚未实现</span></div><p class="small-note blank">配置文件包含密钥，请妥善保管。指定 frp-dir 中的二进制属于受信任程序；请仅放入官方或自行审计的版本。</p></div></section>` +
+   `<section class="panel"><div class="panel-title"><h3>环境与边界</h3><span class="pill accent">LOCAL</span></div><div class="panel-content">${coreRows}<div class="check-row"><span>配置保存</span><span class="pill good">本地持久化</span></div><div class="check-row"><span>远端设备管理</span><span class="pill">尚未实现</span></div><p class="small-note blank">配置文件包含密钥，请妥善保管。${coreNote}</p></div></section>` +
    `<section class="panel overview-events"><div class="panel-title"><div><h3>最近事件</h3><small>仅显示配置变更记录，进程输出请查看日志</small></div><button class="quiet" data-go="logs">运行记录 →</button></div>${eventRows ? `<ol class="overview-event-list">${eventRows}</ol>` : '<div class="overview-empty"><strong>暂无配置事件</strong><p>保存配置后，最近的变更会显示在这里。</p></div>'}</section>`;
  }
 

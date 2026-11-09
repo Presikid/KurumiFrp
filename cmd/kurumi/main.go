@@ -177,7 +177,7 @@ func run() error {
 		return e
 	}
 	defer cleanTemp()
-	app, e := manager.New(abs, *bin, *addr, web.Files)
+	app, e := manager.NewWithRuntime(abs, *bin, *addr, web.Files, runtimeBackend())
 	if e != nil {
 		return e
 	}
