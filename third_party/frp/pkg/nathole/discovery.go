@@ -15,6 +15,7 @@
 package nathole
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -27,16 +28,31 @@ var responseTimeout = 3 * time.Second
 
 // If the localAddr is empty, it will listen on a random port.
 func Discover(stunServers []string, localAddr string) ([]string, net.Addr, error) {
+	return DiscoverContext(context.Background(), stunServers, localAddr, nil)
+}
+
+// DiscoverContext permits a client to cancel discovery and use its own resolver.
+func DiscoverContext(ctx context.Context, stunServers []string, localAddr string, resolve func(context.Context, string) (*net.UDPAddr, error)) ([]string, net.Addr, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	discoverConn, err := listen(localAddr)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer discoverConn.Close()
+	stop := context.AfterFunc(ctx, func() { _ = discoverConn.Close() })
+	defer stop()
+	if resolve == nil {
+		resolve = func(_ context.Context, address string) (*net.UDPAddr, error) {
+			return net.ResolveUDPAddr("udp4", address)
+		}
+	}
 
 	addresses := make([]string, 0, len(stunServers))
 	for _, addr := range stunServers {
 		// get external address from stun server
-		externalAddrs, err := discoverConn.discoverFromStunServer(addr)
+		externalAddrs, err := discoverConn.discoverFromStunServer(ctx, addr, resolve)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -86,10 +102,16 @@ func (c *discoverConn) Close() error {
 	return c.conn.Close()
 }
 
-func (c *discoverConn) doSTUNRequest(addr string) (*stunResponse, error) {
-	serverAddr, err := net.ResolveUDPAddr("udp4", addr)
+func (c *discoverConn) doSTUNRequest(ctx context.Context, addr string, resolve func(context.Context, string) (*net.UDPAddr, error)) (*stunResponse, error) {
+	serverAddr, err := resolve(ctx, addr)
 	if err != nil {
 		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if serverAddr.IP.To4() == nil {
+		return nil, fmt.Errorf("stun server must resolve to IPv4")
 	}
 	transaction, err := stun.NewBindingTransaction(serverAddr)
 	if err != nil {
@@ -117,8 +139,8 @@ func (c *discoverConn) doSTUNRequest(addr string) (*stunResponse, error) {
 	return resp, nil
 }
 
-func (c *discoverConn) discoverFromStunServer(addr string) ([]string, error) {
-	resp, err := c.doSTUNRequest(addr)
+func (c *discoverConn) discoverFromStunServer(ctx context.Context, addr string, resolve func(context.Context, string) (*net.UDPAddr, error)) ([]string, error) {
+	resp, err := c.doSTUNRequest(ctx, addr, resolve)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +156,7 @@ func (c *discoverConn) discoverFromStunServer(addr string) ([]string, error) {
 	}
 
 	// find external address from changed address
-	resp, err = c.doSTUNRequest(resp.otherAddr)
+	resp, err = c.doSTUNRequest(ctx, resp.otherAddr, resolve)
 	if err != nil {
 		return nil, err
 	}

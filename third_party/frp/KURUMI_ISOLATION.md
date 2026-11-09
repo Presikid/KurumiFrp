@@ -33,11 +33,13 @@ These lifecycle changes still require validation in the combined workspace and
 are not a runtime guarantee.
 
 The profile rejects virtual networking, admin and metrics servers, includes,
-store sources, OIDC and dynamic token sources, XTCP, upstream proxies,
+store sources, OIDC and dynamic token sources, upstream proxies,
 client/visitor plugins, health checks, custom hooks and
 unsafe feature overrides. The adapter returns ErrFRPUnsupported for these
-options. Other upstream users retain normal configuration completion and use
-the process logger unless they explicitly supply an instance sink or logger.
+options. XTCP is available in the development profile but still needs
+end-to-end NAT traversal and failure recovery verification. Other upstream users
+retain normal configuration completion and use the process logger unless they
+explicitly supply an instance sink or logger.
 
 Each restricted control generation now owns a separate cancellation scope.
 Its dispatcher, admitted proxy and visitor workers, accepted connections and
