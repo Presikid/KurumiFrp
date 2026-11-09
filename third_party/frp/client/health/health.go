@@ -50,6 +50,7 @@ type Monitor struct {
 	url            string
 	header         http.Header
 	failedTimes    uint64
+	statusKnown    bool
 	statusOK       bool
 	statusNormalFn func()
 	statusFailedFn func()
@@ -150,20 +151,26 @@ func (monitor *Monitor) handleCheckResult(err error) {
 	if err == nil {
 		xl.Tracef("do one health check success")
 		monitor.failedTimes = 0
-		if !monitor.statusOK && monitor.statusNormalFn != nil {
+		if !monitor.statusKnown || !monitor.statusOK {
 			xl.Infof("health check status change to success")
+			monitor.statusKnown = true
 			monitor.statusOK = true
-			monitor.statusNormalFn()
+			if monitor.statusNormalFn != nil {
+				monitor.statusNormalFn()
+			}
 		}
 		return
 	}
 
 	xl.Warnf("do one health check failed: %v", err)
 	monitor.failedTimes++
-	if monitor.statusOK && int(monitor.failedTimes) >= monitor.maxFailedTimes && monitor.statusFailedFn != nil {
+	if int(monitor.failedTimes) >= monitor.maxFailedTimes && (!monitor.statusKnown || monitor.statusOK) {
 		xl.Warnf("health check status change to failed")
+		monitor.statusKnown = true
 		monitor.statusOK = false
-		monitor.statusFailedFn()
+		if monitor.statusFailedFn != nil {
+			monitor.statusFailedFn()
+		}
 	}
 }
 
