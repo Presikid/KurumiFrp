@@ -8,7 +8,7 @@ kurumifrp \- local frpc/frps management workbench
 The native Linux package installs a systemd service running as the unprivileged
 kurumifrp account. The management interface binds only to 127.0.0.1 on a free port
 between 9000 and 9010. Configuration and downloaded cores reside under
-/var/lib/kurumifrp. Existing web servers and firewall rules are not modified.
+/opt/kurumifrp/runtime. Existing web servers and firewall rules are not modified.
 .SH OPTIONS
 .TP
 .B --show-token
@@ -25,7 +25,7 @@ Request authenticated shutdown and wait for managed children to stop.
 Print the application version.
 .SH ADMINISTRATION
 Use systemctl status/start/stop kurumifrp. Read the chosen address from
-/var/lib/kurumifrp/data/listen.addr. Use SSH port forwarding for remote access.
+/opt/kurumifrp/runtime/data/listen.addr. Use SSH port forwarding for remote access.
 The workbench starts at boot; saved frp instances are not automatically started.
 The service has no capability to bind privileged ports below 1024.
 .SH REMOVAL

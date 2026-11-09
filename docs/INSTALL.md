@@ -2,7 +2,7 @@
 
 ## Windows：Program Files 正式安装
 
-下载 `KurumiFRP-0.7.1.19-Setup.exe`，双击并允许 UAC 管理员授权。一个安装文件按系统选择 x64 或 ARM64。默认程序目录是 `C:\Program Files\KurumiFRP`（实际路径使用系统 Program Files 定义），注册到 HKLM 的“已安装的应用”，不是 AppData 内的当前用户安装。安装、打开和卸载均不依赖 PS1/CMD、Python、Go 或 Node.js。
+下载 `KurumiFRP-0.7.1.20-Setup.exe`，双击并允许 UAC 管理员授权。一个安装文件按系统选择 x64 或 ARM64。默认程序目录是 `C:\Program Files\KurumiFRP`（实际路径使用系统 Program Files 定义），注册到 HKLM 的“已安装的应用”，不是 AppData 内的当前用户安装。安装、打开和卸载均不依赖 PS1/CMD、Python、Go 或 Node.js。
 
 程序文件和可变数据分离：
 
@@ -29,30 +29,28 @@
 Debian/Ubuntu 按架构下载 DEB，Fedora/RHEL 系按架构下载 RPM：
 
 ```sh
-sudo apt install ./kurumifrp_0.7.1.19_amd64.deb
-# ARM64 改为 kurumifrp_0.7.1.19_arm64.deb
+sudo apt install ./kurumifrp_0.7.1.20_amd64.deb
+# ARM64 改为 kurumifrp_0.7.1.20_arm64.deb
 
-sudo dnf install ./kurumifrp-0.7.1.19-1.x86_64.rpm
-# ARM64 改为 kurumifrp-0.7.1.19-1.aarch64.rpm
+sudo dnf install ./kurumifrp-0.7.1.20-1.x86_64.rpm
+# ARM64 改为 kurumifrp-0.7.1.20-1.aarch64.rpm
 ```
 
 升级继续交给 APT/DNF。没有另外部署在线 APT/YUM 软件源，也未提供仓库 GPG 签名；这是上游发布的软件包，不表示已进入发行版官方仓库。附带 SHA-256 是完整性校验，不是独立身份签名。
 
-Linux 不照搬 Windows 的“一个安装文件夹”，而按文件性质分开：
+Linux 原生包将程序和运行数据放在 `/opt/kurumifrp`。包管理器仍在系统目录登记服务、命令链接和文档。
 
 | 内容 | 位置 |
 |---|---|
-| 包管理器拥有的主程序 | `/usr/bin/kurumifrp` |
-| 服务单元 | `/usr/lib/systemd/system/kurumifrp.service` |
-| WebUI 管理的状态数据库、密钥、历史与生成配置 | `/var/lib/kurumifrp/data` |
-| 下载的核心及原子下载暂存 | `/var/lib/kurumifrp/cores` |
-| 应用和子进程运行临时文件 | systemd 管理的 `/run/kurumifrp/session-*` |
-| 包安装归属记录 | `/var/lib/kurumifrp-package` |
-| 文档和 man 手册 | `/usr/share/doc/kurumifrp`、`/usr/share/man` |
+| 主程序 | `/opt/kurumifrp/kurumifrp`（`/usr/bin/kurumifrp` 为命令链接） |
+| 状态、密钥、历史、核心与临时文件 | `/opt/kurumifrp/runtime` |
+| 升级前数据备份 | `/opt/kurumifrp/backups/legacy`，仅 root 可访问 |
+| 包安装归属记录与更新器工作目录 | `/opt/kurumifrp/meta`、`/opt/kurumifrp/private` |
+| 服务单元和文档 | `/usr/lib/systemd/system`、`/usr/share/doc/kurumifrp`、`/usr/share/man` |
 
-没有 systemd 的显式手动运行使用 `/var/lib/kurumifrp/tmp`，不会回退到个人 HOME。`/var/lib` 内的是通过 WebUI 更新的状态数据库与生成内容，不是要求管理员手工编辑的 `/etc` 配置文件。目前没有单独的手工系统配置文件，因此不创建空的 `/etc/kurumifrp` 或无用途的缓存目录。
+升级旧包时会停止服务，在安装目录内保留旧数据的备份，完成复制后切换运行目录；不符合安全检查或中途出错时，保留已有数据供排查。普通卸载保留数据，彻底清理会删除运行数据和迁移备份。应用和子进程的临时文件位于运行目录中，不修改系统全局 TEMP/TMP 环境。
 
-系统服务由专用低权限 `kurumifrp` 账户运行；`ProtectHome=yes`、`ProtectSystem=strict` 保留，主要持久可写区只有专用状态目录，临时目录由 systemd 管理。停止后回收 RuntimeDirectory，不修改系统全局 TEMP/TMP 环境。没有开放低端口权限、修改防火墙或触碰现有网站。
+系统服务由专用低权限 `kurumifrp` 账户运行，保留 `ProtectHome=yes` 和 `ProtectSystem=strict`。没有开放低端口权限、修改防火墙或触碰现有网站。
 
 ```sh
 systemctl status kurumifrp
@@ -73,7 +71,7 @@ sudo dnf remove kurumifrp  # 此 RPM 的最终卸载会清除托管数据；升�
 DEB/RPM 不在包维护脚本里猜测、扫描并删除用户下载文件，不破坏包管理器缓存或事务记录。需要安装验证后删除当前包，可执行：
 
 ```sh
-file=kurumifrp_0.7.1.19_amd64.deb
+file=kurumifrp_0.7.1.20_amd64.deb
 sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 ```
 
@@ -95,7 +93,7 @@ sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 
 ## 从 0.4 或更早版本迁移
 
-以下是 0.5 发布时的历史迁移说明：当时安装器不会自动执行旧用户目录中的程序，也不会把旧数据不经确认提升为机器级安装。当前版本已改为自动迁移受安装回执、SID 和 ACL 验证的旧 ProgramData 数据；从旧版升级时不再手动把备份放回 ProgramData，而由当前安装器迁移到安装目录的 `runtime`。Linux 从 0.4 的原生包升级仍保留原 `/var/lib/kurumifrp` 数据。
+以下是 0.5 发布时的历史迁移说明：当时安装器不会自动执行旧用户目录中的程序，也不会把旧数据不经确认提升为机器级安装。当前版本已改为自动迁移受安装回执、SID 和 ACL 验证的旧 ProgramData 数据；从旧版升级时不再手动把备份放回 ProgramData，而由当前安装器迁移到安装目录的 `runtime`。Linux 原生包升级时将旧运行数据迁移到安装目录，并在安装目录保留备份。
 
 ## 规范与验证
 

@@ -2,7 +2,7 @@
 Description=Watch for authenticated KurumiFRP update requests
 
 [Path]
-PathChanged=/var/lib/kurumifrp/update.request
+PathChanged=/opt/kurumifrp/runtime/update.request
 Unit=kurumifrp-updater.service
 
 [Install]

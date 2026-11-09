@@ -3,16 +3,15 @@ Description=KurumiFRP local management workbench
 Documentation=https://github.com/Presikid/KurumiFrp
 Wants=network-online.target
 After=network-online.target
+ConditionPathExists=!/opt/kurumifrp/meta/migrating
 
 [Service]
 Type=simple
 User=kurumifrp
 Group=kurumifrp
-WorkingDirectory=/var/lib/kurumifrp
-RuntimeDirectory=kurumifrp
-RuntimeDirectoryMode=0700
-ExecStart=/usr/bin/kurumifrp
-ExecStop=/usr/bin/kurumifrp --stop
+WorkingDirectory=/opt/kurumifrp/runtime
+ExecStart=/opt/kurumifrp/kurumifrp
+ExecStop=/opt/kurumifrp/kurumifrp --stop
 KillMode=control-group
 TimeoutStopSec=60
 Restart=no
@@ -21,7 +20,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/kurumifrp
+ReadWritePaths=/opt/kurumifrp/runtime
 CapabilityBoundingSet=
 RestrictSUIDSGID=yes
 
