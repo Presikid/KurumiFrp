@@ -6,13 +6,100 @@ import (
 	"encoding/hex"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 type transportFunc func(*http.Request) (*http.Response, error)
 
 func (f transportFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestRateLimitMessage(t *testing.T) {
+	m := New(t.TempDir(), "windows-installed")
+	m.client = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		header.Set("X-RateLimit-Remaining", "0")
+		return &http.Response{StatusCode: http.StatusForbidden, Body: io.NopCloser(strings.NewReader("")), Header: header}, nil
+	})}
+	if _, err := m.Versions(context.Background()); err == nil || !strings.Contains(err.Error(), "请求次数已用完") {
+		t.Fatalf("missing useful rate limit message: %v", err)
+	}
+}
+
+func TestHTMLFallbackPaginationAndDigest(t *testing.T) {
+	m := New(t.TempDir(), "windows-installed")
+	sha := "sha256:" + strings.Repeat("a", 64)
+	m.client = &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
+		resp := &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header), ContentLength: 3}
+		if r.URL.Host == "api.github.com" {
+			resp.StatusCode = 403
+			resp.Header.Set("X-RateLimit-Remaining", "0")
+			return resp, nil
+		}
+		if r.Method == "HEAD" {
+			return resp, nil
+		}
+		if r.URL.Path == "/Presikid/KurumiFrp/releases" {
+			if r.Header.Get("Accept") != "text/html" {
+				t.Error("HTML fallback sent the API Accept header")
+			}
+			page := `<a href="/Presikid/KurumiFrp/releases/tag/v999.0.0.1">v</a>`
+			if r.URL.Query().Get("page") == "1" {
+				page += `<a href="/Presikid/KurumiFrp/releases?page=2">next</a>`
+			} else {
+				page = `<a href="/Presikid/KurumiFrp/releases/tag/v999.0.0.0">v</a>`
+			}
+			resp.Body = io.NopCloser(strings.NewReader(page))
+			return resp, nil
+		}
+		tag := strings.TrimPrefix(r.URL.Path, "/Presikid/KurumiFrp/releases/expanded_assets/")
+		name := packageName(tag, "windows-installed")
+		page := `<a href="/Presikid/KurumiFrp/releases/download/` + tag + `/` + name + `">x</a><clipboard-copy aria-label="Copy to clipboard digest for ` + name + `" value="` + sha + `">`
+		resp.Body = io.NopCloser(strings.NewReader(page))
+		return resp, nil
+	})}
+	versions, err := m.Versions(context.Background())
+	if err != nil || len(versions) != 2 || !versions[0].Available || versions[0].Tag != "v999.0.0.1" {
+		t.Fatalf("%#v %v", versions, err)
+	}
+	a, err := m.selectAsset(context.Background(), "v999.0.0.1")
+	if err != nil || a.Digest != sha || a.Size != 3 {
+		t.Fatalf("%#v %v", a, err)
+	}
+	if _, _, err := htmlAssetDigest(`<a href="/Presikid/KurumiFrp/releases/download/v999.0.0.1/KurumiFRP-999.0.0.1-Setup.exe">`, "v999.0.0.1", "KurumiFRP-999.0.0.1-Setup.exe"); err == nil {
+		t.Fatal("accepted missing digest")
+	}
+	name := "KurumiFRP-999.0.0.1-Setup.exe"
+	link := `<a href="/Presikid/KurumiFrp/releases/download/v999.0.0.1/` + name + `">`
+	digest := `<clipboard-copy aria-label="Copy to clipboard digest for ` + name + `" value="` + sha + `">`
+	if _, _, err := htmlAssetDigest(link+digest+digest, "v999.0.0.1", name); err == nil {
+		t.Fatal("accepted ambiguous digest")
+	}
+}
+
+func TestLiveHTMLFallbackDownload(t *testing.T) {
+	if os.Getenv("KURUMI_LIVE_UPDATES") != "1" {
+		t.Skip("live network test is opt-in")
+	}
+	m := New(t.TempDir(), "windows-installed")
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	releases, err := m.releasesHTML(ctx)
+	if err != nil || len(releases) < 1 {
+		t.Fatalf("releases: %v", err)
+	}
+	for _, r := range releases {
+		if asset, ok := assetFor(r, "windows-installed"); ok {
+			if _, err = m.download(ctx, asset, t.TempDir()); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+	t.Fatal("no verified official installer")
+}
 
 func TestFourPartVersionOrdering(t *testing.T) {
 	cases := []struct {
