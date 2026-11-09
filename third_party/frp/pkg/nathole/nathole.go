@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatedier/golib/pool"
@@ -73,6 +74,8 @@ type PrepareOptions struct {
 	// DisableAssistedAddrs disables the use of local network interfaces
 	// for assisted connections during NAT traversal
 	DisableAssistedAddrs bool
+	// ResolveUDPAddr selects the resolver belonging to the caller, when set.
+	ResolveUDPAddr func(context.Context, string) (*net.UDPAddr, error)
 }
 
 type PrepareResult struct {
@@ -116,8 +119,12 @@ func PreCheck(
 
 // Prepare is used to do some preparation work before penetration.
 func Prepare(stunServers []string, opts PrepareOptions) (*PrepareResult, error) {
+	return PrepareContext(context.Background(), stunServers, opts)
+}
+
+func PrepareContext(ctx context.Context, stunServers []string, opts PrepareOptions) (*PrepareResult, error) {
 	// discover for Nat type
-	addrs, localAddr, err := Discover(stunServers, "")
+	addrs, localAddr, err := DiscoverContext(ctx, stunServers, "", opts.ResolveUDPAddr)
 	if err != nil {
 		return nil, fmt.Errorf("discover error: %v", err)
 	}
@@ -138,6 +145,10 @@ func Prepare(stunServers []string, opts PrepareOptions) (*PrepareResult, error) 
 	listenConn, err := net.ListenUDP("udp4", laddr)
 	if err != nil {
 		return nil, fmt.Errorf("listen local udp addr error: %v", err)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = listenConn.Close()
+		return nil, err
 	}
 
 	// Apply NAT traversal options
@@ -189,7 +200,7 @@ func ExchangeInfo(
 }
 
 // MakeHole is used to make a NAT hole between client and visitor.
-func MakeHole(ctx context.Context, listenConn *net.UDPConn, m *msg.NatHoleResp, key []byte) (*net.UDPConn, *net.UDPAddr, error) {
+func MakeHole(ctx context.Context, listenConn *net.UDPConn, m *msg.NatHoleResp, key []byte) (winner *net.UDPConn, remote *net.UDPAddr, resultErr error) {
 	xl := xlog.FromContextSafe(ctx)
 	transactionID := NewTransactionID()
 	sendToRangePortsFunc := func(conn *net.UDPConn, addr string) error {
@@ -201,7 +212,14 @@ func MakeHole(ctx context.Context, listenConn *net.UDPConn, m *msg.NatHoleResp, 
 	if m.DetectBehavior.Role == DetectRoleSender {
 		// sender
 		if m.DetectBehavior.SendDelayMs > 0 {
-			time.Sleep(time.Duration(m.DetectBehavior.SendDelayMs) * time.Millisecond)
+			timer := time.NewTimer(time.Duration(m.DetectBehavior.SendDelayMs) * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				_ = listenConn.Close()
+				return nil, nil, ctx.Err()
+			case <-timer.C:
+			}
 		}
 		detectAddrs = m.AssistedAddrs
 		detectAddrs = append(detectAddrs, m.CandidateAddrs...)
@@ -223,9 +241,35 @@ func MakeHole(ctx context.Context, listenConn *net.UDPConn, m *msg.NatHoleResp, 
 		}
 	}
 
+	// Every socket and worker created for a traversal must finish before the
+	// caller can stop its client or reuse the selected connection.
+	ctx, cancel := context.WithCancel(ctx)
+	stopClose := context.AfterFunc(ctx, func() {
+		for _, conn := range listenConns {
+			_ = conn.Close()
+		}
+	})
+	var workers sync.WaitGroup
+	defer func() {
+		stopClose()
+		cancel()
+		for _, conn := range listenConns {
+			if conn != winner {
+				_ = conn.Close()
+			}
+		}
+		workers.Wait()
+	}()
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+
 	detectAddrs = slices.Compact(detectAddrs)
 	for _, detectAddr := range detectAddrs {
 		for _, conn := range listenConns {
+			if err := ctx.Err(); err != nil {
+				return nil, nil, err
+			}
 			if err := sendSidMessage(ctx, conn, m.Sid, transactionID, detectAddr, key, m.DetectBehavior.TTL); err != nil {
 				xl.Tracef("send sid message from %s to %s error: %v", conn.LocalAddr(), detectAddr, err)
 			}
@@ -237,10 +281,12 @@ func MakeHole(ctx context.Context, listenConn *net.UDPConn, m *msg.NatHoleResp, 
 		}
 	}
 	if m.DetectBehavior.SendRandomPorts > 0 {
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
 		for i := range listenConns {
-			go sendSidMessageToRandomPorts(ctx, listenConns[i], m.CandidateAddrs, m.DetectBehavior.SendRandomPorts, sendToRangePortsFunc)
+			workers.Add(1)
+			go func(conn *net.UDPConn) {
+				defer workers.Done()
+				sendSidMessageToRandomPorts(ctx, conn, m.CandidateAddrs, m.DetectBehavior.SendRandomPorts, sendToRangePortsFunc)
+			}(listenConns[i])
 		}
 	}
 
@@ -254,37 +300,42 @@ func MakeHole(ctx context.Context, listenConn *net.UDPConn, m *msg.NatHoleResp, 
 		if err != nil {
 			return nil, nil, fmt.Errorf("wait detect message error: %v", err)
 		}
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		return listenConns[0], raddr, nil
 	}
 
 	type result struct {
 		lConn *net.UDPConn
 		raddr *net.UDPAddr
+		err   error
 	}
-	resultCh := make(chan result)
+	resultCh := make(chan result, len(listenConns))
 	for _, conn := range listenConns {
+		workers.Add(1)
 		go func(lConn *net.UDPConn) {
+			defer workers.Done()
 			addr, err := waitDetectMessage(ctx, lConn, m.Sid, key, timeout, m.DetectBehavior.Role)
-			if err != nil {
-				lConn.Close()
-				return
-			}
-			select {
-			case resultCh <- result{lConn: lConn, raddr: addr}:
-			default:
-				lConn.Close()
-			}
+			resultCh <- result{lConn: lConn, raddr: addr, err: err}
 		}(conn)
 	}
 
-	select {
-	case result := <-resultCh:
-		return result.lConn, result.raddr, nil
-	case <-time.After(timeout):
-		return nil, nil, fmt.Errorf("wait detect message timeout")
-	case <-ctx.Done():
-		return nil, nil, fmt.Errorf("wait detect message canceled")
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for remaining := len(listenConns); remaining > 0; remaining-- {
+		select {
+		case result := <-resultCh:
+			if result.err == nil && ctx.Err() == nil {
+				return result.lConn, result.raddr, nil
+			}
+		case <-timer.C:
+			return nil, nil, fmt.Errorf("wait detect message timeout")
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
 	}
+	return nil, nil, fmt.Errorf("all detect connections closed")
 }
 
 func waitDetectMessage(
@@ -393,6 +444,9 @@ func sendSidMessageToRangePorts(
 	for _, ip := range slices.Compact(parseIPs(addrs)) {
 		for _, portsRange := range ports {
 			for i := portsRange.From; i <= portsRange.To; i++ {
+				if ctx.Err() != nil {
+					return
+				}
 				detectAddr := net.JoinHostPort(ip, strconv.Itoa(i))
 				if err := sendFunc(conn, detectAddr); err != nil {
 					xl.Tracef("send sid message from %s to %s error: %v", conn.LocalAddr(), detectAddr, err)

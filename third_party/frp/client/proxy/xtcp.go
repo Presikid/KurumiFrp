@@ -17,6 +17,7 @@
 package proxy
 
 import (
+	"context"
 	"io"
 	"net"
 	"reflect"
@@ -25,11 +26,13 @@ import (
 	fmux "github.com/fatedier/yamux"
 	"github.com/quic-go/quic-go"
 
+	"github.com/fatedier/frp/client/internal/netx"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
 	"github.com/fatedier/frp/pkg/transport"
+	"github.com/fatedier/frp/pkg/util/lifetime"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 )
 
@@ -40,7 +43,8 @@ func init() {
 type XTCPProxy struct {
 	*BaseProxy
 
-	cfg *v1.XTCPProxyConfig
+	cfg    *v1.XTCPProxyConfig
+	cancel context.CancelFunc
 }
 
 func NewXTCPProxy(baseProxy *BaseProxy, cfg v1.ProxyConfigurer) Proxy {
@@ -48,15 +52,25 @@ func NewXTCPProxy(baseProxy *BaseProxy, cfg v1.ProxyConfigurer) Proxy {
 	if !ok {
 		return nil
 	}
+	ctx, cancel := context.WithCancel(baseProxy.ctx)
+	baseProxy.ctx = ctx
 	return &XTCPProxy{
 		BaseProxy: baseProxy,
 		cfg:       unwrapped,
+		cancel:    cancel,
 	}
+}
+
+func (pxy *XTCPProxy) Close() {
+	pxy.cancel()
+	pxy.BaseProxy.Close()
 }
 
 func (pxy *XTCPProxy) InWorkConn(conn net.Conn, startWorkConnMsg *msg.StartWorkConn) {
 	xl := pxy.xl
 	defer conn.Close()
+	stopConn := context.AfterFunc(pxy.ctx, func() { _ = conn.Close() })
+	defer stopConn()
 	natHoleSidMsg, err := readNatHoleSid(conn, pxy.clientCfg.Transport.WireProtocol)
 	if err != nil {
 		xl.Errorf("xtcp read from workConn error: %v", err)
@@ -70,8 +84,11 @@ func (pxy *XTCPProxy) InWorkConn(conn net.Conn, startWorkConnMsg *msg.StartWorkC
 	if pxy.cfg.NatTraversal != nil && pxy.cfg.NatTraversal.DisableAssistedAddrs {
 		opts.DisableAssistedAddrs = true
 	}
+	if netx.FromContext(pxy.ctx) != nil {
+		opts.ResolveUDPAddr = netx.ResolveUDPAddr
+	}
 
-	prepareResult, err := nathole.Prepare([]string{pxy.clientCfg.NatHoleSTUNServer}, opts)
+	prepareResult, err := nathole.PrepareContext(pxy.ctx, []string{pxy.clientCfg.NatHoleSTUNServer}, opts)
 	if err != nil {
 		xl.Warnf("nathole prepare error: %v", err)
 		return
@@ -80,6 +97,8 @@ func (pxy *XTCPProxy) InWorkConn(conn net.Conn, startWorkConnMsg *msg.StartWorkC
 	xl.Infof("nathole prepare success, nat type: %s, behavior: %s, addresses: %v, assistedAddresses: %v",
 		prepareResult.NatType, prepareResult.Behavior, prepareResult.Addrs, prepareResult.AssistedAddrs)
 	defer prepareResult.ListenConn.Close()
+	stopInitial := context.AfterFunc(pxy.ctx, func() { _ = prepareResult.ListenConn.Close() })
+	defer stopInitial()
 
 	// send NatHoleClient msg to server
 	transactionID := nathole.NewTransactionID()
@@ -114,6 +133,9 @@ func (pxy *XTCPProxy) InWorkConn(conn net.Conn, startWorkConnMsg *msg.StartWorkC
 		return
 	}
 	listenConn = newListenConn
+	defer listenConn.Close()
+	stopSelected := context.AfterFunc(pxy.ctx, func() { _ = newListenConn.Close() })
+	defer stopSelected()
 	xl.Infof("establishing nat hole connection successful, sid [%s], remoteAddr [%s]", natHoleRespMsg.Sid, raddr)
 
 	_ = pxy.msgTransporter.Send(&msg.NatHoleReport{
@@ -166,6 +188,8 @@ func (pxy *XTCPProxy) listenByKCP(listenConn *net.UDPConn, raddr *net.UDPAddr, s
 		return
 	}
 	defer session.Close()
+	stopSession := context.AfterFunc(pxy.ctx, func() { _ = session.Close() })
+	defer stopSession()
 
 	for {
 		muxConn, err := session.Accept()
@@ -173,7 +197,10 @@ func (pxy *XTCPProxy) listenByKCP(listenConn *net.UDPConn, raddr *net.UDPAddr, s
 			xl.Errorf("accept connection error: %v", err)
 			return
 		}
-		go pxy.HandleTCPWorkConnection(muxConn, startWorkConnMsg, []byte(pxy.cfg.Secretkey))
+		if !lifetime.Go(pxy.ctx, func() { pxy.HandleTCPWorkConnection(muxConn, startWorkConnMsg, []byte(pxy.cfg.Secretkey)) }) {
+			_ = muxConn.Close()
+			return
+		}
 	}
 }
 
@@ -198,12 +225,14 @@ func (pxy *XTCPProxy) listenByQUIC(listenConn *net.UDPConn, _ *net.UDPAddr, star
 		xl.Warnf("dial quic error: %v", err)
 		return
 	}
+	defer quicListener.Close()
 	// only accept one connection from raddr
 	c, err := quicListener.Accept(pxy.ctx)
 	if err != nil {
 		xl.Errorf("quic accept connection error: %v", err)
 		return
 	}
+	defer c.CloseWithError(0, "")
 	for {
 		stream, err := c.AcceptStream(pxy.ctx)
 		if err != nil {
@@ -211,6 +240,10 @@ func (pxy *XTCPProxy) listenByQUIC(listenConn *net.UDPConn, _ *net.UDPAddr, star
 			_ = c.CloseWithError(0, "")
 			return
 		}
-		go pxy.HandleTCPWorkConnection(netpkg.QuicStreamToNetConn(stream, c), startWorkConnMsg, []byte(pxy.cfg.Secretkey))
+		workConn := netpkg.QuicStreamToNetConn(stream, c)
+		if !lifetime.Go(pxy.ctx, func() { pxy.HandleTCPWorkConnection(workConn, startWorkConnMsg, []byte(pxy.cfg.Secretkey)) }) {
+			_ = workConn.Close()
+			return
+		}
 	}
 }

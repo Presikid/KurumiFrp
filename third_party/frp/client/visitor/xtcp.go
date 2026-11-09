@@ -30,12 +30,14 @@ import (
 	quic "github.com/quic-go/quic-go"
 	"golang.org/x/time/rate"
 
+	"github.com/fatedier/frp/client/internal/netx"
 	"github.com/fatedier/frp/client/traffic"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
 	"github.com/fatedier/frp/pkg/transport"
+	"github.com/fatedier/frp/pkg/util/lifetime"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/util"
 	"github.com/fatedier/frp/pkg/util/xlog"
@@ -63,18 +65,28 @@ func (sv *XTCPVisitor) Run() (err error) {
 	}
 
 	if sv.cfg.BindPort > 0 {
-		sv.l, err = net.Listen("tcp", net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort)))
+		sv.l, err = netx.ListenTCP(sv.ctx, net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort)))
 		if err != nil {
+			sv.cancel()
 			return
 		}
-		go sv.acceptLoop(sv.l, "xtcp local", sv.handleConn)
+		if !lifetime.Go(sv.ctx, func() { sv.acceptLoop(sv.l, "xtcp local", sv.handleConn) }) {
+			sv.Close()
+			return context.Canceled
+		}
 	}
 
-	go sv.acceptLoop(sv.internalLn, "xtcp internal", sv.handleConn)
-	go sv.processTunnelStartEvents()
+	if !lifetime.Go(sv.ctx, func() { sv.acceptLoop(sv.internalLn, "xtcp internal", sv.handleConn) }) ||
+		!lifetime.Go(sv.ctx, sv.processTunnelStartEvents) {
+		sv.Close()
+		return context.Canceled
+	}
 	if sv.cfg.KeepTunnelOpen {
 		sv.retryLimiter = rate.NewLimiter(rate.Every(time.Hour/time.Duration(sv.cfg.MaxRetriesAnHour)), sv.cfg.MaxRetriesAnHour)
-		go sv.keepTunnelOpenWorker()
+		if !lifetime.Go(sv.ctx, sv.keepTunnelOpenWorker) {
+			sv.Close()
+			return context.Canceled
+		}
 	}
 
 	if sv.plugin != nil {
@@ -106,7 +118,13 @@ func (sv *XTCPVisitor) processTunnelStartEvents() {
 			duration := time.Since(start)
 			// avoid too frequently
 			if duration < 10*time.Second {
-				time.Sleep(10*time.Second - duration)
+				timer := time.NewTimer(10*time.Second - duration)
+				select {
+				case <-sv.ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
 			}
 		}
 	}
@@ -117,7 +135,11 @@ func (sv *XTCPVisitor) keepTunnelOpenWorker() {
 	ticker := time.NewTicker(time.Duration(sv.cfg.MinRetryInterval) * time.Second)
 	defer ticker.Stop()
 
-	sv.startTunnelCh <- struct{}{}
+	select {
+	case sv.startTunnelCh <- struct{}{}:
+	case <-sv.ctx.Done():
+		return
+	}
 	for {
 		select {
 		case <-sv.ctx.Done():
@@ -270,8 +292,11 @@ func (sv *XTCPVisitor) makeNatHole() {
 	if sv.cfg.NatTraversal != nil && sv.cfg.NatTraversal.DisableAssistedAddrs {
 		opts.DisableAssistedAddrs = true
 	}
+	if netx.FromContext(sv.ctx) != nil {
+		opts.ResolveUDPAddr = netx.ResolveUDPAddr
+	}
 
-	prepareResult, err := nathole.Prepare([]string{sv.clientCfg.NatHoleSTUNServer}, opts)
+	prepareResult, err := nathole.PrepareContext(sv.ctx, []string{sv.clientCfg.NatHoleSTUNServer}, opts)
 	if err != nil {
 		xl.Warnf("nathole prepare error: %v", err)
 		return
@@ -281,6 +306,8 @@ func (sv *XTCPVisitor) makeNatHole() {
 		prepareResult.NatType, prepareResult.Behavior, prepareResult.Addrs, prepareResult.AssistedAddrs)
 
 	listenConn := prepareResult.ListenConn
+	stopInitial := context.AfterFunc(sv.ctx, func() { _ = prepareResult.ListenConn.Close() })
+	defer stopInitial()
 
 	// send NatHoleVisitor to server
 	now := time.Now().Unix()
@@ -314,9 +341,11 @@ func (sv *XTCPVisitor) makeNatHole() {
 		return
 	}
 	listenConn = newListenConn
+	stopSelected := context.AfterFunc(sv.ctx, func() { _ = newListenConn.Close() })
+	defer stopSelected()
 	xl.Infof("establishing nat hole connection successful, sid [%s], remoteAddr [%s]", natHoleRespMsg.Sid, raddr)
 
-	if err := sv.session.Init(listenConn, raddr); err != nil {
+	if err := sv.session.Init(sv.ctx, listenConn, raddr); err != nil {
 		listenConn.Close()
 		xl.Warnf("init tunnel session error: %v", err)
 		return
@@ -324,7 +353,7 @@ func (sv *XTCPVisitor) makeNatHole() {
 }
 
 type TunnelSession interface {
-	Init(listenConn *net.UDPConn, raddr *net.UDPAddr) error
+	Init(context.Context, *net.UDPConn, *net.UDPAddr) error
 	OpenConn(context.Context) (net.Conn, error)
 	Close()
 }
@@ -339,7 +368,10 @@ func NewKCPTunnelSession() TunnelSession {
 	return &KCPTunnelSession{}
 }
 
-func (ks *KCPTunnelSession) Init(listenConn *net.UDPConn, raddr *net.UDPAddr) error {
+func (ks *KCPTunnelSession) Init(ctx context.Context, listenConn *net.UDPConn, raddr *net.UDPAddr) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	listenConn.Close()
 	laddr, _ := net.ResolveUDPAddr("udp", listenConn.LocalAddr().String())
 	lConn, err := net.DialUDP("udp", laddr, raddr)
@@ -359,9 +391,16 @@ func (ks *KCPTunnelSession) Init(listenConn *net.UDPConn, raddr *net.UDPAddr) er
 	session, err := fmux.Client(remote, fmuxCfg)
 	if err != nil {
 		remote.Close()
+		lConn.Close()
 		return fmt.Errorf("initial client session error: %v", err)
 	}
 	ks.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		ks.mu.Unlock()
+		_ = session.Close()
+		_ = lConn.Close()
+		return err
+	}
 	ks.session = session
 	ks.lConn = lConn
 	ks.mu.Unlock()
@@ -370,8 +409,8 @@ func (ks *KCPTunnelSession) Init(listenConn *net.UDPConn, raddr *net.UDPAddr) er
 
 func (ks *KCPTunnelSession) OpenConn(_ context.Context) (net.Conn, error) {
 	ks.mu.RLock()
-	defer ks.mu.RUnlock()
 	session := ks.session
+	ks.mu.RUnlock()
 	if session == nil {
 		return nil, ErrNoTunnelSession
 	}
@@ -405,13 +444,13 @@ func NewQUICTunnelSession(clientCfg *v1.ClientCommonConfig) TunnelSession {
 	}
 }
 
-func (qs *QUICTunnelSession) Init(listenConn *net.UDPConn, raddr *net.UDPAddr) error {
+func (qs *QUICTunnelSession) Init(ctx context.Context, listenConn *net.UDPConn, raddr *net.UDPAddr) error {
 	tlsConfig, err := transport.NewClientTLSConfig("", "", "", raddr.String())
 	if err != nil {
 		return fmt.Errorf("create tls config error: %v", err)
 	}
 	tlsConfig.NextProtos = []string{"frp"}
-	quicConn, err := quic.Dial(context.Background(), listenConn, raddr, tlsConfig,
+	quicConn, err := quic.Dial(ctx, listenConn, raddr, tlsConfig,
 		&quic.Config{
 			MaxIdleTimeout:     time.Duration(qs.clientCfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
 			MaxIncomingStreams: int64(qs.clientCfg.Transport.QUIC.MaxIncomingStreams),
@@ -421,6 +460,11 @@ func (qs *QUICTunnelSession) Init(listenConn *net.UDPConn, raddr *net.UDPAddr) e
 		return fmt.Errorf("dial quic error: %v", err)
 	}
 	qs.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		qs.mu.Unlock()
+		_ = quicConn.CloseWithError(0, "")
+		return err
+	}
 	qs.session = quicConn
 	qs.listenConn = listenConn
 	qs.mu.Unlock()
@@ -429,8 +473,8 @@ func (qs *QUICTunnelSession) Init(listenConn *net.UDPConn, raddr *net.UDPAddr) e
 
 func (qs *QUICTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 	qs.mu.RLock()
-	defer qs.mu.RUnlock()
 	session := qs.session
+	qs.mu.RUnlock()
 	if session == nil {
 		return nil, ErrNoTunnelSession
 	}

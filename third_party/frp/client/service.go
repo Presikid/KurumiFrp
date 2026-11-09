@@ -298,15 +298,13 @@ func NewService(options ServiceOptions) (*Service, error) {
 	visitorCfgs = config.CompleteVisitorConfigurers(visitorCfgs)
 	if options.Isolated {
 		for _, cfg := range proxyCfgs {
-			_, xtcp := cfg.(*v1.XTCPProxyConfig)
-			if xtcp || cfg.GetBaseConfig().Plugin.Type != "" || cfg.GetBaseConfig().HealthCheck.Type != "" || cfg.GetBaseConfig().Type == string(v1.ProxyTypeXTCP) {
-				return nil, errors.New("proxy plugins, health checks and XTCP are not supported by the isolated client")
+			if cfg.GetBaseConfig().Plugin.Type != "" || cfg.GetBaseConfig().HealthCheck.Type != "" {
+				return nil, errors.New("proxy plugins and health checks are not supported by the isolated client")
 			}
 		}
 		for _, cfg := range visitorCfgs {
-			_, xtcp := cfg.(*v1.XTCPVisitorConfig)
-			if xtcp || cfg.GetBaseConfig().Plugin.Type != "" || cfg.GetBaseConfig().Type == string(v1.VisitorTypeXTCP) {
-				return nil, errors.New("visitor plugins and XTCP are not supported by the isolated client")
+			if cfg.GetBaseConfig().Plugin.Type != "" {
+				return nil, errors.New("visitor plugins are not supported by the isolated client")
 			}
 		}
 	}
@@ -633,14 +631,12 @@ func (svr *Service) UpdateAllConfigurer(proxyCfgs []v1.ProxyConfigurer, visitorC
 func (svr *Service) updateAllConfigurerLocked(proxyCfgs []v1.ProxyConfigurer, visitorCfgs []v1.VisitorConfigurer) error {
 	if svr.isolateLogs {
 		for _, cfg := range proxyCfgs {
-			_, xtcp := cfg.(*v1.XTCPProxyConfig)
-			if xtcp || cfg == nil || cfg.GetBaseConfig() == nil || cfg.GetBaseConfig().Plugin.Type != "" || cfg.GetBaseConfig().HealthCheck.Type != "" || cfg.GetBaseConfig().Type == string(v1.ProxyTypeXTCP) {
+			if cfg == nil || cfg.GetBaseConfig() == nil || cfg.GetBaseConfig().Plugin.Type != "" || cfg.GetBaseConfig().HealthCheck.Type != "" {
 				return errors.New("proxy configuration is not supported by the isolated client")
 			}
 		}
 		for _, cfg := range visitorCfgs {
-			_, xtcp := cfg.(*v1.XTCPVisitorConfig)
-			if xtcp || cfg == nil || cfg.GetBaseConfig() == nil || cfg.GetBaseConfig().Plugin.Type != "" || cfg.GetBaseConfig().Type == string(v1.VisitorTypeXTCP) {
+			if cfg == nil || cfg.GetBaseConfig() == nil || cfg.GetBaseConfig().Plugin.Type != "" {
 				return errors.New("visitor configuration is not supported by the isolated client")
 			}
 		}
