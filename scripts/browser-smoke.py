@@ -237,6 +237,15 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
             page.locator('[data-action="duplicate-instance"]').first.click()
             expect(page.locator('.instance-card')).to_have_count(2)
             expect(page.locator('.instance-card').last).to_contain_text('手动启动')
+            page.evaluate("""() => { releases = [
+              {tag:'v99.0.0.0', newer:true, available:true, metadataFallback:true},
+              {tag:'v0.1.0.0', newer:false, available:true},
+              {tag:'v98.0.0.0', newer:true, available:false}
+            ]; navigate('update'); }""")
+            expect(page.locator('#update-version option').nth(0)).to_be_enabled()
+            expect(page.locator('#update-version option').nth(0)).to_contain_text('发布状态待确认')
+            expect(page.locator('#update-version option').nth(1)).to_be_disabled()
+            expect(page.locator('#update-version option').nth(2)).to_be_disabled()
             assert not errors, errors
             browser.close()
             print(("Offline UI harness" if offline else "Browser smoke") + " passed: login, CRUD, conflicts, redaction, saved-state reads, responsive layout; no page errors.")
