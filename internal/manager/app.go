@@ -31,6 +31,7 @@ type App struct {
 	procs    map[string]*process
 	traffic  map[string]*trafficSamples // protected by mu, keyed by instance and run ID
 	assets   http.Handler
+	webhooks *webhookDispatcher
 
 	// Lifecycle reservations are protected by mu. Slow operations run without it.
 	operations          map[string]*runtimeOperation
@@ -119,6 +120,9 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 		backend = &externalRuntime{core: cores, dir: s.dir}
 	}
 	app := &App{quit: make(chan struct{}), core: cores, runtime: backend, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	app.webhooks = newWebhookDispatcher()
+	app.configureWebhook(s.DB.webhookConfig())
+	s.onCommit = app.webhooks.emitConfig
 	ctx, cancel := context.WithCancel(context.Background())
 	app.startupCancel = cancel
 	instances := append([]Instance(nil), s.DB.State.Instances...)
@@ -240,6 +244,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.URL.Path == "/api/control" || r.URL.Path == "/api/validate" {
 			a.runtimeAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/webhook" {
+			a.webhookAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/backup/export" || r.URL.Path == "/api/backup/import" {

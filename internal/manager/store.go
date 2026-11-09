@@ -30,19 +30,21 @@ type Event struct {
 	Message string `json:"message"`
 }
 type Database struct {
-	Format       int        `json:"format"`
-	Revision     uint64     `json:"revision"`
-	State        State      `json:"state"`
-	History      []Snapshot `json:"history"`
-	HistoryLimit int        `json:"historyLimit"`
-	Events       []Event    `json:"events"`
-	Key          string     `json:"key,omitempty"`
-	ActiveCore   *string    `json:"activeCore"`
+	Format       int            `json:"format"`
+	Revision     uint64         `json:"revision"`
+	State        State          `json:"state"`
+	History      []Snapshot     `json:"history"`
+	HistoryLimit int            `json:"historyLimit"`
+	Events       []Event        `json:"events"`
+	Key          string         `json:"key,omitempty"`
+	ActiveCore   *string        `json:"activeCore"`
+	Webhook      *webhookConfig `json:"webhook,omitempty"`
 }
 type Store struct {
-	dir string
-	key []byte
-	DB  Database
+	dir      string
+	key      []byte
+	DB       Database
+	onCommit func(uint64)
 }
 
 // Formats 1 and 2 used a separate master key; format 2 also used snapshot
@@ -410,6 +412,9 @@ func newStore(dir string) (*Store, error) {
 	if e != nil || len(s.key) != 32 {
 		return nil, fmt.Errorf("invalid or missing encryption key; original retained")
 	}
+	if e = validateStoredWebhook(s, s.DB.Webhook); e != nil {
+		return nil, fmt.Errorf("invalid local webhook settings; original retained")
+	}
 	if s.DB.Revision < 1 || s.DB.Revision > maxJSONRevision {
 		return nil, fmt.Errorf("unsupported database revision; original retained")
 	}
@@ -574,6 +579,9 @@ func (s *Store) commit(st State, summary string) error {
 	}
 	s.DB = db
 	s.DB.Format = currentDatabaseFormat
+	if s.onCommit != nil {
+		s.onCommit(db.Revision)
+	}
 	return nil
 }
 

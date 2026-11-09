@@ -30,6 +30,10 @@ window.KurumiRecordsConfig = (() => {
      </div>
     </section>
    </div>
+   <section class="panel rc-webhook" aria-labelledby="webhook-title">
+    <div class="panel-title"><div><h3 id="webhook-title">Webhook 通知</h3><p>可选发送实例状态和草稿变更，默认关闭。</p></div><button data-action="webhook-settings">通知设置</button></div>
+    <div class="panel-content"><p class="small-note">仅支持公网 HTTPS，不发送配置内容、密钥或日志。通知地址仅保存在本机；导入及恢复保留本机设置，新设备需要重新设置。旧版导出文件可能包含通知地址，请按凭据保管。</p></div>
+   </section>
    <section class="panel rc-backup" aria-labelledby="backup-title">
     <div class="rc-backup-symbol" aria-hidden="true">✦</div><div class="rc-backup-copy"><h3 id="backup-title">密码加密备份与恢复</h3><p>使用单独的密码保护配置、历史快照和数据密钥，适合迁移到其他设备。</p><small>建议使用至少 16 个字符的密码，并与文件分开保管。密码不会被保存，忘记后无法恢复；备份不包含 frp 核心文件和本机管理令牌。</small></div>
     <div class="rc-backup-actions"><button class="primary" data-backup-action="export">导出加密备份</button><button data-backup-action="import">恢复加密备份</button></div>
@@ -38,7 +42,7 @@ window.KurumiRecordsConfig = (() => {
     <section class="panel" aria-labelledby="config-export-title"><div class="panel-title"><div><h3 id="config-export-title">导出配置文件</h3><p>选择需要带走的配置或快照</p></div></div><div class="panel-content rc-form">
      <label>导出范围<select id="export-scope"><option value="all">当前配置和全部快照</option><option value="config">仅当前配置</option><option value="snapshots">仅全部快照</option><option value="snapshot">单个快照</option></select></label>
      <label id="export-snapshot-field" hidden>选择快照<select id="export-snapshot">${history.length ? history.map(h => `<option value="${h.revision}">r${h.revision} · ${esc(h.summary)}</option>`).join('') : '<option value="">暂无可导出的快照</option>'}</select></label>
-     <p class="rc-note">此文件包含数据密钥和所选配置，请妥善保管。需要密码保护时可使用上方的加密备份。</p>
+     <p class="rc-note">此文件包含数据密钥和所选配置，请妥善保管。本机 Webhook 设置不会导出。需要密码保护时可使用上方的加密备份。</p>
      <div><button data-action="export-data">导出配置文件</button></div>
     </div></section>
     <section class="panel" aria-labelledby="config-import-title"><div class="panel-title"><div><h3 id="config-import-title">导入配置文件</h3><p>从已有文件恢复配置和快照</p></div></div><div class="panel-content rc-form">

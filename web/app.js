@@ -16,6 +16,7 @@ let healthDialog = null, healthChecking = false, healthSelected = '';
 const dialog = $('#dialog');
 const diffDialog = $('#diff-dialog');
 let backupDialogEl = null, backupRequest = null, importFileVersion = 0;
+let webhookDialogEl = null, webhookDialogGeneration = 0;
 let transferRequest = null, transferNotice = null;
 const transferStorageKey = 'kurumi-transfer-status';
 try {
@@ -101,7 +102,7 @@ function stopRefreshPolling() {
 }
 function scheduleRefresh(delay) {
  stopRefreshPolling();
- if (!data || document.hidden || dialog.open || diffDialog.open || backupDialogEl?.open || healthDialog?.open) return;
+ if (!data || document.hidden || dialog.open || diffDialog.open || backupDialogEl?.open || webhookDialogEl?.open || healthDialog?.open) return;
  const wait = delay ?? (Object.values(data.runtime || {}).some(v => v.state === 'running') ? 5000 : 10000);
  refreshTimer = setTimeout(() => {
   refreshTimer = null;
@@ -135,9 +136,9 @@ function resetSession() {
  probeResults = Object.create(null); probing = Object.create(null); probeRevision = null; probingAll = false; probeBatchProgress = null;
  RulesPage.reset(); filter = ''; protocol = '';
 }
-function showLogin() {resetSession();updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; if (dialog.open) dialog.close(); if (diffDialog.open) diffDialog.close(); if (backupDialogEl?.open) backupDialogEl.close(); if (healthDialog?.open) healthDialog.close();}
+function showLogin() {resetSession();updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; if (dialog.open) dialog.close(); if (diffDialog.open) diffDialog.close(); if (backupDialogEl?.open) backupDialogEl.close(); if (webhookDialogEl?.open) webhookDialogEl.close(); if (healthDialog?.open) healthDialog.close();}
 function hasSelection() {return Boolean(window.getSelection()?.toString());}
-function canSilentRender() {const content=$('#content'), active=document.activeElement;return !dialog.open && !diffDialog.open && !backupDialogEl?.open && !healthDialog?.open && !hasSelection() && (active===content || !content.contains(active));}
+function canSilentRender() {const content=$('#content'), active=document.activeElement;return !dialog.open && !diffDialog.open && !backupDialogEl?.open && !webhookDialogEl?.open && !healthDialog?.open && !hasSelection() && (active===content || !content.contains(active));}
 function renderPreservingScroll() {
  const x = window.scrollX, y = window.scrollY, previousSelected = selected, content = $('#content');
  const top = content.scrollTop, left = content.scrollLeft;
@@ -184,7 +185,7 @@ async function refresh(silent = false) {
     if ($('#revision').textContent !== revision) $('#revision').textContent = revision;
     $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
    }
-   if (!silent && !dialog.open && !diffDialog.open && !backupDialogEl?.open && !healthDialog?.open) render();
+   if (!silent && !dialog.open && !diffDialog.open && !backupDialogEl?.open && !webhookDialogEl?.open && !healthDialog?.open) render();
    else if (canSilentRender() && (renderedSnapshot !== stateSnapshot || renderedPage !== page)) renderPreservingScroll();
    applyDeferredConfig();
    refreshRegistration();
@@ -581,13 +582,49 @@ function updateFields(){
  if(editing) ProtocolEditor.update($('#editor'),editing,data.state.tunnels);
 }
 function navigate(to){if(!titles[to])return;cancelPageRequests();++navigationGeneration;page=to;location.hash=to;render();refreshRegistration();}
+async function openWebhookDialog() {
+ if (!webhookDialogEl) {
+  webhookDialogEl=document.createElement('dialog');
+  webhookDialogEl.id='webhook-dialog';
+  document.body.appendChild(webhookDialogEl);
+  webhookDialogEl.addEventListener('close',()=>{if(!webhookDialogEl.open){++webhookDialogGeneration;webhookDialogEl.innerHTML='';scheduleRefresh(0);}});
+  webhookDialogEl.addEventListener('click',e=>{if(e.target.closest('[data-webhook-cancel]'))webhookDialogEl.close();});
+  webhookDialogEl.addEventListener('submit',async e=>{
+   if(!e.target.matches('#webhook-form'))return;
+   e.preventDefault();
+   const f=e.target,button=f.querySelector('button[type="submit"]'),error=f.querySelector('.error'),generation=webhookDialogGeneration,session=authGeneration;
+   error.textContent='';button.disabled=true;
+   try {
+    await api('webhook',{revision:Number(f.dataset.revision),enabled:f.elements.enabled.checked,url:f.elements.url.value,clearURL:f.elements.clearURL.checked,onStatus:f.elements.onStatus.checked,onConfig:f.elements.onConfig.checked});
+    if(generation!==webhookDialogGeneration||session!==authGeneration||!webhookDialogEl.open)return;
+    webhookDialogEl.close();toast('通知设置已保存');await refresh();
+   } catch(err) {if(generation===webhookDialogGeneration&&session===authGeneration&&webhookDialogEl.open)error.textContent=err.message;}
+   finally {button.disabled=false;}
+  });
+ }
+ if (webhookDialogEl.open) return;
+ const generation=++webhookDialogGeneration,session=authGeneration;
+ webhookDialogEl.innerHTML='<h2>Webhook 通知</h2><p>正在读取设置…</p><div class="dialog-actions"><button type="button" data-webhook-cancel>关闭</button></div>';
+ stopRefreshPolling();webhookDialogEl.showModal();
+ try {
+  const v=await api('webhook');
+  if(generation!==webhookDialogGeneration||session!==authGeneration||!webhookDialogEl.open)return;
+  const first=!v.hasURL&&!v.onStatus&&!v.onConfig, status=v.status||{};
+  webhookDialogEl.innerHTML=`<form id="webhook-form" data-revision="${v.revision}"><h2>Webhook 通知</h2><p class="muted">只发送事件类型、时间和实例 ID / 类型或配置版本。进程运行不代表隧道连通。</p><label class="form-check"><input type="checkbox" name="enabled" ${v.enabled?'checked':''}>启用通知</label><label>HTTPS 地址${v.hasURL?'（已保存，留空保留）':''}<input type="password" name="url" maxlength="1024" autocomplete="new-password" placeholder="https://…"></label><label class="form-check"><input type="checkbox" name="clearURL">清除已保存地址</label><label class="form-check"><input type="checkbox" name="onStatus" ${v.onStatus||first?'checked':''}>实例进程启动、退出及启动失败</label><label class="form-check"><input type="checkbox" name="onConfig" ${v.onConfig||first?'checked':''}>草稿保存、删除、复制、批量修改、导入和恢复</label><p class="small-note">仅接受公网地址；不跟随重定向，不使用系统代理。队列满时丢弃，单次发送最多等待 5 秒，不会阻塞启停。关闭工作台时未发送的消息会丢失。</p><p class="small-note">本次运行：成功 ${Number(status.sent)||0} · 失败 ${Number(status.failed)||0} · 丢弃 ${Number(status.dropped)||0}${status.lastResult?' · 最近结果 '+esc(status.lastResult):''}${v.enabled&&!status.ready?' · 地址不可用，请重新设置':''}</p><p class="error" role="alert"></p><div class="dialog-actions"><button type="button" data-webhook-cancel>取消</button><button class="primary" type="submit">保存</button></div></form>`;
+ } catch(err) {
+  if(generation===webhookDialogGeneration&&session===authGeneration&&webhookDialogEl.open) {
+   webhookDialogEl.innerHTML='<h2>Webhook 通知</h2><p class="error" role="alert"></p><div class="dialog-actions"><button type="button" data-webhook-cancel>关闭</button></div>';
+   webhookDialogEl.querySelector('.error').textContent=err.message;
+  }
+ }
+}
 function closeBackupDialog() {
  const request=backupRequest; backupRequest=null;
  if(request && !request.submitted)request.controller.abort();
  if(backupDialogEl?.open)backupDialogEl.close();
 }
-function openBackupDialog(mode) {
- if (!['export','import'].includes(mode)) return;
+function openBackupDialog(mode, scope='all', snapshot=0) {
+ if (!data || !['export','import'].includes(mode) || backupDialogEl?.open) return;
  if (mode==='import' && transferBlocked()) {toast(transferBlocked());return;}
  if (!backupDialogEl) {
   backupDialogEl = document.createElement('dialog');
@@ -601,7 +638,7 @@ function openBackupDialog(mode) {
    e.preventDefault();
    const f=e.target,button=f.querySelector('button[type="submit"]'),error=f.querySelector('.error');
    if (backupRequest || !data) return;
-   const request={generation:authGeneration,navigation:navigationGeneration,revision:data.revision,mode:backupDialogEl.dataset.mode,kind:'backup',controller:new AbortController(),submitted:false}; backupRequest=request;
+   const request={generation:authGeneration,navigation:navigationGeneration,revision:Number(backupDialogEl.dataset.revision),mode:backupDialogEl.dataset.mode,scope:backupDialogEl.dataset.scope,snapshot:Number(backupDialogEl.dataset.snapshot),kind:'backup',controller:new AbortController(),submitted:false}; backupRequest=request;
    const currentRequest=()=>backupRequest===request && request.generation===authGeneration && backupDialogEl.open;
    const checkRestoreContext=()=>{
     if(request.mode==='import' && (request.navigation!==navigationGeneration || page!=='config' || renderedPage!=='config' || renderedRevision!==request.revision || data?.revision!==request.revision))throw new Error('页面或配置已变化，请关闭窗口并刷新后重新恢复');
@@ -622,9 +659,11 @@ function openBackupDialog(mode) {
     if(!currentRequest())return;
     checkRestoreContext();
     if(request.mode==='export'){
-     const result=await api('backup/export',{revision:current.revision,password},{signal:request.controller.signal});
+     if(request.navigation!==navigationGeneration || page!=='config' || current.revision!==request.revision || data.revision!==request.revision)throw new Error('页面或配置已变化，请关闭窗口并刷新后重新导出');
+     const result=await api('backup/export',{revision:request.revision,password,scope:request.scope,snapshot:request.snapshot},{signal:request.controller.signal});
      if(!currentRequest())return;
-     download('kurumi-encrypted-backup-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(result,null,2));
+     if(request.navigation!==navigationGeneration || page!=='config')return;
+     download('kurumi-'+request.scope+'-encrypted-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify(result,null,2));
      closeBackupDialog();
      toast('加密备份已导出，请妥善保管密码');
     }else{
@@ -653,6 +692,9 @@ function openBackupDialog(mode) {
   });
  }
  backupDialogEl.dataset.mode=mode;
+ backupDialogEl.dataset.scope=scope;
+ backupDialogEl.dataset.snapshot=String(snapshot);
+ backupDialogEl.dataset.revision=String(data.revision);
  backupDialogEl.innerHTML=mode==='export'
   ? '<form id="backup-form"><h2>导出加密备份</h2><p class="muted">密码不会保存在工作台；遗失密码后无法恢复，请将密码和文件分开保管。</p><div class="form-grid"><label>备份密码<input name="password" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></label><label>确认密码<input name="confirm" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></label></div><div class="dialog-actions"><button type="button" data-backup-cancel>取消</button><button type="submit" class="primary">导出加密文件</button></div><p class="error" role="alert"></p></form>'
   : '<form id="backup-form"><h2>恢复加密备份</h2><p class="muted">恢复前须停止全部托管实例并等待操作结束。恢复将替换当前配置与历史快照，不会自动启动实例；不会恢复 frp 核心程序及本机管理令牌。</p><div class="form-grid"><label class="span-2">备份文件<input name="file" type="file" accept=".json,application/json" required></label><label class="span-2">备份密码<input name="password" type="password" minlength="12" maxlength="1024" autocomplete="current-password" required></label><label class="form-check span-2"><input name="confirmRestore" type="checkbox" required>确认替换当前配置和历史快照</label></div><p id="backup-status" class="small-note" role="status"></p><div class="dialog-actions"><button type="button" data-backup-cancel>取消</button><button type="submit" class="primary">验证并恢复</button></div><p class="error" role="alert"></p></form>';
@@ -728,6 +770,7 @@ $('#content').addEventListener('click',async e=>{
  b.disabled=true;
  try{
    if(action==='refresh-logs'){await refreshLogs(false);return;}
+  if(action==='webhook-settings'){await openWebhookDialog();return;}
   if(action==='health'){
    if (healthChecking || !id) return;
    healthChecking=true;
@@ -736,7 +779,7 @@ $('#content').addEventListener('click',async e=>{
     if (registrationRequest) await registrationRequest;
     if (generation!==authGeneration || navigation!==navigationGeneration || !data || revision!==data.revision) return;
     const report=await api('health',{revision,id});
-    if(generation===authGeneration&&navigation===navigationGeneration&&data&&report.revision===revision&&data.revision===revision&&runtime===runtimeIdentity(data.runtime?.[id])&&data.state.instances.some(i=>i.id===id)&&page===origin&&['instances','health'].includes(origin)&&(origin!=='health'||$('#health-instance')?.value===id)&&!dialog.open&&!diffDialog.open&&!backupDialogEl?.open&&!healthDialog?.open)showHealth(report);
+    if(generation===authGeneration&&navigation===navigationGeneration&&data&&report.revision===revision&&data.revision===revision&&runtime===runtimeIdentity(data.runtime?.[id])&&data.state.instances.some(i=>i.id===id)&&page===origin&&['instances','health'].includes(origin)&&(origin!=='health'||$('#health-instance')?.value===id)&&!dialog.open&&!diffDialog.open&&!backupDialogEl?.open&&!webhookDialogEl?.open&&!healthDialog?.open)showHealth(report);
    } finally {if (generation===authGeneration) healthChecking=false;}
    return;
   }
