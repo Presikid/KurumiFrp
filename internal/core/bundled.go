@@ -18,14 +18,19 @@ var bundleVersionRE = regexp.MustCompile(`^[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}\.[
 
 // VerifyBundled checks the package-owned files without changing any user state.
 func VerifyBundled() error {
-	if !bundleVersionRE.MatchString(bundledVersion) {
-		return fmt.Errorf("此程序没有有效的预置核心")
-	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	_, err = readBundled(filepath.Join(filepath.Dir(exe), "bundled", bundledVersion), bundledManifestSHA)
+	return VerifyBundledAt(filepath.Dir(exe))
+}
+
+// VerifyBundledAt is also used by Setup's extracted maintenance helper.
+func VerifyBundledAt(install string) error {
+	if !bundleVersionRE.MatchString(bundledVersion) {
+		return fmt.Errorf("此程序没有有效的预置核心")
+	}
+	_, err := readBundled(filepath.Join(install, "bundled", bundledVersion), bundledManifestSHA)
 	return err
 }
 

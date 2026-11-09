@@ -9,7 +9,13 @@ func windowsUserRoot() (string, error) {
 }
 func prepareInstalled(bool) error { return nil }
 func checkMachineGate() error     { return nil }
-func installedOperation(exe, operation string) error {
+func validateMaintenanceTarget(string) error {
+	return fmt.Errorf("installer target is only supported on Windows")
+}
+func installedOperation(exe, operation, target string) error {
+	if target != "" {
+		return fmt.Errorf("installer target is only supported on Windows")
+	}
 	root, e := nativeRoot(exe)
 	if e != nil {
 		return e
