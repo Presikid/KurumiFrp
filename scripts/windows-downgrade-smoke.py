@@ -105,6 +105,7 @@ with tempfile.TemporaryDirectory(prefix='kurumi-downgrade-') as tmp:
     try:
         setup(new_setup)
         root = profile()
+        initial_root = root
         state = api(root, 'state')
         api(root, 'history-settings', {'revision': state['revision'], 'historyLimit': 12})
         state = api(root, 'state')
@@ -129,6 +130,7 @@ with tempfile.TemporaryDirectory(prefix='kurumi-downgrade-') as tmp:
 
         def check(expected_version, expected_db):
             current_root = profile()
+            assert current_root == initial_root, 'profile location changed'
             after = disk(current_root)
             assert after['key'] == expected_db['key'], 'data key changed'
             assert after['state'] == expected_db['state'], 'configuration or encrypted credentials changed'
