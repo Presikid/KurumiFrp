@@ -38,7 +38,16 @@ func probeTarget(t Tunnel) ProbeResult {
 // probeTargetWithRoots keeps production TLS verification enabled. The optional
 // root pool exists so tests can trust an ephemeral httptest certificate.
 func probeTargetWithRoots(t Tunnel, roots *x509.CertPool) ProbeResult {
+	return probeTargetContext(context.Background(), t, roots)
+}
+
+func probeTargetContext(parent context.Context, t Tunnel, roots *x509.CertPool) ProbeResult {
 	result := ProbeResult{Protocol: t.Type}
+	if parent.Err() != nil {
+		result.Status = "cancelled"
+		result.Message = "检测已取消"
+		return stampProbe(result)
+	}
 	if !hostOK(t.LocalHost) || !portOK(t.LocalPort) {
 		result.Status = "invalid"
 		result.Message = "本地目标地址或端口无效"
@@ -54,11 +63,16 @@ func probeTargetWithRoots(t Tunnel, roots *x509.CertPool) ProbeResult {
 
 	switch t.Type {
 	case "tcp", "stcp", "stcp-visitor":
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 		defer cancel()
 		started := time.Now()
 		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", result.Address)
 		if err != nil {
+			if parent.Err() != nil {
+				result.Status = "cancelled"
+				result.Message = "检测已取消"
+				return stampProbe(result)
+			}
 			result.Status = "unreachable"
 			result.Message = fmt.Sprintf("本地 TCP 目标不可连接：%v", err)
 			return stampProbe(result)
@@ -73,7 +87,7 @@ func probeTargetWithRoots(t Tunnel, roots *x509.CertPool) ProbeResult {
 		}
 		return stampProbe(result)
 	case "http", "https":
-		return probeHTTP(t, result, roots)
+		return probeHTTP(parent, t, result, roots)
 	default:
 		result.Status = "unsupported"
 		result.Message = "当前协议不支持本地目标探测"
@@ -81,7 +95,7 @@ func probeTargetWithRoots(t Tunnel, roots *x509.CertPool) ProbeResult {
 	}
 }
 
-func probeHTTP(t Tunnel, result ProbeResult, roots *x509.CertPool) ProbeResult {
+func probeHTTP(parent context.Context, t Tunnel, result ProbeResult, roots *x509.CertPool) ProbeResult {
 	host := t.LocalHost
 	if len(t.Domains) > 0 {
 		host = t.Domains[0]
@@ -126,7 +140,7 @@ func probeHTTP(t Tunnel, result ProbeResult, roots *x509.CertPool) ProbeResult {
 		Path: parsedPath.Path, RawPath: parsedPath.RawPath, RawQuery: parsedPath.RawQuery,
 	}).String()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, method, probeURL, nil)
 	if err != nil {
@@ -160,6 +174,11 @@ func probeHTTP(t Tunnel, result ProbeResult, roots *x509.CertPool) ProbeResult {
 	started := time.Now()
 	response, err := client.Do(request)
 	if err != nil {
+		if parent.Err() != nil {
+			result.Status = "cancelled"
+			result.Message = "检测已取消"
+			return stampProbe(result)
+		}
 		result.Status = "unreachable"
 		result.Message = fmt.Sprintf("%s 本地服务检测失败：%v", strings.ToUpper(t.Type), err)
 		return stampProbe(result)
@@ -220,7 +239,7 @@ func (a *App) probeAPI(w http.ResponseWriter, r *http.Request) {
 		a.mu.Unlock()
 	}()
 
-	result := probeTarget(tunnel)
+	result := probeTargetContext(r.Context(), tunnel, nil)
 
 	a.mu.Lock()
 	unchanged := req.Revision == a.store.DB.Revision

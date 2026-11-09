@@ -24,19 +24,24 @@ type RuntimeStatus struct {
 	State   string `json:"state"`
 	PID     int    `json:"pid"`
 	Started string `json:"started"`
+	RunID   string `json:"runId,omitempty"`
 	Exit    string `json:"exit"`
 	Applied string `json:"applied"`
 	Pending bool   `json:"pending"`
 }
 type process struct {
-	mu                  sync.Mutex
-	cmd                 *exec.Cmd
-	done                chan struct{}
-	status              RuntimeStatus
-	logs                *logBuffer
-	coreID              string
-	appliedConfig       string
-	appliedSecretDigest string
+	mu                      sync.Mutex
+	cmd                     *exec.Cmd
+	done                    chan struct{}
+	status                  RuntimeStatus
+	logs                    *logBuffer
+	coreID                  string
+	appliedConfig           string
+	appliedSecretDigest     string
+	privateStatus           *privateStatus
+	monitorReason           string
+	appliedTunnels          map[string]Tunnel
+	appliedTunnelSignatures map[string][32]byte
 }
 type logBuffer struct {
 	mu       sync.Mutex
@@ -74,6 +79,8 @@ func newLogRedactor(secrets []string) *strings.Replacer {
 			}
 		}
 		jsonText, _ := json.Marshal(secret)
+		add(templateCredential(secret))
+		add("\"" + templateCredential(secret) + "\"")
 		for _, quoted := range []string{quote(secret), string(jsonText), strconv.Quote(secret)} {
 			add(quoted)
 			add(quoted[1 : len(quoted)-1])
@@ -236,12 +243,12 @@ func (a *App) start(i Instance, r Rendered) error {
 	if e != nil {
 		return e
 	}
-	return a.startPrepared(i, r, path, configPath, a.activeCoreID())
+	return a.startPrepared(i, r, path, configPath, a.activeCoreID(), nil)
 }
 
 // a.mu protects the final launch/publication so a concurrent shutdown, core
 // switch or draft edit cannot pass between the snapshot check and cmd.Start.
-func (a *App) startPrepared(i Instance, r Rendered, path, configPath, coreID string) error {
+func (a *App) startPrepared(i Instance, r Rendered, path, configPath, coreID string, status *privateStatus) error {
 	if a.closing {
 		return fmt.Errorf("工作台正在关闭")
 	}
@@ -253,13 +260,27 @@ func (a *App) startPrepared(i Instance, r Rendered, path, configPath, coreID str
 	cmd.Env = childEnv(r.Env)
 	cmd.Dir = filepath.Dir(configPath)
 	cmd.WaitDelay = 2 * time.Second
-	p := &process{cmd: cmd, done: make(chan struct{}), logs: newLogBuffer(r.Secrets), coreID: coreID, appliedConfig: r.Text, appliedSecretDigest: r.SecretDigest}
+	p := &process{cmd: cmd, done: make(chan struct{}), logs: newLogBuffer(r.Secrets), coreID: coreID, appliedConfig: r.Text, appliedSecretDigest: r.SecretDigest, privateStatus: status, monitorReason: r.MonitorReason, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
+	if status != nil {
+		p.appliedConfig = status.baseText
+	}
+	for _, tunnel := range a.store.DB.State.clone().Tunnels {
+		if tunnel.InstanceID == i.ID && tunnel.Enabled {
+			p.appliedTunnels[tunnel.ID] = tunnel
+			if signature, err := a.store.tunnelSignature(tunnel); err == nil {
+				p.appliedTunnelSignatures[tunnel.ID] = signature
+			}
+		}
+	}
 	cmd.Stdout = p.logs
 	cmd.Stderr = p.logs
 	if e := cmd.Start(); e != nil {
 		return fmt.Errorf("无法启动 frp：%w", e)
 	}
-	p.status = RuntimeStatus{State: "running", PID: cmd.Process.Pid, Started: now(), Applied: r.Digest}
+	if status != nil {
+		status.markStarted(cmd.Process.Pid)
+	}
+	p.status = RuntimeStatus{State: "running", PID: cmd.Process.Pid, Started: now(), RunID: randomHex(8), Applied: r.Digest}
 	a.procs[i.ID] = p
 	delete(a.startupErrors, i.ID)
 	go func() {
@@ -267,12 +288,16 @@ func (a *App) startPrepared(i Instance, r Rendered, path, configPath, coreID str
 		// Clean the owned process group even when its leader exited first. Do
 		// this before publishing completion and allowing a replacement to start.
 		_ = childprocess.Kill(cmd)
+		status.cleanup()
 		p.logs.Write([]byte("\n"))
 		p.mu.Lock()
 		p.status.State = "exited"
 		p.status.PID = 0
 		if err != nil {
 			p.status.Exit = err.Error()
+			if status != nil {
+				p.status.Exit += "；如日志显示本机状态端口被占用，可重新启动实例以重新分配端口"
+			}
 		} else {
 			p.status.Exit = "exit 0"
 		}

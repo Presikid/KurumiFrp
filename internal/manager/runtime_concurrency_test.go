@@ -59,6 +59,26 @@ func runRuntimeAuditHelper() {
 		wait("descendant.pid")
 	}
 	if len(os.Args) > 1 && os.Args[1] == "verify" {
+		if mode == "status-verify-block" && len(os.Args) > 3 {
+			config, err := os.ReadFile(os.Args[3])
+			if err != nil {
+				os.Exit(2)
+			}
+			if strings.Contains(string(config), "webServer.tls.certFile") {
+				mark("status-verifying", "yes")
+				wait("status-release")
+			}
+		}
+		if mode == "status-unsupported" && len(os.Args) > 3 {
+			config, err := os.ReadFile(os.Args[3])
+			if err != nil {
+				os.Exit(2)
+			}
+			if strings.Contains(string(config), "webServer.tls.certFile") {
+				fmt.Println("unsupported status config")
+				os.Exit(1)
+			}
+		}
 		if mode == "verify-group" {
 			spawnDescendant()
 		}
@@ -172,6 +192,68 @@ func assertStateResponsive(t *testing.T, a *App) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("state polling blocked behind a slow lifecycle operation")
+	}
+}
+
+func TestChangedDraftDuringStatusVerificationDoesNotStopProcess(t *testing.T) {
+	a := testApp(t)
+	i := seed(t, a)
+	dir := installRuntimeAuditFixture(t, a, "")
+	w := request(a, "POST", "/api/control", map[string]any{"revision": a.store.DB.Revision, "id": i.ID, "action": "start"}, a.AccessToken(), "")
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	pid := a.procs[i.ID].view().PID
+	t.Setenv("FRP_AUDIT_MODE", "status-verify-block")
+	response := make(chan *httptest.ResponseRecorder, 1)
+	revision := a.store.DB.Revision
+	go func() {
+		response <- request(a, "POST", "/api/control", map[string]any{"revision": revision, "id": i.ID, "action": "restart"}, a.AccessToken(), "")
+	}()
+	awaitRuntimeFile(t, filepath.Join(dir, "status-verifying"))
+	public := a.store.DB.State.public().Instances[0]
+	public.Name = "changed while verifying status"
+	w = request(a, "POST", "/api/save", map[string]any{"revision": a.store.DB.Revision, "kind": "instance", "value": public}, a.AccessToken(), "")
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	if err := os.WriteFile(filepath.Join(dir, "status-release"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	w = awaitRuntimeResponse(t, response)
+	if w.Code != 409 || a.procs[i.ID].view().PID != pid {
+		t.Fatalf("stale restart stopped process: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUnsupportedStatusKeepsUserProcessAvailable(t *testing.T) {
+	a := testApp(t)
+	i := seed(t, a)
+	tunnel := Tunnel{ID: randomHex(8), InstanceID: i.ID, Name: "web", Type: "tcp", LocalHost: "127.0.0.1", LocalPort: 80, RemotePort: 6000, Enabled: true}
+	st := a.store.DB.State.clone()
+	st.Tunnels = append(st.Tunnels, tunnel)
+	if err := a.store.commit(st, "add"); err != nil {
+		t.Fatal(err)
+	}
+	installRuntimeAuditFixture(t, a, "status-unsupported")
+	w := request(a, "POST", "/api/control", map[string]any{"revision": a.store.DB.Revision, "id": i.ID, "action": "start"}, a.AccessToken(), "")
+	if w.Code != 200 {
+		t.Fatalf("valid process blocked: %d %s", w.Code, w.Body.String())
+	}
+	if a.procs[i.ID].privateStatus != nil {
+		t.Fatal("unsupported status installed")
+	}
+	w = request(a, "GET", "/api/registration", nil, a.AccessToken(), "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "当前核心未通过安全状态接口配置验证") {
+		t.Fatalf("missing reason: %d %s", w.Code, w.Body.String())
+	}
+	entries, err := filepath.Glob(filepath.Join(a.store.dir, "status-*"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("temporary status files remain: %v %v", entries, err)
+	}
+	w = request(a, "POST", "/api/control", map[string]any{"revision": a.store.DB.Revision, "id": i.ID, "action": "stop"}, a.AccessToken(), "")
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
 	}
 }
 

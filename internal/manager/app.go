@@ -31,17 +31,19 @@ type App struct {
 	assets   http.Handler
 
 	// Lifecycle reservations are protected by mu. Slow operations run without it.
-	operations    map[string]*runtimeOperation
-	operationWG   sync.WaitGroup
-	closing       bool
-	closeOnce     sync.Once
-	closeErr      error
-	stateCache    *stateResponseCache
-	activeProbes  int
-	activeBackup  bool
-	startupDone   chan struct{}
-	startupCancel context.CancelFunc
-	startupErrors map[string]string
+	operations         map[string]*runtimeOperation
+	operationWG        sync.WaitGroup
+	closing            bool
+	closeOnce          sync.Once
+	closeErr           error
+	stateCache         *stateResponseCache
+	activeProbes       int
+	activeBackup       bool
+	activeRegistration bool
+	activeHealth       bool
+	startupDone        chan struct{}
+	startupCancel      context.CancelFunc
+	startupErrors      map[string]string
 }
 
 func New(dir, bin, addr string, assets fs.FS) (*App, error) {
@@ -52,6 +54,7 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 	if e != nil {
 		return nil, e
 	}
+	reapPrivateStatuses(s.dir)
 	tokenPath := filepath.Join(s.dir, "access.token")
 	token, e := privateFile(tokenPath)
 	if os.IsNotExist(e) {
@@ -194,6 +197,22 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.URL.Path == "/api/probe" && r.Method == "POST" {
 			a.probeAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/registration" {
+			if r.Method != http.MethodGet {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			a.registrationAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/health" {
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			a.healthAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/core" || strings.HasPrefix(r.URL.Path, "/api/core/") {

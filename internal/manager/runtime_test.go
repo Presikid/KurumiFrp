@@ -64,8 +64,25 @@ func TestOwnedProcessLifecycle(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	before := a.procs[i.ID].view()
-	if before.State != "running" || before.PID < 1 {
+	if before.State != "running" || before.PID < 1 || before.RunID == "" {
 		t.Fatal(before)
+	}
+	status := a.procs[i.ID].privateStatus
+	if status == nil {
+		t.Fatal("private status missing")
+	}
+	for _, endpoint := range []string{"/api/config?id=" + i.ID, "/api/export?scope=all", "/api/logs?id=" + i.ID} {
+		response := request(a, "GET", endpoint, nil, a.AccessToken(), "")
+		if response.Code != 200 || strings.Contains(response.Body.String(), status.password) || strings.Contains(response.Body.String(), status.dir) {
+			t.Fatalf("status credential or path leaked via %s", endpoint)
+		}
+	}
+	runtimeText, err := os.ReadFile(filepath.Join(a.store.dir, "runtime", i.ID+".toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(runtimeText), status.password) {
+		t.Fatal("status password in runtime file")
 	}
 	if a.statuses()[i.ID].Pending {
 		t.Fatal("freshly applied config pending")
@@ -96,6 +113,9 @@ func TestOwnedProcessLifecycle(t *testing.T) {
 	}
 	if a.procs[i.ID].view().State == "running" {
 		t.Fatal("child not stopped")
+	}
+	if _, err := os.Stat(status.dir); !os.IsNotExist(err) {
+		t.Fatalf("status certificate directory retained: %v", err)
 	}
 }
 

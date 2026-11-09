@@ -253,7 +253,7 @@ func TestConfigRenderAndDisabled(t *testing.T) {
 	if len(r.Env) != 2 {
 		t.Fatal(r.Env)
 	}
-	if !strings.Contains(r.Env[1], `\"`) {
+	if !strings.Contains(r.Env[1], `\u0022`) {
 		t.Fatal("TOML injection in environment")
 	}
 	preview, e := a.store.render(i.ID, true)
