@@ -805,11 +805,8 @@ func stopMachine(install string, purge bool) (err error) {
 	} else {
 		return e
 	}
-	defer func() {
-		if err != nil {
-			_ = os.Remove(marker)
-		}
-	}()
+	// Migration or cleanup can have changed data before an error is returned.
+	// Keep the maintenance gate until initialization or full removal succeeds.
 	legacyRoot, err := legacyWindowsDataRoot()
 	if err != nil {
 		return err
@@ -854,13 +851,28 @@ func stopMachine(install string, purge bool) (err error) {
 	if err = os.Remove(filepath.Join(root, "profiles")); err != nil {
 		return err
 	}
-	if err = os.Remove(marker); err != nil {
-		return err
-	}
 	if err = os.Remove(filepath.Join(root, "machine-install.json")); err != nil {
 		return err
 	}
-	return os.Remove(root)
+	if err = os.Remove(marker); err != nil {
+		return err
+	}
+	if err = os.Remove(root); err != nil {
+		// The directory must be empty before it can be removed. Restore the
+		// gate without overwriting another entry if the final removal fails.
+		f, restoreErr := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if restoreErr == nil {
+			_, restoreErr = f.Write([]byte(productID))
+			if closeErr := f.Close(); restoreErr == nil {
+				restoreErr = closeErr
+			}
+		}
+		if restoreErr != nil {
+			return fmt.Errorf("remove runtime directory: %w; restore maintenance marker: %v", err, restoreErr)
+		}
+		return err
+	}
+	return nil
 }
 func installedOperation(exe, operation string) error {
 	root, e := nativeRoot(exe)
