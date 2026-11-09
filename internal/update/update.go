@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +27,8 @@ const current = "v" + version.Current
 const releaseAPI = "https://api.github.com/repos/Presikid/KurumiFrp/releases"
 const maxPackage = 256 << 20
 
+var errGitHubRateLimit = errors.New("GitHub API 请求次数已用完，请稍后重试；同一网络可能与其他设备共享额度")
+
 // Three-part tags remain readable for releases published before the four-part scheme.
 var tagRE = regexp.MustCompile(`^v[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}(\.[0-9]{1,5})?$`)
 var digestRE = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
@@ -37,16 +40,18 @@ type Asset struct {
 	Digest string `json:"digest"`
 }
 type release struct {
-	Tag        string  `json:"tag_name"`
-	Draft      bool    `json:"draft"`
-	Prerelease bool    `json:"prerelease"`
-	Assets     []Asset `json:"assets"`
+	Tag              string  `json:"tag_name"`
+	Draft            bool    `json:"draft"`
+	Prerelease       bool    `json:"prerelease"`
+	Assets           []Asset `json:"assets"`
+	MetadataFallback bool    `json:"-"`
 }
 type Version struct {
-	Tag        string `json:"tag"`
-	Prerelease bool   `json:"prerelease"`
-	Newer      bool   `json:"newer"`
-	Available  bool   `json:"available"`
+	Tag              string `json:"tag"`
+	Prerelease       bool   `json:"prerelease"`
+	Newer            bool   `json:"newer"`
+	Available        bool   `json:"available"`
+	MetadataFallback bool   `json:"metadataFallback,omitempty"`
 }
 type Manager struct {
 	dir, distribution string
@@ -93,6 +98,9 @@ func (m *Manager) get(ctx context.Context, address string) (*http.Response, erro
 	}
 	if resp.StatusCode != 200 {
 		resp.Body.Close()
+		if (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests) && resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			return nil, errGitHubRateLimit
+		}
 		return nil, fmt.Errorf("GitHub 返回 HTTP %d", resp.StatusCode)
 	}
 	return resp, nil
@@ -102,6 +110,13 @@ func (m *Manager) releases(ctx context.Context) ([]release, error) {
 	defer cancel()
 	resp, e := m.get(ctx, releaseAPI+"?per_page=100")
 	if e != nil {
+		if errors.Is(e, errGitHubRateLimit) {
+			fallback, err := m.releasesHTML(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("%w；官方发行页面备用查询失败：%v", errGitHubRateLimit, err)
+			}
+			return fallback, nil
+		}
 		return nil, e
 	}
 	defer resp.Body.Close()
@@ -182,7 +197,7 @@ func (m *Manager) Versions(ctx context.Context) ([]Version, error) {
 			continue
 		}
 		_, ok := assetFor(r, m.distribution)
-		out = append(out, Version{r.Tag, r.Prerelease, newer(r.Tag, current), ok})
+		out = append(out, Version{Tag: r.Tag, Prerelease: r.Prerelease, Newer: newer(r.Tag, current), Available: ok, MetadataFallback: r.MetadataFallback})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		return newer(out[i].Tag, out[j].Tag)

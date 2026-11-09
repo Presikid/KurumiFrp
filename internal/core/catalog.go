@@ -3,7 +3,9 @@ package core
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +18,14 @@ import (
 
 const API = "https://api.github.com/repos/fatedier/frp/releases"
 const MaxArchive = 160 << 20
+
+// Published upstream release metadata, captured from GitHub's official API.
+// This is an immutable identity fallback, not a promise that this is latest.
+//
+//go:embed upstream-v0.72.0.json
+var pinned0720 []byte
+
+var errGitHubAPIRestricted = errors.New("GitHub API rate limit or permission error")
 
 var tagRE = regexp.MustCompile(`^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$`)
 var digestRE = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
@@ -62,12 +72,25 @@ type Asset struct {
 	Installable bool   `json:"installable"`
 }
 type Release struct {
-	Tag        string  `json:"tag_name"`
-	Name       string  `json:"name"`
-	Published  string  `json:"published_at"`
-	Prerelease bool    `json:"prerelease"`
-	Draft      bool    `json:"draft"`
-	Assets     []Asset `json:"assets,omitempty"`
+	Tag            string  `json:"tag_name"`
+	Name           string  `json:"name"`
+	Published      string  `json:"published_at"`
+	Prerelease     bool    `json:"prerelease"`
+	Draft          bool    `json:"draft"`
+	Assets         []Asset `json:"assets,omitempty"`
+	PinnedFallback bool    `json:"pinnedFallback,omitempty"`
+}
+
+func pinnedRelease(tag string) (Release, bool) {
+	if tag != "v0.72.0" {
+		return Release{}, false
+	}
+	var r Release
+	if json.Unmarshal(pinned0720, &r) != nil || r.Tag != tag || r.Draft || r.Prerelease {
+		return Release{}, false
+	}
+	r.PinnedFallback = true
+	return cleanRelease(r), true
 }
 
 func newClient() *http.Client {
@@ -121,7 +144,7 @@ func (m *Manager) get(ctx context.Context, address string) (*http.Response, erro
 		}
 		resp.Body.Close()
 		if resp.StatusCode == 403 || resp.StatusCode == 429 {
-			return nil, fmt.Errorf("GitHub rate limit/permission error (HTTP %d); retry later", resp.StatusCode)
+			return nil, fmt.Errorf("%w (HTTP %d); retry later", errGitHubAPIRestricted, resp.StatusCode)
 		}
 		last = fmt.Errorf("official download returned HTTP %d", resp.StatusCode)
 		if resp.StatusCode < 500 {
@@ -176,6 +199,12 @@ func (m *Manager) Releases(ctx context.Context) ([]Release, error) {
 	}
 	var all []Release
 	if err := m.json(ctx, API+"?per_page=20", &all); err != nil {
+		if errors.Is(err, errGitHubAPIRestricted) {
+			if r, ok := pinnedRelease("v0.72.0"); ok {
+				r.Assets = nil
+				return []Release{r}, nil
+			}
+		}
 		return nil, err
 	}
 	out := []Release{}
@@ -197,6 +226,11 @@ func (m *Manager) Release(ctx context.Context, tag string) (Release, error) {
 	}
 	var r Release
 	if err := m.json(ctx, API+"/tags/"+tag, &r); err != nil {
+		if errors.Is(err, errGitHubAPIRestricted) {
+			if fallback, ok := pinnedRelease(tag); ok {
+				return fallback, nil
+			}
+		}
 		return r, err
 	}
 	if r.Tag != tag || r.Draft || r.Prerelease {

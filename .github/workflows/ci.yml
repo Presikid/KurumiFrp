@@ -46,6 +46,11 @@ jobs:
         run: |
           go test -race ./...
           python3 scripts/core-smoke.py ./kurumi
+      - name: Verify official release page fallback and download
+        if: runner.os == 'Linux'
+        env:
+          KURUMI_LIVE_RELEASE_TEST: '1'
+        run: go test -count=1 ./internal/update -run '^TestLiveOfficialHTMLFallbackDownload$'
       - name: Windows official core and forwarding
         if: runner.os == 'Windows'
         shell: pwsh

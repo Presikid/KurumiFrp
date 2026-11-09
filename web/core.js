@@ -125,7 +125,7 @@ async function loadCoreReleases(force=false) {
 async function showCoreReleaseOptions(force=false) {
  if(!$('#core-screen'))return;
  const previous=coreRelease?.tag_name;
- $('#core-version').innerHTML=coreReleases.map((r,i)=>`<option value="${esc(r.tag_name)}">${esc(r.tag_name)}${i===0?' · 最新稳定版':''}</option>`).join('');
+ $('#core-version').innerHTML=coreReleases.map((r,i)=>`<option value="${esc(r.tag_name)}">${esc(r.tag_name)}${r.pinnedFallback?' · 临时固定版本，列表受限':i===0?' · 最新稳定版':''}</option>`).join('');
  if(!coreReleases.length)throw new Error('没有可用的稳定版本');
  if(coreReleases.some(r=>r.tag_name===previous))$('#core-version').value=previous;
  if(force)coreRelease=null;
