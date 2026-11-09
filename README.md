@@ -17,7 +17,7 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 
 工作台由 Go 编写，界面内嵌在程序中；日常运行不需要 Node.js、数据库服务器或 Docker。
 
-> 当前 0.7 是主题预览版本。已发布的版本和实际安装包请以 [Releases](https://github.com/Presikid/KurumiFrp/releases) 页面为准。
+> 主分支正在开发 0.8.0.0，重构尚未完成。已发布的版本和实际安装包请以 [Releases](https://github.com/Presikid/KurumiFrp/releases) 页面为准。
 
 ## 下载安装
 
