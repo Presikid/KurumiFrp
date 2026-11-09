@@ -279,6 +279,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		a.importConfig(w, r)
 		return
 	}
+	if r.URL.Path == "/api/duplicate" {
+		a.duplicateAPI(w, r)
+		return
+	}
 	var req struct {
 		Revision     uint64          `json:"revision"`
 		Kind         string          `json:"kind"`

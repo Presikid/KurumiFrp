@@ -172,7 +172,7 @@ function render() {
  } else if(page==='instances') {
   content.innerHTML=header('运行实例','一个实例对应一个本机 frp 进程；远程服务器地址不代表远程管理权限。','<button class="primary" data-action="new-instance">＋ 新建实例</button>')+
   `<div class="notice">启动前会调用官方 frp verify。可以为每个实例单独启用工作台启动时自动恢复；失败原因会显示在实例卡片中。</div>`+
-  (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span><span>${i.autoStart?'工作台启动时自动恢复':'手动启动'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button>${v.applied?`<button data-action="diff" data-id="${i.id}">查看差异</button>`:''}<button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
+  (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span><span>${i.autoStart?'工作台启动时自动恢复':'手动启动'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button><button data-action="duplicate-instance" data-id="${i.id}">复制实例</button>${v.applied?`<button data-action="diff" data-id="${i.id}">查看差异</button>`:''}<button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
  } else if(page==='tunnels') {
   content.innerHTML=header('连接看板','管理规则并检测本地目标：TCP 检查端口，HTTP/HTTPS 检查响应；UDP 无法可靠探测。','<button class="primary" data-action="new-tunnel">＋ 新建规则</button>')+
   `<div class="toolbar"><input id="search" placeholder="搜索规则、地址或实例…" aria-label="搜索规则" value="${esc(filter)}" ${probingAll?'disabled':'' }><select id="protocol" aria-label="按协议筛选" ${probingAll?'disabled':'' }><option value="">所有协议</option>${['tcp','udp','http','https','stcp','stcp-visitor'].map(t=>`<option ${protocol===t?'selected':''}>${t}</option>`).join('')}</select><button data-action="probe-visible" ${probingAll?'disabled':''}>${probingAll?'批量检测 '+(probeBatchProgress?.done||0)+'/'+(probeBatchProgress?.total||0):'检测当前筛选'}</button></div><section class="panel" id="tunnel-list">${filteredTable()}</section>`;
@@ -197,7 +197,7 @@ function picker(){return `<select class="config-picker" id="instance-picker" ari
 function filteredTable(){return tunnelTable(data.state.tunnels.filter(t=>(!protocol||t.type===protocol)&&`${t.name} ${t.localHost} ${t.remotePort} ${data.state.instances.find(i=>i.id===t.instanceId)?.name}`.toLowerCase().includes(filter.toLowerCase())));}
 function tunnelTable(rows) {
  if(!rows.length)return empty('这里还静悄悄的 ♡','先添加 frpc 实例，再创建 TCP、UDP、Web 或 STCP 规则。','<button data-action="new-tunnel">＋ 添加规则</button>');
- return `<div class="table-wrap"><table><thead><tr><th>服务 / 归属</th><th>协议</th><th>本地目标</th><th>远端 / 配对</th><th>配置意图</th><th>检测结果</th><th>操作</th></tr></thead><tbody>${rows.map(t=>`<tr><td><strong>${esc(t.name)}</strong><small>${esc(data.state.instances.find(i=>i.id===t.instanceId)?.name)}</small></td><td><span class="type-icon">${t.type.toUpperCase()}</span></td><td><code>${esc(t.localHost)}:${t.localPort}</code></td><td><code>${esc(t.type==='stcp-visitor'?t.serverName:t.type==='stcp'?'私密配对':t.type==='http'||t.type==='https'?t.domains.join(', '):t.remotePort)}</code></td><td><span class="pill ${t.enabled?'good':''}">${t.enabled?'期望启用':'期望停用'}</span></td><td class="probe-cell">${probeCell(t)}</td><td><div class="actions"><button data-action="probe" data-id="${t.id}" ${t.type==='udp'||probing[t.id]||probingAll?'disabled':''} ${t.type==='udp'?'title="UDP 不支持通用探测"':''}>${t.type==='udp'?'不支持':probing[t.id]?'检测中…':'检测目标'}</button><button data-action="edit-tunnel" data-id="${t.id}">编辑</button><button data-action="toggle" data-id="${t.id}">${t.enabled?'停用':'启用'}</button><button class="danger" data-action="delete-tunnel" data-id="${t.id}">删除</button></div></td></tr>`).join('')}</tbody></table></div>`;
+ return `<div class="table-wrap"><table><thead><tr><th>服务 / 归属</th><th>协议</th><th>本地目标</th><th>远端 / 配对</th><th>配置意图</th><th>检测结果</th><th>操作</th></tr></thead><tbody>${rows.map(t=>`<tr><td><strong>${esc(t.name)}</strong><small>${esc(data.state.instances.find(i=>i.id===t.instanceId)?.name)}</small></td><td><span class="type-icon">${t.type.toUpperCase()}</span></td><td><code>${esc(t.localHost)}:${t.localPort}</code></td><td><code>${esc(t.type==='stcp-visitor'?t.serverName:t.type==='stcp'?'私密配对':t.type==='http'||t.type==='https'?t.domains.join(', '):t.remotePort)}</code></td><td><span class="pill ${t.enabled?'good':''}">${t.enabled?'期望启用':'期望停用'}</span></td><td class="probe-cell">${probeCell(t)}</td><td><div class="actions"><button data-action="probe" data-id="${t.id}" ${t.type==='udp'||probing[t.id]||probingAll?'disabled':''} ${t.type==='udp'?'title="UDP 不支持通用探测"':''}>${t.type==='udp'?'不支持':probing[t.id]?'检测中…':'检测目标'}</button><button data-action="edit-tunnel" data-id="${t.id}">编辑</button><button data-action="duplicate-tunnel" data-id="${t.id}">复制规则</button><button data-action="toggle" data-id="${t.id}">${t.enabled?'停用':'启用'}</button><button class="danger" data-action="delete-tunnel" data-id="${t.id}">删除</button></div></td></tr>`).join('')}</tbody></table></div>`;
 }
 function field(name,label,value='',type='text',extra=''){return `<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;}
 function openEditor(kind,id) {
@@ -249,6 +249,31 @@ $('#content').addEventListener('click',async e=>{
  if(action==='logs'){selected=id;navigate('logs');return;}
  b.disabled=true;
  try{
+  if(action==='duplicate-instance'){
+   const instance=data.state.instances.find(i=>i.id===id);
+   if(!instance)throw new Error('源实例已不存在');
+   const rules=data.state.tunnels.filter(t=>t.instanceId===id).length;
+   const includeTunnels=instance.kind==='frpc'&&rules>0&&confirm('是否同时复制 '+rules+' 条关联规则？\n复制的规则默认停用，以避免端口和域名冲突。');
+   if(!confirm('复制「'+instance.name+'」作为独立草稿实例？\n不会启动进程；若为服务端将另选监听端口并关闭 HTTP(S) 监听。'))return;
+   const copied=await api('duplicate',{revision:data.revision,kind:'instance',id,includeTunnels});
+   toast('实例复制成功，附带 '+copied.rulesCopied+' 条停用规则；请检查配置后再启动');
+   await refresh();return;
+  }
+  if(action==='duplicate-tunnel'){
+   const tunnel=data.state.tunnels.find(t=>t.id===id);
+   if(!tunnel)throw new Error('源规则已不存在');
+   const clients=data.state.instances.filter(i=>i.kind==='frpc');
+   const options=clients.map((i,n)=>(n+1)+': '+i.name).join('\n');
+   const current=clients.findIndex(i=>i.id===tunnel.instanceId);
+   const input=prompt('复制到哪个 frpc 客户端？输入编号：\n'+options,current+1);
+   if(input===null)return;
+   if(!/^[0-9]+$/.test(input.trim()))throw new Error('请输入有效的目标编号');
+   const target=clients[Number(input.trim())-1];
+   if(!target)throw new Error('目标客户端编号无效');
+   const copied=await api('duplicate',{revision:data.revision,kind:'tunnel',id,targetInstanceId:target.id});
+   toast('已创建停用的规则副本。请检查本地目标及远端端口后再启用');
+   await refresh();return;
+  }
   if(action==='check-update'){await checkUpdates();return;}
   if(action==='install-update'){const tag=$('#update-version').value;if(!tag)throw new Error('没有可更新的版本');if(!confirm(`更新到 ${tag}？更新将中断工作台和托管连接。`))return;await api('update/install',{tag});updateStatus='正在检查并准备更新';render();setTimeout(pollUpdate,1000);return;}
   if(action==='export-data'){const scope=$('#export-scope').value, revision=$('#export-snapshot').value;if(scope==='snapshot'&&!revision)throw new Error('没有可导出的快照');const query=new URLSearchParams({scope});if(scope==='snapshot')query.set('revision',revision);const result=await api('export?'+query);download(`kurumi-${scope}.json`,JSON.stringify(result,null,2));toast('配置文件已导出，请妥善保管');return;}
