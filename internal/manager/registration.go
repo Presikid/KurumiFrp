@@ -26,6 +26,11 @@ type registrationSnapshot struct {
 }
 
 func safeStatusText(s string, secrets []string) string {
+	// Refuse oversized input before redaction; truncating first could expose a
+	// fragment of a credential that crosses the truncation point.
+	if len(s) > 4096 {
+		return "[状态内容过长，已隐藏]"
+	}
 	s = redact(s, secrets)
 	s = strings.Map(func(r rune) rune {
 		if r < 32 || r == 127 {

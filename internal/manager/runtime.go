@@ -99,6 +99,8 @@ func newLogRedactor(secrets []string) *logRedactor {
 // overlapping credential and leave the latter's tail visible.
 func (r *logRedactor) Replace(s string) string {
 	var boundaries []int
+	const maxMatches = 32768
+	matches := 0
 	for _, value := range r.values {
 		for start := 0; start < len(s); {
 			i := strings.Index(s[start:], value)
@@ -106,6 +108,11 @@ func (r *logRedactor) Replace(s string) string {
 				break
 			}
 			i += start
+			matches++
+			if matches > maxMatches {
+				// Do not expose any fragment when excessive overlaps exhaust the budget.
+				return "[REDACTED]"
+			}
 			if boundaries == nil {
 				boundaries = make([]int, len(s)+1)
 			}

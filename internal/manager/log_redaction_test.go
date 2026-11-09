@@ -73,6 +73,7 @@ func TestLogRedactorMasksIntersectingCredentials(t *testing.T) {
 		{[]string{"abc", "bcdef"}, "x abcdef y", "x [REDACTED] y"},
 		{[]string{"aba"}, "ababa", "[REDACTED]"},
 		{[]string{"abc", "xyz"}, "abc / xyz", "[REDACTED] / [REDACTED]"},
+		{[]string{"aaaaaaaa", "aaaaaaaaa", "aaaaaaaaaa"}, "prefix " + strings.Repeat("a", 16360) + " suffix", "[REDACTED]"},
 	} {
 		buf := newLogBuffer(tc.secrets)
 		_, _ = buf.Write([]byte(tc.line + "\n"))
