@@ -21,7 +21,7 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 
 ## 下载安装
 
-前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.17、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
+前往 [Releases](https://github.com/Presikid/KurumiFrp/releases) 下载对应系统的安装包。下方 Linux 命令以 0.7.1.20、amd64 文件名为例；如果下载的是其他版本或 ARM64 包，请替换为实际文件名。
 
 **Windows 10 / 11**
 
@@ -30,13 +30,13 @@ KurumiFRP 是一个以时崎狂三为主题的本机 [frp](https://github.com/fa
 **Debian / Ubuntu**
 
 ```sh
-sudo apt install ./kurumifrp_0.7.1.17_amd64.deb
+sudo apt install ./kurumifrp_0.7.1.20_amd64.deb
 ```
 
 **Fedora / RHEL 系**
 
 ```sh
-sudo dnf install ./kurumifrp-0.7.1.17-1.x86_64.rpm
+sudo dnf install ./kurumifrp-0.7.1.20-1.x86_64.rpm
 ```
 
 Linux 安装包会配置 systemd 服务；ARM64 请下载对应架构的包。安装、升级、卸载及旧版迁移的步骤见 [安装说明](docs/INSTALL.md)。目前安装包尚未进行商业代码签名，也没有在线 APT/YUM 软件源。
@@ -58,6 +58,7 @@ Windows 快捷方式可以自动打开工作台；手动登录或无桌面环境
 
 - **连接与实例**：管理本机多个 `frpc` / `frps`，配置 TCP、UDP、HTTP、HTTPS、STCP 和 Visitor，查看进程状态与运行记录；可为每个实例选择在工作台启动时自动恢复。
 - **本地目标诊断**：检测 TCP/STCP 端口或 HTTP/HTTPS 服务，可自定义诊断路径并批量检查；结果只代表本地目标状态，不代表远端隧道或公网可达。UDP 不支持通用探测。
+- **代理注册与链路监测**：运行实例和连接看板从本机 frpc 的受保护状态接口读取已应用代理状态；旧进程需要重启后才支持，状态不可用和待应用不会算成已注册。Visitor 不提供代理注册状态。链路监测中心按实例检查进程、草稿控制端口和本地目标，并显示规则注册及汇总；结果不代表认证成功或公网可达。导出的诊断报告不含认证凭据，但含实例名称与网络地址，请妥善保管。
 - **核心管理**：从 frp 官方发布中选择、下载和切换核心版本，下载时校验文件；切换不会自动启动实例。
 - **配置差异**：对比实例上次应用的配置与当前草稿，查看变更；密钥内容不会出现在差异中。
 - **配置与快照**：在界面中预览配置、导入导出，或恢复历史快照。默认保留 5 份，可调整为 0–100 份。
@@ -74,7 +75,7 @@ frp 核心支持自动安装官方 Windows、Linux 各架构及 macOS amd64 / ar
 
 **导出文件包含恢复配置所需的密钥，请像密码一样保管，不要公开分享。** 导入后界面会刷新，但已经运行的实例需要重新启动才能使用新配置。导出文件不包含 frp 核心程序，换机器后请另行安装适合目标系统的核心。
 
-Windows 原生安装版的数据位于安装目录下的 `runtime/profiles/<Windows SID>`，并按 Windows 账户隔离；Linux 原生包的数据位于 `/opt/kurumifrp/runtime`。源码运行时默认使用当前目录下的 `data`。旧版数据在升级时经验证后迁移。完整路径及卸载时的数据处理见 [安装说明](docs/INSTALL.md)。
+Windows 原生安装版的数据位于安装目录下的 `runtime/profiles/<Windows SID>`，并按 Windows 账户隔离；Linux 原生包的数据位于 `/opt/kurumifrp/runtime`。源码运行时默认使用当前目录下的 `data`。旧版 ProgramData 数据会在升级时经验证后自动迁移。完整路径及卸载时的数据处理见 [安装说明](docs/INSTALL.md)。
 
 ## 从源码运行
 
@@ -115,3 +116,5 @@ go vet ./...
 - [架构说明](docs/ARCHITECTURE.md) · [测试说明](docs/VALIDATION.md) · [开发路线](docs/ROADMAP.md) · [审计核验与修复](docs/AUDIT_REMEDIATION.md)
 - [主题素材说明](docs/ARTWORK.md)
 - [版本约定](docs/VERSIONING.md)
+
+

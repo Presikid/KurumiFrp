@@ -46,7 +46,17 @@ func (a *App) restoreOne(snapshot runtimeSnapshot, op *runtimeOperation) error {
 	if err != nil {
 		return err
 	}
-	configPath, err := a.prepareRuntimeConfig(snapshot.instance.ID, snapshot.rendered)
+	runtimeRendered, private, err := a.preparePrivateStatus(op.ctx, snapshot.binary, snapshot.instance, snapshot.rendered)
+	if err != nil {
+		return err
+	}
+	started := false
+	defer func() {
+		if !started {
+			private.cleanup()
+		}
+	}()
+	configPath, err := a.prepareRuntimeConfig(snapshot.instance.ID, runtimeRendered)
 	if err != nil {
 		return err
 	}
@@ -56,5 +66,7 @@ func (a *App) restoreOne(snapshot runtimeSnapshot, op *runtimeOperation) error {
 	if err != nil {
 		return err
 	}
-	return a.startPrepared(snapshot.instance, snapshot.rendered, snapshot.binary, configPath, snapshot.coreID)
+	err = a.startPrepared(snapshot.instance, runtimeRendered, snapshot.binary, configPath, snapshot.coreID, private)
+	started = err == nil
+	return err
 }

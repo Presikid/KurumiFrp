@@ -3,8 +3,7 @@ Description=KurumiFRP local management workbench
 Documentation=https://github.com/Presikid/KurumiFrp
 Wants=network-online.target
 After=network-online.target
-ConditionPathExists=!/opt/kurumifrp/meta/migration-intent
-ConditionPathExists=!/opt/kurumifrp/meta/legacy-cleanup
+ConditionPathExists=!/opt/kurumifrp/meta/migrating
 
 [Service]
 Type=simple

@@ -79,8 +79,8 @@ with tempfile.TemporaryDirectory(prefix="kurumi-frp-") as tmp, socketserver.Thre
             api("core/activate", {"id": installed[0]["id"]})
         # Exercise real Go-template + TOML parsing, including quotes, slashes,
         # Unicode, equals signs, and template-looking data expanded only once.
-        auth_secret = 'smoke-"auth"\\secret=猫{{ .Envs.UNEXPECTED }}'
-        pair_secret = 'pair-"secret"\\key=私密{{ .Envs.UNEXPECTED }}'
+        auth_secret = 'smoke-"auth"\\secret=猫<&>\'{{ .Envs.UNEXPECTED }}'
+        pair_secret = 'pair-"secret"\\key=私密<&>\'{{ .Envs.UNEXPECTED }}'
         save("instance", {"name": "smoke-frps", "kind": "frps", "host": "127.0.0.1", "port": bind_port, "token": auth_secret})
         save("instance", {"name": "smoke-frpc", "kind": "frpc", "host": "127.0.0.1", "port": bind_port, "token": auth_secret})
         state = api("state")
@@ -93,6 +93,26 @@ with tempfile.TemporaryDirectory(prefix="kurumi-frp-") as tmp, socketserver.Thre
         control(server_id, "start")
         control(client_id, "start")
         control(visitor_id, "start")
+        current = api('state')['state']
+        tcp_rule = next(t for t in current['tunnels'] if t['name'] == 'echo')
+        visitor_rule = next(t for t in current['tunnels'] if t['name'] == 'visitor')
+        for _ in range(100):
+            report = api('registration')['tunnels']
+            if report[tcp_rule['id']]['state'] == 'registered':
+                break
+            time.sleep(.1)
+        else:
+            raise AssertionError(f"registration not detected: {report}")
+        assert report[visitor_rule['id']]['state'] == 'not-reported'
+        health = api('health', {'revision': api('state')['revision'], 'id': client_id})
+        row = next(r for r in health['rules'] if r['id'] == tcp_rule['id'])
+        assert health['endpoint']['state'] == 'reachable' and row['registration']['state'] == 'registered' and row['target']['status'] == 'reachable'
+        assert auth_secret not in json.dumps(health, ensure_ascii=False) and pair_secret not in json.dumps(health, ensure_ascii=False)
+        tcp_rule['localPort'] = echo.server_address[1] + 1 if echo.server_address[1] < 65535 else echo.server_address[1] - 1
+        save('tunnel', tcp_rule)
+        assert api('registration')['tunnels'][tcp_rule['id']]['state'] == 'pending'
+        health = api('health', {'revision': api('state')['revision'], 'id': client_id})
+        assert next(r for r in health['rules'] if r['id'] == tcp_rule['id'])['registration']['state'] == 'pending'
         message = b"kurumi-real-frp-roundtrip"
         for target_port in [remote_port, visitor_port]:
             success = False

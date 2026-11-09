@@ -108,7 +108,7 @@ Priority: optional
 Architecture: {arch}
 Maintainer: Presikid <67297065+Presikid@users.noreply.github.com>
 Installed-Size: {size}
-Depends: ca-certificates, passwd, procps, util-linux, init-system-helpers (>= 1.54)
+Depends: ca-certificates, passwd, procps, util-linux, findutils, mawk | gawk, init-system-helpers (>= 1.54)
 Recommends: systemd
 Homepage: https://github.com/Presikid/KurumiFrp
 Description: Local frpc and frps management workbench
@@ -145,9 +145,9 @@ URL: https://github.com/Presikid/KurumiFrp
 ExclusiveArch: x86_64 aarch64
 AutoReqProv: no
 Requires: ca-certificates, systemd, shadow-utils, procps-ng, coreutils, util-linux, findutils, gawk
-Requires(pre): shadow-utils, coreutils, procps-ng, findutils
-Requires(preun): systemd, coreutils
-Requires(postun): shadow-utils, procps-ng, coreutils
+Requires(pre): shadow-utils, procps-ng, coreutils, util-linux, findutils, gawk
+Requires(preun): systemd, coreutils, util-linux
+Requires(postun): shadow-utils, procps-ng, coreutils, util-linux, gawk
 %global debug_package %{{nil}}
 %global __os_install_post %{{nil}}
 %description

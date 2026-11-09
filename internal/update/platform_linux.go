@@ -15,43 +15,48 @@ import (
 )
 
 const updateRequest = "/opt/kurumifrp/runtime/update.request"
-const updateScratch = "/opt/kurumifrp/root-tmp"
+const updateScratch = "/opt/kurumifrp/private"
 
-func lockUpdateScratch() (*os.File, error) {
-	for p := updateScratch; ; p = filepath.Dir(p) {
-		info, err := os.Lstat(p)
-		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("unsafe update directory: %s", p)
+// The updater holds this lock until the package manager and cleanup finish.
+// Purge takes the same lock; an ordinary upgrade never takes it.
+func lockSystemUpdate() (*os.File, error) {
+	for p := filepath.Dir(updateScratch); ; p = filepath.Dir(p) {
+		parent, err := os.Lstat(p)
+		if err != nil || !parent.IsDir() || parent.Mode().Perm()&0022 != 0 {
+			return nil, fmt.Errorf("unsafe update parent: %s", p)
 		}
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Uid != 0 || info.Mode().Perm()&0022 != 0 || (p == updateScratch && info.Mode().Perm() != 0700) {
-			return nil, fmt.Errorf("unprotected update directory: %s", p)
+		stat, ok := parent.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != 0 {
+			return nil, fmt.Errorf("untrusted update parent: %s", p)
 		}
 		if p == filepath.Dir(p) {
 			break
 		}
 	}
-	return openUpdateLock(updateScratch, 0, 0)
-}
-
-func openUpdateLock(scratch string, ownerUID, ownerGID uint32) (*os.File, error) {
-	path := filepath.Join(scratch, ".updater.lock")
-	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
+	info, err := os.Lstat(updateScratch)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
+		return nil, fmt.Errorf("unsafe update directory")
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || st.Uid != 0 {
+		return nil, fmt.Errorf("update directory is not root owned")
+	}
+	fd, err := syscall.Open(filepath.Join(updateScratch, ".update.lock"), syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
 	if err != nil {
 		return nil, err
 	}
-	f := os.NewFile(uintptr(fd), path)
-	info, err := f.Stat()
+	f := os.NewFile(uintptr(fd), "update lock")
+	info, err = f.Stat()
 	if err != nil {
 		f.Close()
 		return nil, err
 	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || st.Uid != ownerUID || st.Gid != ownerGID || st.Nlink != 1 {
+	st, ok = info.Sys().(*syscall.Stat_t)
+	if !ok || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || st.Uid != 0 || st.Nlink != 1 {
 		f.Close()
 		return nil, fmt.Errorf("unsafe update lock")
 	}
-	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("another update or purge is active: %w", err)
 	}
@@ -104,7 +109,7 @@ func PerformSystemUpdate() error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("system update requires root")
 	}
-	lock, e := lockUpdateScratch()
+	lock, e := lockSystemUpdate()
 	if e != nil {
 		return e
 	}

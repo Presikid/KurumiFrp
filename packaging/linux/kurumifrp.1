@@ -26,7 +26,7 @@ Print the application version.
 .SH ADMINISTRATION
 Use systemctl status/start/stop kurumifrp. Read the chosen address from
 /opt/kurumifrp/runtime/data/listen.addr. Use SSH port forwarding for remote access.
-The workbench starts at boot; instance recovery is configured per instance.
+The workbench starts at boot; saved frp instances are not automatically started.
 The service has no capability to bind privileged ports below 1024.
 .SH REMOVAL
 Debian/Ubuntu: apt remove preserves state; apt purge kurumifrp removes application
