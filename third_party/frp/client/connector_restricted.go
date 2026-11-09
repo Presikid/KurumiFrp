@@ -40,7 +40,13 @@ func (c *defaultConnectorImpl) realConnectRestricted(network *netx.Network, tlsC
 	defer cancel()
 
 	target := net.JoinHostPort(c.cfg.ServerAddr, strconv.Itoa(c.cfg.ServerPort))
-	conn, err := network.DialContext(ctx, "tcp", target, 0, time.Duration(c.cfg.Transport.DialServerKeepAlive)*time.Second, true)
+	var conn net.Conn
+	var err error
+	if c.cfg.Transport.Protocol == "kcp" {
+		conn, err = network.DialKCP(ctx, target)
+	} else {
+		conn, err = network.DialContext(ctx, "tcp", target, 0, time.Duration(c.cfg.Transport.DialServerKeepAlive)*time.Second, true)
+	}
 	if err != nil {
 		return nil, err
 	}
