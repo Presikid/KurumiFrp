@@ -66,7 +66,9 @@ References reviewed for the implementation:
 启动票据只有 60 秒寿命且使用后删除，通过 URL fragment 交给网页，网页先清除 fragment 再换取 HttpOnly 会话。长期 Token 不进入浏览器地址。安装器用户目录的权限保护很重要：加密不防同一系统账户或系统管理员访问本机主密钥。
 
 
-## 0.3 安装清理与卸载边界
+## 0.3 历史安装清理与卸载边界
+
+以下是 0.3 的历史设计；当前 Windows 卸载行为以本页“原生发行”和 Windows 报告为准。
 
 本机 CLI 新增 `--check-running`、`--stop`、`--cleanup-package` 和可选 `--cleanup-archive`；这些不是远程 HTTP 管理接口。停止通过安装目录已有的令牌和回环地址请求当前管理器，等待关闭所有托管子进程后释放锁；关闭失败保留锁，卸载不绕过它。
 
@@ -78,7 +80,7 @@ Windows 卸载脚本保留自身和所有权记录到其他文件清理完成，
 
 ## 0.4 原生发行
 
-Windows 采用 Inno Setup 原生引擎，不执行 PS1/CMD；安装器根据 CPU 选择 Go GUI 子系统程序。原生安装版将可变运行数据放在安装目录下受 ACL 保护的 `runtime/profiles/<SID>`，原生维护命令仅处理安装记录确认的 profiles 与指定摘要的 Setup.exe；安装引擎负责自身文件和系统集成项。首次升级会验证旧 ProgramData 安装回执、SID profile 回执和 NTFS ACL，再迁移 profile；同卷移动，跨卷复制后校验目录摘要，旧数据仅在新副本验证成功后删除。迁移标记阻止旧工作台重新启动，失败时保留源数据并阻止新版以空配置启动。Linux 通过 DEB/RPM 登记命令链接和 systemd 服务，运行数据位于安装目录，由独立低权限账户持有；归属记录和旧数据备份由 root 保护。包维护脚本只处理固定目录，普通 remove/升级不等于 purge。
+Windows 采用 Inno Setup 原生引擎，不执行 PS1/CMD；安装器根据 CPU 选择 Go GUI 子系统程序。新安装的可变数据位于安装目录下受 ACL 保护的 `runtime/profiles/<SID>`。升级时从安装包提取新维护程序，检查目标路径和现有回执，再停止各账户工作台；不以管理员权限执行旧程序。符合回执和权限检查的旧 ProgramData 目录继续在原位置使用，不移动或删除 profile。安装结束后由用户以自己的普通账户手动启动；卸载保留账户数据。限制与未解决事项见 [0.7.1.23 Windows 报告](WINDOWS_0.7.1.23.md)。Linux 通过 DEB/RPM 登记命令链接和 systemd 服务，运行数据位于安装目录，由独立低权限账户持有；归属记录和旧数据备份由 root 保护。包维护脚本只处理固定目录，普通 remove/升级不等于 purge。
 
 
 ## Local target diagnostics
