@@ -528,5 +528,3 @@ document.addEventListener('visibilitychange', () => {
  if (document.hidden) stopRefreshPolling();
  else if (data && !dialog.open) refresh(true);
 });
-
-
