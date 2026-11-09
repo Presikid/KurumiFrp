@@ -134,6 +134,9 @@ func renderProtocolTunnel(b *strings.Builder, t Tunnel, secret func(string, stri
 				fmt.Fprintf(b, "healthCheck.maxFailed = %d\n", t.HealthCheckMaxFailed)
 			}
 		}
+		if t.ProxyProtocolVersion != "" {
+			fmt.Fprintf(b, "transport.proxyProtocolVersion = %s\n", quote(t.ProxyProtocolVersion))
+		}
 	}
 	if t.UseEncryption {
 		fmt.Fprintln(b, "transport.useEncryption = true")

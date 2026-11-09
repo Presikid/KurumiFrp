@@ -51,6 +51,7 @@ type Tunnel struct {
 	HasSecret            bool     `json:"hasSecret,omitempty"`
 	BandwidthKB          int      `json:"bandwidthKB"`
 	BandwidthMode        string   `json:"bandwidthMode,omitempty"`
+	ProxyProtocolVersion string   `json:"proxyProtocolVersion,omitempty"`
 	Enabled              bool     `json:"enabled"`
 	AllowUsers           []string `json:"allowUsers,omitempty"`
 	ServerUser           string   `json:"serverUser,omitempty"`
@@ -339,6 +340,12 @@ func validate(s State) error {
 		}
 		if isVisitor(t.Type) && t.BandwidthMode != "" {
 			return fmt.Errorf("Visitor 不支持带宽限制位置")
+		}
+		if t.ProxyProtocolVersion != "" && t.ProxyProtocolVersion != "v1" && t.ProxyProtocolVersion != "v2" {
+			return fmt.Errorf("PROXY 协议版本仅支持 v1 或 v2")
+		}
+		if isVisitor(t.Type) && t.ProxyProtocolVersion != "" {
+			return fmt.Errorf("Visitor 不支持 PROXY 协议")
 		}
 		if err := validateRuleHealthCheck(t); err != nil {
 			return err
