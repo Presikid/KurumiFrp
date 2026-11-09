@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-frp-") as tmp, socketserver.Thre
                 if manager is not None and manager.poll() is not None:
                     raise RuntimeError("manager exited")
                 time.sleep(.1)
-        token = (data_dir / "access.token").read_text()
+        token = (data_dir / "access.token").read_text(encoding='utf-8')
         def api(path, body=None):
             request = urllib.request.Request(base + "/api/" + path,
                 data=json.dumps(body).encode() if body is not None else None,
@@ -83,7 +83,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-frp-") as tmp, socketserver.Thre
             assert status.get('bundledInUse'), 'packaged core is not selected'
             initial = api('state')['state']
             assert not initial['instances'] and not initial['tunnels'], 'existing test workspace must be empty'
-            packaged = Path(binary).parent / 'bundled' / (Path(__file__).resolve().parents[1] / 'VERSION').read_text().strip()
+            packaged = Path(binary).parent / 'bundled' / (Path(__file__).resolve().parents[1] / 'VERSION').read_text(encoding='utf-8').strip()
             suffix = '.exe' if os.name == 'nt' else ''
             for kind in ('frpc', 'frps'):
                 version = subprocess.check_output([str(packaged / (kind + suffix)), '-v'], text=True, timeout=10).strip()
@@ -153,7 +153,7 @@ with tempfile.TemporaryDirectory(prefix="kurumi-frp-") as tmp, socketserver.Thre
                     print(json.dumps(api("logs?id=" + id), ensure_ascii=False))
                 raise AssertionError(f"TCP/STCP roundtrip failed on {target_port}")
         for config in (data_dir / "runtime").glob("*.toml"):
-            text = config.read_text()
+            text = config.read_text(encoding='utf-8')
             assert auth_secret not in text and pair_secret not in text
         control(visitor_id, "stop")
         control(client_id, "stop")

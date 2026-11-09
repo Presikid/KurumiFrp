@@ -79,10 +79,10 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
     profile=None
     account=None
     def api(path,body=None):
-        address=(profile/'data/listen.addr').read_text().strip()
+        address=(profile/'data/listen.addr').read_text(encoding='utf-8').strip()
         req=urllib.request.Request('http://'+address+'/api/'+path,
             data=None if body is None else json.dumps(body).encode(),
-            headers={'Authorization':'Bearer '+(profile/'data/access.token').read_text(),'Content-Type':'application/json'})
+            headers={'Authorization':'Bearer '+(profile/'data/access.token').read_text(encoding='utf-8'),'Content-Type':'application/json'})
         with opener.open(req,timeout=10) as r: return json.load(r)
     try:
         before=None
@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
                                   '/TASKS=cleanup','/LOG='+str(log)],timeout=100)
             if result.returncode:
                 print(log.read_text(encoding='utf-8',errors='replace')); result.check_returncode()
-            paths=json.loads(subprocess.check_output([str(exe),'--paths'],text=True))
+            paths=json.loads(subprocess.check_output([str(exe),'--paths'],text=True,encoding='utf-8'))
             profile=Path(paths['data']).parent
             assert profile.parent==common/'profiles', paths
             assert profile.is_relative_to(app), 'runtime data escaped the installation directory'
@@ -104,9 +104,9 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
             if i == 0: assert api('core').get('bundledInUse'), 'packaged core is not available without a download'
             if i == 0:
                 subprocess.run([sys.executable,str(Path(__file__).with_name('frp-smoke.py')),str(exe),str(profile/'cores'),
-                                '--existing',(profile/'data/listen.addr').read_text().strip(),str(profile/'data'),'--disposable-package-test'],check=True,timeout=120)
+                                '--existing',(profile/'data/listen.addr').read_text(encoding='utf-8').strip(),str(profile/'data'),'--disposable-package-test'],check=True,timeout=120)
             wait_until(lambda:not source.exists())
-            current=[(profile/'data/access.token').read_text(), json.loads((profile/'data/state.json').read_text())['key']]
+            current=[(profile/'data/access.token').read_text(encoding='utf-8'), json.loads((profile/'data/state.json').read_text(encoding='utf-8'))['key']]
             if before is not None: assert before==current, 'reinstall rotated secrets'
             before=current
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,arp,0,access) as key:
@@ -122,7 +122,7 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
                 shutil.copyfile(Path(__file__).resolve().parents[1]/'packaging/windows/ChineseSimplified-LICENSE.txt', legacy_notice)
                 (legacy_notice.parent/'user-note.txt').write_text('keep')
             else:
-                assert (legacy_notice.parent/'user-note.txt').read_text() == 'keep'
+                assert (legacy_notice.parent/'user-note.txt').read_text(encoding='utf-8') == 'keep'
                 (legacy_notice.parent/'user-note.txt').unlink()
                 legacy_notice.parent.rmdir()
         # Test an actual non-administrator account, not only an elevated runner.
@@ -141,8 +141,8 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
         other=(set((common/'profiles').iterdir())-original_profiles).pop()
         wait_until(lambda:(other/'data/access.token').exists() and (other/'data/listen.addr').exists())
         as_standard(username,password,exe,['--check-running'],wait=True)
-        assert json.loads((other/'data/state.json').read_text())['key']!=json.loads((profile/'data/state.json').read_text())['key']
-        assert (other/'data/listen.addr').read_text()!=(profile/'data/listen.addr').read_text()
+        assert json.loads((other/'data/state.json').read_text(encoding='utf-8'))['key']!=json.loads((profile/'data/state.json').read_text(encoding='utf-8'))['key']
+        assert (other/'data/listen.addr').read_text(encoding='utf-8')!=(profile/'data/listen.addr').read_text(encoding='utf-8')
         probe_source=root/'acl.go'
         probe_source.write_text('package main\nimport("os")\nfunc main(){if f,e:=os.Open(os.Args[1]);e==nil{f.Close();os.Exit(71)};if e:=os.WriteFile(os.Args[2],[]byte("bad"),0600);e==nil{os.Remove(os.Args[2]);os.Exit(72)}}\n')
         probe_exe=app/'acl-probe.exe'
@@ -166,7 +166,7 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
         assert api('state')['runtime'][iid]['pid']>0
         wait_until(lambda:bool(list((profile/'tmp').glob('session-*/frp-temp-probe'))))
         probe=next((profile/'tmp').glob('session-*/frp-temp-probe'))
-        assert probe.read_text()==str(probe.parent), 'frp inherited system TEMP'
+        assert probe.read_text(encoding='utf-8')==str(probe.parent), 'frp inherited system TEMP'
         outside=root/'outside'; outside.mkdir(); (outside/'keep').write_text('user document')
         subprocess.run(['cmd.exe','/d','/c','mklink','/J',str(profile/'cores/linked'),str(outside)],check=True)
         uninstaller=app/'unins000.exe'
@@ -177,7 +177,7 @@ with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
         wait_until(lambda:not app.exists())
         assert not common.exists(), 'installation runtime residue'
         assert not legacy.exists(), 'legacy ProgramData residue'
-        assert (outside/'keep').read_text()=='user document'
+        assert (outside/'keep').read_text(encoding='utf-8')=='user document'
         try:
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,arp,0,access): raise AssertionError('ARP residue')
         except FileNotFoundError: pass
