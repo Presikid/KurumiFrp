@@ -127,6 +127,11 @@ func dnsServerAddress(value string) (string, bool) {
 
 func validateProtocolInstance(i Instance) error {
 	if i.Kind == "frpc" {
+		switch i.ClientTransport {
+		case "", "tcp", "websocket", "wss", "kcp", "quic":
+		default:
+			return fmt.Errorf("客户端连接协议无效")
+		}
 		if _, ok := dnsServerAddress(i.DNSServer); !ok {
 			return fmt.Errorf("DNS 服务器须为 IP 地址，可选端口")
 		}
@@ -144,8 +149,8 @@ func validateProtocolInstance(i Instance) error {
 			return fmt.Errorf("客户端不能设置服务端 TCPMUX 或子域名选项")
 		}
 	} else {
-		if i.User != "" || i.NatHoleSTUNServer != "" || i.DNSServer != "" {
-			return fmt.Errorf("服务端不能设置客户端用户、STUN 或 DNS 地址")
+		if i.User != "" || i.NatHoleSTUNServer != "" || i.DNSServer != "" || i.ClientTransport != "" {
+			return fmt.Errorf("服务端不能设置客户端连接、用户、STUN 或 DNS 选项")
 		}
 		if i.TCPMuxPassthrough && i.TCPMuxHTTPConnectPort == 0 {
 			return fmt.Errorf("TCPMUX 透传需要设置 HTTP CONNECT 监听端口")

@@ -18,7 +18,17 @@ func candidateServerForClient(s State, client Instance) (Instance, bool) {
 	var found Instance
 	matched := false
 	for _, server := range s.Instances {
-		if server.Kind != "frps" || server.Port != client.Port {
+		if server.Kind != "frps" {
+			continue
+		}
+		port := server.Port
+		switch client.ClientTransport {
+		case "kcp":
+			port = server.KCPBindPort
+		case "quic":
+			port = server.QUICBindPort
+		}
+		if port == 0 || port != client.Port {
 			continue
 		}
 		bind := net.ParseIP(server.Host)
@@ -58,6 +68,11 @@ func possibleProxyConflicts(s State) map[string]string {
 		for _, port := range []int{server.Port, server.HTTPPort, server.HTTPSPort, server.TCPMuxHTTPConnectPort} {
 			if port > 0 {
 				listeners = append(listeners, localBinding{server.Host, "tcp", server.Name, server.ID, port})
+			}
+		}
+		for _, port := range []int{server.KCPBindPort, server.QUICBindPort} {
+			if port > 0 {
+				listeners = append(listeners, localBinding{server.Host, "udp", server.Name, server.ID, port})
 			}
 		}
 	}

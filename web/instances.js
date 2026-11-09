@@ -90,7 +90,7 @@ window.KurumiInstances = (() => {
    return `<button type="button" ${primary?'class="primary" ':''}data-action="${action}" data-id="${id}" aria-label="${esc(label + ' · ' + instance.name)}"${control?` data-instance-control data-idle-label="${esc(label)}"${operation?' disabled':''}`:''}>${display}</button>`;
   };
   const registration = role === 'client' ? `<div class="instance-card__registration"><span>代理注册</span><strong data-registration-count="${id}">${esc(registrationText(instance))}</strong></div>` : '';
-  const vhosts = role === 'server' ? `<div class="instance-card__fact instance-card__fact--wide"><dt>草稿虚拟主机端口</dt><dd>HTTP ${esc(instance.httpPort || '关闭')} · HTTPS ${esc(instance.httpsPort || '关闭')}</dd></div>` : '';
+  const vhosts = role === 'server' ? `<div class="instance-card__fact instance-card__fact--wide"><dt>草稿监听端口</dt><dd>HTTP ${esc(instance.httpPort || '关闭')} · HTTPS ${esc(instance.httpsPort || '关闭')} · KCP ${esc(instance.kcpBindPort || '关闭')} · QUIC ${esc(instance.quicBindPort || '关闭')}</dd></div>` : '';
   const started = runtime.started ? `<div class="instance-card__fact instance-card__fact--wide"><dt>${running?'启动时间':'最近启动'}</dt><dd>${esc(formatTime(runtime.started))}</dd></div>` : '';
   const process = runtime.pid ? `<div class="instance-card__fact"><dt>系统进程 PID</dt><dd>${esc(runtime.pid)}</dd></div>` : '';
 
