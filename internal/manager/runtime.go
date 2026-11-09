@@ -51,6 +51,8 @@ type logBuffer struct {
 	lines    []string
 	secrets  []string // immutable after the first Write; retained for literal fixtures
 	redactor *logRedactor
+	sequence uint64
+	changed  chan struct{}
 }
 
 var ansi = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
@@ -158,6 +160,7 @@ func (l *logBuffer) Write(b []byte) (int, error) {
 	}
 
 	written := len(b)
+	added := false
 	for len(b) > 0 {
 		newline := bytes.IndexByte(b, '\n')
 		chunk := b
@@ -181,6 +184,8 @@ func (l *logBuffer) Write(b []byte) (int, error) {
 			line = l.redactor.Replace(ansi.ReplaceAllString(string(l.pending), ""))
 		}
 		l.lines = append(l.lines, line)
+		l.sequence++
+		added = true
 		if len(l.lines) > 200 {
 			l.lines[0] = ""
 			l.lines = l.lines[len(l.lines)-200:]
@@ -189,12 +194,34 @@ func (l *logBuffer) Write(b []byte) (int, error) {
 		l.dropping = false
 		b = b[newline+1:]
 	}
+	// Broadcast once per write without waiting for any network reader.
+	if added && l.changed != nil {
+		close(l.changed)
+		l.changed = nil
+	}
 	return written, nil
 }
 func (l *logBuffer) read() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]string{}, l.lines...)
+}
+
+// updates captures redacted lines and a wakeup atomically. Readers that fall
+// behind the retained window must replace their snapshot instead of appending.
+func (l *logBuffer) updates(cursor uint64, initial bool) ([]string, uint64, bool, <-chan struct{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.changed == nil {
+		l.changed = make(chan struct{})
+	}
+	oldest := l.sequence - uint64(len(l.lines))
+	reset := initial || cursor < oldest || cursor > l.sequence
+	start := 0
+	if !reset {
+		start = int(cursor - oldest)
+	}
+	return append([]string{}, l.lines[start:]...), l.sequence, reset, l.changed
 }
 func (p *process) view() RuntimeStatus { p.mu.Lock(); defer p.mu.Unlock(); return p.status }
 
@@ -381,6 +408,7 @@ func (a *App) statuses() map[string]RuntimeStatus {
 }
 func (a *App) Close() error {
 	a.closeOnce.Do(func() {
+		a.RequestShutdown()
 		a.mu.Lock()
 		a.closing = true
 		if a.webhooks != nil {

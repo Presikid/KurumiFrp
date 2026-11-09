@@ -42,14 +42,17 @@ func (a *App) launchLogin(w http.ResponseWriter, r *http.Request) {
 			delete(a.auth.sessions, k)
 		}
 	}
-	if !ok || time.Now().After(expires) || len(a.auth.sessions) >= 64 {
+	if !ok || time.Now().After(expires) {
 		a.auth.mu.Unlock()
 		fail(w, 401, fmt.Errorf("启动凭据无效或已过期，请重新打开桌面快捷方式"))
 		return
 	}
-	sid := randomHex(32)
-	a.auth.sessions[sid] = time.Now().Add(12 * time.Hour)
+	sid, err := a.auth.newSessionLocked(r, time.Now())
 	a.auth.mu.Unlock()
+	if err != nil {
+		fail(w, http.StatusUnauthorized, err)
+		return
+	}
 	http.SetCookie(w, &http.Cookie{Name: "kurumi_session", Value: sid, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 43200})
 	reply(w, 200, map[string]bool{"ok": true})
 }

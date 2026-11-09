@@ -21,7 +21,7 @@ func (a *App) batchTunnelEnabledAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, fmt.Errorf("配置已在其他窗口更新，请刷新后重新选择"))
 		return
 	}
-	if req.Enabled == nil || len(req.IDs) == 0 || len(req.IDs) > 512 {
+	if req.Enabled == nil || len(req.IDs) == 0 || len(req.IDs) > maxTunnelCount {
 		fail(w, http.StatusBadRequest, fmt.Errorf("请指定启停意图和 1–512 条规则"))
 		return
 	}

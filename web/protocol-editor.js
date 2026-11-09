@@ -44,7 +44,7 @@ const ProtocolEditor = (() => {
     <div class="bandwidth-field">${field('bandwidthKB', '带宽上限（KB/s，0 不限）', v.bandwidthKB ?? 0, 'number', 'min="0" max="10000000" step="1"')}</div>
     <label><span class="local-host-label">本地目标地址</span><input name="localHost" type="text" value="${esc(v.localHost)}" required></label>
     <label><span class="local-port-label">本地目标端口</span><input name="localPort" type="number" value="${esc(v.localPort)}" required min="1" max="65535" step="1" ${lockedPort ? 'readonly' : ''}><small class="unbound-note" hidden>负数表示仅接收回退连接，不监听本地端口。</small>${lockedPort ? '<small>当前暂不支持更改此规则的回退监听端口。</small>' : ''}</label>
-    <div class="port-field">${field('remotePort', '远端端口', v.remotePort ?? '', 'number', 'min="1" max="65535" step="1"')}</div>
+    <div class="port-field">${field('remotePort', '远端端口（0 请求动态分配）', ['tcp', 'udp'].includes(v.type) ? (v.remotePort ?? '') : '', 'number', 'min="0" max="65535" step="1"')}</div>
     <div class="domain-field span-2">${field('domains', '域名（多个用逗号分隔）', (v.domains || []).join(', '))}</div>
     <div class="probe-field span-2 protocol-subgrid">
      ${field('probePath', '本地健康检查路径（仅用于诊断）', v.probePath || '', 'text', 'maxlength="512" placeholder="/（默认）"')}
@@ -77,6 +77,28 @@ const ProtocolEditor = (() => {
    </div>`;
  }
 
+ function batch(clients) {
+  return `<h2>批量创建连接规则</h2><p class="muted">一次保存全部规则草稿；运行中的实例需重启后应用。生成的规则可逐条编辑。</p>
+   <div class="form-grid">
+    ${field('name', '规则名称前缀', '', 'text', 'required maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]{0,63}"')}
+    <label>归属实例<select name="instanceId">${clients.map(i => `<option value="${esc(i.id)}">${esc(i.name)}</option>`).join('')}</select></label>
+    <label>协议<select name="protocol"><option value="tcp+udp">TCP+UDP · 成对创建</option><option value="tcp">TCP</option><option value="udp">UDP</option></select></label>
+    ${field('bandwidthKB', '每条规则的带宽上限（KB/s，0 不限）', 0, 'number', 'required min="0" max="10000000" step="1"')}
+    ${field('localHost', '本地目标地址', '127.0.0.1', 'text', 'required')}
+    <label>本地端口列表<input name="localPorts" type="text" required maxlength="4096" placeholder="例如 8000-8002,8010"></label>
+    <label class="span-2">远端端口列表<input name="remotePorts" type="text" required maxlength="4096" placeholder="例如 6000-6002,6010，或填 0 动态分配"></label>
+    <p class="small-note span-2">端口可用逗号和范围，固定端口按顺序一一对应。多端口名称加本地端口后缀，TCP+UDP 再加 -tcp / -udp。规则总数最多 512 条。</p>
+    <p class="small-note span-2">远端 0 只支持单协议，由服务端为每条规则分配端口；TCP+UDP 成对创建须使用固定端口。草稿检查无法确认远端端口可用。</p>
+    <label class="form-check span-2"><input name="enabled" type="checkbox" checked>期望启用这些规则</label>
+   </div>`;
+ }
+
+ function batchValue(form) {
+  const f = form.elements, val = name => f[name].value;
+  return {name:val('name').trim(), instanceId:val('instanceId'), protocol:val('protocol'), localHost:val('localHost').trim(),
+   localPorts:val('localPorts').trim(), remotePorts:val('remotePorts').trim(), bandwidthKB:+val('bandwidthKB'), enabled:f.enabled.checked};
+ }
+
  function visible(form, selector, show) {
   form.querySelectorAll(selector).forEach(el => {
    el.hidden = !show;
@@ -86,6 +108,7 @@ const ProtocolEditor = (() => {
 
  function update(form, editing, tunnels) {
   const f = form.elements;
+  if (editing.kind === 'tunnel-batch') return;
   if (editing.kind === 'instance') {
    visible(form, '.client-field', f.kind.value === 'frpc');
    visible(form, '.server-field', f.kind.value === 'frps');
@@ -162,5 +185,5 @@ const ProtocolEditor = (() => {
   return result;
  }
 
- return {instance, tunnel, update, value};
+ return {instance, tunnel, batch, batchValue, update, value};
 })();

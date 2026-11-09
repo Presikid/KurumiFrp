@@ -3,7 +3,9 @@ package manager
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -11,12 +13,13 @@ import (
 )
 
 type registrationItem struct {
-	State      string `json:"state"`
-	Pending    bool   `json:"pending"`
-	RunID      string `json:"runId,omitempty"`
-	Phase      string `json:"phase,omitempty"`
-	RemoteAddr string `json:"remoteAddr,omitempty"`
-	Error      string `json:"error,omitempty"`
+	State       string `json:"state"`
+	Pending     bool   `json:"pending"`
+	RunID       string `json:"runId,omitempty"`
+	Phase       string `json:"phase,omitempty"`
+	RemoteAddr  string `json:"remoteAddr,omitempty"`
+	PortPending bool   `json:"portPending,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 type registrationSnapshot struct {
@@ -202,6 +205,32 @@ func knownProxyPhase(s string) string {
 	}
 }
 
+// A status source may report a bare port or host:port. Never infer an
+// allocation from zero, a malformed address, or text altered by truncation.
+func validAllocatedAddress(addr string) bool {
+	if addr == "" || len(addr) > 512 || strings.TrimSpace(addr) != addr {
+		return false
+	}
+	port := addr
+	if strings.Contains(addr, ":") {
+		host, p, err := net.SplitHostPort(addr)
+		if err != nil || (host != "" && !hostOK(host)) {
+			return false
+		}
+		port = p
+	}
+	if port == "" {
+		return false
+	}
+	for _, c := range port {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && portOK(n)
+}
+
 // classifyRegistration describes only state attributable to the current applied run.
 func classifyRegistration(c registrationContext) registrationItem {
 	tunnel := c.tunnel
@@ -234,7 +263,13 @@ func classifyRegistration(c registrationContext) registrationItem {
 			item.Error = "代理状态无法识别"
 		case item.Phase == "running":
 			item.State = "registered"
-			item.RemoteAddr = safeStatusText(value.RemoteAddr, c.secrets)
+			addr := safeStatusText(value.RemoteAddr, c.secrets)
+			if (tunnel.Type == "tcp" || tunnel.Type == "udp") && tunnel.RemotePort == 0 &&
+				(value.Error != "" || !validAllocatedAddress(value.RemoteAddr) || !validAllocatedAddress(addr)) {
+				item.PortPending = true
+			} else {
+				item.RemoteAddr = addr
+			}
 			item.Error = safeStatusText(value.Error, c.secrets)
 		case value.Error != "" || item.Phase == "start error" || item.Phase == "check failed":
 			item.State = "failed"

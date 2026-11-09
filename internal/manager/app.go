@@ -49,6 +49,8 @@ type App struct {
 	startupErrors       map[string]string
 	autoStartSuppressed map[string]bool
 	generations         map[string]uint64
+	logStreams          int
+	logStreamsByID      map[string]int
 }
 
 func New(dir, bin, addr string, assets fs.FS) (*App, error) {
@@ -200,7 +202,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.URL.Path == "/api/quit" && r.Method == "POST" {
-			a.quitOnce.Do(func() { close(a.quit) })
+			a.RequestShutdown()
 			reply(w, 200, map[string]bool{"ok": true})
 			return
 		}
@@ -274,6 +276,18 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.handleState(w, r)
 			return
 		}
+		if r.URL.Path == "/api/logs" || r.URL.Path == "/api/logs/stream" {
+			if r.Method != http.MethodGet {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			if r.URL.Path == "/api/logs" {
+				a.pollLogs(w, r)
+			} else {
+				a.streamLogs(w, r)
+			}
+			return
+		}
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		a.api(w, r)
@@ -322,15 +336,6 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			}
 			reply(w, 200, compareConfig(i.ID, i.Name, a.store.DB.Revision, p.appliedConfig, current.Text, p.appliedSecretDigest != current.SecretDigest, p.coreID != coreID))
 			return
-		case "/api/logs":
-			lines := []string{}
-			runID := ""
-			if p := a.procs[r.URL.Query().Get("id")]; p != nil {
-				lines = p.logs.read()
-				runID = p.view().RunID
-			}
-			reply(w, 200, map[string]any{"lines": lines, "runId": runID})
-			return
 		default:
 			fail(w, 404, fmt.Errorf("接口不存在"))
 			return
@@ -350,6 +355,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/tunnels/batch-enabled" {
 		a.batchTunnelEnabledAPI(w, r)
+		return
+	}
+	if r.URL.Path == "/api/tunnels/batch" {
+		a.createTunnelBatchAPI(w, r)
 		return
 	}
 	var req struct {
@@ -438,6 +447,19 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				v.Secret = ""
 				v.HTTPPassword = ""
 				if err = json.Unmarshal(req.Value, &v); err != nil {
+					break
+				}
+			}
+			if v.Type == "tcp" || v.Type == "udp" {
+				var fields struct {
+					RemotePort json.RawMessage `json:"remotePort"`
+				}
+				if err = json.Unmarshal(req.Value, &fields); err != nil {
+					break
+				}
+				present := len(fields.RemotePort) != 0
+				if (present && strings.TrimSpace(string(fields.RemotePort)) == "null") || (!present && (!exists || old.Type != v.Type)) {
+					err = fmt.Errorf("请指定远端端口；填 0 可请求动态分配")
 					break
 				}
 			}
@@ -600,3 +622,6 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) Done() <-chan struct{} { return a.quit }
+
+// RequestShutdown wakes long-lived log streams before HTTP shutdown waits.
+func (a *App) RequestShutdown() { a.quitOnce.Do(func() { close(a.quit) }) }

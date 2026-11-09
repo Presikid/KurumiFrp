@@ -22,7 +22,7 @@ const Protocols = Object.freeze({
   if (['http', 'https', 'tcpmux'].includes(t.type)) {
    return [...(t.domains || []), ...(t.type === 'tcpmux' && t.subdomain ? [t.subdomain + '（子域名）'] : [])].join(', ');
   }
-  return t.remotePort;
+  return ['tcp', 'udp'].includes(t.type) && t.remotePort === 0 ? '动态分配（查看代理状态）' : t.remotePort;
  },
  matches(t, instance, query, protocol) {
   const words = [t.name, t.type, t.localHost, t.localPort, t.remotePort, ...(t.domains || []), t.subdomain, t.serverName, t.serverUser, instance?.name];
