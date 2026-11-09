@@ -1,0 +1,43 @@
+name: Disposable Windows downgrade experiment
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  round-trip:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'ci/issue23-windows-downgrade-experiment'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            goarch: amd64
+          - os: windows-11-arm
+            goarch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            cmd
+            docs
+            internal
+            packaging
+            scripts
+            web
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: stable
+          architecture: ${{ matrix.goarch }}
+          cache: false
+      - name: Build current installer and run genuine old installer round trip
+        shell: pwsh
+        run: |
+          python scripts/package-native.py windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/windows-downgrade-smoke.py "dist-native/KurumiFRP-$((Get-Content VERSION -Raw).Trim())-Setup.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
