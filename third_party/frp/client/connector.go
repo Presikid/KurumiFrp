@@ -22,6 +22,7 @@ package client
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"net"
@@ -95,9 +96,11 @@ type defaultConnectorImpl struct {
 	conns  map[*trackedConnectorConn]struct{}
 	ops    sync.WaitGroup
 
-	muxSession *fmux.Session
-	quicConn   *quic.Conn
-	closeOnce  sync.Once
+	muxSession    *fmux.Session
+	quicConn      *quic.Conn
+	quicTransport *quic.Transport
+	quicSocket    *net.UDPConn
+	closeOnce     sync.Once
 }
 
 func NewConnector(ctx context.Context, cfg *v1.ClientCommonConfig) Connector {
@@ -193,24 +196,29 @@ func (c *defaultConnectorImpl) Open() error {
 		}
 		tlsConfig.NextProtos = []string{"frp"}
 
-		conn, err := quic.DialAddr(
-			c.ctx,
-			net.JoinHostPort(c.cfg.ServerAddr, strconv.Itoa(c.cfg.ServerPort)),
-			tlsConfig, &quic.Config{
-				MaxIdleTimeout:     time.Duration(c.cfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
-				MaxIncomingStreams: int64(c.cfg.Transport.QUIC.MaxIncomingStreams),
-				KeepAlivePeriod:    time.Duration(c.cfg.Transport.QUIC.KeepalivePeriod) * time.Second,
-			})
+		quicConfig := &quic.Config{
+			MaxIdleTimeout:     time.Duration(c.cfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
+			MaxIncomingStreams: int64(c.cfg.Transport.QUIC.MaxIncomingStreams),
+			KeepAlivePeriod:    time.Duration(c.cfg.Transport.QUIC.KeepalivePeriod) * time.Second,
+		}
+		var conn *quic.Conn
+		var transport *quic.Transport
+		var socket *net.UDPConn
+		if netx.FromContext(c.ctx) != nil {
+			conn, transport, socket, err = c.dialScopedQUIC(tlsConfig, quicConfig)
+		} else {
+			conn, err = quic.DialAddr(c.ctx, net.JoinHostPort(c.cfg.ServerAddr, strconv.Itoa(c.cfg.ServerPort)), tlsConfig, quicConfig)
+		}
 		if err != nil {
 			return err
 		}
 		c.mu.Lock()
 		if c.closed {
 			c.mu.Unlock()
-			_ = conn.CloseWithError(0, "")
+			closeScopedQUIC(conn, transport, socket)
 			return net.ErrClosed
 		}
-		c.quicConn = conn
+		c.quicConn, c.quicTransport, c.quicSocket = conn, transport, socket
 		c.mu.Unlock()
 		return nil
 	}
@@ -249,6 +257,59 @@ func (c *defaultConnectorImpl) Open() error {
 	c.muxSession = session
 	c.mu.Unlock()
 	return nil
+}
+
+// dialScopedQUIC resolves through the owning client and retains the UDP
+// socket and transport so shutdown can close them.
+func (c *defaultConnectorImpl) dialScopedQUIC(tlsConfig *tls.Config, cfg *quic.Config) (*quic.Conn, *quic.Transport, *net.UDPConn, error) {
+	ctx := c.ctx
+	cancel := func() {}
+	if timeout := time.Duration(c.cfg.Transport.DialServerTimeout) * time.Second; timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+	addr, err := netx.ResolveUDPAddr(ctx, net.JoinHostPort(c.cfg.ServerAddr, strconv.Itoa(c.cfg.ServerPort)))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var key quic.TokenGeneratorKey
+	if _, err = rand.Read(key[:]); err != nil {
+		return nil, nil, nil, err
+	}
+	network := "udp6"
+	local := &net.UDPAddr{IP: net.IPv6unspecified}
+	if addr.IP.To4() != nil {
+		network = "udp4"
+		local.IP = net.IPv4zero
+	}
+	socket, err := net.ListenUDP(network, local)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	transport := &quic.Transport{Conn: socket, TokenGeneratorKey: &key}
+	conn, err := transport.Dial(ctx, addr, tlsConfig, cfg)
+	if err != nil {
+		closeScopedQUIC(nil, transport, socket)
+		return nil, nil, nil, err
+	}
+	return conn, transport, socket, nil
+}
+
+func closeScopedQUIC(conn *quic.Conn, transport *quic.Transport, socket *net.UDPConn) {
+	if conn != nil {
+		if socket != nil {
+			if err := socket.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+				_ = socket.Close()
+			}
+		}
+		_ = conn.CloseWithError(0, "")
+	}
+	if socket != nil {
+		_ = socket.Close()
+	}
+	if transport != nil {
+		_ = transport.Close()
+	}
 }
 
 // Connect returns a stream from the underlying connection, or a new TCP connection if TCPMux isn't enabled.
@@ -383,16 +444,14 @@ func (c *defaultConnectorImpl) Close() error {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
 		c.closed = true
-		quicConn, muxSession := c.quicConn, c.muxSession
+		quicConn, transport, socket, muxSession := c.quicConn, c.quicTransport, c.quicSocket, c.muxSession
 		conns := make([]*trackedConnectorConn, 0, len(c.conns))
 		for conn := range c.conns {
 			conns = append(conns, conn)
 		}
 		c.mu.Unlock()
 		c.cancel()
-		if quicConn != nil {
-			_ = quicConn.CloseWithError(0, "")
-		}
+		closeScopedQUIC(quicConn, transport, socket)
 		if muxSession != nil {
 			_ = muxSession.Close()
 		}
