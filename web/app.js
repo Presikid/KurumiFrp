@@ -8,7 +8,16 @@ let data, page = 'overview', selected = '', filter = '', protocol = '', editing,
 let authGeneration = 0, stateETag = '', stateSnapshot = '', renderedSnapshot = '', renderedPage = '';
 let stateRequest = null, logRequest = null, deferredConfig = null;
 const dialog = $('#dialog');
+const diffDialog = $('#diff-dialog');
 function toast(text) { $('#toast').textContent = text; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 8000); }
+function showDiff(v) {
+ $('#diff-title').textContent = v.instanceName + ' · 配置差异';
+ $('#diff-summary').textContent = '新增 '+v.addedCount+' 行 · 移除 '+v.removedCount+' 行'+(v.secretChanged?' · 认证凭据已变化':'')+(v.coreChanged?' · 核心已变化':'')+(v.orderChanged?' · 仅顺序变化':'');
+ const lines=[...(v.removed||[]).map(x=>'- '+x),...(v.added||[]).map(x=>'+ '+x)];
+ $('#diff-content').textContent=(lines.join('\n')||'没有可显示的行变化')+(v.truncated?'\n差异显示已截断':'');
+ stopRefreshPolling();
+ diffDialog.showModal();
+}
 async function api(path, body, options = {}) {
  const generation = authGeneration;
  const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST',credentials:'same-origin',headers:{...(body === undefined ? {}:{'Content-Type':'application/json'}),...options.headers},body:body === undefined ? undefined:JSON.stringify(body),signal:options.signal});
@@ -26,7 +35,7 @@ function stopRefreshPolling() {
 }
 function scheduleRefresh(delay) {
  stopRefreshPolling();
- if (!data || document.hidden || dialog.open) return;
+ if (!data || document.hidden || dialog.open || diffDialog.open) return;
  const wait = delay ?? (Object.values(data.runtime || {}).some(v => v.state === 'running') ? 5000 : 10000);
  refreshTimer = setTimeout(() => {
   refreshTimer = null;
@@ -41,9 +50,9 @@ function resetSession() {
  stateETag = ''; stateSnapshot = ''; renderedSnapshot = ''; renderedPage = ''; data = null;
  probeResults = Object.create(null); probing = Object.create(null); probeRevision = null; probingAll = false; probeBatchProgress = null;
 }
-function showLogin() {resetSession();updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; if (dialog.open) dialog.close();}
+function showLogin() {resetSession();updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; if (dialog.open) dialog.close(); if (diffDialog.open) diffDialog.close();}
 function hasSelection() {return Boolean(window.getSelection()?.toString());}
-function canSilentRender() {return !dialog.open && !hasSelection() && !$('#content').contains(document.activeElement);}
+function canSilentRender() {return !dialog.open && !diffDialog.open && !hasSelection() && !$('#content').contains(document.activeElement);}
 function renderPreservingScroll() {
  const x = window.scrollX, y = window.scrollY, previousSelected = selected, content = $('#content');
  const top = content.scrollTop, left = content.scrollLeft;
@@ -82,7 +91,7 @@ async function refresh(silent = false) {
     if ($('#revision').textContent !== revision) $('#revision').textContent = revision;
     $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
    }
-   if (!silent && !dialog.open) render();
+   if (!silent && !dialog.open && !diffDialog.open) render();
    else if (canSilentRender() && (renderedSnapshot !== stateSnapshot || renderedPage !== page)) renderPreservingScroll();
    applyDeferredConfig();
    // Logs have a separate endpoint and can change even when state returns 304.
@@ -163,7 +172,7 @@ function render() {
  } else if(page==='instances') {
   content.innerHTML=header('运行实例','一个实例对应一个本机 frp 进程；远程服务器地址不代表远程管理权限。','<button class="primary" data-action="new-instance">＋ 新建实例</button>')+
   `<div class="notice">启动前会调用官方 frp verify。可以为每个实例单独启用工作台启动时自动恢复；失败原因会显示在实例卡片中。</div>`+
-  (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span><span>${i.autoStart?'工作台启动时自动恢复':'手动启动'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button><button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
+  (data.state.instances.length?`<div class="instance-grid">${data.state.instances.map(i=>{const v=stateOf(i.id);return `<article class="instance-card"><div class="instance-title"><div><span class="type-icon">${i.kind.toUpperCase()}</span><h3>${esc(i.name)}</h3><small>${i.kind==='frpc'?'客户端 · 上游入口':'服务端 · 本机监听'}</small></div><div>${badge(i.id)}</div></div><div class="instance-endpoint">${esc(i.host)}:${i.port}</div><div class="instance-info"><span>${data.state.tunnels.filter(t=>t.instanceId===i.id).length} 条规则</span><span>PID ${v.pid || '—'}</span><span>认证令牌 ${i.hasToken?'已保存':'缺失'}</span><span>${i.autoStart?'工作台启动时自动恢复':'手动启动'}</span></div><div class="actions"><button data-action="edit-instance" data-id="${i.id}">编辑</button>${v.applied?`<button data-action="diff" data-id="${i.id}">查看差异</button>`:''}<button data-action="validate" data-id="${i.id}">校验</button>${v.state==='running'?`<button data-action="restart" data-id="${i.id}">重启应用</button><button data-action="stop" data-id="${i.id}">停止</button>`:`<button class="primary" data-action="start" data-id="${i.id}">启动</button>`}<button data-action="logs" data-id="${i.id}">日志</button><button class="danger" data-action="delete-instance" data-id="${i.id}">删除</button></div>${v.exit?`<p class="small-note">${esc(v.exit)}</p>`:''}</article>`;}).join('')}</div>`:empty('添加第一个运行实例','本机可以同时运行多个 frpc 和 frps。','<button data-action="new-instance" class="primary">新建实例</button>'));
  } else if(page==='tunnels') {
   content.innerHTML=header('连接看板','管理规则并检测本地目标：TCP 检查端口，HTTP/HTTPS 检查响应；UDP 无法可靠探测。','<button class="primary" data-action="new-tunnel">＋ 新建规则</button>')+
   `<div class="toolbar"><input id="search" placeholder="搜索规则、地址或实例…" aria-label="搜索规则" value="${esc(filter)}" ${probingAll?'disabled':'' }><select id="protocol" aria-label="按协议筛选" ${probingAll?'disabled':'' }><option value="">所有协议</option>${['tcp','udp','http','https','stcp','stcp-visitor'].map(t=>`<option ${protocol===t?'selected':''}>${t}</option>`).join('')}</select><button data-action="probe-visible" ${probingAll?'disabled':''}>${probingAll?'批量检测 '+(probeBatchProgress?.done||0)+'/'+(probeBatchProgress?.total||0):'检测当前筛选'}</button></div><section class="panel" id="tunnel-list">${filteredTable()}</section>`;
@@ -221,6 +230,8 @@ try{document.body.classList.toggle('dark',localStorage.getItem('kurumi-theme')==
 $('#nav').addEventListener('click',e=>{const b=e.target.closest('[data-page]');if(b)navigate(b.dataset.page);});
 $('#cancel').addEventListener('click',()=>dialog.close());
 dialog.addEventListener('close',()=>scheduleRefresh(0));
+$('#diff-close').addEventListener('click',()=>diffDialog.close());
+diffDialog.addEventListener('close',()=>scheduleRefresh(0));
 $('#editor').addEventListener('change',updateFields);
 $('#editor').addEventListener('submit',async e=>{
  e.preventDefault();const f=e.target,b=f.querySelector('button[type="submit"]');b.disabled=true;const val=n=>f.elements[n].value;let value;
@@ -284,6 +295,7 @@ $('#content').addEventListener('click',async e=>{
    if(data)render();
    return;
   }
+  if(action==='diff'){const generation=authGeneration, result=await api('diff?id='+encodeURIComponent(id));if(generation===authGeneration&&data)showDiff(result);return;}
   if(action==='probe'){
    const revision=data.revision, generation=authGeneration;
    probing[id]=true;
