@@ -1,4 +1,5 @@
 """Test one real installer round trip on disposable GitHub-hosted Windows runners."""
+import copy
 import hashlib
 import json
 import os
@@ -71,6 +72,28 @@ def disk(root):
     return json.loads((root / 'data/state.json').read_text(encoding='utf-8'))
 
 
+def state_for_comparison(state):
+    # State.clone converts a nil Domains slice to an empty slice. No other
+    # field, missing key, or value is ignored in the comparison.
+    state = copy.deepcopy(state)
+    for tunnel in state['tunnels']:
+        if 'domains' in tunnel and tunnel['domains'] is None:
+            tunnel['domains'] = []
+    return state
+
+
+def changed_paths(left, right, path='state'):
+    # Report paths and types only: do not print keys, ciphertext, or tokens.
+    if isinstance(left, dict) and isinstance(right, dict):
+        return [p for key in sorted(left.keys() | right.keys())
+                for p in (changed_paths(left[key], right[key], path + '.' + key)
+                          if key in left and key in right else [path + '.' + key + ' (missing)'])]
+    if isinstance(left, list) and isinstance(right, list) and len(left) == len(right):
+        return [p for index, (a, b) in enumerate(zip(left, right))
+                for p in changed_paths(a, b, path + '[' + str(index) + ']')]
+    return [] if left == right else [path + ' (' + type(left).__name__ + '/' + type(right).__name__ + ')']
+
+
 with tempfile.TemporaryDirectory(prefix='kurumi-downgrade-') as tmp:
     old_setup = Path(tmp) / 'old-setup.exe'
     req = urllib.request.Request(url, headers={'User-Agent': 'KurumiFRP-CI'})
@@ -128,9 +151,13 @@ with tempfile.TemporaryDirectory(prefix='kurumi-downgrade-') as tmp:
         old_written = disk(root)
         assert old_written['key'] == before['key']
         assert old_written['history'][:-1] == before['history'], 'older version lost previous snapshots'
-        assert old_written['history'][-1]['state'] == before['state'], 'new snapshot missing previous configuration'
-        assert old_written['state']['instances'][0]['token'] == before['state']['instances'][0]['token']
-        assert old_written['state']['tunnels'] == before['state']['tunnels']
+        actual_snapshot = state_for_comparison(old_written['history'][-1]['state'])
+        previous_state = state_for_comparison(before['state'])
+        assert actual_snapshot == previous_state, 'snapshot differences: ' + ', '.join(changed_paths(previous_state, actual_snapshot))
+        expected_state = copy.deepcopy(previous_state)
+        next(i for i in expected_state['instances'] if i['id'] == instance['id'])['port'] = 17071
+        actual_state = state_for_comparison(old_written['state'])
+        assert actual_state == expected_state, 'configuration differences: ' + ', '.join(changed_paths(expected_state, actual_state))
         setup(new_setup)
         check(new_version, old_written)
         print('PASS:', runner_arch, 'current -> 0.7.1.12 -> current; configuration, secrets and snapshots preserved')
