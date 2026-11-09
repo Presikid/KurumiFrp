@@ -8,9 +8,11 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from bundled_frp import release_metadata
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = (ROOT / "VERSION").read_text().strip()
+FRP = release_metadata()
 EMULATORS = {
     "arm": "qemu-arm-static", "arm_hf": "qemu-arm-static",
     "riscv64": "qemu-riscv64-static", "loong64": "qemu-loongarch64-static",
@@ -32,7 +34,7 @@ def exercise(binary, arch, emulator, root, label):
          "--listen", f"127.0.0.1:{port}"],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     try:
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 60
         while True:
             if process.poll() is not None:
                 raise RuntimeError(f"{label}: workbench exited: {process.stderr.read()}")
@@ -49,6 +51,11 @@ def exercise(binary, arch, emulator, root, label):
                 time.sleep(0.2)
         if status["host"] != "linux_" + arch or not status["supported"]:
             raise RuntimeError(f"{label}: wrong core platform: {status}")
+        expected_name = f'frp_{FRP["tag_name"][1:]}_linux_{arch}.tar.gz'
+        expected = next(a for a in FRP['assets'] if a['name'] == expected_name)
+        b = status.get('bundled') or {}
+        if not status.get('bundledInUse') or b.get('tag') != FRP['tag_name'] or b.get('platform') != 'linux_' + arch or b.get('archiveSHA256') != expected['digest'][7:]:
+            raise RuntimeError(f"{label}: packaged core is not available: {status}")
         print(f"PASS: {label} starts and selects its official core platform", flush=True)
     finally:
         process.terminate()
@@ -61,12 +68,20 @@ def exercise(binary, arch, emulator, root, label):
 
 with tempfile.TemporaryDirectory(prefix="kurumi-emulated-") as tmp:
     root = Path(tmp)
-    binary = root / "kurumifrp"
     for arch, emulator in EMULATORS.items():
         package = ROOT / "dist-native" / f"KurumiFRP-{VERSION}-linux-{arch}.tar.gz"
+        dest = root / ("portable-" + arch)
+        dest.mkdir()
+        binary = dest / "kurumifrp"
         with tarfile.open(package, "r:gz") as tar:
-            assert sorted(tar.getnames()) == ["README.txt", "kurumifrp"]
+            assert sorted(tar.getnames()) == ["README.txt", f"bundled/{VERSION}/LICENSE", f"bundled/{VERSION}/frpc", f"bundled/{VERSION}/frps", f"bundled/{VERSION}/manifest.json", "kurumifrp"]
             binary.write_bytes(tar.extractfile("kurumifrp").read())
+            bundle = dest / "bundled" / VERSION
+            bundle.mkdir(parents=True)
+            for item in ("frpc", "frps", "LICENSE", "manifest.json"):
+                target = bundle / item
+                target.write_bytes(tar.extractfile("bundled/" + VERSION + "/" + item).read())
+                target.chmod(0o755 if item in ("frpc", "frps") else 0o644)
         binary.chmod(0o755)
         exercise(binary, arch, emulator, root, "portable-" + arch)
     for deb_arch, core_arch in (("armhf", "arm_hf"), ("riscv64", "riscv64")):

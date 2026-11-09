@@ -30,7 +30,7 @@ function mountCore() {
  <strong id="core-job-title">暂无任务</strong><progress id="core-progress" max="100" value="0" aria-label="核心下载进度"></progress><p id="core-job-detail" class="small-note" role="status"></p><button id="core-cancel" hidden>取消下载</button>
  <div class="notice">下载完成后点击「启用此版本」。切换前须停止全部实例；切换不会自动启动实例。旧版本保留，可随时重新选择。</div>
  </div></section></div>
- <section class="panel"><div class="panel-title"><h3>已下载核心</h3><span class="muted">frpc + frps 成对管理</span></div><div class="panel-content" id="core-installed"></div></section>
+ <section class="panel"><div class="panel-title"><h3>已下载核心</h3><span class="muted">frpc + frps 成对管理</span></div><div class="panel-content"><p id="core-bundled" class="small-note" hidden></p><div id="core-installed"></div></div></section>
  <p class="small-note">下载仅连接 GitHub 官方发布与其文件存储。网络受限时可为 KurumiFRP 启动进程配置 HTTPS_PROXY；不会自动使用第三方镜像或关闭证书校验。</p></div>`;
  $('#core-reload').onclick = () => loadCoreReleases(true);
  $('#core-version').onchange = () => loadCoreRelease($('#core-version').value);
@@ -96,6 +96,9 @@ function paintCoreStatus() {
  if (!$('#core-screen'))return;
  $('#core-error').textContent=coreError;
  if (!coreStatus)return;
+ const bundledNote=$('#core-bundled'); bundledNote.hidden=!coreStatus.bundled && !coreStatus.bundledError;
+ if (coreStatus.bundled) bundledNote.textContent=`安装包预置 ${coreStatus.bundled.tag} · ${coreStatus.bundled.platform} · ${coreStatus.bundledInUse?'正在使用':'备用'}；预置版本可能随软件升级变化。`;
+ else if (coreStatus.bundledError) bundledNote.textContent=coreStatus.bundledError;
  $('#core-host').textContent=coreStatus.host+(coreStatus.supported?' · 已支持':' · 暂不支持自动安装');
  const j=coreStatus.job;
  $('#core-job-title').textContent=corePhase[j.state]||j.state;

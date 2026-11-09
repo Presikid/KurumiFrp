@@ -1,8 +1,10 @@
 # KurumiFRP 0.7 安装、目录与卸载
 
+原生安装包和 Linux 便携包随附适配本机架构的官方 frp 核心；未选择其他核心且没有手工核心时，工作台可离线使用它。已选择或手工放入的核心优先，软件升级不会覆盖这些用户核心。随包预置版本可能在软件升级时变化，可在核心管理查看；源码运行版本不含预置核心。预置核心的官方许可证位于程序目录的 `bundled/<软件版本>/LICENSE`。
+
 ## Windows：Program Files 正式安装
 
-下载 `KurumiFRP-0.7.1.21-Setup.exe`，双击并允许 UAC 管理员授权。一个安装文件按系统选择 x64 或 ARM64。默认程序目录是 `C:\Program Files\KurumiFRP`（实际路径使用系统 Program Files 定义），注册到 HKLM 的“已安装的应用”，不是 AppData 内的当前用户安装。安装、打开和卸载均不依赖 PS1/CMD、Python、Go 或 Node.js。
+下载 `KurumiFRP-0.7.1.22-Setup.exe`，双击并允许 UAC 管理员授权。一个安装文件按系统选择 x64 或 ARM64。默认程序目录是 `C:\Program Files\KurumiFRP`（实际路径使用系统 Program Files 定义），注册到 HKLM 的“已安装的应用”，不是 AppData 内的当前用户安装。安装、打开和卸载均不依赖 PS1/CMD、Python、Go 或 Node.js。
 
 程序文件和可变数据分离：
 
@@ -29,11 +31,11 @@
 Debian/Ubuntu 按架构下载 DEB，Fedora/RHEL 系按架构下载 RPM：
 
 ```sh
-sudo apt install ./kurumifrp_0.7.1.21_amd64.deb
-# ARM64 改为 kurumifrp_0.7.1.21_arm64.deb
+sudo apt install ./kurumifrp_0.7.1.22_amd64.deb
+# ARM64 改为 kurumifrp_0.7.1.22_arm64.deb
 
-sudo dnf install ./kurumifrp-0.7.1.21-1.x86_64.rpm
-# ARM64 改为 kurumifrp-0.7.1.21-1.aarch64.rpm
+sudo dnf install ./kurumifrp-0.7.1.22-1.x86_64.rpm
+# ARM64 改为 kurumifrp-0.7.1.22-1.aarch64.rpm
 ```
 
 升级继续交给 APT/DNF。没有另外部署在线 APT/YUM 软件源，也未提供仓库 GPG 签名；这是上游发布的软件包，不表示已进入发行版官方仓库。附带 SHA-256 是完整性校验，不是独立身份签名。
@@ -71,7 +73,7 @@ sudo dnf remove kurumifrp  # 此 RPM 的最终卸载会清除托管数据；升�
 DEB/RPM 不在包维护脚本里猜测、扫描并删除用户下载文件，不破坏包管理器缓存或事务记录。需要安装验证后删除当前包，可执行：
 
 ```sh
-file=kurumifrp_0.7.1.21_amd64.deb
+file=kurumifrp_0.7.1.22_amd64.deb
 sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 ```
 
@@ -81,7 +83,7 @@ sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 
 还提供 KurumiFRP-版本-linux-架构.tar.gz 便携包，覆盖 ARM 基线版、ARM 硬浮点版、RISC-V 64、LoongArch 64，以及 MIPS 大小端 32/64 位。它们解压后无需安装：在可写目录运行 ./kurumifrp，用 ./kurumifrp --show-token 查看本机访问令牌。也可通过 --data 和 --frp-dir 指定数据和核心目录。管理页面默认只监听本机，通过 SSH 端口转发从其他设备访问。
 
-便携包不会注册系统服务，程序更新需先停止工作台，再下载相应架构的新版并手动替换可执行文件；配置与已下载核心保存在独立的数据和核心目录。ARM 基线包适合较老的 ARM 设备，arm_hf 包要求 ARMv7 硬浮点支持。MIPS 包按设备位数和大小端选择。
+便携包不会注册系统服务。更新时先停止旧工作台并备份数据，将对应架构的新压缩包完整解压到新的空目录；启动新程序时通过 `--data` 和 `--frp-dir` 指向原来的数据和核心目录，建议使用绝对路径。若此前使用默认路径，它们分别是旧进程工作目录下的 `data` 和 `frp`。请保留程序旁的 `bundled` 目录，不要仅替换可执行文件或覆盖已有目录。ARM 基线包适合较老的 ARM 设备，arm_hf 包要求 ARMv7 硬浮点支持。MIPS 包按设备位数和大小端选择。
 
 这些新增架构的可执行文件经模拟器启动验证；模拟验证不等于在所有真实设备及发行版上完成安装、转发和性能验证。
 
