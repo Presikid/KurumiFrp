@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Modified by KurumiFRP: isolate web assets per server.
+
 package http
 
 import (
@@ -43,15 +45,15 @@ type Server struct {
 	hs     *http.Server
 
 	authMiddleware mux.MiddlewareFunc
+	assetsFS       http.FileSystem
 }
 
 func NewServer(cfg v1.WebServerConfig) (*Server, error) {
-	assets.Load(cfg.AssetsDir)
-
 	s, err := newServer(cfg.Addr, cfg.Port, cfg.User, cfg.Password, cfg.TLS)
 	if err != nil {
 		return nil, err
 	}
+	s.assetsFS = assets.ForPath(cfg.AssetsDir)
 	if cfg.PprofEnable {
 		s.registerPprofHandlers()
 	}
@@ -125,7 +127,7 @@ type RouterRegisterHelper struct {
 func (s *Server) RouteRegister(register func(helper *RouterRegisterHelper)) {
 	register(&RouterRegisterHelper{
 		Router:         s.router,
-		AssetsFS:       assets.FileSystem,
+		AssetsFS:       s.assetsFS,
 		AuthMiddleware: s.authMiddleware,
 	})
 }
