@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type registrationItem struct {
@@ -31,15 +32,32 @@ func safeStatusText(s string, secrets []string) string {
 	if len(s) > 4096 {
 		return "[状态内容过长，已隐藏]"
 	}
-	s = redact(s, secrets)
-	s = strings.Map(func(r rune) rune {
-		if r < 32 || r == 127 {
-			return -1
+	// Normalize both sides before matching: removing control characters after
+	// redaction could otherwise reassemble a credential in the output.
+	normalize := func(value string) string {
+		value = ansi.ReplaceAllString(value, "")
+		return strings.Map(func(r rune) rune {
+			if r < 32 || r == 127 {
+				return -1
+			}
+			return r
+		}, value)
+	}
+	s = normalize(s)
+	redactionSecrets := make([]string, 0, 2*len(secrets))
+	redactionSecrets = append(redactionSecrets, secrets...)
+	for _, secret := range secrets {
+		if normalized := normalize(secret); normalized != "" && normalized != secret {
+			redactionSecrets = append(redactionSecrets, normalized)
 		}
-		return r
-	}, s)
+	}
+	s = redact(s, redactionSecrets)
 	if len(s) > 512 {
-		s = s[:512]
+		end := 512
+		for end > 0 && !utf8.RuneStart(s[end]) {
+			end--
+		}
+		s = s[:end]
 	}
 	return s
 }
