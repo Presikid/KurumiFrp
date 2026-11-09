@@ -1,0 +1,59 @@
+name: Label owner issues and pull requests
+on:
+  issues:
+    types: [opened, reopened]
+  pull_request_target:
+    types: [opened, reopened]
+  push:
+    branches: [main]
+    paths: [.github/workflows/owner-launch-label.yml]
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  label-owner:
+    if: >-
+      ((github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'issues' && github.event.issue.user.id == github.event.repository.owner.id) ||
+      (github.event_name == 'pull_request_target' && github.event.pull_request.base.ref == 'main' && github.event.pull_request.user.id == github.event.repository.owner.id)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # Deliberately no checkout or execution of PR content.
+      - name: Ensure label and apply it to owner submissions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_KIND: ${{ github.event_name }}
+          OWNER_ID: ${{ github.event.repository.owner.id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$OWNER_ID" in ''|*[!0-9]*) echo 'Invalid owner ID' >&2; exit 1;; esac
+          case "$EVENT_KIND" in
+            workflow_dispatch|push)
+              [ "${GITHUB_REF:-}" = refs/heads/main ] || { echo 'Only main may run backfill' >&2; exit 1; } ;;
+            issues|pull_request_target)
+              case "$ISSUE_NUMBER" in ''|*[!0-9]*) echo 'Invalid issue number' >&2; exit 1;; esac ;;
+            *) echo 'Invalid event kind' >&2; exit 1 ;;
+          esac
+          if ! gh api "repos/$GITHUB_REPOSITORY/labels/launch" >/dev/null 2>&1; then
+            gh label create launch --repo "$GITHUB_REPOSITORY" --color 0e8a16 --description 'Owner submission or manually marked for intake' \
+              || gh api "repos/$GITHUB_REPOSITORY/labels/launch" >/dev/null
+          fi
+          add_label() {
+            case "$1" in ''|*[!0-9]*) echo 'Invalid issue number' >&2; exit 1;; esac
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$1/labels" -f 'labels[]=launch' >/dev/null
+          }
+          if [ "$EVENT_KIND" = workflow_dispatch ] || [ "$EVENT_KIND" = push ]; then
+            # Store the API result before iterating: failures must not be hidden by a pipe.
+            numbers="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=all&per_page=100" --jq ".[] | select(.user.id == $OWNER_ID) | .number")"
+            while IFS= read -r n; do
+              [ -z "$n" ] || add_label "$n"
+            done <<< "$numbers"
+          else
+            add_label "$ISSUE_NUMBER"
+          fi
