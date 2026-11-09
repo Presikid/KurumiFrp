@@ -101,7 +101,9 @@ sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 
 目录依据：微软 Shell 安全建议 https://learn.microsoft.com/en-us/windows/win32/shell/sec-shell ，Windows Known Folders https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid ，FHS https://refspecs.linuxfoundation.org/FHS_3.0/fhs/index.html ，systemd.exec https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html 。程序放 Program Files 不代表配置也应写入该只读目录。
 
-CI 目标覆盖默认 Program Files 安装、HKLM 登记、真实普通账户使用、账户间密钥隔离、Program Files 写保护、临时路径、升级与完整卸载；Linux 覆盖实际 DEB/systemd 与 Fedora 容器 RPM 生命周期。以对应提交的 CI 结果为准。ARM64 构建不等于原生硬件验证；没有完成全系统文件访问追踪，不承诺操作系统、浏览器或第三方软件完全不产生外部记录。
+历史版本的 CI 曾覆盖默认 Program Files 安装、HKLM 登记、真实普通账户使用、账户间密钥隔离、Program Files 写保护、临时路径、升级与完整卸载；Linux 曾覆盖实际 DEB/systemd 与 Fedora 容器 RPM 生命周期。以对应提交的 CI 结果为准。ARM64 构建不等于原生硬件验证；没有完成全系统文件访问追踪，不承诺操作系统、浏览器或第三方软件完全不产生外部记录。
+
+当前 CI 构建 Windows 安装包、Linux 安装包和便携包，并编译 macOS 源码；发布前核对附件。
 
 ## 配置迁移与软件更新
 

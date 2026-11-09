@@ -65,7 +65,7 @@ Windows 快捷方式可以自动打开工作台；手动登录或无桌面环境
 - **软件更新**：已安装的 Windows 和 Linux 原生包可从工作台选择项目发布版本并更新；源码运行版本需要自行更新。
 - **随手看看**：界面支持深浅主题和手机尺寸，运行记录保留当前会话最近的进程输出。
 
-frp 核心支持自动安装官方 Windows、Linux 各架构及 macOS amd64 / arm64 版本。KurumiFRP 提供 Windows x64 / ARM64 安装包、Linux amd64 / arm64 的 DEB 和 RPM、Linux armhf / riscv64 的 DEB，以及其他官方 Linux 架构的便携版。便携版更新方法见 [安装说明](docs/INSTALL.md)。核心最低支持 frp 0.60，具体验证情况见 [测试说明](docs/VALIDATION.md)。
+frp 核心支持自动安装官方 Windows、Linux 各架构及 macOS amd64 / arm64 版本。KurumiFRP 提供 Windows x64 / ARM64 安装包、Linux amd64 / arm64 的 DEB 和 RPM、Linux armhf / riscv64 的 DEB，以及其他官方 Linux 架构的便携版。便携版更新方法见 [安装说明](docs/INSTALL.md)。核心最低支持 frp 0.60，以往版本的验证记录见 [历史验证记录](docs/VALIDATION.md)。
 
 安装包和 Linux 便携包带有官方预置核心，可在未选择或手工放置其他核心时离线使用；已有用户核心优先。预置版本随软件包更新，源码构建不自带核心。
 
@@ -97,12 +97,10 @@ go build -o kurumi.exe ./cmd/kurumi
 
 也可以在工作台的「核心管理」中下载核心。无桌面环境时，请使用启动信息中的本机地址，通过 SSH 端口转发访问；令牌可用 `kurumi --data ./data --show-token` 查看。请勿公开访问令牌或配置文件。
 
-开发与测试：
+开发构建：
 
 ```sh
-go test ./...
-go test -race ./...
-go vet ./...
+go build ./cmd/kurumi
 ```
 
 ## 使用前知道这些
@@ -115,7 +113,7 @@ go vet ./...
 ## 更多资料
 
 - [安装、升级与卸载](docs/INSTALL.md)
-- [架构说明](docs/ARCHITECTURE.md) · [测试说明](docs/VALIDATION.md) · [开发路线](docs/ROADMAP.md) · [审计核验与修复](docs/AUDIT_REMEDIATION.md)
+- [架构说明](docs/ARCHITECTURE.md) · [历史验证记录](docs/VALIDATION.md) · [开发路线](docs/ROADMAP.md) · [审计核验与修复](docs/AUDIT_REMEDIATION.md)
 - [主题素材说明](docs/ARTWORK.md)
 - [版本约定](docs/VERSIONING.md)
 
