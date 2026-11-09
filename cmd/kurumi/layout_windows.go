@@ -432,7 +432,7 @@ type legacyProfile struct {
 	digest string
 }
 
-func cleanupMigrationTemps(runtimeRoot string) error {
+func verifyRuntimeProfiles(runtimeRoot string) error {
 	profilesRoot := filepath.Join(runtimeRoot, "profiles")
 	if err := verifyDirectoryACL(profilesRoot, profilesACL); err != nil {
 		return err
@@ -456,17 +456,12 @@ func cleanupMigrationTemps(runtimeRoot string) error {
 			}
 			continue
 		}
-		match := migrationTempName.FindStringSubmatch(entry.Name())
-		if match == nil {
-			return fmt.Errorf("unknown runtime profile entry retained: %s", entry.Name())
+		// A matching name and ACL do not prove that we created this directory.
+		// Keep it for manual inspection rather than deleting potentially user-owned data.
+		if migrationTempName.MatchString(entry.Name()) {
+			return fmt.Errorf("incomplete migration directory retained for inspection: %s", entry.Name())
 		}
-		path := filepath.Join(profilesRoot, entry.Name())
-		if err := verifyDirectoryACL(path, profileACL(match[1])); err != nil {
-			return err
-		}
-		if err := os.RemoveAll(path); err != nil {
-			return fmt.Errorf("cannot remove incomplete migration directory %s: %w", entry.Name(), err)
-		}
+		return fmt.Errorf("unknown runtime profile entry retained: %s", entry.Name())
 	}
 	return nil
 }
@@ -576,8 +571,8 @@ func migrateLegacyWindowsProfiles(legacyRoot, runtimeRoot, install string) error
 		}
 	}
 
-	if err = cleanupMigrationTemps(runtimeRoot); err != nil {
-		return fmt.Errorf("cannot clean an incomplete migration directory: %w", err)
+	if err = verifyRuntimeProfiles(runtimeRoot); err != nil {
+		return fmt.Errorf("cannot verify runtime profiles: %w", err)
 	}
 	oldProfiles := filepath.Join(legacyRoot, "profiles")
 	var entries []os.DirEntry
@@ -727,7 +722,7 @@ func initMachine(install string) error {
 	if e = migrateLegacyWindowsProfiles(legacyRoot, root, install); e != nil {
 		return e
 	}
-	if e = cleanupMigrationTemps(root); e != nil {
+	if e = verifyRuntimeProfiles(root); e != nil {
 		return e
 	}
 	if e = os.Remove(filepath.Join(root, ".uninstalling")); e != nil && !os.IsNotExist(e) {
@@ -822,7 +817,7 @@ func stopMachine(install string, purge bool) (err error) {
 	if err = migrateLegacyWindowsProfiles(legacyRoot, root, install); err != nil {
 		return fmt.Errorf("legacy data migration must complete before maintenance: %w", err)
 	}
-	if err = cleanupMigrationTemps(root); err != nil {
+	if err = verifyRuntimeProfiles(root); err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(filepath.Join(root, "profiles"))
