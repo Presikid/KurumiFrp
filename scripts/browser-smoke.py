@@ -242,10 +242,10 @@ with tempfile.TemporaryDirectory(prefix="kurumi-browser-") as directory:
               {tag:'v0.1.0.0', newer:false, available:true},
               {tag:'v98.0.0.0', newer:true, available:false}
             ]; navigate('update'); }""")
-            expect(page.locator('#update-version option').nth(0)).to_be_enabled()
+            assert not page.locator('#update-version option').nth(0).evaluate('(option) => option.disabled')
             expect(page.locator('#update-version option').nth(0)).to_contain_text('发布状态待确认')
-            expect(page.locator('#update-version option').nth(1)).to_be_disabled()
-            expect(page.locator('#update-version option').nth(2)).to_be_disabled()
+            assert page.locator('#update-version option').nth(1).evaluate('(option) => option.disabled')
+            assert page.locator('#update-version option').nth(2).evaluate('(option) => option.disabled')
             assert not errors, errors
             browser.close()
             print(("Offline UI harness" if offline else "Browser smoke") + " passed: login, CRUD, conflicts, redaction, saved-state reads, responsive layout; no page errors.")
