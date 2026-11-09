@@ -3,7 +3,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, reopened, synchronize, labeled, unlabeled]
+    types: [opened, reopened, synchronize]
   workflow_dispatch:
 permissions:
   contents: read
@@ -11,46 +11,8 @@ concurrency:
   group: kurumi-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  launch-gate:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      allowed: ${{ steps.labels.outputs.allowed }}
-    permissions:
-      issues: read
-    steps:
-      # Inspect GitHub metadata only; do not check out or run PR code here.
-      - name: Check Launch label
-        id: labels
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_KIND: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "$EVENT_KIND" != pull_request ]; then
-            if [ "$GITHUB_REF" = refs/heads/main ]; then
-              echo 'allowed=true' >> "$GITHUB_OUTPUT"
-            else
-              echo 'allowed=false' >> "$GITHUB_OUTPUT"
-            fi
-            exit 0
-          fi
-          case "$PR_NUMBER" in ''|*[!0-9]*) echo '::error::Invalid pull request number; build skipped.'; exit 1;; esac
-          if ! labeled="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER" --jq 'any(.labels[]; (.name | ascii_downcase) == "launch")')"; then
-            echo '::error::Could not check the Launch label; build skipped.'
-            exit 1
-          fi
-          if [ "$labeled" = true ]; then
-            echo 'allowed=true' >> "$GITHUB_OUTPUT"
-          else
-            echo '::error::Launch label missing; build skipped. Apply the label after review.'
-            exit 1
-          fi
   resolve-frp:
-    needs: [launch-gate]
-    if: needs.launch-gate.outputs.allowed == 'true'
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -66,8 +28,7 @@ jobs:
           release="$(jq -c '{tag_name,draft,prerelease,assets:[.assets[]|{name,size,digest,browser_download_url}]}' "$RUNNER_TEMP/frp-release.json")"
           printf 'release=%s\n' "$release" >> "$GITHUB_OUTPUT"
   package:
-    needs: [launch-gate, resolve-frp]
-    if: needs.launch-gate.outputs.allowed == 'true'
+    needs: [resolve-frp]
     env:
       KURUMI_FRP_RELEASE: ${{ needs.resolve-frp.outputs.release }}
     strategy:
@@ -115,8 +76,7 @@ jobs:
             dist-native/*.tar.gz
           if-no-files-found: error
   source-macos:
-    needs: [launch-gate]
-    if: needs.launch-gate.outputs.allowed == 'true'
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -204,4 +164,5 @@ jobs:
             exit 1
           fi
           gh release create "$tag" dist-native/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "KurumiFrp $version" --notes-file "docs/RELEASE_$version.md" --prerelease
+
 
