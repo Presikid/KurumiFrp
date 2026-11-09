@@ -96,7 +96,9 @@ func (s *Store) render(id string, preview bool) (Rendered, error) {
 	} else {
 		fmt.Fprintf(&b, "serverAddr = %s\nserverPort = %d\nloginFailExit = false\ntransport.tls.enable = true\n", quote(i.Host), i.Port)
 	}
-	renderProtocolInstance(&b, i)
+	if err := renderProtocolInstance(&b, i); err != nil {
+		return r, err
+	}
 	v, e := secret(i.Token, "KURUMI_AUTH_TOML")
 	if e != nil {
 		return r, e

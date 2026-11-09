@@ -19,6 +19,7 @@ const ProtocolEditor = (() => {
     <div class="span-2">${field('token', old?.hasToken ? '认证令牌（已保存，留空保留）' : '认证令牌（8–1024 字节）', '', 'password', `${old?.hasToken ? '' : 'required'} autocomplete="new-password"`)}</div>
     <div class="client-field">${field('user', '客户端用户名称（可选）', v.user || '', 'text', 'pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]{0,63}"')}</div>
     <div class="client-field">${field('natHoleStunServer', 'NAT 穿透 STUN 地址（可选）', v.natHoleStunServer || '', 'text', 'placeholder="host:port"')}</div>
+    <div class="client-field">${field('dnsServer', 'DNS 服务器 IP（可选）', v.dnsServer || '', 'text', 'placeholder="例如 1.1.1.1 或 [::1]:53"')}</div>
     <div class="server-field">${field('httpPort', 'HTTP 虚拟主机端口（0 关闭）', v.httpPort ?? 0, 'number', 'min="0" max="65535" step="1"')}</div>
     <div class="server-field">${field('httpsPort', 'HTTPS 虚拟主机端口（0 关闭）', v.httpsPort ?? 0, 'number', 'min="0" max="65535" step="1"')}</div>
     <div class="server-field">${field('tcpmuxHTTPConnectPort', 'TCPMUX HTTP CONNECT 端口（0 关闭）', v.tcpmuxHTTPConnectPort ?? 0, 'number', 'min="0" max="65535" step="1"')}</div>
@@ -159,7 +160,7 @@ const ProtocolEditor = (() => {
    delete result.hasToken;
    Object.assign(result, {name:val('name').trim(), kind, host:val('host').trim(), port:+val('port'), token:val('token'), autoStart:f.autoStart.checked,
     httpPort:kind === 'frps' ? +val('httpPort') : 0, httpsPort:kind === 'frps' ? +val('httpsPort') : 0,
-    user:kind === 'frpc' ? val('user').trim() : '', natHoleStunServer:kind === 'frpc' ? val('natHoleStunServer').trim() : '',
+    user:kind === 'frpc' ? val('user').trim() : '', natHoleStunServer:kind === 'frpc' ? val('natHoleStunServer').trim() : '', dnsServer:kind === 'frpc' ? val('dnsServer').trim() : '',
     tcpmuxHTTPConnectPort:kind === 'frps' ? +val('tcpmuxHTTPConnectPort') : 0,
     tcpmuxPassthrough:kind === 'frps' && f.tcpmuxPassthrough.checked, subDomainHost:kind === 'frps' ? val('subDomainHost').trim() : ''});
    return result;
