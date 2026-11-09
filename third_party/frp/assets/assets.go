@@ -12,21 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Modified by KurumiFRP: isolate web assets per server.
+
 package assets
 
 import (
 	"io/fs"
 	"net/http"
+	"sync"
 )
 
 var (
-	// read-only filesystem created by "embed" for embedded files
-	content fs.FS
-
-	FileSystem http.FileSystem
-
-	// if prefix is not empty, we get file content from disk
-	prefixPath string
+	// content is the embedded read-only filesystem registered at startup.
+	content   fs.FS
+	contentMu sync.RWMutex
 )
 
 type emptyFS struct{}
@@ -35,23 +34,24 @@ func (emptyFS) Open(name string) (http.File, error) {
 	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 }
 
-// if path is empty, load assets in memory
-// or set FileSystem using disk files
-func Load(path string) {
-	prefixPath = path
-	switch {
-	case prefixPath != "":
-		FileSystem = http.Dir(prefixPath)
-	case content != nil:
-		FileSystem = http.FS(content)
-	default:
-		FileSystem = emptyFS{}
+// ForPath returns the assets owned by one web server.
+func ForPath(path string) http.FileSystem {
+	if path != "" {
+		return http.Dir(path)
 	}
+	contentMu.RLock()
+	defer contentMu.RUnlock()
+	if content != nil {
+		return http.FS(content)
+	}
+	return emptyFS{}
 }
 
 func Register(fileSystem fs.FS) {
 	subFs, err := fs.Sub(fileSystem, "dist")
 	if err == nil {
+		contentMu.Lock()
 		content = subFs
+		contentMu.Unlock()
 	}
 }
