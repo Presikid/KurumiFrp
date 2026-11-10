@@ -121,7 +121,7 @@ func protocolTextOK(s string) bool {
 	return true
 }
 
-func tcpMuxDomainOK(domain string) bool {
+func vhostDomainOK(domain string) bool {
 	if domain == "*" {
 		return true
 	}
@@ -269,7 +269,7 @@ func validateProtocolTunnel(t Tunnel, endpoint string, claim func(string, string
 		return fmt.Errorf("TCPMUX 密码需要设置 HTTP 用户名")
 	}
 	for _, domain := range t.Domains {
-		if !tcpMuxDomainOK(domain) {
+		if !vhostDomainOK(domain) {
 			return fmt.Errorf("TCPMUX 域名无效")
 		}
 		if t.Enabled {

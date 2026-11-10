@@ -418,7 +418,7 @@ func validate(s State) error {
 				return nil
 			}
 			for _, d := range t.Domains {
-				if !hostOK(d) || net.ParseIP(d) != nil {
+				if !vhostDomainOK(d) {
 					return fmt.Errorf("虚拟主机域名无效")
 				}
 				if t.Enabled {
