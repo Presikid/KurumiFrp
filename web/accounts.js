@@ -27,6 +27,8 @@ render = function () {
   document.title = '授权实例 · KurumiFRP';
   document.querySelectorAll('[data-page]').forEach(el => el.classList.toggle('active', el.dataset.page === page));
   $('#content').innerHTML = window.KurumiInstances.render(data,{header,empty,esc,registrationText:instanceRegistrationText});
+  $('#content').insertAdjacentHTML('beforeend', '<section class="panel" id="shared-nodes"><div class="panel-title"><h3>授权远程实例</h3></div><div class="panel-content" data-shared-list>正在读取…</div></section>');
+  loadSharedNodes();
   renderedSnapshot = stateSnapshot; renderedPage = page; renderedRevision = data.revision;
   return;
  }
@@ -57,12 +59,41 @@ async function loadAccounts() {
  }
 }
 
+async function loadSharedNodes() {
+ const host = document.querySelector('#shared-nodes [data-shared-list]');
+ if (!host) return;
+ const generation = authGeneration, navigation = navigationGeneration;
+ const current = () => host.isConnected && generation === authGeneration && navigation === navigationGeneration && page === 'instances';
+ try {
+  const result = await api('nodes');
+  if (!current()) return;
+  const nodes = Array.isArray(result.nodes) ? result.nodes : [];
+  host.innerHTML = nodes.length ? nodes.map(node => `<div class="check-row"><strong>${esc(node.name)}</strong><button type="button" data-shared-check="${esc(node.id)}" ${node.ready?'':'disabled'}>${node.ready?'检查状态':'等待管理员确认地址'}</button></div><div data-shared-result="${esc(node.id)}"></div>`).join('') : '<p class="small-note">当前没有远程实例授权。</p>';
+  host.querySelectorAll('[data-shared-check]').forEach(button => button.addEventListener('click', async () => {
+   const node = nodes.find(item => item.id === button.dataset.sharedCheck);
+   const output = host.querySelector(`[data-shared-result="${node?.id || ''}"]`);
+   if (!node || !output || !current()) return;
+   const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 10000);
+   button.disabled = true; output.textContent = '正在读取…';
+   try {
+    const checked = await api('nodes/check', {id:node.id, stamp:node.stamp}, {signal:controller.signal});
+    if (!current() || !output.isConnected) return;
+    if (checked.id !== node.id || checked.stamp !== node.stamp) throw new Error('节点已变化，请重新打开页面。');
+    const instances = Array.isArray(checked.summary?.instances) ? checked.summary.instances : [];
+    const states = {running:'运行中', stopped:'已停止', exited:'已退出', 'autostart-failed':'自动启动失败'};
+    output.innerHTML = instances.length ? `<ul>${instances.map(instance => `<li>${esc(instance.name)} · ${esc(instance.kind)} · ${esc(states[instance.state] || '状态未知')}</li>`).join('')}</ul>` : '<p class="small-note">没有可显示的授权实例；实例可能已被替换，请联系管理员重新授权。</p>';
+   } catch (error) {if (current() && output.isConnected) output.textContent = error.name === 'AbortError' ? '检查超时，请重试。' : error.message;}
+   finally {clearTimeout(timeout); if (button.isConnected) button.disabled = false;}
+  }));
+ } catch (error) {if (current()) host.textContent = '读取远程授权失败：' + error.message;}
+}
+
 function paintAccounts() {
  const list = $('#account-list');
  if (!list || !accountData) return;
  const names = Object.fromEntries(data.state.instances.map(i => [i.id, i.name]));
  list.innerHTML = accountData.accounts.length ? `<div class="table-wrap"><table><thead><tr><th>用户</th><th>角色</th><th>状态</th><th>授权实例</th><th>管理</th></tr></thead><tbody>${accountData.accounts.map(u =>
-  `<tr><td>${esc(u.username)}</td><td>${esc(({admin:'管理员',operator:'操作员',viewer:'查看者'})[u.role])}</td><td>${u.enabled?'启用':'停用'}</td><td>${u.role==='admin'?'全部':(u.instances.map(id=>esc(names[id] || ('已不存在：'+id))).join('、') || '无')}${u.role==='operator'?' · 可操作 '+(u.controlInstances || []).length+' 个':''}${u.role!=='admin'&&u.allowLogs?' · 可查看 '+(u.logInstances || []).length+' 个实例日志':''}</td><td><div class="actions"><button type="button" data-account-edit="${esc(u.id)}">编辑</button><button type="button" class="danger" data-account-delete="${esc(u.id)}">删除</button></div></td></tr>`
+  `<tr><td>${esc(u.username)}</td><td>${esc(({admin:'管理员',operator:'操作员',viewer:'查看者'})[u.role])}</td><td>${u.enabled?'启用':'停用'}</td><td>${u.role==='admin'?'全部':(u.instances.map(id=>esc(names[id] || ('已不存在：'+id))).join('、') || '无')}${u.role==='operator'?' · 可操作 '+(u.controlInstances || []).length+' 个':''}${u.role!=='admin'&&u.allowLogs?' · 可查看 '+(u.logInstances || []).length+' 个实例日志':''}${u.role!=='admin'?' · 远程只读 '+(u.remoteInstances || []).length+' 个':''}</td><td><div class="actions"><button type="button" data-account-edit="${esc(u.id)}">编辑</button><button type="button" class="danger" data-account-delete="${esc(u.id)}">删除</button></div></td></tr>`
  ).join('')}</tbody></table></div>` : '<p>尚未创建本地账户。现有管理令牌可继续使用。</p>';
 }
 
@@ -73,6 +104,8 @@ function showAccountEditor(id = '') {
  const grants = new Set(u?.instances || []);
  const controls = new Set(u?.controlInstances || []);
  const logs = new Set(u?.logInstances || []);
+ const remoteKey = grant => `${grant.nodeId}:${grant.instanceId}:${grant.binding}`;
+ const remoteChoices = new Map((u?.remoteInstances || []).map(grant => [remoteKey(grant), {grant, label:`节点 ${grant.nodeId} / 实例 ${grant.instanceId}（待核对）`, selected:true}]));
  host.innerHTML = `<form id="account-form"><h3>${u?'编辑账户':'新建账户'}</h3><input type="hidden" name="id" value="${esc(u?.id || '')}"><div class="form-grid">
   <label>用户名<input name="username" required pattern="[A-Za-z0-9][A-Za-z0-9_.-]{2,31}" maxlength="32" value="${esc(u?.username || '')}" ${u?'readonly':''} autocomplete="off"></label>
   <label>角色<select name="role"><option value="viewer" ${!u || u.role==='viewer'?'selected':''}>查看者</option><option value="operator" ${u?.role==='operator'?'selected':''}>操作员</option><option value="admin" ${u?.role==='admin'?'selected':''}>管理员（全部权限）</option></select></label>
@@ -82,14 +115,59 @@ function showAccountEditor(id = '') {
   <fieldset class="span-2" id="account-controls"><legend>可操作的实例</legend>${data.state.instances.length ? data.state.instances.map(i => `<label class="form-check"><input type="checkbox" name="controlInstance" value="${esc(i.id)}" ${controls.has(i.id)?'checked':''}>${esc(i.name)} · ${esc(i.kind)}</label>`).join('') : '<p>当前没有实例。</p>'}<p class="small-note">可操作实例必须先在上方授权查看；未勾选时仅可查看，不能启停、重启或校验。</p></fieldset>
   <div class="span-2" id="account-log-grant"><label class="form-check"><input type="checkbox" name="allowLogs" ${u?.allowLogs?'checked':''}>允许查看运行日志</label><p class="small-note">默认关闭。日志可能包含地址、用户名和其他敏感内容；请仅授予可信账户。</p></div>
   <fieldset class="span-2" id="account-logs"><legend>可查看日志的实例</legend>${data.state.instances.length ? data.state.instances.map(i => `<label class="form-check"><input type="checkbox" name="logInstance" value="${esc(i.id)}" ${logs.has(i.id)?'checked':''}>${esc(i.name)} · ${esc(i.kind)}</label>`).join('') : '<p>当前没有实例。</p>'}<p class="small-note">只能选择已授权查看的实例；未选择时无法查看任何日志。</p></fieldset>
+  <fieldset class="span-2" id="account-remote"><legend>远程实例只读授权</legend><p class="small-note">读取已添加且已确认地址的节点，选择可查看状态的实例；目标替换实例后需要重新授权。远程控制仍仅限管理员。</p><button type="button" data-load-remote-grants>读取远程实例</button><p class="small-note" data-remote-status></p><div data-remote-choices></div></fieldset>
   </div><div class="actions"><button class="primary" type="submit">保存账户</button><button type="button" data-account-new>新建账户</button></div><p class="error" role="alert"></p></form>`;
  const form = $('#account-form');
  const updateGrants = () => {
   const role = form.elements.role.value, admin = role === 'admin';
-  $('#account-grants').hidden = admin; $('#account-log-grant').hidden = admin; $('#account-controls').hidden = role !== 'operator'; $('#account-logs').hidden = admin || !form.elements.allowLogs.checked;
+  $('#account-grants').hidden = admin; $('#account-log-grant').hidden = admin; $('#account-controls').hidden = role !== 'operator'; $('#account-logs').hidden = admin || !form.elements.allowLogs.checked; $('#account-remote').hidden = admin;
   const visible = new Set([...form.querySelectorAll('[name=instance]:checked')].map(el => el.value));
   form.querySelectorAll('[name=controlInstance], [name=logInstance]').forEach(el => {el.disabled = !visible.has(el.value); if (el.disabled) el.checked = false;});
  };
+ const paintRemoteChoices = () => {
+  const host = form.querySelector('[data-remote-choices]');
+  host.innerHTML = remoteChoices.size ? [...remoteChoices].map(([key, choice]) => `<label class="form-check"><input type="checkbox" name="remoteInstance" value="${esc(key)}" ${choice.selected?'checked':''}>${esc(choice.label)}</label>`).join('') : '<p class="small-note">尚无远程实例授权。</p>';
+ };
+ form.addEventListener('change', event => {
+  const box = event.target;
+  if (box.name !== 'remoteInstance') return;
+  const choice = remoteChoices.get(box.value);
+  if (!choice) return;
+  choice.selected = box.checked;
+  if (box.checked) for (const [key, other] of remoteChoices) {
+   if (key !== box.value && other.grant.nodeId === choice.grant.nodeId && other.grant.instanceId === choice.grant.instanceId) other.selected = false;
+  }
+  paintRemoteChoices();
+ });
+ form.querySelector('[data-load-remote-grants]').addEventListener('click', async event => {
+  const button = event.currentTarget, status = form.querySelector('[data-remote-status]'), generation = authGeneration;
+  button.disabled = true; status.textContent = '正在读取节点…';
+  const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 60000);
+  try {
+   const list = await api('nodes', undefined, {signal:controller.signal});
+   const nodes = (list.nodes || []).filter(node => node.addresses?.length);
+   let failed = (list.nodes || []).length - nodes.length;
+   for (let offset = 0; offset < nodes.length; offset += 4) {
+    const batch = nodes.slice(offset, offset + 4);
+    const results = await Promise.allSettled(batch.map(node => api('nodes/check', {id:node.id, stamp:node.stamp}, {signal:controller.signal})));
+    if (!form.isConnected || generation !== authGeneration) return;
+    results.forEach((result, index) => {
+     const node = batch[index];
+     if (result.status !== 'fulfilled' || result.value.id !== node.id || result.value.stamp !== node.stamp) {failed++; return;}
+     for (const instance of result.value.summary?.instances || []) {
+      if (!/^[a-f0-9]{64}$/.test(instance.binding || '')) continue;
+      const grant = {nodeId:node.id, instanceId:instance.id, binding:instance.binding}, key = remoteKey(grant);
+      const previous = remoteChoices.get(key);
+      remoteChoices.set(key, {grant, label:`${node.name} / ${instance.name} · ${instance.kind}`, selected:previous?.selected || false});
+     }
+    });
+   }
+   if (form.isConnected && generation === authGeneration) {paintRemoteChoices(); status.textContent = failed ? `${failed} 个节点未能读取，请先检查地址或授权。` : '远程实例已读取；旧版目标可能无法提供实例身份。';}
+  } catch (error) { if (form.isConnected && generation === authGeneration) status.textContent = error.name === 'AbortError' ? '读取超时，请重试。' : error.message; }
+  finally {clearTimeout(timeout); if (form.isConnected) button.disabled = false;}
+ });
+ form.remoteGrantChoices = remoteChoices;
+ paintRemoteChoices();
  form.addEventListener('change', updateGrants); updateGrants();
 }
 
@@ -172,7 +250,8 @@ $('#content').addEventListener('submit', async e => {
   role, enabled:form.elements.enabled.checked, password:form.elements.password.value,
   instances:role === 'admin' ? [] : [...form.querySelectorAll('[name=instance]:checked')].map(el => el.value),
   controlInstances:role === 'operator' ? [...form.querySelectorAll('[name=controlInstance]:checked')].map(el => el.value) : [], allowLogs:role !== 'admin' && form.elements.allowLogs.checked,
-  logInstances:role !== 'admin' && form.elements.allowLogs.checked ? [...form.querySelectorAll('[name=logInstance]:checked')].map(el => el.value) : []};
+  logInstances:role !== 'admin' && form.elements.allowLogs.checked ? [...form.querySelectorAll('[name=logInstance]:checked')].map(el => el.value) : [],
+  remoteInstances:role === 'admin' ? [] : [...form.remoteGrantChoices.values()].filter(choice => choice.selected).map(choice => choice.grant)};
  button.disabled = true; error.textContent = '';
  try {
   await api('accounts', request); form.elements.password.value = ''; toast('账户已保存');
