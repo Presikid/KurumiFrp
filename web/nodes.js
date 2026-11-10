@@ -19,7 +19,7 @@ function syncNodeControlNotices() {
    if (!key || !key.startsWith(nodeControlNoticePrefix)) continue;
    let saved = null;
    try { saved = JSON.parse(localStorage.getItem(key)); } catch (_) { /* Keep a damaged record visible. */ }
-   const valid = saved && /^[a-f0-9]{16}$/.test(saved.nodeId) && /^[a-f0-9]{16}$/.test(saved.instanceId) && ['start','stop'].includes(saved.action);
+   const valid = saved && /^[a-f0-9]{16}$/.test(saved.nodeId) && /^[a-f0-9]{16}$/.test(saved.instanceId) && ['start','stop','restart'].includes(saved.action);
    notices.push(valid ? {key,nodeId:saved.nodeId,instanceId:saved.instanceId,action:saved.action,phase:'uncertain'} : {key,phase:'uncertain'});
   }
  } catch (_) { notices.push({phase:'unavailable'}); }
@@ -72,7 +72,7 @@ function paintNodeControlNotice() {
   const node = nodesModel?.nodes.find(n => n.id === notice.nodeId);
   const instance = nodeResults[notice.nodeId]?.summary?.instances.find(i => i.id === notice.instanceId);
   const target = esc((notice.nodeName || node?.name || (notice.nodeId ? '节点 ' + notice.nodeId : '未知节点')) + ' / ' + (notice.instanceName || instance?.name || (notice.instanceId ? '实例 ' + notice.instanceId : '未知实例')));
-  const action = notice.action === 'start' ? '启动' : notice.action === 'stop' ? '停止' : '操作';
+  const action = ({start:'启动',stop:'停止',restart:'重启'})[notice.action] || '操作';
   return notice.phase === 'pending'
    ? `<p>正在等待 ${target} 的${action}结果。关闭页面或断线不能保证取消。</p>`
    : `<p>${target} 的${action}结果未确认或核对记录尚未清除。请核对目标状态，再决定是否重试。 <button type="button" data-node-action="ack-control" data-notice-key="${esc(notice.key)}">核对并解除</button></p>`;
@@ -120,8 +120,8 @@ function mountNodes() {
    <div class="panel-content"><p class="small-note">先在目标工作台生成只读授权，添加后核对解析地址。检查只连接已确认地址，并验证 HTTPS 证书。</p><div id="nodes-list" role="status">正在读取…</div></div></section>
   <section class="panel"><div class="panel-title"><div><h3>允许其他工作台查看本机</h3><p>独立只读授权仅用于查看本机所有实例的名称、类型和运行状态。</p></div><span id="node-sharing" class="pill">读取中</span></div>
    <div class="panel-content"><p class="small-note">工作台仍只监听本机。需由管理员配置受信任的 HTTPS 反向代理；只读与控制使用不同授权。</p><div class="actions"><button data-node-action="issue">生成 / 更换只读授权</button><button class="danger" data-node-action="revoke">撤销只读授权</button></div><p id="node-page-error" class="error" role="alert"></p></div></section>
-  <section class="panel"><div class="panel-title"><div><h3>允许远程启动和停止</h3><p>单独授权，默认关闭。持有者可操作本机全部实例。</p></div><span id="node-control-sharing" class="pill">读取中</span></div>
-   <div class="panel-content"><p class="small-note">仅向可信工作台提供此授权；生成新授权会撤销旧授权。已受理的操作可能在撤销后完成，不支持远程重启。</p><div class="actions"><button data-node-action="issue-control">生成 / 更换控制授权</button><button class="danger" data-node-action="revoke-control">撤销控制授权</button></div></div></section>
+  <section class="panel"><div class="panel-title"><div><h3>允许远程启停和重启</h3><p>单独授权，默认关闭。持有者可操作本机全部实例。</p></div><span id="node-control-sharing" class="pill">读取中</span></div>
+   <div class="panel-content"><p class="small-note">仅向可信工作台提供此授权；生成新授权会撤销旧授权。已受理的操作可能在撤销后完成。</p><div class="actions"><button data-node-action="issue-control">生成 / 更换控制授权</button><button class="danger" data-node-action="revoke-control">撤销控制授权</button></div></div></section>
  </div>`;
  paintNodeControlNotice();
  loadNodes();
@@ -182,8 +182,9 @@ function paintNodes() {
    detail = `<p class="small-note">检查于 ${esc(new Date(state.checkedAt).toLocaleString('zh-CN'))} · 工作台 ${esc(state.summary.version)} · ${instances.length} 个实例</p>` +
     (instances.length ? `<ul class="node-instances">${instances.map(i=>{
      const running = i.state === 'running', action = running ? 'stop' : 'start';
-     const button = node.hasControl ? `<button type="button" data-node-action="control-${action}" data-node-id="${esc(node.id)}" data-instance-id="${esc(i.id)}" ${nodeBusy||nodeLoading||nodeControlNotices.length?'disabled':''}>${running?'停止':'启动'}</button>` : '';
-     return `<li><strong>${esc(i.name)}</strong><span>${esc(i.kind)} · ${esc(labels[i.state] || '状态未知')}</span>${button}</li>`;
+     const disabled = nodeBusy||nodeLoading||nodeControlNotices.length?'disabled':'';
+     const buttons = node.hasControl ? `<div class="actions"><button type="button" data-node-action="control-${action}" data-node-id="${esc(node.id)}" data-instance-id="${esc(i.id)}" ${disabled}>${running?'停止':'启动'}</button>${running?`<button type="button" data-node-action="control-restart" data-node-id="${esc(node.id)}" data-instance-id="${esc(i.id)}" ${disabled}>重启</button>`:''}</div>` : '';
+     return `<li><strong>${esc(i.name)}</strong><span>${esc(i.kind)} · ${esc(labels[i.state] || '状态未知')}</span>${buttons}</li>`;
     }).join('')}</ul>` : '<p class="small-note">目标没有实例。</p>');
   }
   const addresses = node.addresses || [];
@@ -285,14 +286,14 @@ async function saveNodeForm(event) {
 function showIssuedNodeCredential(value, control=false) {
  ensureNodesDialog();
  ++nodeDialogGeneration; nodeIssued = value;
- nodesDialog.innerHTML = `<h2>${control?'控制授权':'只读授权'}已生成</h2><p>旧授权已失效。${control?'持有者可远程启动和停止本机全部实例。':''}此授权只显示一次；请复制并通过安全渠道交给获准的工作台。丢失后可重新生成。</p><label>授权<textarea readonly rows="3" aria-label="${control?'控制授权':'只读授权'}"></textarea></label><div class="dialog-actions"><button type="button" data-node-dialog="select">选择授权</button><button class="primary" type="button" data-node-dialog="close">已保存，关闭</button></div>`;
+ nodesDialog.innerHTML = `<h2>${control?'控制授权':'只读授权'}已生成</h2><p>旧授权已失效。${control?'持有者可远程启动、停止和重启本机全部实例。':''}此授权只显示一次；请复制并通过安全渠道交给获准的工作台。丢失后可重新生成。</p><label>授权<textarea readonly rows="3" aria-label="${control?'控制授权':'只读授权'}"></textarea></label><div class="dialog-actions"><button type="button" data-node-dialog="select">选择授权</button><button class="primary" type="button" data-node-dialog="close">已保存，关闭</button></div>`;
  nodesDialog.querySelector('textarea').value = nodeIssued;
  stopRefreshPolling(); if (!nodesDialog.open) nodesDialog.showModal();
 }
 async function mutateNodes(action, node) {
  if (!nodesModel || nodeBusy || nodeLoading) return;
  const issuing = action === 'issue' || action === 'issue-control';
- const prompt = action === 'issue' ? '生成新的只读授权？旧授权会立即失效。新授权只显示一次。' : action === 'issue-control' ? '生成新的控制授权？持有者可远程启动和停止本机全部实例。旧控制授权会立即失效。' : action === 'revoke' ? '撤销本机只读授权？所有使用它的控制端将无法再查看状态。' : action === 'revoke-control' ? '撤销本机控制授权？已经受理的操作可能仍会完成。' : `从本机删除节点「${node.name}」？这不会撤销目标节点上的授权。`;
+ const prompt = action === 'issue' ? '生成新的只读授权？旧授权会立即失效。新授权只显示一次。' : action === 'issue-control' ? '生成新的控制授权？持有者可远程启动、停止和重启本机全部实例。旧控制授权会立即失效。' : action === 'revoke' ? '撤销本机只读授权？所有使用它的控制端将无法再查看状态。' : action === 'revoke-control' ? '撤销本机控制授权？已经受理的操作可能仍会完成。' : `从本机删除节点「${node.name}」？这不会撤销目标节点上的授权。`;
  if (!confirm(prompt)) return;
  const generation = nodePageGeneration, session = authGeneration;
  let issuedVisible = false;
@@ -385,10 +386,10 @@ async function controlNode(node, instance, action) {
   const preview = result.preview;
   if (result.id!==node.id || result.stamp!==node.stamp || !preview || preview.id!==instance.id || !/^[a-f0-9]{64}$/.test(preview.version || '')) throw new Error('目标状态无效，请重新检查。');
   const running = preview.state === 'running';
-  if (preview.name !== instance.name || preview.kind !== instance.kind || (action === 'start' && running) || (action === 'stop' && !running)) { delete nodeResults[node.id]; toast('目标实例信息或状态已变化，请重新检查。'); return; }
-  const label = action === 'start' ? '启动' : '停止';
+  if (preview.name !== instance.name || preview.kind !== instance.kind || (action === 'start' && running) || (action !== 'start' && !running)) { delete nodeResults[node.id]; toast('目标实例信息或状态已变化，请重新检查。'); return; }
+  const label = ({start:'启动',stop:'停止',restart:'重启'})[action];
   const stateLabel = ({running:'运行中',stopped:'已停止',exited:'已退出','autostart-failed':'自动启动失败'})[preview.state] || '状态未知';
-  if (!confirm(`在「${node.name}」${label}实例「${preview.name}」（${preview.kind}）？\n当前状态：${stateLabel}。提交后连接中断不能保证取消；结果不明时请先到目标核对。`)) return;
+  if (!confirm(`在「${node.name}」${label}实例「${preview.name}」（${preview.kind}）？\n当前状态：${stateLabel}。${action === 'restart' ? '重启会应用目标上的当前草稿；停止后如果启动失败，实例可能保持停止。' : ''}提交后连接中断不能保证取消；结果不明时请先到目标核对。`)) return;
   syncNodeControlNotices();
   if (nodeControlNotices.length) { toast('有尚未核对的远程操作，请先核对。'); return; }
   pending = beginNodeControlNotice(node, preview, action);
@@ -474,9 +475,9 @@ $('#content').addEventListener('click', event => {
  else if (action === 'new') openNodeForm(null);
  else if (action === 'edit' && node) openNodeForm(node);
  else if (action === 'check' && node) checkNode(node);
- else if ((action === 'control-start' || action === 'control-stop') && node) {
+ else if (['control-start','control-stop','control-restart'].includes(action) && node) {
   const instance = nodeResults[node.id]?.summary?.instances.find(i=>i.id===button.dataset.instanceId);
-  if (instance) controlNode(node,instance,action === 'control-start' ? 'start' : 'stop');
+  if (instance) controlNode(node,instance,action.slice('control-'.length));
  }
  else if (action === 'resolve' && node) reviewNodeAddresses(node);
  else if (['issue','revoke','issue-control','revoke-control'].includes(action)) mutateNodes(action, null);

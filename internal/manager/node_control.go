@@ -71,7 +71,7 @@ func validNodeControlRequest(id, action, version string, confirmed bool) bool {
 	switch action {
 	case "preview":
 		return version == "" && !confirmed
-	case "start", "stop":
+	case "start", "stop", "restart":
 		return confirmed && nodeTokenPattern.MatchString(version)
 	default:
 		return false
@@ -146,7 +146,7 @@ func (a *App) nodeControlAPI(w http.ResponseWriter, r *http.Request) {
 		_ = controller.Flush()
 		return
 	}
-	if preview.Version != req.Version || (req.Action == "start" && preview.State == "running") || (req.Action == "stop" && preview.State != "running") {
+	if preview.Version != req.Version || (req.Action == "start" && preview.State == "running") || ((req.Action == "stop" || req.Action == "restart") && preview.State != "running") {
 		a.mu.Unlock()
 		a.nodeControlGate.RUnlock()
 		fail(w, 409, fmt.Errorf("实例状态或配置已变化，请重新检查"))
@@ -159,7 +159,7 @@ func (a *App) nodeControlAPI(w http.ResponseWriter, r *http.Request) {
 	a.mu.Unlock()
 	a.nodeControlGate.RUnlock()
 	if err != nil {
-		if req.Action == "start" && a.webhooks != nil {
+		if (req.Action == "start" || req.Action == "restart") && a.webhooks != nil {
 			a.webhooks.emitInstance("instance.start_failed", snapshot.instance.ID, snapshot.instance.Kind)
 		}
 		fail(w, status, fmt.Errorf("实例操作未完成，请在目标工作台查看详情"))
