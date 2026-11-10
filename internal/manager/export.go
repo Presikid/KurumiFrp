@@ -100,6 +100,7 @@ func (a *App) export(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, fmt.Errorf("无效的导出范围"))
 		return
 	}
+	db.Schedules = schedulesForState(db.Schedules, db.State)
 	reply(w, 200, db)
 }
 
@@ -133,6 +134,7 @@ func selectExportScope(db Database, scope string, target uint64) (Database, erro
 	default:
 		return Database{}, fmt.Errorf("无效的导出范围")
 	}
+	db.Schedules = schedulesForState(db.Schedules, db.State)
 	return db, nil
 }
 
@@ -217,6 +219,16 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 	if err = validateVisitorListeners(a.store.DB.State, db.State); err != nil {
 		fail(w, 400, err)
 		return
+	}
+	if err = validateSchedules(db.State, db.Schedules); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	db.Schedules = cloneSchedules(db.Schedules)
+	for id, plan := range db.Schedules {
+		plan = pauseSchedule(plan, "导入或恢复后请检查并重新启用计划")
+		plan.LastMinute, plan.LastStatus = 0, ""
+		db.Schedules[id] = plan
 	}
 	// Ignore imported notification settings. The imported key replaces the local
 	// key, so re-encrypt both local credentials before committing either.

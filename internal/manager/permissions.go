@@ -33,7 +33,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.admin()
 		case "/api/webhooks":
 			return p.admin()
-		case "/api/tunnels/export":
+		case "/api/tunnels/export", "/api/schedules":
 			return p.admin()
 		case "/api/control", "/api/validate":
 			return p.admin() || p.Role == "operator"

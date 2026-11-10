@@ -7,8 +7,9 @@ import (
 )
 
 type runtimeOperation struct {
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx       context.Context
+	cancel    context.CancelFunc
+	scheduled bool
 }
 
 type runtimeRequest struct {
@@ -18,12 +19,14 @@ type runtimeRequest struct {
 }
 
 type runtimeSnapshot struct {
-	instance Instance
-	rendered Rendered
-	target   string
-	coreID   string
-	revision uint64
-	process  *process
+	instance        Instance
+	rendered        Rendered
+	target          string
+	coreID          string
+	revision        uint64
+	process         *process
+	scheduleVersion string
+	scheduleMinute  int64
 }
 
 // A state replacement must not detach a live instance or reuse its ID for a
@@ -62,6 +65,7 @@ func (a *App) discardStoppedRuntimeLocked() {
 	clear(a.traffic)
 	clear(a.startupErrors)
 	clear(a.nodeOperationVersions)
+	clear(a.scheduleBlocks)
 	for id := range a.generations {
 		if _, exists := a.store.DB.State.Instance(id); !exists {
 			delete(a.generations, id)
@@ -83,6 +87,10 @@ func (a *App) beginRuntimeOperation(parent context.Context, req runtimeRequest, 
 // reserve an operation and publish an immediate failure without a race against
 // a concurrent manual operation.
 func (a *App) beginRuntimeOperationLocked(parent context.Context, req runtimeRequest, validate bool) (runtimeSnapshot, *runtimeOperation, int, error) {
+	return a.beginRuntimeOperationSourceLocked(parent, req, validate, true)
+}
+
+func (a *App) beginRuntimeOperationSourceLocked(parent context.Context, req runtimeRequest, validate, manual bool) (runtimeSnapshot, *runtimeOperation, int, error) {
 	var snapshot runtimeSnapshot
 	if a.closing {
 		return snapshot, nil, http.StatusServiceUnavailable, fmt.Errorf("工作台正在关闭")
@@ -132,6 +140,11 @@ func (a *App) beginRuntimeOperationLocked(parent context.Context, req runtimeReq
 			return snapshot, nil, http.StatusBadRequest, fmt.Errorf("无法使用所选 frp 核心：%w", err)
 		}
 	}
+	if manual && !validate {
+		if err := a.pauseScheduleForManualLocked(req.ID); err != nil {
+			return snapshot, nil, http.StatusInternalServerError, err
+		}
+	}
 	ctx, cancel := context.WithCancel(parent)
 	op := &runtimeOperation{ctx: ctx, cancel: cancel}
 	if a.operations == nil {
@@ -163,6 +176,11 @@ func (a *App) activeCoreID() string {
 }
 
 func (a *App) checkRuntimeSnapshot(ctx context.Context, snapshot runtimeSnapshot) (int, error) {
+	if snapshot.scheduleVersion != "" {
+		if status, err := a.checkScheduledSnapshot(ctx, snapshot); err != nil {
+			return status, err
+		}
+	}
 	if a.closing {
 		return http.StatusServiceUnavailable, fmt.Errorf("工作台正在关闭，未启动新进程")
 	}
