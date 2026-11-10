@@ -30,16 +30,18 @@ var nodeTokenPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var nodeDNSLabel = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
 
 type remoteNode struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	URL        string   `json:"url"`
-	Credential string   `json:"credential"`
-	Addresses  []string `json:"addresses,omitempty"`
+	ID                string   `json:"id"`
+	Name              string   `json:"name"`
+	URL               string   `json:"url"`
+	Credential        string   `json:"credential"`
+	ControlCredential string   `json:"controlCredential,omitempty"`
+	Addresses         []string `json:"addresses,omitempty"`
 }
 
 type nodeSettings struct {
-	ReaderHash string       `json:"readerHash,omitempty"`
-	Nodes      []remoteNode `json:"nodes,omitempty"`
+	ReaderHash  string       `json:"readerHash,omitempty"`
+	ControlHash string       `json:"controlHash,omitempty"`
+	Nodes       []remoteNode `json:"nodes,omitempty"`
 }
 
 type nodeInstanceSummary struct {
@@ -109,7 +111,8 @@ func validateStoredNodes(s *Store, cfg *nodeSettings) error {
 	if cfg == nil {
 		return nil
 	}
-	if cfg.ReaderHash != "" && !nodeTokenPattern.MatchString(cfg.ReaderHash) {
+	if (cfg.ReaderHash != "" && !nodeTokenPattern.MatchString(cfg.ReaderHash)) ||
+		(cfg.ControlHash != "" && (!nodeTokenPattern.MatchString(cfg.ControlHash) || cfg.ControlHash == cfg.ReaderHash)) {
 		return fmt.Errorf("invalid node authorization")
 	}
 	if len(cfg.Nodes) > maxRemoteNodes {
@@ -125,6 +128,12 @@ func validateStoredNodes(s *Store, cfg *nodeSettings) error {
 		if err != nil || !nodeTokenPattern.MatchString(plain) {
 			return fmt.Errorf("invalid node credential")
 		}
+		if n.ControlCredential != "" {
+			control, err := s.decrypt(n.ControlCredential)
+			if err != nil || !nodeTokenPattern.MatchString(control) {
+				return fmt.Errorf("invalid node control credential")
+			}
+		}
 		ids[n.ID], origins[n.URL] = true, true
 	}
 	return nil
@@ -134,7 +143,7 @@ func cloneNodeSettings(cfg *nodeSettings) nodeSettings {
 	if cfg == nil {
 		return nodeSettings{}
 	}
-	copy := nodeSettings{ReaderHash: cfg.ReaderHash, Nodes: append([]remoteNode(nil), cfg.Nodes...)}
+	copy := nodeSettings{ReaderHash: cfg.ReaderHash, ControlHash: cfg.ControlHash, Nodes: append([]remoteNode(nil), cfg.Nodes...)}
 	for i := range copy.Nodes {
 		copy.Nodes[i].Addresses = append([]string(nil), copy.Nodes[i].Addresses...)
 	}
@@ -159,6 +168,16 @@ func rewrapNodeSettings(oldStore, newStore *Store, cfg *nodeSettings) (*nodeSett
 		if err != nil {
 			return nil, err
 		}
+		if next.Nodes[i].ControlCredential != "" {
+			control, err := oldStore.decrypt(next.Nodes[i].ControlCredential)
+			if err != nil {
+				return nil, err
+			}
+			next.Nodes[i].ControlCredential, err = newStore.encrypt(control)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	return &next, nil
 }
@@ -172,6 +191,14 @@ func nodeStamp(node remoteNode) string {
 }
 
 func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/api/nodes/control" {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		a.nodeControlProxyAPI(w, r)
+		return
+	}
 	if r.URL.Path == "/api/nodes/resolve" || r.URL.Path == "/api/nodes/confirm" {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -197,17 +224,18 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 		cfg, revision := cloneNodeSettings(a.store.DB.Nodes), a.store.DB.Revision
 		a.mu.Unlock()
 		type view struct {
-			ID        string   `json:"id"`
-			Name      string   `json:"name"`
-			URL       string   `json:"url"`
-			Stamp     string   `json:"stamp"`
-			Addresses []string `json:"addresses"`
+			ID         string   `json:"id"`
+			Name       string   `json:"name"`
+			URL        string   `json:"url"`
+			Stamp      string   `json:"stamp"`
+			Addresses  []string `json:"addresses"`
+			HasControl bool     `json:"hasControl"`
 		}
 		items := make([]view, 0, len(cfg.Nodes))
 		for _, n := range cfg.Nodes {
-			items = append(items, view{n.ID, n.Name, n.URL, nodeStamp(n), append([]string{}, n.Addresses...)})
+			items = append(items, view{n.ID, n.Name, n.URL, nodeStamp(n), append([]string{}, n.Addresses...), n.ControlCredential != ""})
 		}
-		reply(w, http.StatusOK, map[string]any{"revision": revision, "sharing": cfg.ReaderHash != "", "nodes": items})
+		reply(w, http.StatusOK, map[string]any{"revision": revision, "sharing": cfg.ReaderHash != "", "controlSharing": cfg.ControlHash != "", "nodes": items})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -215,12 +243,14 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Revision   uint64 `json:"revision"`
-		Action     string `json:"action"`
-		ID         string `json:"id"`
-		Name       string `json:"name"`
-		URL        string `json:"url"`
-		Credential string `json:"credential"`
+		Revision          uint64 `json:"revision"`
+		Action            string `json:"action"`
+		ID                string `json:"id"`
+		Name              string `json:"name"`
+		URL               string `json:"url"`
+		Credential        string `json:"credential"`
+		ControlCredential string `json:"controlCredential"`
+		ClearControl      bool   `json:"clearControl"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, http.StatusBadRequest, err)
@@ -229,14 +259,21 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 	// The gate orders changes to the inbound grant after all admitted summary
 	// writes. Always acquire it before mu and release both before writing back.
 	grantChange := req.Action == "issue" || req.Action == "revoke"
+	controlChange := req.Action == "issue-control" || req.Action == "revoke-control"
 	if grantChange {
 		a.nodeAccessGate.Lock()
+	}
+	if controlChange {
+		a.nodeControlGate.Lock()
 	}
 	a.mu.Lock()
 	locked := true
 	unlock := func() {
 		if locked {
 			a.mu.Unlock()
+			if controlChange {
+				a.nodeControlGate.Unlock()
+			}
 			if grantChange {
 				a.nodeAccessGate.Unlock()
 			}
@@ -260,8 +297,22 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 		issued = randomHex(32)
 		hash := sha256.Sum256([]byte(issued))
 		cfg.ReaderHash = hex.EncodeToString(hash[:])
+		if cfg.ReaderHash == cfg.ControlHash {
+			reject(500, fmt.Errorf("无法生成授权，请重试"))
+			return
+		}
 	case "revoke":
 		cfg.ReaderHash = ""
+	case "issue-control":
+		issued = randomHex(32)
+		hash := sha256.Sum256([]byte(issued))
+		cfg.ControlHash = hex.EncodeToString(hash[:])
+		if cfg.ControlHash == cfg.ReaderHash {
+			reject(500, fmt.Errorf("无法生成授权，请重试"))
+			return
+		}
+	case "revoke-control":
+		cfg.ControlHash = ""
 	case "save":
 		origin, err := normalizeNodeURL(req.URL)
 		if err != nil {
@@ -300,12 +351,31 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 			reject(400, fmt.Errorf("节点授权格式无效"))
 			return
 		}
-		credential := ""
+		if req.ClearControl && req.ControlCredential != "" {
+			reject(400, fmt.Errorf("不能同时设置和清除控制授权"))
+			return
+		}
+		if req.ControlCredential != "" && !nodeTokenPattern.MatchString(req.ControlCredential) {
+			reject(400, fmt.Errorf("控制授权格式无效"))
+			return
+		}
+		credential, controlCredential := "", ""
 		var addresses []string
 		if index >= 0 {
 			credential = cfg.Nodes[index].Credential
 			if cfg.Nodes[index].URL == origin {
 				addresses = append([]string(nil), cfg.Nodes[index].Addresses...)
+				controlCredential = cfg.Nodes[index].ControlCredential
+			}
+		}
+		if req.ClearControl {
+			controlCredential = ""
+		}
+		if req.ControlCredential != "" {
+			controlCredential, err = a.store.encrypt(req.ControlCredential)
+			if err != nil {
+				reject(500, fmt.Errorf("无法保存控制授权"))
+				return
 			}
 		}
 		if req.Credential != "" {
@@ -323,9 +393,9 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			cfg.Nodes = append(cfg.Nodes, remoteNode{ID: id, Name: req.Name, URL: origin, Credential: credential})
+			cfg.Nodes = append(cfg.Nodes, remoteNode{ID: id, Name: req.Name, URL: origin, Credential: credential, ControlCredential: controlCredential})
 		} else {
-			cfg.Nodes[index] = remoteNode{ID: req.ID, Name: req.Name, URL: origin, Credential: credential, Addresses: addresses}
+			cfg.Nodes[index] = remoteNode{ID: req.ID, Name: req.Name, URL: origin, Credential: credential, ControlCredential: controlCredential, Addresses: addresses}
 		}
 	case "delete":
 		index := -1
@@ -345,7 +415,7 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	db := a.store.DB
-	if cfg.ReaderHash == "" && len(cfg.Nodes) == 0 {
+	if cfg.ReaderHash == "" && cfg.ControlHash == "" && len(cfg.Nodes) == 0 {
 		db.Nodes = nil
 	} else {
 		db.Nodes = &cfg

@@ -61,6 +61,7 @@ func (a *App) discardStoppedRuntimeLocked() {
 	clear(a.procs)
 	clear(a.traffic)
 	clear(a.startupErrors)
+	clear(a.nodeOperationVersions)
 	for id := range a.generations {
 		if _, exists := a.store.DB.State.Instance(id); !exists {
 			delete(a.generations, id)
@@ -103,6 +104,11 @@ func (a *App) beginRuntimeOperationLocked(parent context.Context, req runtimeReq
 	if !validate && req.Action == "start" && p != nil && p.view().State == "running" {
 		return snapshot, nil, http.StatusBadRequest, fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
+	if a.nodeOperationVersions == nil {
+		a.nodeOperationVersions = make(map[string]string)
+	}
+	// Consume older control previews even if rendering or core resolution fails.
+	a.nodeOperationVersions[req.ID] = randomHex(16)
 	if !validate && req.Action == "stop" && a.startupDone != nil {
 		select {
 		case <-a.startupDone:
@@ -208,6 +214,20 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 		failure(status, err)
 		return
 	}
+	a.runRuntimeOperation(w, req, validate, p, snapshot, op)
+}
+
+// The caller has already authenticated and reserved the operation. This is
+// shared by local and narrowly authorized remote control requests.
+func (a *App) runRuntimeOperation(w http.ResponseWriter, req runtimeRequest, validate bool, p principal, snapshot runtimeSnapshot, op *runtimeOperation) {
+	failure := func(status int, err error) {
+		if !p.admin() {
+			err = fmt.Errorf("实例操作未完成，请联系管理员查看详情")
+		}
+		fail(w, status, err)
+	}
+	var err error
+	var status int
 	defer a.finishRuntimeOperation(req.ID, op)
 	started := false
 	defer func() {

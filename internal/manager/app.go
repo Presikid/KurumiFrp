@@ -24,16 +24,21 @@ type App struct {
 	runtime  RuntimeBackend
 	updater  *update.Manager
 	mu       sync.Mutex
-	// Take nodeAccessGate before mu when rotating/revoking a read-only grant.
-	nodeAccessGate sync.RWMutex
-	store          *Store
-	bin            string
-	addr           string
-	auth           auth
-	procs          map[string]*process
-	traffic        map[string]*trafficSamples // protected by mu, keyed by instance and run ID
-	assets         http.Handler
-	webhooks       *webhookDispatcher
+	// Take the appropriate node gate before mu; never hold both node gates.
+	nodeAccessGate   sync.RWMutex
+	nodeControlGate  sync.RWMutex
+	nodeControlEpoch string
+	// Protected by mu; changes when a valid instance operation is attempted.
+	nodeOperationVersions map[string]string
+
+	store            *Store
+	bin              string
+	addr             string
+	auth             auth
+	procs            map[string]*process
+	traffic          map[string]*trafficSamples // protected by mu, keyed by instance and run ID
+	assets           http.Handler
+	webhooks         *webhookDispatcher
 
 	// Lifecycle reservations are protected by mu. Slow operations run without it.
 	operations          map[string]*runtimeOperation
@@ -141,7 +146,7 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 	if backend == nil {
 		backend = &externalRuntime{core: cores, dir: s.dir}
 	}
-	app := &App{quit: make(chan struct{}), core: cores, runtime: backend, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2)}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), core: cores, runtime: backend, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2)}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	app.webhooks = newWebhookDispatcher()
 	app.configureWebhook(s.DB.webhookConfig())
 	s.onCommit = app.webhooks.emitConfig
@@ -221,6 +226,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The remote summary has its own narrow, read-only credential.
 	if r.URL.Path == "/api/node/summary" {
 		a.nodeSummaryAPI(w, r)
+		return
+	}
+	if r.URL.Path == "/api/node/control" {
+		a.nodeControlAPI(w, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -321,7 +330,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.runtimeAPI(w, r)
 			return
 		}
-		if r.URL.Path == "/api/nodes" || r.URL.Path == "/api/nodes/check" || r.URL.Path == "/api/nodes/resolve" || r.URL.Path == "/api/nodes/confirm" {
+		if r.URL.Path == "/api/nodes" || r.URL.Path == "/api/nodes/check" || r.URL.Path == "/api/nodes/control" || r.URL.Path == "/api/nodes/resolve" || r.URL.Path == "/api/nodes/confirm" {
 			a.nodesAPI(w, r)
 			return
 		}
@@ -710,6 +719,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				delete(a.startupErrors, req.ID)
 				delete(a.autoStartSuppressed, req.ID)
 				delete(a.generations, req.ID)
+				delete(a.nodeOperationVersions, req.ID)
 				a.stateCache = nil
 			}
 		}
