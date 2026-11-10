@@ -65,9 +65,10 @@ const ProtocolEditor = (() => {
     <div class="health-check-options">${field('healthCheckTimeoutSeconds', '检查超时（秒，0 使用默认）', v.healthCheckTimeoutSeconds ?? 0, 'number', 'min="0" max="86400" step="1"')}</div>
     <div class="health-check-options">${field('healthCheckIntervalSeconds', '检查间隔（秒，0 使用默认）', v.healthCheckIntervalSeconds ?? 0, 'number', 'min="0" max="604800" step="1"')}</div>
     <div class="health-check-options">${field('healthCheckMaxFailed', '连续失败次数（0 使用默认）', v.healthCheckMaxFailed ?? 0, 'number', 'min="0" max="1000" step="1"')}</div>
-    <div class="tcpmux-field">${field('subdomain', 'TCPMUX 子域名（可选）', v.subdomain || '')}</div>
+    <div class="subdomain-field">${field('subdomain', '子域名（可选）', v.subdomain || '')}</div>
+    <p class="subdomain-field small-note span-2">至少填写一个自定义域名或子域名；子域名需要在服务端配置后缀。</p>
     <div class="tcpmux-field"><label>多路复用器<select name="multiplexer"><option value="" ${!v.multiplexer ? 'selected' : ''}>默认 · httpconnect</option><option value="httpconnect" ${v.multiplexer === 'httpconnect' ? 'selected' : ''}>httpconnect</option></select></label></div>
-    <p class="tcpmux-field small-note span-2">至少填写一个域名或子域名；域名支持 * 和 *.example.com。使用子域名时需在服务端配置子域名后缀。</p>
+    <p class="tcpmux-field small-note span-2">TCPMUX 自定义域名支持 * 和 *.example.com。</p>
     <div class="tcpmux-field">${field('httpUser', 'HTTP 认证用户名（可选）', v.httpUser || '')}</div>
     <div class="tcpmux-field">${field('httpPassword', old?.hasHTTPPassword ? 'HTTP 密码（已保存，留空保留）' : 'HTTP 密码（可选，8–1024 字节）', '', 'password', 'autocomplete="new-password"')}</div>
     <div class="tcpmux-field span-2">${field('routeByHTTPUser', '按 HTTP 用户名路由（可选）', v.routeByHTTPUser || '')}</div>
@@ -139,6 +140,7 @@ const ProtocolEditor = (() => {
   visible(form, '.proxy-protocol-field', !visitor && !['udp', 'sudp'].includes(type));
   visible(form, '.port-field', ['tcp', 'udp'].includes(type));
   visible(form, '.domain-field', ['http', 'https', 'tcpmux'].includes(type));
+  visible(form, '.subdomain-field', ['http', 'https', 'tcpmux'].includes(type));
   visible(form, '.probe-field', ['http', 'https'].includes(type));
   visible(form, '.health-check-field', !visitor);
   visible(form, '.health-check-options', !visitor && f.healthCheckType.value !== '');
@@ -164,7 +166,7 @@ const ProtocolEditor = (() => {
   f.secret.required = paired && !editing.old?.hasSecret;
   f.serverName.required = visitor;
   f.remotePort.required = ['tcp', 'udp'].includes(type);
-  f.domains.required = ['http', 'https'].includes(type);
+  f.domains.required = false; // The server validates the domain/subdomain pair.
   form.querySelector('.local-host-label').textContent = visitor ? 'Visitor 监听地址' : '本地目标地址';
   form.querySelector('.local-port-label').textContent = visitor ? 'Visitor 监听端口' : '本地目标端口';
   const unbound = Protocols.supportsUnbound(type);
@@ -198,7 +200,10 @@ const ProtocolEditor = (() => {
    healthCheckIntervalSeconds:health ? +val('healthCheckIntervalSeconds') : 0,
    healthCheckMaxFailed:health ? +val('healthCheckMaxFailed') : 0});
   if (['tcp', 'udp'].includes(type)) result.remotePort = +val('remotePort');
-  if (['http', 'https', 'tcpmux'].includes(type)) result.domains = val('domains').split(',').map(s => s.trim()).filter(Boolean);
+  if (['http', 'https', 'tcpmux'].includes(type)) {
+   result.domains = val('domains').split(',').map(s => s.trim()).filter(Boolean);
+   result.subdomain = val('subdomain').trim();
+  } else result.subdomain = '';
   if (['http', 'https'].includes(type)) { result.probePath = val('probePath').trim(); result.probeMethod = val('probeMethod'); }
   if (paired) {
    result.secret = val('secret');
@@ -208,7 +213,7 @@ const ProtocolEditor = (() => {
   if (type === 'xtcp' || type === 'xtcp-visitor') result.disableAssistedAddrs = f.disableAssistedAddrs.checked;
   if (type === 'xtcp-visitor') Object.assign(result, {protocol:val('protocol'), keepTunnelOpen:f.keepTunnelOpen.checked,
    maxRetriesAnHour:+val('maxRetriesAnHour'), minRetryInterval:+val('minRetryInterval'), fallbackTo:val('fallbackTo').trim(), fallbackTimeoutMs:+val('fallbackTimeoutMs')});
-  if (type === 'tcpmux') Object.assign(result, {subdomain:val('subdomain').trim(), multiplexer:val('multiplexer'), httpUser:val('httpUser'), routeByHTTPUser:val('routeByHTTPUser'),
+  if (type === 'tcpmux') Object.assign(result, {multiplexer:val('multiplexer'), httpUser:val('httpUser'), routeByHTTPUser:val('routeByHTTPUser'),
    httpPassword:f.clearHTTPPassword.checked ? '' : val('httpPassword')});
   if (editing.old?.hasHTTPPassword && f.clearHTTPPassword.checked) result.clearHTTPPassword = true;
   return result;

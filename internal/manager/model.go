@@ -374,8 +374,11 @@ func validate(s State) error {
 			if !probePathOK(t.ProbePath) || !probeMethodOK(t.ProbeMethod) {
 				return fmt.Errorf("HTTP 检测路径或方法无效（路径须以单个 / 开头，方法仅支持 HEAD/GET）")
 			}
-			if len(t.Domains) == 0 || len(t.Domains) > 16 {
-				return fmt.Errorf("HTTP/HTTPS 需要 1-16 个域名")
+			if len(t.Domains) > 16 || (len(t.Domains) == 0 && t.Subdomain == "") {
+				return fmt.Errorf("HTTP/HTTPS 需要自定义域名或子域名，最多 16 个自定义域名")
+			}
+			if !validSubdomain(t.Subdomain) {
+				return fmt.Errorf("HTTP/HTTPS 子域名无效")
 			}
 			for _, d := range t.Domains {
 				if !hostOK(d) || net.ParseIP(d) != nil {
@@ -385,6 +388,11 @@ func validate(s State) error {
 					if err := claim(endpoint+t.Type+"/"+strings.ToLower(d), t.Name); err != nil {
 						return err
 					}
+				}
+			}
+			if t.Enabled && t.Subdomain != "" {
+				if err := claim(endpoint+t.Type+"/subdomain/"+strings.ToLower(t.Subdomain), t.Name); err != nil {
+					return err
 				}
 			}
 		case "stcp", "xtcp", "sudp", "stcp-visitor", "xtcp-visitor", "sudp-visitor", "tcpmux":

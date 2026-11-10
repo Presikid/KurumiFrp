@@ -13,6 +13,10 @@ func isVisitor(kind string) bool {
 	return kind == "stcp-visitor" || kind == "xtcp-visitor" || kind == "sudp-visitor"
 }
 
+func validSubdomain(value string) bool {
+	return value == "" || (hostOK(value) && !strings.Contains(value, ".") && net.ParseIP(value) == nil)
+}
+
 // Preserve the effective namespace when an existing Visitor changes client.
 // A fallback name is local to its client, so it must be configured separately
 // after the move instead of being silently rebound to a same-named Visitor.
@@ -229,7 +233,7 @@ func validateProtocolTunnel(t Tunnel, endpoint string, claim func(string, string
 	if len(t.Domains) > 16 || (len(t.Domains) == 0 && t.Subdomain == "") {
 		return fmt.Errorf("TCPMUX 需要自定义域名或子域名，最多 16 个自定义域名")
 	}
-	if t.Subdomain != "" && (!hostOK(t.Subdomain) || strings.Contains(t.Subdomain, ".") || net.ParseIP(t.Subdomain) != nil) {
+	if !validSubdomain(t.Subdomain) {
 		return fmt.Errorf("TCPMUX 子域名无效")
 	}
 	if !protocolTextOK(t.HTTPUser) || !protocolTextOK(t.RouteByHTTPUser) {
