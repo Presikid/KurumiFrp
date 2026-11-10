@@ -25,6 +25,9 @@ type Instance struct {
 	DNSServer             string `json:"dnsServer,omitempty"`
 	ClientTransport       string `json:"clientTransport,omitempty"`
 	ClientBindIP          string `json:"clientBindIP,omitempty"`
+	ClientDialTimeout     int    `json:"clientDialTimeout,omitempty"`
+	TCPKeepalive          int    `json:"tcpKeepalive,omitempty"`
+	MuxKeepalive          int    `json:"muxKeepalive,omitempty"`
 	LoginFailExit         bool   `json:"loginFailExit,omitempty"`
 	ClientTLSDisabled     bool   `json:"clientTLSDisabled,omitempty"`
 	ServerAllowPlaintext  bool   `json:"serverAllowPlaintext,omitempty"`

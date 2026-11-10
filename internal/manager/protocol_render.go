@@ -9,12 +9,21 @@ func renderProtocolInstance(b *strings.Builder, i Instance) error {
 	if i.TransportMuxDisabled {
 		fmt.Fprintln(b, "transport.tcpMux = false")
 	}
+	if i.MuxKeepalive != 0 {
+		fmt.Fprintf(b, "transport.tcpMuxKeepaliveInterval = %d\n", i.MuxKeepalive)
+	}
 	if i.Kind == "frpc" {
 		if i.ClientTransport != "" && i.ClientTransport != "tcp" {
 			fmt.Fprintf(b, "transport.protocol = %s\n", quote(i.ClientTransport))
 		}
 		if i.ClientBindIP != "" {
 			fmt.Fprintf(b, "transport.connectServerLocalIP = %s\n", quote(i.ClientBindIP))
+		}
+		if i.ClientDialTimeout != 0 {
+			fmt.Fprintf(b, "transport.dialServerTimeout = %d\n", i.ClientDialTimeout)
+		}
+		if i.TCPKeepalive != 0 {
+			fmt.Fprintf(b, "transport.dialServerKeepalive = %d\n", i.TCPKeepalive)
 		}
 		if i.User != "" {
 			fmt.Fprintf(b, "user = %s\n", quote(i.User))
@@ -33,6 +42,9 @@ func renderProtocolInstance(b *strings.Builder, i Instance) error {
 			fmt.Fprintf(b, "dnsServer = %s\n", quote(address))
 		}
 		return nil
+	}
+	if i.TCPKeepalive != 0 {
+		fmt.Fprintf(b, "transport.tcpKeepalive = %d\n", i.TCPKeepalive)
 	}
 	if i.KCPBindPort > 0 {
 		fmt.Fprintf(b, "kcpBindPort = %d\n", i.KCPBindPort)

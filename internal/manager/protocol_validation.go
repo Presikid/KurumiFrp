@@ -196,6 +196,18 @@ func parseServerAllowedPorts(value string) ([]allowedPortRange, error) {
 }
 
 func validateProtocolInstance(i Instance) error {
+	if i.ClientDialTimeout < 0 || i.ClientDialTimeout > 3600 || (i.Kind != "frpc" && i.ClientDialTimeout != 0) {
+		return fmt.Errorf("客户端连接超时须为 0–3600 秒；0 使用默认值")
+	}
+	if i.TCPKeepalive < -1 || i.TCPKeepalive > 86400 {
+		return fmt.Errorf("TCP 保活间隔须为 -1–86400 秒")
+	}
+	if i.Kind == "frpc" && i.TCPKeepalive != 0 && (i.ClientTransport == "kcp" || i.ClientTransport == "quic") {
+		return fmt.Errorf("KCP 和 QUIC 不使用此 TCP 保活设置")
+	}
+	if i.MuxKeepalive < 0 || i.MuxKeepalive > 3600 || (i.MuxKeepalive != 0 && (i.TransportMuxDisabled || (i.Kind == "frpc" && i.ClientTransport == "quic"))) {
+		return fmt.Errorf("多路复用保活间隔须为 0–3600 秒，且需要启用 TCP 多路复用")
+	}
 	if i.ClientBindIP != "" {
 		if i.Kind != "frpc" || (i.ClientTransport != "" && i.ClientTransport != "tcp" && i.ClientTransport != "websocket" && i.ClientTransport != "wss") {
 			return fmt.Errorf("客户端源地址仅适用于 TCP、WebSocket 和 WSS 连接")
