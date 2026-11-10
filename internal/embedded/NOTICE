@@ -1,0 +1,13 @@
+KurumiFRP includes portions of frp v0.72.0 from https://github.com/fatedier/frp,
+authored by the frp contributors. The source files retain their original notices.
+KurumiFRP modifies them for embedding, lifecycle management, instance-scoped
+logging and traffic statistics.
+
+The Linux nftables rule layout is adapted from FRP Manager's panel/firewall.go,
+https://github.com/Gogowwww/frp-manager. KurumiFRP modifies the rule generation
+and lifecycle to use an explicit port set, a per-profile table and manual
+application.
+
+Both components are licensed under the Apache License, Version 2.0. A copy is
+provided as LICENSE-frp; that license does not establish a license for the
+KurumiFRP project as a whole.

@@ -48,8 +48,9 @@ def windows():
         # in the existing installation guide rather than creating a license folder.
         guide = (ROOT / 'docs/INSTALL.md').read_text(encoding='utf-8')
         notice = (ROOT / 'packaging/windows/ChineseSimplified-LICENSE.txt').read_text(encoding='utf-8')
+        components = (ROOT / 'internal/embedded/NOTICE').read_text(encoding='utf-8')
         frp_license = (ROOT / 'internal/embedded/LICENSE-frp').read_text(encoding='utf-8')
-        (stage / 'INSTALL.md').write_text(guide + '\n## 第三方组件声明\n\n简体中文安装界面翻译使用以下第三方许可；这不是 KurumiFRP 的项目许可。\n\n' + notice + '\n\n## frp 许可\n\n' + frp_license, encoding='utf-8')
+        (stage / 'INSTALL.md').write_text(guide + '\n## 第三方组件声明\n\n' + components + '\n\n简体中文安装界面翻译使用以下第三方许可；这不是 KurumiFRP 的项目许可。\n\n' + notice + '\n\n## Apache 2.0 许可\n\n' + frp_license, encoding='utf-8')
         run([iscc, '/DAppVersion=' + VERSION, '/DPayloadDir=' + str(stage),
              '/DOutputPath=' + str(OUT), ROOT / 'packaging/windows/kurumifrp.iss'])
 
@@ -76,7 +77,8 @@ def linux_tree(stage, binary):
     write(docs / 'README.md', (ROOT / 'docs/INSTALL.md').read_text())
     write(docs / 'copyright', 'Upstream: https://github.com/Presikid/KurumiFrp\n'
           'No project license grant has been specified. Packaging does not grant additional rights.\n\n'
-          'Embedded frp license:\n' + (ROOT / 'internal/embedded/LICENSE-frp').read_text(encoding='utf-8'))
+          + (ROOT / 'internal/embedded/NOTICE').read_text(encoding='utf-8') + '\n\n'
+          'Apache 2.0 license:\n' + (ROOT / 'internal/embedded/LICENSE-frp').read_text(encoding='utf-8'))
     write(docs / 'changelog', 'KurumiFRP ' + VERSION + ': native installers and package-managed lifecycle.\n')
     for src, dest in [(ROOT / 'packaging/linux/kurumifrp.1', stage / 'usr/share/man/man1/kurumifrp.1.gz'),
                       (docs / 'changelog', docs / 'changelog.gz')]:
