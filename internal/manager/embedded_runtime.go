@@ -121,13 +121,12 @@ func (b *embeddedRuntime) Start(target string, cfg RuntimeConfig, output io.Writ
 }
 
 type embeddedRun struct {
-	cancel      context.CancelFunc
-	ready       chan struct{}
-	exiting     chan struct{}
-	done        chan struct{}
-	err         error // published by closing done
-	exitOnce    sync.Once
-	workerPanic atomic.Bool
+	cancel   context.CancelFunc
+	ready    chan struct{}
+	exiting  chan struct{}
+	done     chan struct{}
+	err      error // published by closing done
+	exitOnce sync.Once
 
 	mu           sync.RWMutex
 	client       *embedded.Client
@@ -198,17 +197,6 @@ func (r *embeddedRun) markEngineExited() {
 	r.exitOnce.Do(func() { close(r.exiting) })
 }
 
-// A panic can leave instance resources in an unknown state. Stop only this
-// run; the shared guard also prevents new embedded runs until a restart.
-func (r *embeddedRun) workerPanicked() {
-	r.workerPanic.Store(true)
-	embeddedCleanupUnknown.Store(true)
-	r.markEngineExited()
-	r.cancel()
-}
-
-func (r *embeddedRun) WorkerPanicked() bool { return r.workerPanic.Load() }
-
 // Track the run loop separately from the later completion of resource cleanup.
 func (r *embeddedRun) observeEngine(exiting, done <-chan struct{}) {
 	r.mu.Lock()
@@ -246,7 +234,7 @@ func publishEmbeddedReady(ctx context.Context, ready, exiting, done <-chan struc
 }
 
 func (r *embeddedRun) runServer(ctx context.Context, config *v1.ServerConfig, sink *xlog.Sink) error {
-	server, err := embedded.NewServerWithOptions(config, embedded.ServerOptions{LogSink: sink, OnWorkerPanic: r.workerPanicked})
+	server, err := embedded.NewServerWithOptions(config, embedded.ServerOptions{LogSink: sink})
 	if err != nil {
 		return errors.New("无法创建内嵌服务端")
 	}
@@ -264,10 +252,7 @@ func (r *embeddedRun) runServer(ctx context.Context, config *v1.ServerConfig, si
 	if err = server.Start(ctx); err != nil {
 		// A failed constructor may still own resources during rollback.
 		r.markEngineExited()
-		stopErr := server.Stop(context.Background())
-		if errors.Is(stopErr, embedded.ErrServerPanicked) {
-			return errors.New("内嵌服务端异常退出，清理状态未知，请重启工作台")
-		}
+		_ = server.Stop(context.Background())
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			return nil
 		}
@@ -307,8 +292,7 @@ func (r *embeddedRun) runClient(ctx context.Context, instanceID string, config *
 		return errors.New("无法绑定客户端流量统计")
 	}
 	client, err := embedded.NewFRPClient(embedded.FRPClientOptions{
-		Common: config.Common, Proxies: config.Proxies, Visitors: config.Visitors,
-		LogSink: sink, Traffic: bindings, OnWorkerPanic: r.workerPanicked,
+		Common: config.Common, Proxies: config.Proxies, Visitors: config.Visitors, LogSink: sink, Traffic: bindings,
 	})
 	if err != nil {
 		return errors.New("无法创建内嵌客户端")
