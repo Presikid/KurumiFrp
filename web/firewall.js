@@ -46,10 +46,11 @@ function mountFirewall() {
    <label>过滤方式<select data-rule-mode><option value="allow">仅允许列表中的来源</option><option value="block">阻止列表中的来源</option></select></label>
    <label>TCP/UDP 目标端口<input data-rule-ports maxlength="1024" placeholder="7000, 6000-6010"></label>
    <label>来源 IP 或 CIDR 网段<textarea data-rule-sources maxlength="262144" rows="5" placeholder="192.0.2.1&#10;2001:db8::/32"></textarea></label>
-   <label>按 AS 号添加网段<input data-rule-asn maxlength="12" placeholder="例如 AS3333"></label><button type="button" data-firewall-asn>查询并加入此规则</button>
+   <label>导入方式<select data-list-mode><option value="append">加入现有来源</option><option value="replace">替换此规则全部来源</option></select></label><p class="small-note">替换可移除清单中不再包含的旧地址；两种方式都只修改草稿。</p>
+   <label>按 AS 号查询网段<input data-rule-asn maxlength="12" placeholder="例如 AS3333"></label><button type="button" data-firewall-asn>查询网段</button>
    <p data-asn-status class="small-note" role="status">向 RIPEstat 查询近两周观察到的网段；结果可能不完整或过时，不会自动更新或应用。</p>
    <label>导入地址清单文件<input type="file" data-list-file accept=".txt,.list,text/plain"></label><p data-file-status class="small-note" role="status">文本每行一个 IP 或 CIDR，可用 # 写注释；导入后请核对草稿。</p>
-   <label>公网 HTTPS 地址清单<input type="text" inputmode="url" data-list-url maxlength="1024" autocomplete="off" spellcheck="false" placeholder="https://example.org/addresses.txt"></label><button type="button" data-firewall-list>获取并加入此规则</button>
+   <label>公网 HTTPS 地址清单<input type="text" inputmode="url" data-list-url maxlength="1024" autocomplete="off" spellcheck="false" placeholder="https://example.org/addresses.txt"></label><button type="button" data-firewall-list>获取清单</button>
    <p data-list-status class="small-note" role="status">仅手动获取 UTF-8 文本，不保存地址、自动更新或应用。请核对清单来源和范围。</p>
    <button type="button" data-firewall-remove>删除此规则</button>`;
   row.querySelector('[data-rule-name]').value = rule.name || '';
@@ -63,15 +64,18 @@ function mountFirewall() {
   name:row.querySelector('[data-rule-name]').value, enabled:row.querySelector('[data-rule-enabled]').checked, mode:row.querySelector('[data-rule-mode]').value,
   ports:row.querySelector('[data-rule-ports]').value, sources:row.querySelector('[data-rule-sources]').value
  }));
- const mergeSources = (sources, prefixes) => {
+ const mergeSources = (row, prefixes) => {
   if (!Array.isArray(prefixes) || !prefixes.length) throw new Error('未获得地址');
-  const existing = sources.value.split(/[,\r\n]+/).map(value=>value.trim()).filter(Boolean);
+  const sources = row.querySelector('[data-rule-sources]');
+  const replace = row.querySelector('[data-list-mode]').value === 'replace';
+  const existing = replace ? [] : sources.value.split(/[,\r\n]+/).map(value=>value.trim()).filter(Boolean);
   const merged = [...new Set([...existing, ...prefixes])], text = merged.join('\n');
   const others = [...rulesHost.querySelectorAll('[data-rule-sources]')].filter(input=>input !== sources).map(input=>input.value);
   const totalCount = merged.length + others.reduce((count,value)=>count + value.split(/[,\r\n]+/).filter(part=>part.trim()).length,0);
   const totalBytes = new TextEncoder().encode(text + others.join('')).length;
   if (totalCount > 4096 || totalBytes > 262144) throw new Error('所有规则合并后的来源列表超过上限');
   sources.value = text;
+  return replace ? '替换' : '加入';
  };
  const refreshSeen = async () => {
   clearTimeout(seenTimer); seenTimer = null;
@@ -150,15 +154,15 @@ function mountFirewall() {
   }
   if (event.target.closest('[data-firewall-list]')) {
    if (busy || !model || !supported || !form.elements.enabled.checked) return;
-   const notice = row.querySelector('[data-list-status]'), sources = row.querySelector('[data-rule-sources]');
+   const notice = row.querySelector('[data-list-status]');
    busy = true; controls.disabled = true; reload.disabled = true;
    notice.textContent = '正在获取地址清单…';
    const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 25000);
    try {
     const result = await api('firewall/list', {url:row.querySelector('[data-list-url]').value}, {signal:controller.signal});
     if (!current() || !row.isConnected) return;
-    mergeSources(sources, result.prefixes);
-    notice.textContent = `已将 ${result.prefixes.length} 个地址加入草稿；请核对后再决定是否应用。地址和清单不会自动更新。`;
+    const action = mergeSources(row, result.prefixes);
+    notice.textContent = `已用 ${result.prefixes.length} 个地址${action}草稿来源；请核对后再决定是否应用。地址和清单不会自动更新。`;
    } catch (err) {
     if (current() && row.isConnected) notice.textContent = '获取失败，来源列表未更改：' + (err.name === 'AbortError' ? '请求超时' : err.message);
    } finally {
@@ -168,15 +172,15 @@ function mountFirewall() {
    return;
   }
   if (!event.target.closest('[data-firewall-asn]') || busy || !model || !supported || !form.elements.enabled.checked) return;
-  const notice = row.querySelector('[data-asn-status]'), sources = row.querySelector('[data-rule-sources]');
+  const notice = row.querySelector('[data-asn-status]');
   busy = true; controls.disabled = true; reload.disabled = true;
   notice.textContent = '正在向 RIPEstat 查询…';
   const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 25000);
   try {
    const result = await api('firewall/asn', {asn:row.querySelector('[data-rule-asn]').value}, {signal:controller.signal});
    if (!current()) return;
-   mergeSources(sources, result.prefixes);
-   notice.textContent = `${result.asn} 返回 ${result.prefixes.length} 个网段，已加入草稿；请核对列表，再决定是否保存并应用。数据未自动更新。`;
+   const action = mergeSources(row, result.prefixes);
+   notice.textContent = `${result.asn} 返回 ${result.prefixes.length} 个网段，已${action}草稿来源；请核对列表，再决定是否保存并应用。数据未自动更新。`;
   } catch (err) {
    if (current()) notice.textContent = '查询失败，来源列表未更改：' + (err.name === 'AbortError' ? '请求超时' : err.message);
   } finally {
@@ -197,8 +201,8 @@ function mountFirewall() {
    if (!current() || !row.isConnected) return;
    const result = await api('firewall/import', {text}, {signal:controller.signal});
    if (!current() || !row.isConnected) return;
-   mergeSources(row.querySelector('[data-rule-sources]'), result.prefixes);
-   notice.textContent = `已将 ${result.prefixes.length} 个地址加入草稿；请核对后再决定是否应用。`;
+   const action = mergeSources(row, result.prefixes);
+   notice.textContent = `已用 ${result.prefixes.length} 个地址${action}草稿来源；请核对后再决定是否应用。`;
   } catch (err) {
    if (current() && row.isConnected) notice.textContent = '导入失败，来源列表未更改：' + (err.name === 'AbortError' ? '请求超时' : err.message);
   } finally {
