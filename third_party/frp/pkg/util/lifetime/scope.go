@@ -46,6 +46,18 @@ func fromContext(ctx context.Context) *Scope {
 	return scope
 }
 
+// ReportPanic notifies the owning scope after an inner handler has recovered
+// a panic. It returns false when no instance-specific handler is available.
+// The handler has the same nonblocking and no-panic contract as for Go.
+func ReportPanic(ctx context.Context) bool {
+	scope := fromContext(ctx)
+	if scope == nil || scope.onPanic == nil {
+		return false
+	}
+	scope.onPanic()
+	return true
+}
+
 // Go starts fn unless this context's scope is already stopping. With no scope
 // it retains normal asynchronous behavior.
 func Go(ctx context.Context, fn func()) bool {

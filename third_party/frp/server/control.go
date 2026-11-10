@@ -24,7 +24,6 @@ import (
 	"io"
 	"math"
 	"net"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -659,9 +658,19 @@ func (ctl *Control) finishLocked() {
 func (ctl *Control) GetWorkConn() (workConn *proxy.WorkConn, err error) {
 	xl := ctl.xl
 	defer func() {
-		if err := recover(); err != nil {
-			xl.Errorf("panic error: %v", err)
-			xl.Errorf(string(debug.Stack()))
+		if recover() != nil {
+			acquired := workConn
+			workConn = nil
+			err = fmt.Errorf("work connection acquisition panicked; connection cleanup may be incomplete")
+			if lifetime.ReportPanic(ctl.ctx) {
+				// This service's scope owns accepted connections and is stopping.
+				return
+			}
+			// Without an instance handler, the service keeps running. A close may
+			// block, so hand it to the scope instead of delaying the error return.
+			if acquired != nil {
+				lifetime.Go(ctl.ctx, func() { closeFailedWorkConn(acquired) })
+			}
 		}
 	}()
 
@@ -698,6 +707,15 @@ func (ctl *Control) GetWorkConn() (workConn *proxy.WorkConn, err error) {
 	// When we get a work connection from pool, replace it with a new one.
 	_ = ctl.msgDispatcher.Send(&msg.ReqWorkConn{})
 	return
+}
+
+// closeFailedWorkConn keeps a cleanup panic from exposing its value in the
+// default, non-embedded mode. The returned error already reports uncertainty.
+func closeFailedWorkConn(conn *proxy.WorkConn) {
+	defer func() {
+		_ = recover()
+	}()
+	_ = conn.Close()
 }
 
 func (ctl *Control) heartbeatWorker() {
