@@ -47,8 +47,8 @@ function mountFirewall() {
    <label>TCP/UDP 目标端口<input data-rule-ports maxlength="1024" placeholder="7000, 6000-6010"></label>
    <label>来源 IP 或 CIDR 网段<textarea data-rule-sources maxlength="262144" rows="5" placeholder="192.0.2.1&#10;2001:db8::/32"></textarea></label>
    <label>导入方式<select data-list-mode><option value="append">加入现有来源</option><option value="replace">替换此规则全部来源</option></select></label><p class="small-note">替换可移除清单中不再包含的旧地址；两种方式都只修改草稿。</p>
-   <label>按 AS 号查询网段<input data-rule-asn maxlength="12" placeholder="例如 AS3333"></label><button type="button" data-firewall-asn>查询网段</button>
-   <p data-asn-status class="small-note" role="status">向 RIPEstat 查询近两周观察到的网段；结果可能不完整或过时，不会自动更新或应用。</p>
+   <label>按 AS 号查询网段<input data-rule-asn maxlength="256" placeholder="例如 AS3333, AS6447"></label><button type="button" data-firewall-asn>查询网段</button>
+   <p data-asn-status class="small-note" role="status">一次最多 16 个 AS 号，用逗号或空格分隔。向 RIPEstat 查询近两周观察到的网段；结果可能不完整或过时，不会自动更新或应用。</p>
    <label>导入地址清单文件<input type="file" data-list-file accept=".txt,.list,text/plain"></label><p data-file-status class="small-note" role="status">文本每行一个 IP 或 CIDR，可用 # 写注释；导入后请核对草稿。</p>
    <label>公网 HTTPS 地址清单<input type="text" inputmode="url" data-list-url maxlength="1024" autocomplete="off" spellcheck="false" placeholder="https://example.org/addresses.txt"></label><button type="button" data-firewall-list>获取清单</button>
    <p data-list-status class="small-note" role="status">仅手动获取 UTF-8 文本，不保存地址、自动更新或应用。请核对清单来源和范围。</p>
@@ -197,7 +197,7 @@ function mountFirewall() {
   const notice = row.querySelector('[data-asn-status]');
   busy = true; controls.disabled = true; reload.disabled = true;
   notice.textContent = '正在向 RIPEstat 查询…';
-  const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 25000);
+  const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 40000);
   try {
    const result = await api('firewall/asn', {asn:row.querySelector('[data-rule-asn]').value}, {signal:controller.signal});
    if (!current()) return;
