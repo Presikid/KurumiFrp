@@ -95,17 +95,9 @@ func renderProtocolTunnel(b *strings.Builder, t Tunnel, secret func(string, stri
 		if t.Type == "http" && len(t.Locations) > 0 {
 			renderStringArray(b, "locations", t.Locations)
 		}
-		if t.Type == "tcpmux" {
-			mux := t.Multiplexer
-			if mux == "" {
-				mux = "httpconnect"
-			}
-			fmt.Fprintf(b, "multiplexer = %s\n", quote(mux))
+		if (t.Type == "http" && t.HTTPAuthEnabled) || t.Type == "tcpmux" {
 			if t.HTTPUser != "" {
 				fmt.Fprintf(b, "httpUser = %s\n", quote(t.HTTPUser))
-			}
-			if t.RouteByHTTPUser != "" {
-				fmt.Fprintf(b, "routeByHTTPUser = %s\n", quote(t.RouteByHTTPUser))
 			}
 			if t.HTTPPassword != "" {
 				value, err := secret(t.HTTPPassword, "KURUMI_HTTP_PASSWORD_"+t.ID)
@@ -113,6 +105,16 @@ func renderProtocolTunnel(b *strings.Builder, t Tunnel, secret func(string, stri
 					return err
 				}
 				fmt.Fprintf(b, "httpPassword = %s\n", value)
+			}
+		}
+		if t.Type == "tcpmux" {
+			mux := t.Multiplexer
+			if mux == "" {
+				mux = "httpconnect"
+			}
+			fmt.Fprintf(b, "multiplexer = %s\n", quote(mux))
+			if t.RouteByHTTPUser != "" {
+				fmt.Fprintf(b, "routeByHTTPUser = %s\n", quote(t.RouteByHTTPUser))
 			}
 		}
 		if usesPairingSecret(t.Type) && len(t.AllowUsers) > 0 {

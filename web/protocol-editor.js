@@ -69,12 +69,13 @@ const ProtocolEditor = (() => {
     <p class="subdomain-field small-note span-2">至少填写一个自定义域名或子域名；子域名需要在服务端配置后缀。</p>
     <div class="http-routing-field span-2">${field('hostHeaderRewrite', '转发时重写 Host（可选）', v.hostHeaderRewrite || '', 'text', 'maxlength="512" placeholder="例如 internal.example.com"')}</div>
     <div class="http-routing-field span-2"><label>HTTP 路径前缀（每行一条）<textarea name="locations" rows="3" placeholder="/api&#10;/assets">${esc((v.locations || []).join('\n'))}</textarea></label><small>留空匹配全部路径；按解码后的请求路径作前缀匹配，不包含查询字符串。例如 /api 也会匹配 /apix。</small></div>
+    <div class="http-routing-field span-2">${check('httpAuthEnabled', '启用 HTTP Basic 认证', v.httpAuthEnabled)}<small>请通过 TLS 保护访问链路；Basic 认证本身不加密用户名和密码。</small></div>
     <div class="tcpmux-field"><label>多路复用器<select name="multiplexer"><option value="" ${!v.multiplexer ? 'selected' : ''}>默认 · httpconnect</option><option value="httpconnect" ${v.multiplexer === 'httpconnect' ? 'selected' : ''}>httpconnect</option></select></label></div>
     <p class="tcpmux-field small-note span-2">TCPMUX 自定义域名支持 * 和 *.example.com。</p>
-    <div class="tcpmux-field">${field('httpUser', 'HTTP 认证用户名（可选）', v.httpUser || '')}</div>
-    <div class="tcpmux-field">${field('httpPassword', old?.hasHTTPPassword ? 'HTTP 密码（已保存，留空保留）' : 'HTTP 密码（可选，8–1024 字节）', '', 'password', 'autocomplete="new-password"')}</div>
+    <div class="http-credential-field">${field('httpUser', 'HTTP 认证用户名', v.httpUser || '')}</div>
+    <div class="http-credential-field">${field('httpPassword', old?.hasHTTPPassword ? 'HTTP 密码（已保存，留空保留）' : 'HTTP 密码（8–1024 字节）', '', 'password', 'autocomplete="new-password"')}</div>
     <div class="tcpmux-field span-2">${field('routeByHTTPUser', '按 HTTP 用户名路由（可选）', v.routeByHTTPUser || '')}</div>
-    <div class="password-clear-field span-2" hidden>${check('clearHTTPPassword', '清除已保存的 TCPMUX HTTP 密码', false)}<p class="small-note password-clear-note">勾选后保存会清除已保存的密码。</p></div>
+    <div class="password-clear-field span-2" hidden>${check('clearHTTPPassword', '清除已保存的 HTTP 密码', false)}<p class="small-note password-clear-note">勾选后保存会清除已保存的密码。</p></div>
     <div class="secret-removal-field span-2" hidden>${check('confirmSecretRemoval', '确认更改协议并清除已保存的配对密钥', false)}</div>
     <div class="visitor-field">${field('serverName', '服务端规则名', v.serverName || '', 'text', 'pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]{0,63}"')}</div>
     <div class="visitor-field">${field('serverUser', '服务端用户名称（可选）', v.serverUser || '', 'text', 'pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]{0,63}"')}</div>
@@ -150,19 +151,22 @@ const ProtocolEditor = (() => {
   visible(form, '.health-http-field', !visitor && f.healthCheckType.value === 'http');
   f.healthCheckPath.required = !visitor && f.healthCheckType.value === 'http';
   visible(form, '.tcpmux-field', type === 'tcpmux');
+  visible(form, '.http-credential-field', type === 'tcpmux' || (type === 'http' && f.httpAuthEnabled.checked));
   visible(form, '.visitor-field', visitor);
   visible(form, '.secret-field', paired);
   visible(form, '.private-proxy-field', paired && !visitor);
   visible(form, '.xtcp-field', type === 'xtcp' || type === 'xtcp-visitor');
   visible(form, '.xtcp-visitor-field', type === 'xtcp-visitor');
   const oldPassword = !!editing.old?.hasHTTPPassword;
-  const clearOnTypeChange = oldPassword && type !== 'tcpmux';
+  const clearOnTypeChange = oldPassword && type !== editing.old.type;
   visible(form, '.password-clear-field', oldPassword);
   f.clearHTTPPassword.required = clearOnTypeChange;
-  f.httpPassword.disabled = type !== 'tcpmux' || (oldPassword && f.clearHTTPPassword.checked);
+  f.httpPassword.disabled = !(type === 'tcpmux' || (type === 'http' && f.httpAuthEnabled.checked)) || (oldPassword && f.clearHTTPPassword.checked);
   form.querySelector('.password-clear-note').textContent = clearOnTypeChange
-   ? '更改协议会清除已保存的 TCPMUX 密码，请先勾选确认。'
-   : '勾选后保存会清除已保存的密码；输入新密码前请取消勾选。';
+   ? '更改协议会清除已保存的 HTTP 密码，请先勾选确认。'
+   : type === 'http' && f.httpAuthEnabled.checked
+    ? '清除密码时请先关闭 HTTP Basic 认证；修改密码请取消勾选并输入新密码。'
+    : '勾选后保存会清除已保存的密码；输入新密码前请取消勾选。';
   const clearSecret = !!editing.old?.hasSecret && !paired;
   visible(form, '.secret-removal-field', clearSecret);
   f.confirmSecretRemoval.required = clearSecret;
@@ -210,6 +214,8 @@ const ProtocolEditor = (() => {
   if (['http', 'https'].includes(type)) { result.probePath = val('probePath').trim(); result.probeMethod = val('probeMethod'); }
   result.hostHeaderRewrite = type === 'http' ? val('hostHeaderRewrite').trim() : '';
   result.locations = type === 'http' ? val('locations').split(/\r?\n/).map(s => s.trim()).filter(Boolean) : [];
+  result.httpAuthEnabled = type === 'http' && f.httpAuthEnabled.checked;
+  if (type === 'http' || type === 'tcpmux') Object.assign(result, {httpUser:val('httpUser'), httpPassword:f.clearHTTPPassword.checked ? '' : val('httpPassword')});
   if (paired) {
    result.secret = val('secret');
    if (visitor) { result.serverName = val('serverName').trim(); result.serverUser = val('serverUser').trim(); }
@@ -218,8 +224,7 @@ const ProtocolEditor = (() => {
   if (type === 'xtcp' || type === 'xtcp-visitor') result.disableAssistedAddrs = f.disableAssistedAddrs.checked;
   if (type === 'xtcp-visitor') Object.assign(result, {protocol:val('protocol'), keepTunnelOpen:f.keepTunnelOpen.checked,
    maxRetriesAnHour:+val('maxRetriesAnHour'), minRetryInterval:+val('minRetryInterval'), fallbackTo:val('fallbackTo').trim(), fallbackTimeoutMs:+val('fallbackTimeoutMs')});
-  if (type === 'tcpmux') Object.assign(result, {multiplexer:val('multiplexer'), httpUser:val('httpUser'), routeByHTTPUser:val('routeByHTTPUser'),
-   httpPassword:f.clearHTTPPassword.checked ? '' : val('httpPassword')});
+  if (type === 'tcpmux') Object.assign(result, {multiplexer:val('multiplexer'), routeByHTTPUser:val('routeByHTTPUser')});
   if (editing.old?.hasHTTPPassword && f.clearHTTPPassword.checked) result.clearHTTPPassword = true;
   return result;
  }

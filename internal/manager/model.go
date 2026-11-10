@@ -71,6 +71,7 @@ type Tunnel struct {
 	DisableAssistedAddrs bool     `json:"disableAssistedAddrs,omitempty"`
 	Subdomain            string   `json:"subdomain,omitempty"`
 	Multiplexer          string   `json:"multiplexer,omitempty"`
+	HTTPAuthEnabled      bool     `json:"httpAuthEnabled,omitempty"`
 	HTTPUser             string   `json:"httpUser,omitempty"`
 	HTTPPassword         string   `json:"httpPassword,omitempty"`
 	HasHTTPPassword      bool     `json:"hasHTTPPassword,omitempty"`
@@ -364,6 +365,11 @@ func validate(s State) error {
 		}
 		if err := validateHTTPTypeLocations(t); err != nil {
 			return err
+		}
+		if t.Type == "http" && t.HTTPAuthEnabled {
+			if t.HTTPUser == "" || t.HTTPPassword == "" || !protocolTextOK(t.HTTPUser) || strings.Contains(t.HTTPUser, ":") {
+				return fmt.Errorf("HTTP Basic 认证需要有效用户名和密码；用户名不能包含冒号")
+			}
 		}
 		endpoint := strings.ToLower(i.Host) + fmt.Sprintf(":%d/", i.Port)
 		if ip := net.ParseIP(i.Host); ip != nil {
