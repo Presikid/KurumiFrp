@@ -43,6 +43,46 @@ const ProtocolEditor = (() => {
    </div>`;
  }
 
+ function httpHeaderRow(header = {}) {
+  const saved = !!header.hasValue;
+  return `<div class="http-header-row" data-http-header-row data-saved="${saved ? 'true' : 'false'}"><label>名称<input data-header-name type="text" value="${esc(header.name || '')}" maxlength="128" required></label><label>值<input data-header-value type="password" maxlength="1024" autocomplete="new-password" placeholder="${saved ? '已保存，留空保留' : '留空表示空值'}"></label><label class="form-check"><input data-header-empty type="checkbox">设为空值</label><button type="button" data-http-header-remove>删除</button></div>`;
+ }
+
+ function httpHeaderEditor(v) {
+  const section = (label, direction, headers) => `<div class="http-header-group"><div class="http-header-group-title"><strong>${label}</strong><button type="button" data-http-header-add="${direction}">添加</button></div><div data-http-header-list="${direction}">${(headers || []).map(httpHeaderRow).join('')}</div></div>`;
+  return `<div class="http-routing-field span-2 http-header-editor"><h3>自定义 HTTP 头</h3><p class="small-note">每个方向最多 32 项，每个客户端最多 128 项；名称不区分大小写。值加密保存，不会回显。已有项留空保留，勾选“设为空值”可清空；新项留空即为空值。重命名需重新输入值或明确设为空值。</p>${section('请求头', 'request', v.requestHeaders)}${section('响应头', 'response', v.responseHeaders)}<p class="small-note">非空短值可能与普通文字相同，命中的日志或诊断内容会整条隐藏。空值不参与脱敏匹配。</p></div><p class="http-header-removal-note small-note span-2" hidden>更换协议前，请返回 HTTP 并删除全部自定义头后再保存。</p>`;
+ }
+
+ function headerClick(form, target) {
+  const add = target.closest('[data-http-header-add]');
+  if (add) {
+   const list = form.querySelector(`[data-http-header-list="${add.dataset.httpHeaderAdd}"]`);
+   if (!list) return;
+   if (list.querySelectorAll('[data-http-header-row]').length >= 32) {
+    form.querySelector('#form-error').textContent = '每个方向最多支持 32 个 HTTP 头。';
+    return;
+   }
+   list.insertAdjacentHTML('beforeend', httpHeaderRow());
+   list.lastElementChild?.querySelector('[data-header-name]')?.focus();
+   return;
+  }
+  const remove = target.closest('[data-http-header-remove]');
+  if (remove) remove.closest('[data-http-header-row]')?.remove();
+ }
+
+ function readHTTPHeaders(form, direction) {
+  const list = form.querySelector(`[data-http-header-list="${direction}"]`);
+  return [...list.querySelectorAll('[data-http-header-row]')].map(row => {
+   const name = row.querySelector('[data-header-name]').value.trim();
+   const value = row.querySelector('[data-header-value]').value;
+   const empty = row.querySelector('[data-header-empty]').checked;
+   if (empty && value !== '') throw new Error('设置空值时请清空输入框。');
+   const item = {name};
+   if (empty || row.dataset.saved !== 'true' || value !== '') item.value = empty ? '' : value;
+   return item;
+  });
+ }
+
  function tunnel(old, clients) {
   const v = old || {instanceId:clients[0].id, type:'tcp', localHost:'127.0.0.1', localPort:8080, remotePort:6000, domains:[], probePath:'', probeMethod:'HEAD', bandwidthKB:0, enabled:true};
   const types = Protocols.types.includes(v.type) ? Protocols.types : [...Protocols.types, v.type];
@@ -79,6 +119,7 @@ const ProtocolEditor = (() => {
     <div class="http-routing-field span-2"><label>HTTP 路径前缀（每行一条）<textarea name="locations" rows="3" placeholder="/api&#10;/assets">${esc((v.locations || []).join('\n'))}</textarea></label><small>留空匹配全部路径；按解码后的请求路径作前缀匹配，不包含查询字符串。例如 /api 也会匹配 /apix。</small></div>
     <div class="http-routing-field span-2">${field('httpRouteByUser', '按 HTTP 用户名路由（可选）', v.httpRouteByUser || '')}<small>只选择路由，不能验证身份或限制访问。需要保护目标时，请另外启用认证；同域名可为不同用户名配置不同路由。</small></div>
     <div class="http-routing-field span-2">${check('httpAuthEnabled', '启用 HTTP Basic 认证', v.httpAuthEnabled)}<small>请通过 TLS 保护访问链路；Basic 认证本身不加密用户名和密码。</small></div>
+    ${httpHeaderEditor(v)}
     <div class="tcpmux-field"><label>多路复用器<select name="multiplexer"><option value="" ${!v.multiplexer ? 'selected' : ''}>默认 · httpconnect</option><option value="httpconnect" ${v.multiplexer === 'httpconnect' ? 'selected' : ''}>httpconnect</option></select></label></div>
     <div class="http-credential-field">${field('httpUser', 'HTTP 认证用户名', v.httpUser || '')}</div>
     <div class="http-credential-field">${field('httpPassword', old?.hasHTTPPassword ? 'HTTP 密码（已保存，留空保留）' : 'HTTP 密码（8–1024 字节）', '', 'password', 'autocomplete="new-password"')}</div>
@@ -153,6 +194,7 @@ const ProtocolEditor = (() => {
   visible(form, '.domain-field', ['http', 'https', 'tcpmux'].includes(type));
   visible(form, '.subdomain-field', ['http', 'https', 'tcpmux'].includes(type));
   visible(form, '.http-routing-field', type === 'http');
+  visible(form, '.http-header-removal-note', type !== 'http' && !!form.querySelector('[data-http-header-row]'));
   visible(form, '.probe-field', ['http', 'https'].includes(type));
   visible(form, '.health-check-field', !visitor);
   visible(form, '.health-check-options', !visitor && f.healthCheckType.value !== '');
@@ -223,6 +265,8 @@ const ProtocolEditor = (() => {
   result.hostHeaderRewrite = type === 'http' ? val('hostHeaderRewrite').trim() : '';
   result.locations = type === 'http' ? val('locations').split(/\r?\n/).map(s => s.trim()).filter(Boolean) : [];
   result.httpRouteByUser = type === 'http' ? val('httpRouteByUser') : '';
+  result.requestHeaders = readHTTPHeaders(form, 'request');
+  result.responseHeaders = readHTTPHeaders(form, 'response');
   result.httpAuthEnabled = type === 'http' && f.httpAuthEnabled.checked;
   if (type === 'http' || type === 'tcpmux') Object.assign(result, {httpUser:val('httpUser'), httpPassword:f.clearHTTPPassword.checked ? '' : val('httpPassword')});
   if (paired) {
@@ -238,5 +282,5 @@ const ProtocolEditor = (() => {
   return result;
  }
 
- return {instance, tunnel, batch, batchValue, update, value};
+ return {instance, tunnel, batch, batchValue, update, value, headerClick};
 })();
