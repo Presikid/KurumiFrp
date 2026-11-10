@@ -115,7 +115,12 @@ func renderProtocolTunnel(b *strings.Builder, t Tunnel, secret func(string, stri
 			}
 		}
 	} else {
-		fmt.Fprintf(b, "\n[[proxies]]\nname = %s\ntype = %s\nlocalIP = %s\nlocalPort = %d\n", quote(t.Name), quote(t.Type), quote(t.LocalHost), t.LocalPort)
+		fmt.Fprintf(b, "\n[[proxies]]\nname = %s\ntype = %s\n", quote(t.Name), quote(t.Type))
+		if t.UnixSocketPath != "" {
+			fmt.Fprintf(b, "plugin.type = \"unix_domain_socket\"\nplugin.unixPath = %s\n", quote(t.UnixSocketPath))
+		} else {
+			fmt.Fprintf(b, "localIP = %s\nlocalPort = %d\n", quote(t.LocalHost), t.LocalPort)
+		}
 		if t.Type == "tcp" || t.Type == "udp" {
 			fmt.Fprintf(b, "remotePort = %d\n", t.RemotePort)
 		}
