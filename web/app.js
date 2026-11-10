@@ -13,6 +13,7 @@ let logStream = null, logPaintFrame = null, logAccessDenied = null;
 let registrationRequest = null, registrations = Object.create(null), registrationRevision = null, registrationProcesses = Object.create(null), registrationEpoch = 0, registrationExpiryTimer = null;
 let registrationPaintPending = false;
 let navigationGeneration = 0;
+let oidcStatusRequest = null, oidcStartRequest = null;
 let healthDialog = null, healthChecking = false, healthSelected = '';
 const dialog = $('#dialog');
 const diffDialog = $('#diff-dialog');
@@ -129,6 +130,8 @@ function cancelConfigRequest() {
 function cancelPageRequests() {cancelLogRequest(); cancelConfigRequest(); stopLogStream(); Overview.pause(); logAccessDenied = null; logSnapshot = null; logExportView = null;}
 function resetSession() {
  stopRefreshPolling();
+ oidcStatusRequest?.abort(); oidcStatusRequest = null;
+ oidcStartRequest?.abort(); oidcStartRequest = null;
  window.resetAccountView?.();
  Overview.reset();
  window.KurumiInstances.reset();
@@ -151,7 +154,21 @@ function resetSession() {
  RulesPage.reset(); filter = ''; protocol = '';
  editing = null; $('#dialog-body').inert = false; $('#cancel').disabled = false; $('#editor button[type="submit"]').disabled = false;
 }
-function showLogin() {resetSession();updateChecked=false;$('#login').hidden = false; $('#app').hidden = true; if (dialog.open) dialog.close(); if (diffDialog.open) diffDialog.close(); if (backupDialogEl?.open) backupDialogEl.close(); if (webhookDialogEl?.open) webhookDialogEl.close(); if (healthDialog?.open) healthDialog.close(); window.KurumiTOMLImport.close();}
+function showLogin() {
+ resetSession(); updateChecked=false; $('#login').hidden = false; $('#app').hidden = true;
+ if (dialog.open) dialog.close(); if (diffDialog.open) diffDialog.close(); if (backupDialogEl?.open) backupDialogEl.close(); if (webhookDialogEl?.open) webhookDialogEl.close(); if (healthDialog?.open) healthDialog.close(); window.KurumiTOMLImport.close();
+ void refreshOIDCLogin();
+}
+async function refreshOIDCLogin() {
+ const button = $('#oidc-login'), generation = authGeneration, controller = new AbortController();
+ button.hidden = true; oidcStatusRequest?.abort(); oidcStatusRequest = controller;
+ const timeout = setTimeout(() => controller.abort(), 10000);
+ try {
+  const status = await api('oidc/status', undefined, {signal:controller.signal});
+  if (oidcStatusRequest === controller && generation === authGeneration && !$('#login').hidden) button.hidden = status.enabled !== true;
+ } catch (_) { /* Local login remains available if the status cannot be read. */ }
+ finally {clearTimeout(timeout); if (oidcStatusRequest === controller) oidcStatusRequest = null;}
+}
 function announceSessionChange() {
  const signal = `${Date.now()}:${Math.random()}`;
  lastAuthSignal = signal;
@@ -882,7 +899,33 @@ function openBackupDialog(mode, scope='all', snapshot=0) {
 
 
 function download(name,text,type='application/json'){const u=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');try{a.href=u;a.download=name;document.body.appendChild(a);a.click();}finally{a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);}}
-$('#login-form').addEventListener('submit',async e=>{e.preventDefault();const b=e.target.querySelector('button'),username=e.target.elements.username.value.trim(),value=e.target.elements.token.value;b.disabled=true;try{await api('login',username?{username,password:value}:{token:value.trim()});e.target.reset();$('#login-error').textContent='';await refresh();}catch(err){$('#login-error').textContent=err.message;}finally{b.disabled=false;}});
+$('#login-form').addEventListener('submit',async e=>{e.preventDefault();const b=e.target.querySelector('button[type=submit]'),oidc=$('#oidc-login'),username=e.target.elements.username.value.trim(),value=e.target.elements.token.value;b.disabled=true;oidc.disabled=true;try{await api('login',username?{username,password:value}:{token:value.trim()});e.target.reset();$('#login-error').textContent='';await refresh();}catch(err){$('#login-error').textContent=err.message;}finally{b.disabled=false;oidc.disabled=false;}});
+$('#oidc-login').addEventListener('click', async () => {
+ if (oidcStartRequest) return;
+ const button = $('#oidc-login'), submit = $('#login-form button[type=submit]'), generation = authGeneration, controller = new AbortController();
+ oidcStartRequest = controller; button.disabled = true; submit.disabled = true; $('#login-error').textContent = '';
+ const timeout = setTimeout(() => controller.abort(), 15000);
+ try {
+  const result = await api('oidc/start', {}, {signal:controller.signal});
+  if (oidcStartRequest !== controller || generation !== authGeneration || $('#login').hidden) return;
+  const target = new URL(result.authorizationURL);
+  if (target.protocol !== 'https:' || target.username || target.password) throw new Error('身份提供方授权地址无效');
+  window.location.assign(target.href);
+ } catch (err) {
+  if (generation === authGeneration && oidcStartRequest === controller) $('#login-error').textContent = err.name === 'AbortError' ? '连接身份提供方超时，请重试。' : err.message;
+ } finally {
+  clearTimeout(timeout);
+  if (oidcStartRequest === controller) oidcStartRequest = null;
+  button.disabled = false; submit.disabled = false;
+ }
+});
+const loginQuery = new URLSearchParams(location.search);
+if (loginQuery.get('oidc') === 'failed') {
+ loginQuery.delete('oidc');
+ const remainingQuery = loginQuery.toString();
+ history.replaceState(history.state, '', location.pathname + (remainingQuery ? '?' + remainingQuery : '') + location.hash);
+ $('#login-error').textContent = '单点登录未完成，请检查账户绑定或联系管理员。';
+}
 $('#logout').addEventListener('click',async()=>{try{await api('logout',{});showLogin();announceSessionChange();}catch(e){toast(e.message);}});
 $('#refresh').addEventListener('click',()=>RulesPage.needsSync()?synchronizeRules():refresh());
 $('#theme').addEventListener('click',()=>{document.body.classList.toggle('dark');try{localStorage.setItem('kurumi-theme',document.body.classList.contains('dark')?'dark':'light');}catch(_){/* private browsing may deny storage */}});
