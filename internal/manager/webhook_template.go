@@ -81,7 +81,7 @@ func validWebhookTemplatePlaceholders(value string) bool {
 			return false
 		}
 		switch value[:end] {
-		case "event", "at", "instanceId", "kind", "revision", "sourceIp", "version":
+		case "event", "at", "instanceId", "nodeId", "kind", "revision", "sourceIp", "version":
 		default:
 			return false
 		}
@@ -98,6 +98,7 @@ func (template *webhookJSONTemplate) render(event webhookEvent) ([]byte, error) 
 		"{{event}}", event.Event,
 		"{{at}}", event.At,
 		"{{instanceId}}", event.InstanceID,
+		"{{nodeId}}", event.NodeID,
 		"{{kind}}", event.Kind,
 		"{{revision}}", revision,
 		"{{sourceIp}}", event.SourceIP,
