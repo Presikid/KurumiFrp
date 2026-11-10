@@ -18,7 +18,9 @@ render = function () {
     <div id="firewall-settings">
      <label>过滤方式<select name="mode"><option value="allow">仅允许列表中的来源</option><option value="block">阻止列表中的来源</option></select></label>
      <label>TCP/UDP 目标端口<input name="ports" maxlength="1024" placeholder="7000, 6000-6010"></label>
-     <label>来源 IP 或 CIDR 网段<textarea name="sources" maxlength="8192" rows="5" placeholder="192.0.2.1&#10;2001:db8::/32"></textarea></label>
+     <label>来源 IP 或 CIDR 网段<textarea name="sources" maxlength="262144" rows="5" placeholder="192.0.2.1&#10;2001:db8::/32"></textarea></label>
+     <label>按 AS 号添加网段<input name="asn" maxlength="12" placeholder="例如 AS3333"></label><button type="button" id="firewall-asn">查询并加入列表</button>
+     <p id="firewall-asn-status" class="small-note" role="status">将向 RIPEstat 查询近两周观察到的网段；结果是可能不完整或过时的快照，不会自动更新或应用。</p>
      <label class="form-check"><input type="checkbox" name="recordBlocked">记录近期被此规则阻止的来源</label>
      <p class="small-note">记录包含来源地址、协议和目标端口，约一小时无新尝试后过期且数量有限；关闭或重新应用规则会清空记录。</p>
     </div>
@@ -38,6 +40,7 @@ function mountFirewall() {
  const current = () => host.isConnected && generation === authGeneration && navigation === navigationGeneration && page === 'firewall';
  const syncEnabled = () => {
   for (const input of $('#firewall-settings').querySelectorAll('input,select,textarea')) input.disabled = !form.elements.enabled.checked;
+  $('#firewall-asn').disabled = !form.elements.enabled.checked;
  };
  const refreshSeen = async () => {
   clearTimeout(seenTimer); seenTimer = null;
@@ -105,6 +108,29 @@ function mountFirewall() {
  };
  form.elements.enabled.addEventListener('change', syncEnabled);
  reload.addEventListener('click', load);
+ $('#firewall-asn').addEventListener('click', async () => {
+  if (busy || !model || !supported || !form.elements.enabled.checked) return;
+  const notice = $('#firewall-asn-status');
+  busy = true; controls.disabled = true; reload.disabled = true;
+  notice.textContent = '正在向 RIPEstat 查询…';
+  const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 25000);
+  try {
+   const result = await api('firewall/asn', {asn:form.elements.asn.value}, {signal:controller.signal});
+   if (!current()) return;
+   if (!Array.isArray(result.prefixes) || !result.prefixes.length) throw new Error('未获得网段');
+   const existing = form.elements.sources.value.split(/[,\r\n]+/).map(value=>value.trim()).filter(Boolean);
+   const merged = [...new Set([...existing, ...result.prefixes])];
+   const text = merged.join('\n');
+   if (merged.length > 4096 || text.length > 262144) throw new Error('合并后的来源列表超过上限');
+   form.elements.sources.value = text;
+   notice.textContent = `${result.asn} 返回 ${result.prefixes.length} 个网段，已加入草稿；请核对列表，再决定是否保存并应用。数据未自动更新。`;
+  } catch (err) {
+   if (current()) notice.textContent = '查询失败，来源列表未更改：' + (err.name === 'AbortError' ? '请求超时' : err.message);
+  } finally {
+   clearTimeout(timeout); busy = false;
+   if (current()) { controls.disabled = false; reload.disabled = false; syncEnabled(); }
+  }
+ });
  form.addEventListener('submit', async event => {
   event.preventDefault();
   if (busy || !model) return;
