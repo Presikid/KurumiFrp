@@ -7,11 +7,13 @@ const Protocols = Object.freeze({
  hasPairingSecret: type => ['stcp', 'xtcp', 'sudp', 'stcp-visitor', 'xtcp-visitor', 'sudp-visitor'].includes(type),
  supportsUnbound: type => ['stcp-visitor', 'xtcp-visitor'].includes(type),
  probeUnavailable(t) {
+  if (t.unixSocketPath) return 'Unix 套接字目标暂不支持检测';
   if (['udp', 'sudp', 'sudp-visitor'].includes(t.type)) return 'UDP 不支持通用检测';
   if (this.supportsUnbound(t.type) && t.localPort < 0) return '此 Visitor 仅接收回退连接';
   return '';
  },
  endpoint(t) {
+  if (t.unixSocketPath) return 'Unix: ' + t.unixSocketPath;
   if (this.supportsUnbound(t.type) && t.localPort < 0) return '仅接收回退连接';
   const host = String(t.localHost || '');
   return (host.includes(':') ? `[${host}]` : host) + ':' + t.localPort;
@@ -28,7 +30,7 @@ const Protocols = Object.freeze({
   return ['tcp', 'udp'].includes(t.type) && t.remotePort === 0 ? '动态分配（查看代理状态）' : t.remotePort;
  },
  matches(t, instance, query, protocol) {
-  const words = [t.name, t.type, t.localHost, t.localPort, t.remotePort, ...(t.domains || []), ...(t.locations || []), t.httpRouteByUser, t.subdomain, t.serverName, t.serverUser, instance?.name];
+  const words = [t.name, t.type, t.localHost, t.localPort, t.unixSocketPath, t.remotePort, ...(t.domains || []), ...(t.locations || []), t.httpRouteByUser, t.subdomain, t.serverName, t.serverUser, instance?.name];
   return (!protocol || t.type === protocol) && words.join(' ').toLocaleLowerCase().includes(query.toLocaleLowerCase());
  }
 });

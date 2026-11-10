@@ -61,7 +61,7 @@ window.KurumiTOMLImport = (() => {
       lines.push(`实例：${instance.name} · ${instance.kind}`, `地址：${instance.host}:${instance.port}`,
        `规则：${(result.tunnels || []).length} 条`);
       for (const rule of result.tunnels || []) {
-       let detail = `${rule.localHost}:${rule.localPort}`;
+       let detail = rule.unixSocketPath ? `Unix: ${rule.unixSocketPath}` : `${rule.localHost}:${rule.localPort}`;
        if (['tcp', 'udp'].includes(rule.type)) detail += ` → ${rule.remotePort}`;
        if (rule.type.endsWith('-visitor')) detail += ` → ${rule.serverName}`;
        lines.push(`  ${rule.name} · ${rule.type} · ${rule.enabled ? '启用' : '停用'} · ${detail}`);
