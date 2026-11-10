@@ -20,8 +20,19 @@ import (
 type webhookConfig struct {
 	Enabled  bool   `json:"enabled"`
 	URL      string `json:"url,omitempty"`
+	Format   string `json:"format,omitempty"`
 	OnStatus bool   `json:"onStatus"`
 	OnConfig bool   `json:"onConfig"`
+}
+
+// An empty format preserves the original structured JSON payload.
+func validWebhookFormat(format string) bool {
+	switch format {
+	case "", "discord", "slack", "ntfy":
+		return true
+	default:
+		return false
+	}
 }
 
 func (db Database) webhookConfig() webhookConfig {
@@ -36,6 +47,9 @@ func (db Database) webhookConfig() webhookConfig {
 func validateStoredWebhook(s *Store, cfg *webhookConfig) error {
 	if cfg == nil {
 		return nil
+	}
+	if !validWebhookFormat(cfg.Format) {
+		return fmt.Errorf("invalid webhook format")
 	}
 	if cfg.URL != "" {
 		plain, err := s.decrypt(cfg.URL)
@@ -100,7 +114,7 @@ func (d *webhookDispatcher) configure(cfg webhookConfig, target string) {
 	defer d.mu.Unlock()
 	// The encrypted URL may change when the store key changes, even though the
 	// destination and event options remain the same.
-	if d.configCancel != nil && d.target == target && d.config.Enabled == cfg.Enabled &&
+	if d.configCancel != nil && d.target == target && d.config.Enabled == cfg.Enabled && d.config.Format == cfg.Format &&
 		d.config.OnStatus == cfg.OnStatus && d.config.OnConfig == cfg.OnConfig {
 		d.config = cfg
 		return
@@ -159,9 +173,9 @@ func (d *webhookDispatcher) run() {
 				d.mu.Unlock()
 				continue
 			}
-			target, ctx := d.target, d.configCtx
+			target, format, ctx := d.target, d.config.Format, d.configCtx
 			d.mu.Unlock()
-			result, ok := sendWebhook(ctx, target, item.event)
+			result, ok := sendWebhook(ctx, target, format, item.event)
 			d.mu.Lock()
 			if ctx.Err() != nil {
 				d.dropped++
@@ -288,11 +302,58 @@ func webhookDial(ctx context.Context, network, address string) (net.Conn, error)
 	return nil, fmt.Errorf("connection failed")
 }
 
-func sendWebhook(ctx context.Context, target string, event webhookEvent) (string, bool) {
+// All channel-specific payloads are produced here; the original JSON remains
+// byte-for-byte compatible when the stored format is empty.
+func formatWebhookEvent(format string, event webhookEvent) ([]byte, string, error) {
+	if format == "" {
+		body, err := json.Marshal(event)
+		return body, "application/json", err
+	}
+	var description string
+	switch event.Event {
+	case "instance.up":
+		description = "实例进程已启动"
+	case "instance.down":
+		description = "实例进程已退出"
+	case "instance.start_failed":
+		description = "实例进程启动失败"
+	case "config.saved":
+		description = fmt.Sprintf("配置草稿已更新（r%d）", event.Revision)
+	default:
+		return nil, "", fmt.Errorf("unsupported event")
+	}
+	message := fmt.Sprintf("KurumiFRP · %s\n时间：%s", description, event.At)
+	if event.InstanceID != "" {
+		message += fmt.Sprintf("\n实例：%s (%s)", event.InstanceID, event.Kind)
+	}
+	switch format {
+	case "discord":
+		payload := struct {
+			Content         string `json:"content"`
+			AllowedMentions struct {
+				Parse []string `json:"parse"`
+			} `json:"allowed_mentions"`
+		}{Content: message}
+		payload.AllowedMentions.Parse = []string{}
+		body, err := json.Marshal(payload)
+		return body, "application/json", err
+	case "slack":
+		body, err := json.Marshal(struct {
+			Text string `json:"text"`
+		}{Text: message})
+		return body, "application/json", err
+	case "ntfy":
+		return []byte(message), "text/plain; charset=utf-8", nil
+	default:
+		return nil, "", fmt.Errorf("unsupported webhook format")
+	}
+}
+
+func sendWebhook(ctx context.Context, target, format string, event webhookEvent) (string, bool) {
 	if !validWebhookURL(target) {
 		return "通知地址无效", false
 	}
-	body, err := json.Marshal(event)
+	body, contentType, err := formatWebhookEvent(format, event)
 	if err != nil {
 		return "通知生成失败", false
 	}
@@ -309,7 +370,7 @@ func sendWebhook(ctx context.Context, target string, event webhookEvent) (string
 	if err != nil {
 		return "通知请求无效", false
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", contentType)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "发送失败（连接、地址或超时）", false
@@ -334,12 +395,13 @@ func (a *App) configureWebhook(cfg webhookConfig) {
 // Called after authentication and same-origin checks. Decode the request before
 // acquiring a.mu so a slow request body cannot delay instance controls.
 type webhookRequest struct {
-	Revision uint64 `json:"revision"`
-	Enabled  bool   `json:"enabled"`
-	URL      string `json:"url"`
-	ClearURL bool   `json:"clearURL"`
-	OnStatus bool   `json:"onStatus"`
-	OnConfig bool   `json:"onConfig"`
+	Revision uint64  `json:"revision"`
+	Enabled  bool    `json:"enabled"`
+	URL      string  `json:"url"`
+	Format   *string `json:"format"`
+	ClearURL bool    `json:"clearURL"`
+	OnStatus bool    `json:"onStatus"`
+	OnConfig bool    `json:"onConfig"`
 }
 
 func (a *App) webhookAPI(w http.ResponseWriter, r *http.Request) {
@@ -351,7 +413,7 @@ func (a *App) webhookAPI(w http.ResponseWriter, r *http.Request) {
 		a.mu.Unlock()
 		reply(w, http.StatusOK, map[string]any{
 			"revision": revision, "enabled": cfg.Enabled, "hasURL": cfg.URL != "",
-			"onStatus": cfg.OnStatus, "onConfig": cfg.OnConfig, "status": status,
+			"format": cfg.Format, "onStatus": cfg.OnStatus, "onConfig": cfg.OnConfig, "status": status,
 		})
 		return
 	}
@@ -385,7 +447,15 @@ func (a *App) saveWebhook(req webhookRequest) (uint64, int, error) {
 		return 0, http.StatusBadRequest, fmt.Errorf("不能同时清除和设置通知地址")
 	}
 	previous := a.store.DB.webhookConfig()
-	cfg := webhookConfig{Enabled: req.Enabled, URL: previous.URL, OnStatus: req.OnStatus, OnConfig: req.OnConfig}
+	cfg := webhookConfig{Enabled: req.Enabled, URL: previous.URL, Format: previous.Format, OnStatus: req.OnStatus, OnConfig: req.OnConfig}
+	// A client predating channel formats may omit the field while editing
+	// other settings; omission must not reset an existing selection.
+	if req.Format != nil {
+		cfg.Format = *req.Format
+	}
+	if !validWebhookFormat(cfg.Format) {
+		return 0, http.StatusBadRequest, fmt.Errorf("通知格式无效")
+	}
 	if req.ClearURL {
 		cfg.URL = ""
 	} else if req.URL != "" {
