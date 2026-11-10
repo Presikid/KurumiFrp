@@ -51,7 +51,7 @@ Linux 原生包将程序和运行数据放在 `/opt/kurumifrp`。包管理器仍
 | 内容 | 位置 |
 |---|---|
 | 主程序 | `/opt/kurumifrp/kurumifrp`（`/usr/bin/kurumifrp` 为命令链接） |
-| 状态、密钥、历史、核心与临时文件 | `/opt/kurumifrp/runtime` |
+| 状态、密钥、历史与临时文件 | `/opt/kurumifrp/runtime` |
 | 升级前数据备份 | `/opt/kurumifrp/backups/legacy`，仅 root 可访问 |
 | 包安装归属记录与更新器工作目录 | `/opt/kurumifrp/meta`、`/opt/kurumifrp/private` |
 | 服务单元和文档 | `/usr/lib/systemd/system`、`/usr/share/doc/kurumifrp`、`/usr/share/man` |

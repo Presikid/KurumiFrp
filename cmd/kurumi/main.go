@@ -27,14 +27,13 @@ func main() {
 	}
 }
 func run() error {
-	defaultData, defaultCore, defaultListen, pathErr := defaultPaths()
+	defaultData, defaultListen, pathErr := defaultPaths()
 	if pathErr != nil {
 		return pathErr
 	}
 	dir := flag.String("data", defaultData, "private persistent data directory")
-	bin := flag.String("frp-dir", defaultCore, "legacy core path (not used by the in-process runtime)")
 	addr := flag.String("listen", defaultListen, "loopback management listener, or auto for ports 9000..9010")
-	paths := flag.Bool("paths", false, "show resolved native program, data, core and temporary paths")
+	paths := flag.Bool("paths", false, "show resolved native program, data and temporary paths")
 	open := flag.Bool("open", false, "open local WebUI with a one-time login ticket")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	installDir := flag.String("install-dir", "", "installer maintenance target")
@@ -84,10 +83,10 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(os.Stdout).Encode(map[string]string{"program": filepath.Dir(exe), "data": defaultData, "cores": defaultCore, "temporary": temporaryRoot(defaultData), "distribution": distribution})
+		return json.NewEncoder(os.Stdout).Encode(map[string]string{"program": filepath.Dir(exe), "data": defaultData, "temporary": temporaryRoot(defaultData), "distribution": distribution})
 	}
 	if distribution == "windows-installed" {
-		if *dir != defaultData || *bin != defaultCore {
+		if *dir != defaultData {
 			return fmt.Errorf("installed builds keep runtime data under the installation directory; use a source build for custom paths")
 		}
 		// Setup starts the unelevated manager asynchronously. Its read-only
@@ -166,7 +165,7 @@ func run() error {
 		return e
 	}
 	defer cleanTemp()
-	app, e := manager.NewWithRuntime(abs, *bin, *addr, web.Files, runtimeBackend())
+	app, e := manager.NewWithRuntime(abs, *addr, web.Files, runtimeBackend())
 	if e != nil {
 		return e
 	}
