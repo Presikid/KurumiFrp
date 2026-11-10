@@ -31,6 +31,7 @@ import (
 
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/transport"
+	"github.com/fatedier/frp/pkg/util/lifetime"
 	"github.com/fatedier/frp/pkg/util/xlog"
 )
 
@@ -244,14 +245,30 @@ func MakeHole(ctx context.Context, listenConn *net.UDPConn, m *msg.NatHoleResp, 
 	// Every socket and worker created for a traversal must finish before the
 	// caller can stop its client or reuse the selected connection.
 	ctx, cancel := context.WithCancel(ctx)
+	closeDone := make(chan struct{})
 	stopClose := context.AfterFunc(ctx, func() {
+		defer close(closeDone)
+		defer lifetime.Recover(ctx)
 		for _, conn := range listenConns {
 			_ = conn.Close()
 		}
 	})
 	var workers sync.WaitGroup
 	defer func() {
-		stopClose()
+		stopped := stopClose()
+		if !stopped {
+			<-closeDone
+		}
+		// A successful handoff cannot return a socket which the cancellation
+		// callback has closed. stopClose is the handoff boundary.
+		if winner != nil && (!stopped || ctx.Err() != nil) {
+			_ = winner.Close()
+			winner, remote = nil, nil
+			resultErr = ctx.Err()
+			if resultErr == nil {
+				resultErr = fmt.Errorf("NAT traversal was cancelled during handoff")
+			}
+		}
 		cancel()
 		for _, conn := range listenConns {
 			if conn != winner {
@@ -285,6 +302,7 @@ func MakeHole(ctx context.Context, listenConn *net.UDPConn, m *msg.NatHoleResp, 
 			workers.Add(1)
 			go func(conn *net.UDPConn) {
 				defer workers.Done()
+				defer lifetime.Recover(ctx)
 				sendSidMessageToRandomPorts(ctx, conn, m.CandidateAddrs, m.DetectBehavior.SendRandomPorts, sendToRangePortsFunc)
 			}(listenConns[i])
 		}
@@ -316,6 +334,7 @@ func MakeHole(ctx context.Context, listenConn *net.UDPConn, m *msg.NatHoleResp, 
 		workers.Add(1)
 		go func(lConn *net.UDPConn) {
 			defer workers.Done()
+			defer lifetime.Recover(ctx)
 			addr, err := waitDetectMessage(ctx, lConn, m.Sid, key, timeout, m.DetectBehavior.Role)
 			resultCh <- result{lConn: lConn, raddr: addr, err: err}
 		}(conn)
