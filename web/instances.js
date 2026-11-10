@@ -111,7 +111,7 @@ window.KurumiInstances = (() => {
    <div class="instance-card__config ${runtime.pending?'instance-card__config--pending':''}"><div><strong>${runtime.pending?'配置待应用':'配置状态'}</strong><p>${configText}</p></div>${runtime.applied?button('diff','查看差异'):''}</div>
    ${runtime.exit?`<div class="instance-card__runtime-message"><strong>运行信息</strong><p>${esc(runtime.exit)}</p></div>`:''}
    <p class="instance-card__error" data-instance-error role="alert" ${error?'':'hidden'}>${error?'操作失败：'+esc(error):''}</p>
-   <div class="instance-card__controls">${!restricted || operator ? (starting||stopping?button('stop','停止',false,true):running?button('stop','停止',false,true)+button('restart','重启应用',Boolean(runtime.pending),true):button('start','启动',true,true)) : ''}${restricted?`<button type="button" data-instance-read="config" data-id="${id}">配置预览</button><button type="button" data-instance-read="${role === 'server' ? 'server-traffic' : 'traffic'}" data-id="${id}">当前流量</button><button type="button" data-instance-read="traffic-history" data-id="${id}">流量历史</button>${data.identity?.allowLogs ? button('logs','日志') : ''}`:button('logs','日志')+button('health','链路检测')}</div>
+   <div class="instance-card__controls">${!restricted || operator ? (starting||stopping?button('stop','停止',false,true):running?button('stop','停止',false,true)+button('restart','重启应用',Boolean(runtime.pending),true):button('start','启动',true,true)) : ''}${restricted?`<button type="button" data-instance-read="config" data-id="${id}">配置预览</button><button type="button" data-instance-read="${role === 'server' ? 'server-traffic' : 'traffic'}" data-id="${id}">当前流量</button><button type="button" data-instance-read="traffic-history" data-id="${id}">流量历史</button>${(data.identity?.logInstances || []).includes(instance.id) ? button('logs','日志') : ''}`:button('logs','日志')+button('health','链路检测')}</div>
    <div class="instance-card__actions">${!restricted || operator ? button('validate','校验配置',false,true) : ''}${restricted ? '' : button('edit-schedule','定时计划')+button('edit-instance','编辑')+button('duplicate-instance','复制实例')+button('delete-instance','删除')}</div>
   </article>`;
  }
@@ -133,7 +133,7 @@ window.KurumiInstances = (() => {
   }).join('');
 
   const title = restricted ? '授权实例' : '运行实例';
-  const subtitle = restricted ? `${helpers.esc(data.identity?.name || '账户')} · ${data.identity?.role === 'operator' ? '操作员' : '查看者'} · 仅显示已授权实例${data.identity?.allowLogs ? '；可查看这些实例的日志' : '；日志权限未授予'}` : '只管理本机实例；上游服务器地址不代表远程管理权限。';
+  const subtitle = restricted ? `${helpers.esc(data.identity?.name || '账户')} · ${data.identity?.role === 'operator' ? '操作员' : '查看者'} · 仅显示已授权实例${data.identity?.allowLogs ? '；日志权限按实例分配' : '；日志权限未授予'}` : '只管理本机实例；上游服务器地址不代表远程管理权限。';
   const action = restricted ? '' : '<button class="primary" data-action="new-instance">＋ 新建实例</button>';
   const empty = restricted ? helpers.empty('暂无授权实例','请联系管理员分配实例。') : helpers.empty('添加第一个运行实例','先创建客户端或服务端，再检查配置并启动。','<button data-action="new-instance" class="primary">新建实例</button>','welcome');
   return helpers.header(title,subtitle,action) +

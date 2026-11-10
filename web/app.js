@@ -625,8 +625,9 @@ function refreshUpdateStatus(generation) {
  })();
  return request.promise;
 }
-function ensureSelected(){if(!data.state.instances.some(i=>i.id===selected)){cancelLogRequest();stopLogStream();logSnapshot=null;logExportView=null;logAccessDenied=null;selected=data.state.instances[0]?.id||'';}}
-function picker(){return `<select class="config-picker" id="instance-picker" aria-label="选择实例" ${data.state.instances.length?'':'disabled'}>${data.state.instances.length?data.state.instances.map(i=>`<option value="${esc(i.id)}" ${selected===i.id?'selected':''}>${esc(i.name)} · ${esc(i.kind)}</option>`).join(''):'<option value="">尚无实例</option>'}</select>`;}
+function pickerInstances(){return page==='logs'&&data.identity?.role!=='admin'?data.state.instances.filter(i=>(data.identity?.logInstances||[]).includes(i.id)):data.state.instances;}
+function ensureSelected(){const instances=pickerInstances();if(!instances.some(i=>i.id===selected)){cancelLogRequest();stopLogStream();logSnapshot=null;logExportView=null;logAccessDenied=null;selected=instances[0]?.id||'';}}
+function picker(){const instances=pickerInstances();return `<select class="config-picker" id="instance-picker" aria-label="选择实例" ${instances.length?'':'disabled'}>${instances.length?instances.map(i=>`<option value="${esc(i.id)}" ${selected===i.id?'selected':''}>${esc(i.name)} · ${esc(i.kind)}</option>`).join(''):'<option value="">尚无可用实例</option>'}</select>`;}
 function rulesContext(){return {data,filter,protocol,probingAll,probing,probeBatchProgress,esc,empty,stateOf,registrationFor,registrationText,probeCell};}
 function paintRulesList(){
  const list=$('#tunnel-list');
