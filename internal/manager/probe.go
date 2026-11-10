@@ -91,8 +91,22 @@ func probeTargetContext(parent context.Context, t Tunnel) ProbeResult {
 
 func probeHTTP(parent context.Context, t Tunnel, result ProbeResult) ProbeResult {
 	host := t.LocalHost
-	if len(t.Domains) > 0 {
-		host = t.Domains[0]
+	var wildcardHost string
+	for _, domain := range t.Domains {
+		if hostOK(domain) {
+			host = domain
+			wildcardHost = ""
+			break
+		}
+		if wildcardHost == "" && strings.HasPrefix(domain, "*.") {
+			candidate := "kurumi-probe." + strings.TrimPrefix(domain, "*.")
+			if hostOK(candidate) {
+				wildcardHost = candidate
+			}
+		}
+	}
+	if wildcardHost != "" {
+		host = wildcardHost
 	}
 	if !hostOK(host) {
 		result.Status = "invalid"

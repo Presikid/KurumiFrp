@@ -54,7 +54,7 @@ const ProtocolEditor = (() => {
     <label><span class="local-host-label">本地目标地址</span><input name="localHost" type="text" value="${esc(v.localHost)}" required></label>
     <label><span class="local-port-label">本地目标端口</span><input name="localPort" type="number" value="${esc(v.localPort)}" required min="1" max="65535" step="1" ${lockedPort ? 'readonly' : ''}><small class="unbound-note" hidden>负数表示仅接收回退连接，不监听本地端口。</small>${lockedPort ? '<small>当前暂不支持更改此规则的回退监听端口。</small>' : ''}</label>
     <div class="port-field">${field('remotePort', '远端端口（0 请求动态分配）', ['tcp', 'udp'].includes(v.type) ? (v.remotePort ?? '') : '', 'number', 'min="0" max="65535" step="1"')}</div>
-    <div class="domain-field span-2">${field('domains', '域名（多个用逗号分隔）', (v.domains || []).join(', '))}</div>
+    <div class="domain-field span-2">${field('domains', '域名（多个用逗号分隔）', (v.domains || []).join(', '))}<small>支持 * 和 *.example.com；后者不匹配 example.com 本身。HTTPS 证书须覆盖访问的具体域名。</small></div>
     <div class="probe-field span-2 protocol-subgrid">
      ${field('probePath', '本地健康检查路径（仅用于诊断）', v.probePath || '', 'text', 'maxlength="512" placeholder="/（默认）"')}
      <label>HTTP 检测方法<select name="probeMethod"><option value="" ${!v.probeMethod ? 'selected' : ''}>默认 · HEAD</option><option value="HEAD" ${v.probeMethod === 'HEAD' ? 'selected' : ''}>HEAD · 只检查响应头</option><option value="GET" ${v.probeMethod === 'GET' ? 'selected' : ''}>GET · 兼容只支持 GET 的接口</option></select></label>
@@ -72,7 +72,6 @@ const ProtocolEditor = (() => {
     <div class="http-routing-field span-2">${field('httpRouteByUser', '按 HTTP 用户名路由（可选）', v.httpRouteByUser || '')}<small>只选择路由，不能验证身份或限制访问。需要保护目标时，请另外启用认证；同域名可为不同用户名配置不同路由。</small></div>
     <div class="http-routing-field span-2">${check('httpAuthEnabled', '启用 HTTP Basic 认证', v.httpAuthEnabled)}<small>请通过 TLS 保护访问链路；Basic 认证本身不加密用户名和密码。</small></div>
     <div class="tcpmux-field"><label>多路复用器<select name="multiplexer"><option value="" ${!v.multiplexer ? 'selected' : ''}>默认 · httpconnect</option><option value="httpconnect" ${v.multiplexer === 'httpconnect' ? 'selected' : ''}>httpconnect</option></select></label></div>
-    <p class="tcpmux-field small-note span-2">TCPMUX 自定义域名支持 * 和 *.example.com。</p>
     <div class="http-credential-field">${field('httpUser', 'HTTP 认证用户名', v.httpUser || '')}</div>
     <div class="http-credential-field">${field('httpPassword', old?.hasHTTPPassword ? 'HTTP 密码（已保存，留空保留）' : 'HTTP 密码（8–1024 字节）', '', 'password', 'autocomplete="new-password"')}</div>
     <div class="tcpmux-field span-2">${field('routeByHTTPUser', '按 HTTP 用户名路由（可选）', v.routeByHTTPUser || '')}</div>
