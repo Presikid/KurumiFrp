@@ -17,16 +17,12 @@ import (
 // to increment. Log lines are a separate /api/logs resource.
 type stateProcessSnapshot struct {
 	status       RuntimeStatus
-	coreID       string
 	startupError string
 	present      bool
 }
 
 type stateResponseCache struct {
 	revision    uint64
-	coreID      string
-	frpc        bool
-	frps        bool
 	runtimeFRPC bool
 	runtimeFRPS bool
 	runtimeMode string
@@ -35,7 +31,7 @@ type stateResponseCache struct {
 }
 
 func (c *stateResponseCache) matches(next *stateResponseCache) bool {
-	if c == nil || c.revision != next.revision || c.coreID != next.coreID || c.frpc != next.frpc || c.frps != next.frps || c.runtimeFRPC != next.runtimeFRPC || c.runtimeFRPS != next.runtimeFRPS || c.runtimeMode != next.runtimeMode || len(c.procs) != len(next.procs) {
+	if c == nil || c.revision != next.revision || c.runtimeFRPC != next.runtimeFRPC || c.runtimeFRPS != next.runtimeFRPS || c.runtimeMode != next.runtimeMode || len(c.procs) != len(next.procs) {
 		return false
 	}
 	for id, p := range next.procs {
@@ -51,7 +47,7 @@ func (c *stateResponseCache) matches(next *stateResponseCache) bool {
 func (a *App) observeRuntimeLocked(i Instance) stateProcessSnapshot {
 	var observed stateProcessSnapshot
 	if p := a.procs[i.ID]; p != nil {
-		observed.status, observed.coreID, observed.present = p.view(), p.coreID, true
+		observed.status, observed.present = p.view(), true
 	}
 	if i.AutoStart {
 		observed.startupError = a.startupErrors[i.ID]
@@ -64,7 +60,7 @@ func (a *App) observedRuntimeStatusLocked(i Instance, observed stateProcessSnaps
 	if observed.present {
 		v = observed.status
 		rendered, err := a.store.render(i.ID, false)
-		v.Pending = err != nil || v.Applied != rendered.Digest || observed.coreID != a.activeCoreID()
+		v.Pending = err != nil || v.Applied != rendered.Digest
 	}
 	if observed.startupError != "" && v.State != "running" && v.State != "starting" && v.State != "stopping" {
 		v.State, v.Exit = "autostart-failed", observed.startupError
@@ -87,7 +83,6 @@ func (a *App) stateResponseLocked() (*stateResponseCache, error) {
 	if backend, ok := a.runtime.(interface{ runtimeMode() string }); ok {
 		next.runtimeMode = backend.runtimeMode()
 	}
-	next.coreID = a.activeCoreID()
 	for _, i := range a.store.DB.State.Instances {
 		observed := a.observeRuntimeLocked(i)
 		if observed.present || observed.startupError != "" {
@@ -132,7 +127,6 @@ func (a *App) stateResponseLocked() (*stateResponseCache, error) {
 		"history":          history,
 		"historyLimit":     a.store.DB.HistoryLimit,
 		"events":           a.store.DB.Events,
-		"binaries":         map[string]bool{"frpc": next.frpc, "frps": next.frps},
 	})
 	if err != nil {
 		return nil, err
@@ -211,7 +205,7 @@ func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
 		body = map[string]json.RawMessage{
 			"version": body["version"], "revision": body["revision"],
 			"state": visibleState, "runtime": visibleRuntime, "schedules": visiblePlans,
-			"runtimeBackend": body["runtimeBackend"], "runtimeAvailable": body["runtimeAvailable"], "binaries": body["binaries"],
+			"runtimeBackend": body["runtimeBackend"], "runtimeAvailable": body["runtimeAvailable"],
 			"history": json.RawMessage(`[]`), "events": json.RawMessage(`[]`), "portWarnings": json.RawMessage(`[]`), "historyLimit": json.RawMessage(`0`),
 		}
 	}

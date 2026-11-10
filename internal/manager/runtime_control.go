@@ -22,7 +22,6 @@ type runtimeSnapshot struct {
 	instance        Instance
 	rendered        Rendered
 	target          string
-	coreID          string
 	revision        uint64
 	process         *process
 	scheduleVersion string
@@ -128,7 +127,7 @@ func (a *App) beginRuntimeOperationSourceLocked(parent context.Context, req runt
 		}
 		delete(a.startupErrors, req.ID)
 	}
-	snapshot = runtimeSnapshot{instance: i, revision: req.Revision, coreID: a.activeCoreID(), process: p}
+	snapshot = runtimeSnapshot{instance: i, revision: req.Revision, process: p}
 	if validate || req.Action != "stop" {
 		var err error
 		snapshot.rendered, err = a.store.render(req.ID, false)
@@ -167,11 +166,7 @@ func (a *App) finishRuntimeOperation(id string, op *runtimeOperation) {
 	a.operationWG.Done()
 }
 
-// activeCoreID and checkRuntimeSnapshot are called with a.mu held.
-func (a *App) activeCoreID() string {
-	return ""
-}
-
+// checkRuntimeSnapshot is called with a.mu held.
 func (a *App) checkRuntimeSnapshot(ctx context.Context, snapshot runtimeSnapshot) (int, error) {
 	if snapshot.scheduleVersion != "" {
 		if status, err := a.checkScheduledSnapshot(ctx, snapshot); err != nil {
@@ -184,8 +179,8 @@ func (a *App) checkRuntimeSnapshot(ctx context.Context, snapshot runtimeSnapshot
 	if ctx.Err() != nil {
 		return http.StatusBadRequest, fmt.Errorf("操作已取消，未启动新进程")
 	}
-	if a.store.DB.Revision != snapshot.revision || a.activeCoreID() != snapshot.coreID || a.procs[snapshot.instance.ID] != snapshot.process {
-		return http.StatusConflict, fmt.Errorf("操作期间配置、核心或进程已变化，请刷新后重试")
+	if a.store.DB.Revision != snapshot.revision || a.procs[snapshot.instance.ID] != snapshot.process {
+		return http.StatusConflict, fmt.Errorf("操作期间配置或进程已变化，请刷新后重试")
 	}
 	rendered, err := a.store.render(snapshot.instance.ID, false)
 	if err != nil || rendered.Digest != snapshot.rendered.Digest {
@@ -301,7 +296,7 @@ func (a *App) runRuntimeOperation(w http.ResponseWriter, req runtimeRequest, val
 	a.mu.Lock()
 	status, err = a.checkRuntimeSnapshot(op.ctx, snapshot)
 	if err == nil {
-		err = a.startPrepared(snapshot.instance, snapshot.rendered, snapshot.target, snapshot.coreID)
+		err = a.startPrepared(snapshot.instance, snapshot.rendered, snapshot.target)
 		if err != nil {
 			status = http.StatusBadRequest
 		} else {

@@ -17,7 +17,6 @@ type ConfigDiff struct {
 	AddedCount    int      `json:"addedCount"`
 	RemovedCount  int      `json:"removedCount"`
 	SecretChanged bool     `json:"secretChanged"`
-	CoreChanged   bool     `json:"coreChanged"`
 	OrderChanged  bool     `json:"orderChanged"`
 	Truncated     bool     `json:"truncated"`
 }
@@ -68,8 +67,8 @@ func configDiffLines(text string) []string {
 	}
 	return result
 }
-func compareConfig(id, name string, revision uint64, applied, draft string, secretChanged, coreChanged bool) ConfigDiff {
+func compareConfig(id, name string, revision uint64, applied, draft string, secretChanged bool) ConfigDiff {
 	r, a, rc, ac, tr := diffLines(applied, draft)
 	orderChanged := rc == 0 && ac == 0 && !slices.Equal(configDiffLines(applied), configDiffLines(draft))
-	return ConfigDiff{InstanceID: id, InstanceName: name, Revision: revision, Changed: rc > 0 || ac > 0 || orderChanged || secretChanged || coreChanged, Added: a, Removed: r, AddedCount: ac, RemovedCount: rc, SecretChanged: secretChanged, CoreChanged: coreChanged, OrderChanged: orderChanged, Truncated: tr}
+	return ConfigDiff{InstanceID: id, InstanceName: name, Revision: revision, Changed: rc > 0 || ac > 0 || orderChanged || secretChanged, Added: a, Removed: r, AddedCount: ac, RemovedCount: rc, SecretChanged: secretChanged, OrderChanged: orderChanged, Truncated: tr}
 }

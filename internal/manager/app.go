@@ -498,8 +498,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				fail(w, 400, err)
 				return
 			}
-			coreID := a.activeCoreID()
-			reply(w, 200, compareConfig(i.ID, i.Name, a.store.DB.Revision, p.appliedConfig, current.Text, p.appliedSecretDigest != current.SecretDigest, p.coreID != coreID))
+			reply(w, 200, compareConfig(i.ID, i.Name, a.store.DB.Revision, p.appliedConfig, current.Text, p.appliedSecretDigest != current.SecretDigest))
 			return
 		default:
 			fail(w, 404, fmt.Errorf("接口不存在"))
