@@ -937,20 +937,22 @@ async function synchronizeRules() {
  if(refreshed){RulesPage.setNeedsSync(false);if(data&&page==='tunnels')render();toast('规则草稿已刷新。');}
  else toast('无法刷新规则草稿，请稍后重试。');
 }
-async function batchRuleIntent(enabled) {
- const plan=RulesPage.plan(rulesContext(),enabled);
+async function batchRuleOperation(operation) {
+ const deleting=operation==='delete',enabled=operation==='enable';
+ const plan=RulesPage.plan(rulesContext(),deleting?null:enabled);
  if(!plan){RulesPage.clear();paintRulesList();toast('规则选择已失效，请重新选择。');return;}
- if(!plan.changed){toast('所选规则的草稿意图已经一致。');return;}
- const action=enabled?'启用':'停用';
- if(!confirm(`将选中的 ${plan.ids.length} 条规则设为草稿${action}（其中 ${plan.changed} 条会改变）？\n保存不会改变正在运行的实例；请在实例页重启应用。`))return;
+ if(!deleting&&!plan.changed){toast('所选规则的草稿意图已经一致。');return;}
+ const action=deleting?'删除':enabled?'启用':'停用';
+ const question=deleting?`删除选中的 ${plan.ids.length} 条规则草稿？如需恢复，请先确认已有可用快照。`:`将选中的 ${plan.ids.length} 条规则设为草稿${action}（其中 ${plan.changed} 条会改变）？`;
+ if(!confirm(question+'\n运行中的实例不会立即改变；请在实例页重启应用。'))return;
  const generation=authGeneration;
  RulesPage.setBusy(true);render();
  try {
-  const result=await api('tunnels/batch-enabled',{revision:plan.revision,ids:plan.ids,enabled});
+  const result=await api(deleting?'tunnels/batch-delete':'tunnels/batch-enabled',deleting?{revision:plan.revision,ids:plan.ids}:{revision:plan.revision,ids:plan.ids,enabled});
   if(generation!==authGeneration)return;
   RulesPage.clear(); RulesPage.setNeedsSync(true);
   const refreshed=await refresh();
-  if(generation===authGeneration){if(refreshed)RulesPage.setNeedsSync(false);toast(`已保存 ${result.changed} 条规则的草稿${action}意图；${refreshed?'实例需重新应用':'请先刷新草稿后继续操作'}。`);}
+  if(generation===authGeneration){if(refreshed)RulesPage.setNeedsSync(false);toast(`已${deleting?'删除':'保存'} ${result.changed} 条规则草稿${deleting?'':action+'意图'}；${refreshed?'实例需重新应用':'请先刷新草稿后继续操作'}。`);}
  } catch(err) {
   if(generation!==authGeneration)return;
   RulesPage.clear(); RulesPage.setNeedsSync(true);
@@ -978,7 +980,7 @@ $('#content').addEventListener('click',async e=>{
  if(action==='refresh-rules'){await synchronizeRules();return;}
  if(['new-tunnel','new-tunnel-batch','edit-tunnel','duplicate-tunnel','delete-tunnel','toggle','probe'].includes(action)&&RulesPage.isUnavailable()){toast('批量操作正在处理或草稿需要刷新，请稍后再操作。');return;}
  if(action==='clear-rule-selection'){RulesPage.clear();RulesPage.paint(rulesContext());return;}
- if(action==='batch-enable'||action==='batch-disable'){await batchRuleIntent(action==='batch-enable');return;}
+ if(action==='batch-enable'||action==='batch-disable'||action==='batch-delete'){await batchRuleOperation(action.slice(6));return;}
  if(action==='new-instance'||action==='edit-instance'){openEditor('instance',id);return;}
  if(action==='new-tunnel-batch'){openTunnelBatchEditor();return;}
  if(action==='new-tunnel'||action==='edit-tunnel'){openEditor('tunnel',id);return;}
