@@ -307,10 +307,16 @@ func (m *tomlMapper) mapRule(store *Store, t *tomlTable, prefix, instanceID stri
 		}
 		if typ == "tcpmux" {
 			r.Multiplexer = m.str(t, "multiplexer", prefix, "")
-			r.HTTPUser = m.str(t, "httpUser", prefix, "")
 			r.RouteByHTTPUser = m.str(t, "routeByHTTPUser", prefix, "")
-			if password := m.str(t, "httpPassword", prefix, ""); password != "" {
+		}
+		if typ == "http" || typ == "tcpmux" {
+			r.HTTPUser = m.str(t, "httpUser", prefix, "")
+			password := m.str(t, "httpPassword", prefix, "")
+			if password != "" {
 				r.HTTPPassword = m.secret(store, password, prefix+"httpPassword")
+			}
+			if typ == "http" {
+				r.HTTPAuthEnabled = r.HTTPUser != "" || password != ""
 			}
 		}
 		if typ == "http" {

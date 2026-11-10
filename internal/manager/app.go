@@ -614,12 +614,16 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if edit.ClearHTTPPassword && v.HTTPPassword != "" {
-				err = fmt.Errorf("不能同时设置和清除 TCPMUX 密码")
+				err = fmt.Errorf("不能同时设置和清除 HTTP 密码")
+				break
+			}
+			if exists && old.Type != v.Type && old.HTTPPassword != "" && !edit.ClearHTTPPassword {
+				err = fmt.Errorf("更改协议前请确认清除已保存的 HTTP 密码")
 				break
 			}
 			if edit.ClearHTTPPassword {
 				v.HTTPPassword = ""
-			} else if v.Type != "tcpmux" {
+			} else if v.Type != "tcpmux" && v.Type != "http" {
 				if exists && old.Type == v.Type {
 					v.HTTPPassword = old.HTTPPassword
 				} else {
@@ -630,7 +634,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					break
 				}
-			} else if exists && old.Type == "tcpmux" {
+			} else if exists && old.Type == v.Type {
 				v.HTTPPassword = old.HTTPPassword
 			}
 			if exists {
