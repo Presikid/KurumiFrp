@@ -231,35 +231,13 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		db.Schedules[id] = plan
 	}
 	// Ignore imported notification settings. The imported key replaces the local
-	// key, so re-encrypt both local credentials before committing either.
+	// key, so re-encrypt all local notification secrets before committing.
 	db.Webhook = nil
 	if a.store.DB.Webhook != nil {
-		local := *a.store.DB.Webhook
-		if err = validateStoredWebhook(a.store, &local); err != nil {
-			fail(w, 500, fmt.Errorf("本机通知设置无效，未导入配置"))
+		local, err := rewrapWebhookConfig(a.store, check, *a.store.DB.Webhook)
+		if err != nil {
+			fail(w, 500, fmt.Errorf("无法迁移本机通知设置"))
 			return
-		}
-		if local.URL != "" {
-			var target string
-			target, err = a.store.decrypt(local.URL)
-			if err == nil {
-				local.URL, err = check.encrypt(target)
-			}
-			if err != nil {
-				fail(w, 500, fmt.Errorf("无法迁移本机通知设置"))
-				return
-			}
-		}
-		if local.SigningSecret != "" {
-			var secret string
-			secret, err = a.store.decrypt(local.SigningSecret)
-			if err == nil {
-				local.SigningSecret, err = check.encrypt(secret)
-			}
-			if err != nil {
-				fail(w, 500, fmt.Errorf("无法迁移本机通知设置"))
-				return
-			}
 		}
 		db.Webhook = &local
 	}
