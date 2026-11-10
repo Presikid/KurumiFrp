@@ -45,45 +45,83 @@ import (
 
 var ErrNoTunnelSession = errors.New("no tunnel session")
 
+const tunnelOpenTimeout = 20 * time.Second
+
 type XTCPVisitor struct {
 	*BaseVisitor
 	session       TunnelSession
 	startTunnelCh chan struct{}
 	retryLimiter  *rate.Limiter
 	cancel        context.CancelFunc
+	started       bool // protected by BaseVisitor.mu
+	closed        bool // protected by BaseVisitor.mu
 
 	cfg *v1.XTCPVisitorConfig
 }
 
 func (sv *XTCPVisitor) Run() (err error) {
+	sv.mu.Lock()
+	if sv.closed {
+		sv.mu.Unlock()
+		return context.Canceled
+	}
+	if sv.started {
+		sv.mu.Unlock()
+		return errors.New("xtcp visitor already started")
+	}
+	sv.started = true
 	sv.ctx, sv.cancel = context.WithCancel(sv.ctx)
 
 	if sv.cfg.Protocol == "kcp" {
-		sv.session = NewKCPTunnelSession()
+		sv.session = newKCPTunnelSession(sv.requestTunnelStart)
 	} else {
 		sv.session = NewQUICTunnelSession(sv.clientCfg)
 	}
+	if sv.cfg.KeepTunnelOpen {
+		sv.retryLimiter = rate.NewLimiter(rate.Every(time.Hour/time.Duration(sv.cfg.MaxRetriesAnHour)), sv.cfg.MaxRetriesAnHour)
+	}
+	ctx := sv.ctx
+	sv.mu.Unlock()
 
 	if sv.cfg.BindPort > 0 {
-		sv.l, err = netx.ListenTCP(sv.ctx, net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort)))
+		listener, err := netx.ListenTCP(ctx, net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort)))
 		if err != nil {
-			sv.cancel()
-			return
+			sv.Close()
+			return err
 		}
-		if !lifetime.Go(sv.ctx, func() { sv.acceptLoop(sv.l, "xtcp local", sv.handleConn) }) {
+		sv.mu.Lock()
+		if sv.closed || ctx.Err() != nil {
+			sv.mu.Unlock()
+			_ = listener.Close()
 			sv.Close()
 			return context.Canceled
 		}
+		sv.l = listener
+		sv.mu.Unlock()
 	}
 
-	if !lifetime.Go(sv.ctx, func() { sv.acceptLoop(sv.internalLn, "xtcp internal", sv.handleConn) }) ||
-		!lifetime.Go(sv.ctx, sv.processTunnelStartEvents) {
+	// Do not start workers or the plugin after Close has shut down the visitor.
+	sv.mu.Lock()
+	if sv.closed || ctx.Err() != nil {
+		sv.mu.Unlock()
+		sv.Close()
+		return context.Canceled
+	}
+	listener := sv.l
+	if listener != nil && !lifetime.Go(ctx, func() { sv.acceptLoop(listener, "xtcp local", sv.handleConn) }) {
+		sv.mu.Unlock()
+		sv.Close()
+		return context.Canceled
+	}
+	if !lifetime.Go(ctx, func() { sv.acceptLoop(sv.internalLn, "xtcp internal", sv.handleConn) }) ||
+		!lifetime.Go(ctx, sv.processTunnelStartEvents) {
+		sv.mu.Unlock()
 		sv.Close()
 		return context.Canceled
 	}
 	if sv.cfg.KeepTunnelOpen {
-		sv.retryLimiter = rate.NewLimiter(rate.Every(time.Hour/time.Duration(sv.cfg.MaxRetriesAnHour)), sv.cfg.MaxRetriesAnHour)
-		if !lifetime.Go(sv.ctx, sv.keepTunnelOpenWorker) {
+		if !lifetime.Go(ctx, sv.keepTunnelOpenWorker) {
+			sv.mu.Unlock()
 			sv.Close()
 			return context.Canceled
 		}
@@ -92,16 +130,21 @@ func (sv *XTCPVisitor) Run() (err error) {
 	if sv.plugin != nil {
 		sv.plugin.Start()
 	}
+	sv.mu.Unlock()
 	return
 }
 
 func (sv *XTCPVisitor) Close() {
 	sv.mu.Lock()
 	defer sv.mu.Unlock()
-	sv.BaseVisitor.Close()
+	if sv.closed {
+		return
+	}
+	sv.closed = true
 	if sv.cancel != nil {
 		sv.cancel()
 	}
+	sv.BaseVisitor.Close()
 	if sv.session != nil {
 		sv.session.Close()
 	}
@@ -113,6 +156,9 @@ func (sv *XTCPVisitor) processTunnelStartEvents() {
 		case <-sv.ctx.Done():
 			return
 		case <-sv.startTunnelCh:
+			if sv.ctx.Err() != nil {
+				return
+			}
 			// A delayed failure from an older connection can arrive after a
 			// replacement has already been established.
 			if sv.session.Ready() {
@@ -140,18 +186,16 @@ func (sv *XTCPVisitor) keepTunnelOpenWorker() {
 	ticker := time.NewTicker(time.Duration(sv.cfg.MinRetryInterval) * time.Second)
 	defer ticker.Stop()
 
-	select {
-	case sv.startTunnelCh <- struct{}{}:
-	case <-sv.ctx.Done():
-		return
-	}
+	sv.requestTunnelStart()
 	for {
 		select {
 		case <-sv.ctx.Done():
 			return
 		case <-ticker.C:
 			xl.Debugf("keepTunnelOpenWorker try to check tunnel...")
-			conn, err := sv.getTunnelConn(sv.ctx)
+			checkCtx, cancel := context.WithTimeout(sv.ctx, tunnelOpenTimeout)
+			conn, err := sv.getTunnelConn(checkCtx)
+			cancel()
 			if err != nil {
 				xl.Warnf("keepTunnelOpenWorker get tunnel connection error: %v", err)
 				_ = sv.retryLimiter.Wait(sv.ctx)
@@ -233,7 +277,7 @@ func (sv *XTCPVisitor) handleConn(userConn net.Conn) {
 // openTunnel will open a tunnel connection to the target server.
 func (sv *XTCPVisitor) openTunnel(ctx context.Context) (conn net.Conn, err error) {
 	xl := xlog.FromContextSafe(sv.ctx)
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, tunnelOpenTimeout)
 	defer cancel()
 
 	timer := time.NewTimer(0)
@@ -270,11 +314,18 @@ func (sv *XTCPVisitor) getTunnelConn(ctx context.Context) (net.Conn, error) {
 	if ctx.Err() != nil {
 		return nil, err
 	}
+	sv.requestTunnelStart()
+	return nil, err
+}
+
+func (sv *XTCPVisitor) requestTunnelStart() {
+	if sv.ctx.Err() != nil {
+		return
+	}
 	select {
 	case sv.startTunnelCh <- struct{}{}:
 	default:
 	}
-	return nil, err
 }
 
 // 0. PreCheck
@@ -369,11 +420,16 @@ type KCPTunnelSession struct {
 	session   *fmux.Session
 	lConn     *net.UDPConn
 	openSlots chan struct{}
+	onFailure func()
 	mu        sync.RWMutex
 }
 
 func NewKCPTunnelSession() TunnelSession {
-	return &KCPTunnelSession{openSlots: make(chan struct{}, 32)}
+	return newKCPTunnelSession(nil)
+}
+
+func newKCPTunnelSession(onFailure func()) *KCPTunnelSession {
+	return &KCPTunnelSession{openSlots: make(chan struct{}, 32), onFailure: onFailure}
 }
 
 func (ks *KCPTunnelSession) Init(ctx context.Context, listenConn *net.UDPConn, raddr *net.UDPAddr) error {
@@ -411,12 +467,14 @@ func (ks *KCPTunnelSession) Init(ctx context.Context, listenConn *net.UDPConn, r
 	}
 	previous, previousConn := ks.session, ks.lConn
 	ks.session, ks.lConn = session, lConn
+	// Open calls from a retired session must not occupy the new one's slots.
+	ks.openSlots = make(chan struct{}, 32)
 	ks.mu.Unlock()
-	if previous != nil {
-		_ = previous.Close()
-	}
 	if previousConn != nil {
 		_ = previousConn.Close()
+	}
+	if previous != nil {
+		_ = previous.Close()
 	}
 	return nil
 }
@@ -427,15 +485,16 @@ func (ks *KCPTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 	}
 	ks.mu.RLock()
 	session := ks.session
+	openSlots := ks.openSlots
 	ks.mu.RUnlock()
 	if session == nil {
 		return nil, ErrNoTunnelSession
 	}
-	// yamux.Open does not accept a context and may wait for an available SYN
-	// slot. Bound the number of outstanding opens while allowing the caller's
-	// fallback deadline to expire without closing other active streams.
+	// yamux.Open does not accept a context. Bound outstanding opens per
+	// session and retire one that stays stuck beyond the shared timeout.
+	// A shorter caller deadline alone does not disrupt healthy streams.
 	select {
-	case ks.openSlots <- struct{}{}:
+	case openSlots <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-session.CloseChan():
@@ -446,11 +505,24 @@ func (ks *KCPTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 		err  error
 	}
 	result := make(chan openResult)
+	accepted := make(chan bool, 1)
+	watchdog := time.AfterFunc(tunnelOpenTimeout, func() { ks.retire(session) })
 	go func() {
-		defer func() { <-ks.openSlots }()
+		defer func() {
+			watchdog.Stop()
+			<-openSlots
+		}()
 		conn, err := session.Open()
+		if err != nil {
+			ks.retire(session)
+		}
 		select {
 		case result <- openResult{conn, err}:
+			// The caller decides ownership before returning. Keep canceled
+			// stream cleanup under the same slot and watchdog as Open.
+			if !<-accepted && conn != nil {
+				_ = conn.Close()
+			}
 		case <-ctx.Done():
 			if conn != nil {
 				_ = conn.Close()
@@ -463,32 +535,35 @@ func (ks *KCPTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 	case opened := <-result:
 		conn, err = opened.conn, opened.err
 		if ctx.Err() != nil {
-			if conn != nil {
-				_ = conn.Close()
-			}
+			accepted <- false
 			return nil, ctx.Err()
 		}
+		accepted <- true
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	if err != nil {
-		// Another goroutine may have installed a replacement while Open was
-		// failing. Only retire the session that actually failed.
-		ks.mu.Lock()
-		if ks.session == session {
-			ks.session = nil
-			lConn := ks.lConn
-			ks.lConn = nil
-			ks.mu.Unlock()
-			_ = session.Close()
-			if lConn != nil {
-				_ = lConn.Close()
-			}
-		} else {
-			ks.mu.Unlock()
-		}
-	}
 	return conn, err
+}
+
+func (ks *KCPTunnelSession) retire(session *fmux.Session) {
+	ks.mu.Lock()
+	// An old Open or watchdog must never retire its replacement.
+	if ks.session != session {
+		ks.mu.Unlock()
+		return
+	}
+	lConn := ks.lConn
+	ks.session, ks.lConn = nil, nil
+	ks.mu.Unlock()
+
+	// Interrupt transport I/O before waiting for yamux to finish closing.
+	if lConn != nil {
+		_ = lConn.Close()
+	}
+	if ks.onFailure != nil {
+		ks.onFailure()
+	}
+	_ = session.Close()
 }
 
 func (ks *KCPTunnelSession) Ready() bool {
@@ -499,14 +574,14 @@ func (ks *KCPTunnelSession) Ready() bool {
 
 func (ks *KCPTunnelSession) Close() {
 	ks.mu.Lock()
-	defer ks.mu.Unlock()
-	if ks.session != nil {
-		_ = ks.session.Close()
-		ks.session = nil
+	session, lConn := ks.session, ks.lConn
+	ks.session, ks.lConn = nil, nil
+	ks.mu.Unlock()
+	if lConn != nil {
+		_ = lConn.Close()
 	}
-	if ks.lConn != nil {
-		_ = ks.lConn.Close()
-		ks.lConn = nil
+	if session != nil {
+		_ = session.Close()
 	}
 }
 
