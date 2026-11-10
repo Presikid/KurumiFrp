@@ -21,6 +21,12 @@ type oidcBinding struct {
 	AccountID string `json:"accountId"`
 }
 
+// Group rules cap the role of an OIDC session; they never add local grants.
+type oidcGroupRule struct {
+	Group string `json:"group"`
+	Role  string `json:"role"`
+}
+
 type oidcSettings struct {
 	Version  int           `json:"version"`
 	Revision uint64        `json:"revision"`
@@ -28,6 +34,7 @@ type oidcSettings struct {
 	Issuer   string        `json:"issuer"`
 	ClientID string        `json:"clientId"`
 	Bindings []oidcBinding `json:"bindings"`
+	GroupRules []oidcGroupRule `json:"groupRules,omitempty"`
 }
 
 func oidcTextOK(value string, max int) bool {
@@ -43,10 +50,10 @@ func oidcTextOK(value string, max int) bool {
 }
 
 func validateOIDCSettings(cfg oidcSettings) error {
-	if cfg.Version != 1 || cfg.Revision == 0 || cfg.Revision > maxJSONRevision || len(cfg.Bindings) > maxAccounts {
+	if cfg.Version != 1 || cfg.Revision == 0 || cfg.Revision > maxJSONRevision || len(cfg.Bindings) > maxAccounts || len(cfg.GroupRules) > 100 {
 		return fmt.Errorf("单点登录配置无效")
 	}
-	if cfg.Issuer == "" && cfg.ClientID == "" && len(cfg.Bindings) == 0 && !cfg.Enabled {
+	if cfg.Issuer == "" && cfg.ClientID == "" && len(cfg.Bindings) == 0 && len(cfg.GroupRules) == 0 && !cfg.Enabled {
 		return nil
 	}
 	u, err := url.Parse(cfg.Issuer)
@@ -78,6 +85,13 @@ func validateOIDCSettings(cfg oidcSettings) error {
 			return fmt.Errorf("同一类型的账户绑定不能重复")
 		}
 		seen[key] = true
+	}
+	groups := make(map[string]bool, len(cfg.GroupRules))
+	for _, rule := range cfg.GroupRules {
+		if !oidcTextOK(rule.Group, 255) || !validRole(rule.Role) || groups[rule.Group] {
+			return fmt.Errorf("提供方分组规则无效或重复")
+		}
+		groups[rule.Group] = true
 	}
 	return nil
 }
@@ -120,6 +134,7 @@ func (a *App) oidcSettingsAPI(w http.ResponseWriter, r *http.Request) {
 		Issuer   string        `json:"issuer"`
 		ClientID string        `json:"clientId"`
 		Bindings []oidcBinding `json:"bindings"`
+		GroupRules *[]oidcGroupRule `json:"groupRules"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, http.StatusBadRequest, err)
@@ -135,7 +150,14 @@ func (a *App) oidcSettingsAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, fmt.Errorf("单点登录配置已变化，请刷新"))
 		return
 	}
+	if req.GroupRules == nil && len(a.auth.oidcSettings.GroupRules) != 0 {
+		fail(w, http.StatusBadRequest, fmt.Errorf("请重新读取并明确提交分组规则"))
+		return
+	}
 	next := oidcSettings{Version: 1, Revision: req.Revision + 1, Enabled: req.Enabled, Issuer: req.Issuer, ClientID: req.ClientID, Bindings: append([]oidcBinding{}, req.Bindings...)}
+	if req.GroupRules != nil {
+		next.GroupRules = append([]oidcGroupRule{}, (*req.GroupRules)...)
+	}
 	if err := validateOIDCSettings(next); err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return

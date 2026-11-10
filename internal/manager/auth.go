@@ -56,6 +56,7 @@ type authSession struct {
 	accountID string        // empty for the local access token or launch ticket
 	gate      *sync.RWMutex // root browser session; account sessions use the account gate
 	oidcRevision uint64     // zero for non-OIDC sessions
+	oidcRoleCap  string     // empty unless a provider-group policy restricted this session
 }
 
 type principal struct {
@@ -222,6 +223,9 @@ func (a *auth) identityLocked(r *http.Request) (principal, bool) {
 	}
 	for _, account := range a.accounts {
 		if account.ID == session.accountID && account.activeAt(time.Now()) {
+			if session.oidcRoleCap != "" && oidcRoleRank(session.oidcRoleCap) < oidcRoleRank(account.Role) {
+				account.Role = session.oidcRoleCap
+			}
 			logs := effectiveLogInstances(account)
 			read := effectiveReadPermissions(account)
 			return principal{Name: account.Username, Role: account.Role, Account: true, AllowLogs: account.AllowLogs && len(logs) != 0, Instances: append([]string(nil), account.Instances...), OperableInstances: effectiveControlInstances(account), AllowedActions: effectiveOperatorActions(account), ViewConfig: read.Config, ViewTraffic: read.Traffic, LogInstances: logs, RemoteInstances: append([]remoteGrant(nil), account.RemoteInstances...), AccountID: account.ID, AccountRevision: a.accountsRevision, gate: account.gate}, true

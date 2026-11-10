@@ -324,6 +324,21 @@ function openOIDCSettings() {
    if (!current()) return;
    output.innerHTML = `<form id="oidc-settings-form"><p class="small-note">使用支持授权码和 PKCE 的公开客户端。发行者与提供方端点须为公网 HTTPS；不保存客户端密钥。只允许明确绑定的本地账户登录。</p><p class="small-note">在提供方登记此工作台当前使用的回调地址：<code data-callback></code>。使用不同端口或主机名时须分别登记。</p><div class="form-grid"><label class="form-check span-2"><input type="checkbox" name="enabled">启用单点登录</label><label class="span-2">发行者地址<input name="issuer" type="url" maxlength="1024" autocomplete="off"></label><label class="span-2">客户端 ID<input name="clientId" maxlength="512" autocomplete="off"></label><fieldset class="span-2"><legend>提供方账户绑定</legend><p class="small-note">绑定提供方用户的准确 sub，或其已验证邮箱，并选择已有本地账户。邮箱须由提供方标记为已验证，完全匹配并区分大小写；sub 绑定优先。邮箱可能被提供方重新分配，请谨慎授权。不再存在的账户需明确移除或更换。</p><div data-bindings></div><button type="button" data-add-binding>添加绑定</button></fieldset></div><p class="small-note">修改设置会使已登录的单点登录会话在下一次请求时失效。本地账户和管理令牌仍可使用。此配置不包含在备份和导出中。</p><button type="submit" class="primary">保存设置</button></form>`;
    const form = output.querySelector('form'), rows = form.querySelector('[data-bindings]'), save = form.querySelector('[type=submit]');
+   const groupField = document.createElement('fieldset');
+   groupField.className = 'span-2';
+   groupField.innerHTML = '<legend>提供方分组权限上限（可选）</legend><p class="small-note">不添加规则时使用本地账户权限。添加后，ID token 的 groups 字符串数组须至少匹配一条规则；多条匹配时使用最高角色上限，但不会增加本地账户权限或实例授权。管理员账户降级后没有自动分配实例。分组变化在重新登录时生效。</p><div data-group-rules></div><button type="button" data-add-group>添加分组规则</button>';
+   form.querySelector('.form-grid').appendChild(groupField);
+   const groupRows = groupField.querySelector('[data-group-rules]');
+   const addGroup = rule => {
+    if (groupRows.children.length >= 100) {error.textContent = '最多添加 100 条分组规则。'; return;}
+    const row = document.createElement('div');
+    row.className = 'form-grid';
+    row.innerHTML = `<label>分组名<input data-group maxlength="255" value="${esc(rule.group || '')}" autocomplete="off" required></label><label>最高角色<select data-role><option value="viewer" ${rule.role === 'viewer' ? 'selected' : ''}>查看者</option><option value="operator" ${rule.role === 'operator' ? 'selected' : ''}>操作员</option><option value="admin" ${rule.role === 'admin' ? 'selected' : ''}>管理员</option></select></label><div class="span-2"><button type="button" data-remove-group>移除此规则</button></div>`;
+    row.querySelector('[data-remove-group]').addEventListener('click', () => row.remove());
+    groupRows.appendChild(row);
+   };
+   (Array.isArray(settings.groupRules) ? settings.groupRules : []).forEach(addGroup);
+   groupField.querySelector('[data-add-group]').addEventListener('click', () => addGroup({}));
    form.querySelector('[data-callback]').textContent = location.origin + '/api/oidc/callback';
    form.elements.enabled.checked = settings.enabled === true;
    form.elements.issuer.value = settings.issuer || '';
@@ -342,7 +357,8 @@ function openOIDCSettings() {
    form.addEventListener('submit', async e => {
     e.preventDefault(); if (submitting || !current()) return;
     const bindings = [...rows.children].map(row => ({kind:row.querySelector('[data-binding-kind]').value,subject:row.querySelector('[data-subject]').value,accountId:row.querySelector('[data-account]').value}));
-    const request = {revision:settings.revision, enabled:form.elements.enabled.checked, issuer:form.elements.issuer.value.trim(), clientId:form.elements.clientId.value.trim(), bindings};
+    const groupRules = [...groupRows.children].map(row => ({group:row.querySelector('[data-group]').value,role:row.querySelector('[data-role]').value}));
+    const request = {revision:settings.revision, enabled:form.elements.enabled.checked, issuer:form.elements.issuer.value.trim(), clientId:form.elements.clientId.value.trim(), bindings, groupRules};
     const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 20000);
     submitting = true; save.disabled = true; close.disabled = true; error.textContent = '';
     try {

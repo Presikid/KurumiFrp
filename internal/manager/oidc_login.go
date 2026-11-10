@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,7 +24,21 @@ type oidcFlow struct {
 	revision        uint64
 	accountRevision uint64
 	bindings        []oidcBinding
+	groupRules      []oidcGroupRule
 	expires         time.Time
+}
+
+func oidcRoleRank(role string) int {
+	switch role {
+	case "admin":
+		return 3
+	case "operator":
+		return 2
+	case "viewer":
+		return 1
+	default:
+		return 0
+	}
 }
 
 // Restrict every discovery, token and key-set request, including metadata
@@ -149,7 +164,7 @@ func (a *App) oidcStart(w http.ResponseWriter, r *http.Request) {
 	}
 	config := oauth2.Config{ClientID: cfg.ClientID, Endpoint: endpoint, RedirectURL: scheme + "://" + r.Host + "/api/oidc/callback", Scopes: scopes}
 	state, nonce, verifier := randomHex(32), randomHex(32), oauth2.GenerateVerifier()
-	flow := oidcFlow{provider: provider, client: client, oauth: config, verifier: verifier, nonce: nonce, revision: cfg.Revision, accountRevision: accountRevision, bindings: append([]oidcBinding{}, cfg.Bindings...), expires: time.Now().Add(5 * time.Minute)}
+	flow := oidcFlow{provider: provider, client: client, oauth: config, verifier: verifier, nonce: nonce, revision: cfg.Revision, accountRevision: accountRevision, bindings: append([]oidcBinding{}, cfg.Bindings...), groupRules: append([]oidcGroupRule{}, cfg.GroupRules...), expires: time.Now().Add(5 * time.Minute)}
 	address := config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("nonce", nonce))
 	if !validPublicHTTPSURL(address) {
 		fail(w, http.StatusBadGateway, fmt.Errorf("身份提供方授权地址无效"))
@@ -236,10 +251,36 @@ func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		AuthorizedParty string `json:"azp"`
 		Email           string `json:"email"`
 		EmailVerified   *bool  `json:"email_verified"`
+		Groups          json.RawMessage `json:"groups"`
 	}
 	if idToken.Claims(&claims) != nil || (len(idToken.Audience) > 1 && claims.AuthorizedParty != flow.oauth.ClientID) || (claims.AuthorizedParty != "" && claims.AuthorizedParty != flow.oauth.ClientID) {
 		failRecorded()
 		return
+	}
+	roleCap := ""
+	if len(flow.groupRules) != 0 {
+		var groups []string
+		if len(claims.Groups) == 0 || json.Unmarshal(claims.Groups, &groups) != nil || len(groups) > 256 {
+			failRecorded()
+			return
+		}
+		groupSet := make(map[string]bool, len(groups))
+		for _, group := range groups {
+			if !oidcTextOK(group, 255) {
+				failRecorded()
+				return
+			}
+			groupSet[group] = true
+		}
+		for _, rule := range flow.groupRules {
+			if groupSet[rule.Group] && oidcRoleRank(rule.Role) > oidcRoleRank(roleCap) {
+				roleCap = rule.Role
+			}
+		}
+		if roleCap == "" {
+			failRecorded()
+			return
+		}
 	}
 	// Some providers put email claims only in UserInfo. Query it only when an
 	// email binding could be needed, never to override an explicit unverified
@@ -308,6 +349,7 @@ func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		session := a.auth.sessions[sid]
 		session.oidcRevision = flow.revision
+		session.oidcRoleCap = roleCap
 		if idToken.Expiry.Before(session.expires) {
 			session.expires = idToken.Expiry
 		}
