@@ -6,17 +6,16 @@
 
 ## Current runtime boundary
 
-Normal builds select the in-process `RuntimeBackend`; the explicit
-`kurumi_external_runtime` build tag retains the earlier external backend. The
-embedded adapter parses a per-instance configuration with its own template
+The workbench and manager's default entry points select the in-process
+`RuntimeBackend`. The embedded adapter parses a per-instance configuration with its own template
 values, creates a separate client or server and log sink, and reports liveness
 and client registration through the manager's runtime interfaces. No external
 frp binary or child environment is needed for this backend. Runtime liveness
 does not establish registration or end-to-end reachability.
 
 The manager retains per-instance generations and waits for the runtime's
-cleanup before replacing that generation. External-core files and selections
-are left for compatibility builds. Importing in embedded mode preserves the
+cleanup before replacing that generation. Existing external-core files and
+selections are not used or deleted. Importing in embedded mode preserves the
 destination's external-core selection and node settings; instance grants are
 revoked before replacement. Known credentials are redacted
 from instance logs and status messages, but arbitrary dependency output cannot

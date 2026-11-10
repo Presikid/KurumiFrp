@@ -33,7 +33,7 @@ func run() error {
 		return pathErr
 	}
 	dir := flag.String("data", defaultData, "private persistent data directory")
-	bin := flag.String("frp-dir", defaultCore, "trusted frpc/frps directory (external compatibility builds only)")
+	bin := flag.String("frp-dir", defaultCore, "legacy core path (not used by the in-process runtime)")
 	addr := flag.String("listen", defaultListen, "loopback management listener, or auto for ports 9000..9010")
 	paths := flag.Bool("paths", false, "show resolved native program, data, core and temporary paths")
 	open := flag.Bool("open", false, "open local WebUI with a one-time login ticket")

@@ -77,8 +77,8 @@ upstream errors and warnings; callers must not expose those blindly. The parser
 returns stage-only diagnostics and warnings because raw TOML can itself contain
 credentials. Crypto, logging and cleanup changes still require real
 interoperability and concurrent runtime validation.
-The normal build selects the restricted in-process backend. The explicit
-`kurumi_external_runtime` build tag retains the external compatibility backend.
+The workbench and manager's default entry points select the restricted
+in-process backend; the old external-backend build switch has been removed.
 This default is a development candidate, not a release-ready replacement:
 real protocol, multi-instance, cleanup, crash recovery, and installation
 acceptance remain outstanding.
