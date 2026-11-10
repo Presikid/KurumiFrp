@@ -69,6 +69,7 @@ window.KurumiInstances = (() => {
   const runtime = data.runtime?.[instance.id] || {state:'stopped'};
   const restricted = data.identity?.role !== 'admin';
   const operator = data.identity?.role === 'operator' && (data.identity?.operableInstances || []).includes(instance.id);
+  const can = action => !restricted || (operator && (data.identity?.allowedActions || []).includes(action));
   const state = runtime.state || 'stopped';
   const running = state === 'running';
   const starting = state === 'starting';
@@ -111,8 +112,8 @@ window.KurumiInstances = (() => {
    <div class="instance-card__config ${runtime.pending?'instance-card__config--pending':''}"><div><strong>${runtime.pending?'配置待应用':'配置状态'}</strong><p>${configText}</p></div>${runtime.applied?button('diff','查看差异'):''}</div>
    ${runtime.exit?`<div class="instance-card__runtime-message"><strong>运行信息</strong><p>${esc(runtime.exit)}</p></div>`:''}
    <p class="instance-card__error" data-instance-error role="alert" ${error?'':'hidden'}>${error?'操作失败：'+esc(error):''}</p>
-   <div class="instance-card__controls">${!restricted || operator ? (starting||stopping?button('stop','停止',false,true):running?button('stop','停止',false,true)+button('restart','重启应用',Boolean(runtime.pending),true):button('start','启动',true,true)) : ''}${restricted?`<button type="button" data-instance-read="config" data-id="${id}">配置预览</button><button type="button" data-instance-read="${role === 'server' ? 'server-traffic' : 'traffic'}" data-id="${id}">当前流量</button><button type="button" data-instance-read="traffic-history" data-id="${id}">流量历史</button>${(data.identity?.logInstances || []).includes(instance.id) ? button('logs','日志') : ''}`:button('logs','日志')+button('health','链路检测')}</div>
-   <div class="instance-card__actions">${!restricted || operator ? button('validate','校验配置',false,true) : ''}${restricted ? '' : button('edit-schedule','定时计划')+button('edit-instance','编辑')+button('duplicate-instance','复制实例')+button('delete-instance','删除')}</div>
+   <div class="instance-card__controls">${starting||stopping ? (can('stop')?button('stop','停止',false,true):'') : running ? (can('stop')?button('stop','停止',false,true):'')+(can('restart')?button('restart','重启应用',Boolean(runtime.pending),true):'') : (can('start')?button('start','启动',true,true):'')}${restricted?`<button type="button" data-instance-read="config" data-id="${id}">配置预览</button><button type="button" data-instance-read="${role === 'server' ? 'server-traffic' : 'traffic'}" data-id="${id}">当前流量</button><button type="button" data-instance-read="traffic-history" data-id="${id}">流量历史</button>${(data.identity?.logInstances || []).includes(instance.id) ? button('logs','日志') : ''}`:button('logs','日志')+button('health','链路检测')}</div>
+   <div class="instance-card__actions">${can('validate') ? button('validate','校验配置',false,true) : ''}${restricted ? '' : button('edit-schedule','定时计划')+button('edit-instance','编辑')+button('duplicate-instance','复制实例')+button('delete-instance','删除')}</div>
   </article>`;
  }
 

@@ -35,6 +35,7 @@ type localAccount struct {
 	ExpiresAt       string        `json:"expiresAt,omitempty"`
 	Instances       []string      `json:"instances"`
 	ControlInstances *[]string     `json:"controlInstances,omitempty"`
+	AllowedActions  *[]string     `json:"allowedActions,omitempty"`
 	AllowLogs       bool          `json:"allowLogs,omitempty"`
 	LogInstances    *[]string     `json:"logInstances,omitempty"`
 	RemoteInstances []remoteGrant `json:"remoteInstances,omitempty"`
@@ -64,6 +65,7 @@ type accountView struct {
 	Expired          bool     `json:"expired"`
 	Instances        []string `json:"instances"`
 	ControlInstances []string `json:"controlInstances"`
+	AllowedActions   []string `json:"allowedActions"`
 	AllowLogs        bool     `json:"allowLogs"`
 	LogInstances     []string `json:"logInstances"`
 	RemoteInstances  []remoteGrant `json:"remoteInstances"`
@@ -114,6 +116,9 @@ func loadAccounts(dir string) ([]localAccount, uint64, error) {
 		if u.LogInstances != nil && (!validGrants(*u.LogInstances) || !subsetGrants(*u.LogInstances, u.Instances) || ((u.Role == "admin" || !u.AllowLogs) && len(*u.LogInstances) != 0)) {
 			return nil, 0, fmt.Errorf("本地账户文件中的日志授权无效")
 		}
+		if u.AllowedActions != nil && (!validOperatorActions(*u.AllowedActions) || (u.Role != "operator" && len(*u.AllowedActions) != 0)) {
+			return nil, 0, fmt.Errorf("本地账户文件中的操作授权无效；原文件已保留")
+		}
 		names[name], ids[u.ID] = true, true
 		file.Accounts[i].gate = &sync.RWMutex{}
 	}
@@ -121,6 +126,32 @@ func loadAccounts(dir string) ([]localAccount, uint64, error) {
 }
 
 func validRole(role string) bool { return role == "admin" || role == "operator" || role == "viewer" }
+
+func validOperatorActions(actions []string) bool {
+	if len(actions) > 4 {
+		return false
+	}
+	seen := make(map[string]bool, len(actions))
+	for _, action := range actions {
+		if (action != "start" && action != "stop" && action != "restart" && action != "validate") || seen[action] {
+			return false
+		}
+		seen[action] = true
+	}
+	return true
+}
+
+// A missing field preserves existing operators' previous permissions. An
+// explicit empty list grants no actions, even for otherwise visible instances.
+func effectiveOperatorActions(user localAccount) []string {
+	if user.Role != "operator" {
+		return []string{}
+	}
+	if user.AllowedActions == nil {
+		return []string{"start", "stop", "restart", "validate"}
+	}
+	return append([]string{}, (*user.AllowedActions)...)
+}
 
 // Deadlines are stored in UTC with whole-second precision. Empty means no
 // expiration; an invalid persisted value must never grant access.
@@ -400,7 +431,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
 		for _, u := range a.auth.accounts {
 			expired := u.Enabled && u.ExpiresAt != "" && !u.activeAt(now)
-			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, ExpiresAt: u.ExpiresAt, Expired: expired, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...)})
+			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, ExpiresAt: u.ExpiresAt, Expired: expired, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowedActions: effectiveOperatorActions(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...)})
 		}
 		revision := a.auth.accountsRevision
 		a.auth.mu.Unlock()
@@ -421,6 +452,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt        *string   `json:"expiresAt"`
 		Instances        []string  `json:"instances"`
 		ControlInstances *[]string `json:"controlInstances"`
+		AllowedActions   *[]string `json:"allowedActions"`
 		AllowLogs        *bool     `json:"allowLogs"`
 		LogInstances     *[]string `json:"logInstances"`
 		RemoteInstances  *[]remoteGrant `json:"remoteInstances"`
@@ -450,6 +482,10 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.ControlInstances != nil && (!validGrants(*req.ControlInstances) || !subsetGrants(*req.ControlInstances, req.Instances) || (req.Role != "operator" && len(*req.ControlInstances) != 0)) {
 			fail(w, 400, fmt.Errorf("可操作实例必须属于查看授权，且仅适用于操作员"))
+			return
+		}
+		if req.AllowedActions != nil && (!validOperatorActions(*req.AllowedActions) || (req.Role != "operator" && len(*req.AllowedActions) != 0)) {
+			fail(w, 400, fmt.Errorf("实例操作授权无效；仅操作员可以获得操作权限"))
 			return
 		}
 		if req.LogInstances != nil && (!validGrants(*req.LogInstances) || !subsetGrants(*req.LogInstances, req.Instances) || (req.Role == "admin" && len(*req.LogInstances) != 0)) {
@@ -582,6 +618,13 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if u.Role == "operator" {
+			if req.AllowedActions != nil {
+				actions := append([]string{}, (*req.AllowedActions)...)
+				u.AllowedActions = &actions
+			} else if index >= 0 && users[index].Role == "operator" && users[index].AllowedActions != nil {
+				actions := append([]string{}, (*users[index].AllowedActions)...)
+				u.AllowedActions = &actions
+			}
 			if req.ControlInstances != nil {
 				controls := append([]string{}, (*req.ControlInstances)...)
 				u.ControlInstances = &controls
