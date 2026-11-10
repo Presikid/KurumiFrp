@@ -87,7 +87,8 @@ blocked and the generation remains owned until process exit. New embedded runs
 are blocked; already running instances are not stopped by this guard.
 Closing the workbench reports an incomplete shutdown and retains its existing
 lock file; it must be checked after the old process has exited before restart.
-The owner-managed client/server control loops, client reconnect loop, selected
+The owner-managed client/server control loops, client reconnect loop, server
+port-reservation cleanup, selected
 SUDP bridge workers, XTCP stream-open worker and watchdog, and server shutdown
 worker also report panics to their owning instance. A failed control or shutdown
 worker may leave its completion signal open; this intentionally retains ownership

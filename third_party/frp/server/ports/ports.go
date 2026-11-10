@@ -3,6 +3,7 @@
 package ports
 
 import (
+	"context"
 	"errors"
 	"net"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"k8s.io/utils/clock"
 
 	"github.com/fatedier/frp/pkg/config/types"
+	"github.com/fatedier/frp/pkg/util/lifetime"
 )
 
 const (
@@ -54,6 +56,15 @@ func NewManager(netType string, bindAddr string, allowPorts []types.PortsRange) 
 }
 
 func newManagerWithClock(netType string, bindAddr string, allowPorts []types.PortsRange, clk clock.WithTicker) *Manager {
+	return newManagerWithContextAndClock(context.Background(), netType, bindAddr, allowPorts, clk)
+}
+
+// NewManagerWithContext associates the cleanup worker with the owning server.
+func NewManagerWithContext(ctx context.Context, netType string, bindAddr string, allowPorts []types.PortsRange) *Manager {
+	return newManagerWithContextAndClock(ctx, netType, bindAddr, allowPorts, clock.RealClock{})
+}
+
+func newManagerWithContextAndClock(ctx context.Context, netType string, bindAddr string, allowPorts []types.PortsRange, clk clock.WithTicker) *Manager {
 	if clk == nil {
 		clk = clock.RealClock{}
 	}
@@ -82,7 +93,9 @@ func newManagerWithClock(netType string, bindAddr string, allowPorts []types.Por
 			pm.freePorts[i] = struct{}{}
 		}
 	}
-	go pm.cleanReservedPortsWorker()
+	if !lifetime.Go(ctx, pm.cleanReservedPortsWorker) {
+		close(pm.doneCh)
+	}
 	return pm
 }
 
