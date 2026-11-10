@@ -233,7 +233,7 @@ async function refresh(silent = false) {
    else if (canSilentRender() && (renderedSnapshot !== stateSnapshot || renderedPage !== page)) renderPreservingScroll();
    applyDeferredConfig();
    refreshRegistration();
-   if (page === 'overview') Overview.refreshServerTraffic();
+   if (page === 'overview') Overview.refreshTraffic();
    syncLogStream();
    // Logs have a separate endpoint and can change even when state returns 304.
    // A delayed log response must not block polling the process generation.
@@ -522,8 +522,8 @@ function render() {
   paintUpdate(); renderedSnapshot = stateSnapshot; renderedRevision = data.revision; return;
  }
  if(page==='overview') {
-  content.innerHTML=Overview.render(data,{escape:esc,header,badge,instanceRegistrationText,tunnelTable,loadServerTraffic:(id,signal)=>api('server-traffic?id='+encodeURIComponent(id),undefined,{signal})});
-  Overview.refreshServerTraffic();
+  content.innerHTML=Overview.render(data,{escape:esc,header,badge,instanceRegistrationText,tunnelTable,loadServerTraffic:(id,signal)=>api('server-traffic?id='+encodeURIComponent(id),undefined,{signal}),loadTraffic:(id,signal)=>api('traffic?id='+encodeURIComponent(id),undefined,{signal})});
+  Overview.refreshTraffic();
  } else if(page==='instances') {
   content.innerHTML=window.KurumiInstances.render(data,{header,empty,esc,registrationText:instanceRegistrationText});
   if(portWarnings) content.insertAdjacentHTML('afterbegin',portWarnings);
