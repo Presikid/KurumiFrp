@@ -220,7 +220,7 @@ func (a *App) oidcStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
-	failLogin := func() { http.Redirect(w, r, "/?oidc=failed", http.StatusSeeOther) }
+	failLogin := func() { oidcLanding(w, false) }
 	states := r.URL.Query()["state"]
 	cookie, err := r.Cookie("kurumi_oidc_state")
 	if err != nil || len(states) != 1 || !nodeTokenPattern.MatchString(states[0]) || subtle.ConstantTimeCompare([]byte(states[0]), []byte(cookie.Value)) != 1 {
@@ -379,5 +379,17 @@ func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	a.loginHistory.record(r, accountName, true)
 	http.SetCookie(w, &http.Cookie{Name: "kurumi_session", Value: sid, Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode, MaxAge: 43200})
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	oidcLanding(w, true)
+}
+
+// The callback is a cross-site top-level navigation. A server redirect can
+// retain that fetch-site classification and be rejected by the workbench's
+// same-origin guard; a local page starts a new same-origin navigation instead.
+func oidcLanding(w http.ResponseWriter, success bool) {
+	next, message := "/?oidc=failed", "单点登录未完成"
+	if success {
+		next, message = "/", "登录已完成"
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = fmt.Fprintf(w, `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="oidc-next" content="%s"><title>返回 KurumiFRP</title><script src="/oidc-return.js" defer></script></head><body><p>%s，正在返回工作台。</p><p><a href="%s">如果没有自动返回，请点击这里</a></p></body></html>`, next, message, next)
 }
