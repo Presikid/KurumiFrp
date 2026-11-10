@@ -192,7 +192,7 @@ const Overview = (() => {
   const status = value.storageError ? '历史文件读取或写入失败；内存数据可能未保存。' : value.saved ? (value.savedAt ? '最近写入：' + sampleTime(value.savedAt) : '暂无已写入的数据。') : '存在待保存采样，约每 30 秒写入。';
   const rows = days.map(day => `<tr><td>${escape(day.date)}</td><td>${bytes(day.receivedBytes)}</td><td>${bytes(day.sentBytes)}</td><td>${day.partial ? '不完整' : '已记录'}</td></tr>`).join('');
   const body = rows ? `<div class="table-wrap"><table><thead><tr><th>UTC 日期</th><th>接收</th><th>发送</th><th>覆盖</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="small-note">尚无可显示的历史采样。</p>';
-  return `<details class="overview-server-details" ${open ? 'open' : ''}><summary>近 90 天流量历史</summary><p class="small-note">只累计确认的采样增量；跨日、采样中断、重置和退出时可能遗漏，缺少日期不代表零流量。该记录不适用于计费或强制配额。</p><p class="small-note">${escape(status)}</p>${body}</details>`;
+  return `<details class="overview-server-details" ${open ? 'open' : ''}><summary>近 90 天流量历史</summary><p class="small-note">只累计确认的采样增量；跨日、采样中断、重置和退出时可能遗漏，缺少日期不代表零流量。该记录不适用于计费或强制配额。</p><p class="small-note">${escape(status)}</p>${body}${days.length ? '<button type="button" data-traffic-history-export>导出 CSV</button>' : ''}</details>`;
  }
 
  function paintHistory() {
@@ -277,6 +277,21 @@ const Overview = (() => {
   paintTraffic();
   paintHistory();
   refresh();
+ });
+
+ document.querySelector('#content').addEventListener('click', event => {
+  if (!event.target.closest('[data-traffic-history-export]') || !trafficContext) return;
+  const instance = selectedInstance(), result = historyResult;
+  if (!instance || !/^[a-f0-9]{16}$/.test(instance.id) || !result || result.error || result.id !== instance.id || result.kind !== instance.kind || result.revision !== trafficContext.revision) return;
+  const days = result.value?.days;
+  if (!Array.isArray(days) || !days.length || days.length > 90 || !days.every(day => day && typeof day.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day.date) && typeof day.receivedBytes === 'string' && /^(0|[1-9]\d*)$/.test(day.receivedBytes) && typeof day.sentBytes === 'string' && /^(0|[1-9]\d*)$/.test(day.sentBytes) && typeof day.partial === 'boolean')) {
+   toast('流量历史格式无效，无法导出。');
+   return;
+  }
+  const rows = days.map(day => [day.date, day.receivedBytes, day.sentBytes, day.partial ? 'true' : 'false'].join(','));
+  const csv = '\ufeffdate_utc,received_bytes,sent_bytes,partial\r\n' + rows.join('\r\n') + '\r\n';
+  download(`kurumi-traffic-${instance.id}.csv`, csv, 'text/csv;charset=utf-8');
+  toast('已导出当前实例的采样历史。');
  });
 
  function reset() {pause(); trafficInstance = ''; trafficContext = null; trafficResult = null; historyResult = null;}
