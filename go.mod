@@ -3,9 +3,11 @@ module github.com/Presikid/KurumiFrp
 go 1.26.0
 
 require (
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/fatedier/frp v0.72.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	golang.org/x/net v0.62.0
+	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sync v0.24.0
 )
 
@@ -14,7 +16,6 @@ require (
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/coreos/go-oidc/v3 v3.21.0 // indirect
 	github.com/fatedier/golib v0.8.2 // indirect
 	github.com/fatedier/yamux v0.3.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
@@ -41,7 +42,6 @@ require (
 	github.com/xtaci/kcp-go/v5 v5.6.73 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
