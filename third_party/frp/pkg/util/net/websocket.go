@@ -1,6 +1,7 @@
 package net
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -8,6 +9,8 @@ import (
 	"time"
 
 	"golang.org/x/net/websocket"
+
+	"github.com/fatedier/frp/pkg/util/lifetime"
 )
 
 var ErrWebsocketListenerClosed = errors.New("websocket listener closed")
@@ -29,6 +32,12 @@ type WebsocketListener struct {
 // NewWebsocketListener to handle websocket connections
 // ln: tcp listener for websocket connections
 func NewWebsocketListener(ln net.Listener) (wl *WebsocketListener) {
+	wl, _ = NewWebsocketListenerWithContext(context.Background(), ln)
+	return wl
+}
+
+// NewWebsocketListenerWithContext associates its serving worker with one service.
+func NewWebsocketListenerWithContext(ctx context.Context, ln net.Listener) (wl *WebsocketListener, err error) {
 	wl = &WebsocketListener{
 		ln:       ln,
 		acceptCh: make(chan net.Conn),
@@ -63,10 +72,14 @@ func NewWebsocketListener(ln net.Listener) (wl *WebsocketListener) {
 		ReadHeaderTimeout: 60 * time.Second,
 	}
 
-	go func() {
+	if !lifetime.Go(ctx, func() {
+		defer wl.Close()
 		_ = wl.server.Serve(ln)
-	}()
-	return
+	}) {
+		_ = wl.Close()
+		return nil, net.ErrClosed
+	}
+	return wl, nil
 }
 
 func (p *WebsocketListener) Accept() (net.Conn, error) {
@@ -85,7 +98,10 @@ func (p *WebsocketListener) Accept() (net.Conn, error) {
 
 func (p *WebsocketListener) Close() error {
 	p.closeOnce.Do(func() { close(p.done) })
-	return p.server.Close()
+	err := p.server.Close()
+	// Serve may not have registered ln when a concurrent shutdown begins.
+	_ = p.ln.Close()
+	return err
 }
 
 func (p *WebsocketListener) Addr() net.Addr {

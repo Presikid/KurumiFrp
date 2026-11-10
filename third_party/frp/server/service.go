@@ -371,7 +371,7 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 	// Listen for accepting connections from client using kcp protocol.
 	if cfg.KCPBindPort > 0 {
 		address := net.JoinHostPort(cfg.BindAddr, strconv.Itoa(cfg.KCPBindPort))
-		svr.kcpListener, err = netpkg.ListenKcp(address)
+		svr.kcpListener, err = netpkg.ListenKcpWithContext(svr.workCtx, address)
 		if err != nil {
 			return nil, fmt.Errorf("listen on kcp udp address %s error: %v", address, err)
 		}
@@ -407,7 +407,10 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 	websocketLn := svr.muxer.Listen(0, uint32(len(websocketPrefix)), func(data []byte) bool {
 		return bytes.Equal(data, websocketPrefix)
 	})
-	svr.websocketListener = netpkg.NewWebsocketListener(websocketLn)
+	svr.websocketListener, err = netpkg.NewWebsocketListenerWithContext(svr.workCtx, websocketLn)
+	if err != nil {
+		return nil, fmt.Errorf("create websocket listener: %w", err)
+	}
 
 	// Create http vhost muxer.
 	if cfg.VhostHTTPPort > 0 {
