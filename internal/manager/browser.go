@@ -44,6 +44,7 @@ func (a *App) launchLogin(w http.ResponseWriter, r *http.Request) {
 	if !ok || !time.Now().Before(expires) {
 		delete(a.auth.tickets, req.Ticket)
 		a.auth.mu.Unlock()
+		a.loginHistory.record(r, "启动凭据", false)
 		fail(w, 401, fmt.Errorf("启动凭据无效或已过期，请重新打开桌面快捷方式"))
 		return
 	}
@@ -54,6 +55,7 @@ func (a *App) launchLogin(w http.ResponseWriter, r *http.Request) {
 		delete(a.auth.tickets, req.Ticket)
 	}
 	a.auth.mu.Unlock()
+	a.loginHistory.record(r, "启动凭据", err == nil)
 	if err != nil {
 		fail(w, http.StatusTooManyRequests, err)
 		return
