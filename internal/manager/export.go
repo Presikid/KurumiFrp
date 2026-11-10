@@ -61,6 +61,7 @@ func (a *App) export(w http.ResponseWriter, r *http.Request) {
 	db := a.store.DB
 	normalizeExportedCore(&db)
 	db.Webhook = nil // Local notification credentials are not exported.
+	db.Webhooks = nil
 	db.Nodes = nil   // Node grants and credentials stay on this device.
 	db.Format = currentDatabaseFormat
 	db.Key = base64.RawStdEncoding.EncodeToString(a.store.key)
@@ -250,6 +251,11 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		db.Webhook = &local
 	}
+	db.Webhooks, err = rewrapWebhookTargets(a.store, check, a.store.DB.Webhook, a.store.DB.Webhooks)
+	if err != nil {
+		fail(w, 500, fmt.Errorf("无法迁移本机通知目标，未导入配置"))
+		return
+	}
 	// Imported node authority is ignored. Keep this device’s node settings and
 	// re-encrypt outbound credentials under the replacement data key.
 	db.Nodes, err = rewrapNodeSettings(a.store, check, a.store.DB.Nodes)
@@ -284,7 +290,7 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 	a.store.DB = db
 	a.discardStoppedRuntimeLocked()
 	if a.webhooks != nil {
-		a.configureWebhook(db.webhookConfig())
+		a.configureWebhooks()
 		a.webhooks.emitConfig(db.Revision)
 	}
 	if a.core != nil {

@@ -73,6 +73,7 @@ func (a *App) backupExport(w http.ResponseWriter, r *http.Request) {
 	normalizeExportedCore(&db)
 	// Webhook destinations are local credentials, not portable backup data.
 	db.Webhook = nil
+	db.Webhooks = nil
 	db.Nodes = nil // Remote node authority remains on this device.
 	key := append([]byte(nil), a.store.key...)
 	a.mu.Unlock()

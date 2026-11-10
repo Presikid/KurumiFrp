@@ -103,58 +103,81 @@ type webhookEvent struct {
 // Import/backup restore ignores the destination in the imported file and
 // preserves the local one; old files without this field default to disabled.
 
-type queuedWebhook struct {
-	event      webhookEvent
-	generation uint64
+type webhookRecipient struct {
+	id         string
+	generation string
 }
 
-// There is one bounded worker per app, never a goroutine per event. Queued
-// events are tied to the settings in force when emitted, so changing the URL
-// or signing key cannot redirect old events to a new configuration.
-type webhookDispatcher struct {
-	mu            sync.Mutex
-	ctx           context.Context
-	cancel        context.CancelFunc
-	configCtx     context.Context
-	configCancel  context.CancelFunc
-	queue         chan queuedWebhook
+type queuedWebhook struct {
+	event      webhookEvent
+	recipients []webhookRecipient
+}
+
+type webhookRuntimeConfig struct {
+	id            string
 	config        webhookConfig
 	target        string
 	signingSecret string
-	generation    uint64
-	sent          uint64
-	failed        uint64
-	dropped       uint64
-	lastResult    string
-	lastAt        string
+}
+
+type webhookDelivery struct {
+	webhookRuntimeConfig
+	generation string
+	ctx        context.Context
+	cancel     context.CancelFunc
+	sent       uint64
+	failed     uint64
+	dropped    uint64
+	lastResult string
+	lastAt     string
+}
+
+// One bounded queue and worker serve all targets. Each queued event remembers
+// each recipient's generation, so one edit cannot redirect old deliveries.
+type webhookDispatcher struct {
+	mu      sync.Mutex
+	ctx     context.Context
+	cancel  context.CancelFunc
+	queue   chan queuedWebhook
+	targets map[string]*webhookDelivery
+	order   []string
 }
 
 func newWebhookDispatcher() *webhookDispatcher {
 	ctx, cancel := context.WithCancel(context.Background())
-	d := &webhookDispatcher{ctx: ctx, cancel: cancel, queue: make(chan queuedWebhook, 64)}
+	d := &webhookDispatcher{ctx: ctx, cancel: cancel, queue: make(chan queuedWebhook, 64), targets: make(map[string]*webhookDelivery)}
 	go d.run()
 	return d
 }
 
-func (d *webhookDispatcher) configure(cfg webhookConfig, target, signingSecret string) {
+func (d *webhookDispatcher) configure(configs []webhookRuntimeConfig) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	// Ciphertext may change during key migration while its plaintext remains
-	// the same. Only effective destination, signing key or options change the
-	// generation and cancel deliveries using the previous configuration.
-	if d.configCancel != nil && d.target == target && d.signingSecret == signingSecret &&
-		d.config.Enabled == cfg.Enabled && d.config.Format == cfg.Format &&
-		d.config.OnStatus == cfg.OnStatus && d.config.OnConfig == cfg.OnConfig {
-		d.config = cfg
-		return
+	seen := make(map[string]bool, len(configs))
+	order := make([]string, 0, len(configs))
+	for _, next := range configs {
+		seen[next.id] = true
+		order = append(order, next.id)
+		old := d.targets[next.id]
+		if old != nil && old.target == next.target && old.signingSecret == next.signingSecret &&
+			old.config.Enabled == next.config.Enabled && old.config.Format == next.config.Format &&
+			old.config.OnStatus == next.config.OnStatus && old.config.OnConfig == next.config.OnConfig {
+			old.config = next.config // ciphertext may change during key migration
+			continue
+		}
+		if old != nil {
+			old.cancel()
+		}
+		ctx, cancel := context.WithCancel(d.ctx)
+		d.targets[next.id] = &webhookDelivery{webhookRuntimeConfig: next, generation: randomHex(16), ctx: ctx, cancel: cancel}
 	}
-	if d.configCancel != nil {
-		d.configCancel()
+	for id, old := range d.targets {
+		if !seen[id] {
+			old.cancel()
+			delete(d.targets, id)
+		}
 	}
-	d.generation++
-	d.config = cfg
-	d.target, d.signingSecret = target, signingSecret
-	d.configCtx, d.configCancel = context.WithCancel(d.ctx)
+	d.order = order
 }
 
 func (d *webhookDispatcher) close() { d.cancel() }
@@ -180,13 +203,25 @@ func (d *webhookDispatcher) emitInstance(event, id, kind string) {
 func (d *webhookDispatcher) enqueue(event webhookEvent, status bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.ctx.Err() != nil || !d.config.Enabled || d.target == "" || (status && !d.config.OnStatus) || (!status && !d.config.OnConfig) {
+	if d.ctx.Err() != nil {
+		return
+	}
+	recipients := make([]webhookRecipient, 0, len(d.order))
+	for _, id := range d.order {
+		target := d.targets[id]
+		if target != nil && target.config.Enabled && target.target != "" && ((status && target.config.OnStatus) || (!status && target.config.OnConfig)) {
+			recipients = append(recipients, webhookRecipient{id: id, generation: target.generation})
+		}
+	}
+	if len(recipients) == 0 {
 		return
 	}
 	select {
-	case d.queue <- queuedWebhook{event: event, generation: d.generation}:
+	case d.queue <- queuedWebhook{event: event, recipients: recipients}:
 	default:
-		d.dropped++
+		for _, recipient := range recipients {
+			d.targets[recipient.id].dropped++
+		}
 	}
 }
 
@@ -196,40 +231,47 @@ func (d *webhookDispatcher) run() {
 		case <-d.ctx.Done():
 			return
 		case item := <-d.queue:
-			d.mu.Lock()
-			if item.generation != d.generation || !d.config.Enabled || d.target == "" || d.ctx.Err() != nil {
-				d.dropped++
-				d.mu.Unlock()
-				continue
-			}
-			target, format, signingSecret, ctx := d.target, d.config.Format, d.signingSecret, d.configCtx
-			d.mu.Unlock()
-			result, ok := sendWebhook(ctx, target, format, signingSecret, item.event)
-			d.mu.Lock()
-			if ctx.Err() != nil {
-				d.dropped++
-			} else {
-				if ok {
-					d.sent++
-				} else {
-					d.failed++
+			for _, recipient := range item.recipients {
+				d.mu.Lock()
+				target := d.targets[recipient.id]
+				if target == nil || target.generation != recipient.generation || !target.config.Enabled || target.target == "" || d.ctx.Err() != nil {
+					d.mu.Unlock()
+					continue
 				}
-				d.lastAt, d.lastResult = now(), result
+				address, format, secret, ctx := target.target, target.config.Format, target.signingSecret, target.ctx
+				d.mu.Unlock()
+				result, ok := sendWebhook(ctx, address, format, secret, item.event)
+				d.mu.Lock()
+				if d.targets[recipient.id] == target && target.generation == recipient.generation {
+					if ctx.Err() != nil {
+						target.dropped++
+					} else {
+						if ok {
+							target.sent++
+						} else {
+							target.failed++
+						}
+						target.lastAt, target.lastResult = now(), result
+					}
+				}
+				d.mu.Unlock()
 			}
-			d.mu.Unlock()
 		}
 	}
 }
 
-// The URL, remote response and network error text are never returned to the UI.
-func (d *webhookDispatcher) status() map[string]any {
+// Neither destination nor remote/network error details are returned to the UI.
+func (d *webhookDispatcher) statusFor(id string) map[string]any {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return map[string]any{
-		"ready": d.config.Enabled && d.target != "", "sent": d.sent,
-		"failed": d.failed, "dropped": d.dropped, "lastResult": d.lastResult, "lastAt": d.lastAt,
+	target := d.targets[id]
+	if target == nil {
+		return map[string]any{"ready": false, "sent": 0, "failed": 0, "dropped": 0, "lastResult": "", "lastAt": ""}
 	}
+	return map[string]any{"ready": target.config.Enabled && target.target != "", "sent": target.sent, "failed": target.failed, "dropped": target.dropped, "lastResult": target.lastResult, "lastAt": target.lastAt}
 }
+
+func (d *webhookDispatcher) status() map[string]any { return d.statusFor(legacyWebhookID) }
 
 // Public HTTPS destinations only. Validation is repeated at dial time because
 // DNS may change after the configuration is saved.
@@ -490,24 +532,34 @@ func sendWebhook(ctx context.Context, target, format, signingSecret string, even
 	return fmt.Sprintf("HTTP %d", resp.StatusCode), true
 }
 
-func (a *App) configureWebhook(cfg webhookConfig) {
-	target := ""
-	if cfg.URL != "" {
-		if plain, err := a.store.decrypt(cfg.URL); err == nil && validWebhookDestination(cfg.Format, plain) {
-			target = plain
+func (a *App) configureWebhooks() {
+	configs := make([]webhookRuntimeConfig, 0, len(a.store.DB.Webhooks)+1)
+	add := func(id string, cfg webhookConfig) {
+		target := ""
+		if cfg.URL != "" {
+			if plain, err := a.store.decrypt(cfg.URL); err == nil && validWebhookDestination(cfg.Format, plain) {
+				target = plain
+			}
 		}
-	}
-	signingSecret := ""
-	if cfg.SigningSecret != "" {
-		plain, err := a.store.decrypt(cfg.SigningSecret)
-		if err != nil || !validWebhookSigningSecret(plain) {
-			// Never silently send an unsigned notification when a key was set.
-			target = ""
-		} else {
-			signingSecret = plain
+		signingSecret := ""
+		if cfg.SigningSecret != "" {
+			plain, err := a.store.decrypt(cfg.SigningSecret)
+			if err != nil || !validWebhookSigningSecret(plain) {
+				// Never silently send an unsigned notification when a key was set.
+				target = ""
+			} else {
+				signingSecret = plain
+			}
 		}
+		configs = append(configs, webhookRuntimeConfig{id: id, config: cfg, target: target, signingSecret: signingSecret})
 	}
-	a.webhooks.configure(cfg, target, signingSecret)
+	if a.store.DB.Webhook != nil {
+		add(legacyWebhookID, *a.store.DB.Webhook)
+	}
+	for _, target := range a.store.DB.Webhooks {
+		add(target.ID, target.Config)
+	}
+	a.webhooks.configure(configs)
 }
 
 // Called after authentication and same-origin checks. Decode the request before
@@ -543,7 +595,7 @@ func (a *App) webhookAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	var req webhookRequest
 	if err := decode(w, r, &req); err != nil {
-		fail(w, http.StatusBadRequest, err)
+		fail(w, http.StatusBadRequest, fmt.Errorf("通知设置请求格式无效"))
 		return
 	}
 	revision, code, err := a.saveWebhook(req)
@@ -563,81 +615,18 @@ func (a *App) saveWebhook(req webhookRequest) (uint64, int, error) {
 	if req.Revision != a.store.DB.Revision {
 		return 0, http.StatusConflict, fmt.Errorf("配置已在其他窗口更新，请刷新后重试")
 	}
-	if req.ClearURL && req.URL != "" {
-		return 0, http.StatusBadRequest, fmt.Errorf("不能同时清除和设置通知地址")
-	}
-	if req.ClearSigningSecret && req.SigningSecret != "" {
-		return 0, http.StatusBadRequest, fmt.Errorf("不能同时清除和设置签名密钥")
-	}
 	previous := a.store.DB.webhookConfig()
-	cfg := webhookConfig{
-		Enabled: req.Enabled, URL: previous.URL, Format: previous.Format,
-		OnStatus: req.OnStatus, OnConfig: req.OnConfig, SigningSecret: previous.SigningSecret,
-	}
-	// A client predating channel formats may omit the field while editing
-	// other settings; omission must not reset an existing selection.
-	if req.Format != nil {
-		cfg.Format = *req.Format
-	}
-	if !validWebhookFormat(cfg.Format) {
-		return 0, http.StatusBadRequest, fmt.Errorf("通知格式无效")
-	}
-	if req.ClearURL {
-		cfg.URL = ""
-	} else if req.URL != "" {
-		if !validWebhookURL(req.URL) {
-			return 0, http.StatusBadRequest, fmt.Errorf("通知地址须为有效的公网 HTTPS 地址，不允许用户信息或片段")
-		}
-		existing, _ := a.store.decrypt(cfg.URL)
-		if req.URL != existing {
-			var err error
-			cfg.URL, err = a.store.encrypt(req.URL)
-			if err != nil {
-				return 0, http.StatusBadRequest, fmt.Errorf("通知地址无法保存")
-			}
-		}
-	}
-	if req.ClearSigningSecret {
-		cfg.SigningSecret = ""
-	} else if req.SigningSecret != "" {
-		if !validWebhookSigningSecret(req.SigningSecret) {
-			return 0, http.StatusBadRequest, fmt.Errorf("签名密钥须为 8–1024 字节的有效 UTF-8 文本，且不能包含 ASCII 控制字符")
-		}
-		existing, _ := a.store.decrypt(cfg.SigningSecret)
-		if req.SigningSecret != existing {
-			var err error
-			cfg.SigningSecret, err = a.store.encrypt(req.SigningSecret)
-			if err != nil {
-				return 0, http.StatusBadRequest, fmt.Errorf("签名密钥无法保存")
-			}
-		}
-	}
-	signingSecret := ""
-	if cfg.SigningSecret != "" {
-		plain, err := a.store.decrypt(cfg.SigningSecret)
-		if err != nil || !validWebhookSigningSecret(plain) {
-			return 0, http.StatusBadRequest, fmt.Errorf("签名密钥无效，请重新设置或清除")
-		}
-		signingSecret = plain
-	}
-	target := ""
-	if cfg.URL != "" {
-		plain, err := a.store.decrypt(cfg.URL)
-		if err != nil || !validWebhookDestination(cfg.Format, plain) {
-			if cfg.Format == "telegram" {
-				return 0, http.StatusBadRequest, fmt.Errorf("Telegram 地址须为完整的 sendMessage 地址，并带一个有效的 chat_id")
-			}
-			return 0, http.StatusBadRequest, fmt.Errorf("通知地址无效，请重新设置")
-		}
-		target = plain
-	}
-	if cfg.Enabled && (target == "" || (!cfg.OnStatus && !cfg.OnConfig)) {
-		return 0, http.StatusBadRequest, fmt.Errorf("启用时需要有效地址，并至少选择一种事件")
+	cfg, err := a.prepareWebhookConfig(previous, req)
+	if err != nil {
+		return 0, http.StatusBadRequest, err
 	}
 	if cfg == previous {
 		return a.store.DB.Revision, http.StatusOK, nil
 	}
 	db := a.store.DB
+	if db.Webhook == nil && cfg != (webhookConfig{}) && len(db.Webhooks) >= maxWebhookTargets {
+		return 0, http.StatusBadRequest, fmt.Errorf("最多设置 8 个通知目标")
+	}
 	if cfg == (webhookConfig{}) {
 		db.Webhook = nil
 	} else {
@@ -650,6 +639,6 @@ func (a *App) saveWebhook(req webhookRequest) (uint64, int, error) {
 		return 0, http.StatusInternalServerError, fmt.Errorf("无法保存通知配置")
 	}
 	a.store.DB = db
-	a.webhooks.configure(cfg, target, signingSecret)
+	a.configureWebhooks()
 	return db.Revision, http.StatusOK, nil
 }
