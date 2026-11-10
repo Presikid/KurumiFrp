@@ -21,12 +21,14 @@ const Protocols = Object.freeze({
   if (this.hasPairingSecret(t.type)) return '私密配对';
   if (['http', 'https', 'tcpmux'].includes(t.type)) {
    const domains = [...(t.domains || []), ...(t.subdomain ? [t.subdomain + '（子域名）'] : [])].join(', ');
-   return t.type === 'http' && t.locations?.length ? domains + ' · ' + t.locations.join(', ') : domains;
+   const paths = t.type === 'http' && t.locations?.length ? ' · ' + t.locations.join(', ') : '';
+   const user = t.type === 'http' && t.httpRouteByUser ? ' · 用户 ' + t.httpRouteByUser : '';
+   return domains + paths + user;
   }
   return ['tcp', 'udp'].includes(t.type) && t.remotePort === 0 ? '动态分配（查看代理状态）' : t.remotePort;
  },
  matches(t, instance, query, protocol) {
-  const words = [t.name, t.type, t.localHost, t.localPort, t.remotePort, ...(t.domains || []), ...(t.locations || []), t.subdomain, t.serverName, t.serverUser, instance?.name];
+  const words = [t.name, t.type, t.localHost, t.localPort, t.remotePort, ...(t.domains || []), ...(t.locations || []), t.httpRouteByUser, t.subdomain, t.serverName, t.serverUser, instance?.name];
   return (!protocol || t.type === protocol) && words.join(' ').toLocaleLowerCase().includes(query.toLocaleLowerCase());
  }
 });

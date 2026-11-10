@@ -322,6 +322,7 @@ func (m *tomlMapper) mapRule(store *Store, t *tomlTable, prefix, instanceID stri
 		if typ == "http" {
 			r.HostHeaderRewrite = m.str(t, "hostHeaderRewrite", prefix, "")
 			r.Locations = m.strings(t, "locations", prefix)
+			r.HTTPRouteByUser = m.str(t, "routeByHTTPUser", prefix, "")
 		}
 		if typ == "stcp" || typ == "xtcp" || typ == "sudp" {
 			r.AllowUsers = m.strings(t, "allowUsers", prefix)

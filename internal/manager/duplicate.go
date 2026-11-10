@@ -191,7 +191,7 @@ func duplicatedTunnel(src Tunnel, id, instanceID, name string) Tunnel {
 		MaxRetriesAnHour: src.MaxRetriesAnHour, MinRetryInterval: src.MinRetryInterval,
 		FallbackTo: src.FallbackTo, FallbackTimeoutMs: src.FallbackTimeoutMs,
 		DisableAssistedAddrs: src.DisableAssistedAddrs,
-		Subdomain:            src.Subdomain, HostHeaderRewrite: src.HostHeaderRewrite, Multiplexer: src.Multiplexer, HTTPAuthEnabled: src.HTTPAuthEnabled, HTTPUser: src.HTTPUser,
+		Subdomain:            src.Subdomain, HostHeaderRewrite: src.HostHeaderRewrite, Multiplexer: src.Multiplexer, HTTPAuthEnabled: src.HTTPAuthEnabled, HTTPRouteByUser: src.HTTPRouteByUser, HTTPUser: src.HTTPUser,
 		HTTPPassword: src.HTTPPassword, RouteByHTTPUser: src.RouteByHTTPUser,
 	}
 }

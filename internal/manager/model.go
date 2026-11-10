@@ -72,6 +72,8 @@ type Tunnel struct {
 	Subdomain            string   `json:"subdomain,omitempty"`
 	Multiplexer          string   `json:"multiplexer,omitempty"`
 	HTTPAuthEnabled      bool     `json:"httpAuthEnabled,omitempty"`
+	// Kept separate from the TCPMUX field so old HTTP drafts do not activate previously ignored settings.
+	HTTPRouteByUser      string   `json:"httpRouteByUser,omitempty"`
 	HTTPUser             string   `json:"httpUser,omitempty"`
 	HTTPPassword         string   `json:"httpPassword,omitempty"`
 	HasHTTPPassword      bool     `json:"hasHTTPPassword,omitempty"`
@@ -371,6 +373,9 @@ func validate(s State) error {
 				return fmt.Errorf("HTTP Basic 认证需要有效用户名和密码；用户名不能包含冒号")
 			}
 		}
+		if t.Type == "http" && (!protocolTextOK(t.HTTPRouteByUser) || strings.Contains(t.HTTPRouteByUser, ":")) {
+			return fmt.Errorf("HTTP 路由用户名无效或包含冒号")
+		}
 		endpoint := strings.ToLower(i.Host) + fmt.Sprintf(":%d/", i.Port)
 		if ip := net.ParseIP(i.Host); ip != nil {
 			endpoint = ip.String() + fmt.Sprintf(":%d/", i.Port)
@@ -405,7 +410,8 @@ func validate(s State) error {
 					locations = []string{""}
 				}
 				for _, location := range locations {
-					if err := claim(key+"/location/"+location, t.Name); err != nil {
+					route := fmt.Sprintf("%s/location/%d:%s/user/%d:%s", key, len(location), location, len(t.HTTPRouteByUser), t.HTTPRouteByUser)
+					if err := claim(route, t.Name); err != nil {
 						return err
 					}
 				}

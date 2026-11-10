@@ -69,6 +69,7 @@ const ProtocolEditor = (() => {
     <p class="subdomain-field small-note span-2">至少填写一个自定义域名或子域名；子域名需要在服务端配置后缀。</p>
     <div class="http-routing-field span-2">${field('hostHeaderRewrite', '转发时重写 Host（可选）', v.hostHeaderRewrite || '', 'text', 'maxlength="512" placeholder="例如 internal.example.com"')}</div>
     <div class="http-routing-field span-2"><label>HTTP 路径前缀（每行一条）<textarea name="locations" rows="3" placeholder="/api&#10;/assets">${esc((v.locations || []).join('\n'))}</textarea></label><small>留空匹配全部路径；按解码后的请求路径作前缀匹配，不包含查询字符串。例如 /api 也会匹配 /apix。</small></div>
+    <div class="http-routing-field span-2">${field('httpRouteByUser', '按 HTTP 用户名路由（可选）', v.httpRouteByUser || '')}<small>只选择路由，不能验证身份或限制访问。需要保护目标时，请另外启用认证；同域名可为不同用户名配置不同路由。</small></div>
     <div class="http-routing-field span-2">${check('httpAuthEnabled', '启用 HTTP Basic 认证', v.httpAuthEnabled)}<small>请通过 TLS 保护访问链路；Basic 认证本身不加密用户名和密码。</small></div>
     <div class="tcpmux-field"><label>多路复用器<select name="multiplexer"><option value="" ${!v.multiplexer ? 'selected' : ''}>默认 · httpconnect</option><option value="httpconnect" ${v.multiplexer === 'httpconnect' ? 'selected' : ''}>httpconnect</option></select></label></div>
     <p class="tcpmux-field small-note span-2">TCPMUX 自定义域名支持 * 和 *.example.com。</p>
@@ -214,6 +215,7 @@ const ProtocolEditor = (() => {
   if (['http', 'https'].includes(type)) { result.probePath = val('probePath').trim(); result.probeMethod = val('probeMethod'); }
   result.hostHeaderRewrite = type === 'http' ? val('hostHeaderRewrite').trim() : '';
   result.locations = type === 'http' ? val('locations').split(/\r?\n/).map(s => s.trim()).filter(Boolean) : [];
+  result.httpRouteByUser = type === 'http' ? val('httpRouteByUser') : '';
   result.httpAuthEnabled = type === 'http' && f.httpAuthEnabled.checked;
   if (type === 'http' || type === 'tcpmux') Object.assign(result, {httpUser:val('httpUser'), httpPassword:f.clearHTTPPassword.checked ? '' : val('httpPassword')});
   if (paired) {
