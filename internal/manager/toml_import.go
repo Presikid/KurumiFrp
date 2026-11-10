@@ -489,6 +489,7 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 		i.VhostHTTPTimeout = m.integer(root, "vhostHTTPTimeout", "", 0)
 		i.UserConnTimeout = m.integer(root, "userConnTimeout", "", 0)
 		i.ServerMaxPoolCount = m.integer(root, "transport.maxPoolCount", "", 0)
+		i.TCPKeepalive = m.integer(root, "transport.tcpKeepalive", "", 0)
 		i.ServerAllowPlaintext = !m.boolean(root, "transport.tls.force", "", false)
 	} else {
 		i.Host = m.str(root, "serverAddr", "", "0.0.0.0")
@@ -506,10 +507,13 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 		i.DNSServer = m.str(root, "dnsServer", "", "")
 		i.ClientTransport = m.str(root, "transport.protocol", "", "")
 		i.ClientBindIP = m.str(root, "transport.connectServerLocalIP", "", "")
+		i.ClientDialTimeout = m.integer(root, "transport.dialServerTimeout", "", 0)
+		i.TCPKeepalive = m.integer(root, "transport.dialServerKeepalive", "", 0)
 		i.ClientPoolCount = m.integer(root, "transport.poolCount", "", 0)
 		m.sameString(root, "transport.wireProtocol", "", "v1")
 	}
 	i.TransportMuxDisabled = !m.boolean(root, "transport.tcpMux", "", true)
+	i.MuxKeepalive = m.integer(root, "transport.tcpMuxKeepaliveInterval", "", 0)
 	if !hostOK(i.Host) {
 		m.issue("serverAddr / bindAddr", "地址不符合当前产品的格式")
 	}
