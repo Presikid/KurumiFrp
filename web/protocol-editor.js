@@ -101,8 +101,10 @@ const ProtocolEditor = (() => {
     <div class="bandwidth-field">${field('bandwidthKB', '带宽上限（KB/s，0 不限）', v.bandwidthKB ?? 0, 'number', 'min="0" max="10000000" step="1"')}</div>
     <div class="bandwidth-field"><label>限速位置<select name="bandwidthMode"><option value="client" ${(v.bandwidthMode || 'client') === 'client' ? 'selected' : ''}>客户端</option><option value="server" ${v.bandwidthMode === 'server' ? 'selected' : ''}>服务端</option></select></label></div>
     <div class="proxy-protocol-field span-2"><label>PROXY 协议<select name="proxyProtocolVersion"><option value="" ${!v.proxyProtocolVersion ? 'selected' : ''}>关闭</option><option value="v1" ${v.proxyProtocolVersion === 'v1' ? 'selected' : ''}>v1</option><option value="v2" ${v.proxyProtocolVersion === 'v2' ? 'selected' : ''}>v2</option></select></label><small>目标服务必须支持所选版本；frp 取得来源地址时会传递连接信息。</small></div>
-    <label><span class="local-host-label">本地目标地址</span><input name="localHost" type="text" value="${esc(v.localHost)}" required></label>
-    <label><span class="local-port-label">本地目标端口</span><input name="localPort" type="number" value="${esc(v.localPort)}" required min="1" max="65535" step="1" ${lockedPort ? 'readonly' : ''}><small class="unbound-note" hidden>负数表示仅接收回退连接，不监听本地端口。</small>${lockedPort ? '<small>当前暂不支持更改此规则的回退监听端口。</small>' : ''}</label>
+    <div class="unix-target-choice span-2"><label>本地目标类型<select name="targetKind"><option value="network" ${!v.unixSocketPath ? 'selected' : ''}>TCP 地址和端口</option><option value="unix" ${v.unixSocketPath ? 'selected' : ''}>Unix 域套接字</option></select></label><small>Unix 目标仅用于 TCP 规则；切换目标类型会清除原目标和代理健康检查配置。</small></div>
+    <label class="network-target-field"><span class="local-host-label">本地目标地址</span><input name="localHost" type="text" value="${esc(v.localHost)}" required></label>
+    <label class="network-target-field"><span class="local-port-label">本地目标端口</span><input name="localPort" type="number" value="${esc(v.localPort)}" required min="1" max="65535" step="1" ${lockedPort ? 'readonly' : ''}><small class="unbound-note" hidden>负数表示仅接收回退连接，不监听本地端口。</small>${lockedPort ? '<small>当前暂不支持更改此规则的回退监听端口。</small>' : ''}</label>
+    <div class="unix-target-field span-2">${field('unixSocketPath', 'Unix 套接字绝对路径', v.unixSocketPath || '', 'text', 'maxlength="1024" placeholder="/run/service.sock"')}<small>需运行在支持 Unix 域套接字的平台，且工作台账户有访问该套接字的权限。</small></div>
     <div class="port-field">${field('remotePort', '远端端口（0 请求动态分配）', ['tcp', 'udp'].includes(v.type) ? (v.remotePort ?? '') : '', 'number', 'min="0" max="65535" step="1"')}</div>
     <div class="domain-field span-2">${field('domains', '域名（多个用逗号分隔）', (v.domains || []).join(', '))}<small>支持 * 和 *.example.com；后者不匹配 example.com 本身。HTTPS 证书须覆盖访问的具体域名。</small></div>
     <div class="probe-field span-2 protocol-subgrid">
@@ -189,6 +191,13 @@ const ProtocolEditor = (() => {
    return;
   }
   const type = f.type.value, visitor = Protocols.isVisitor(type), paired = Protocols.hasPairingSecret(type);
+  const unixTarget = type === 'tcp' && f.targetKind.value === 'unix';
+  visible(form, '.unix-target-choice', type === 'tcp');
+  visible(form, '.unix-target-field', unixTarget);
+  visible(form, '.network-target-field', !unixTarget);
+  f.unixSocketPath.required = unixTarget;
+  f.localHost.required = !unixTarget;
+  f.localPort.required = !unixTarget;
   form.querySelector('.visitor-transfer-note').hidden = !(editing.old && Protocols.isVisitor(editing.old.type) && visitor && f.instanceId.value !== editing.old.instanceId);
   visible(form, '.bandwidth-field', !visitor);
   visible(form, '.proxy-protocol-field', !visitor && !['udp', 'sudp'].includes(type));
@@ -198,10 +207,10 @@ const ProtocolEditor = (() => {
   visible(form, '.http-routing-field', type === 'http');
   visible(form, '.http-header-removal-note', type !== 'http' && !!form.querySelector('[data-http-header-row]'));
   visible(form, '.probe-field', ['http', 'https'].includes(type));
-  visible(form, '.health-check-field', !visitor);
-  visible(form, '.health-check-options', !visitor && f.healthCheckType.value !== '');
-  visible(form, '.health-http-field', !visitor && f.healthCheckType.value === 'http');
-  f.healthCheckPath.required = !visitor && f.healthCheckType.value === 'http';
+  visible(form, '.health-check-field', !visitor && !unixTarget);
+  visible(form, '.health-check-options', !visitor && !unixTarget && f.healthCheckType.value !== '');
+  visible(form, '.health-http-field', !visitor && !unixTarget && f.healthCheckType.value === 'http');
+  f.healthCheckPath.required = !visitor && !unixTarget && f.healthCheckType.value === 'http';
   visible(form, '.tcpmux-field', type === 'tcpmux');
   visible(form, '.http-credential-field', type === 'tcpmux' || (type === 'http' && f.httpAuthEnabled.checked));
   visible(form, '.visitor-field', visitor);
@@ -250,10 +259,11 @@ const ProtocolEditor = (() => {
    return result;
   }
   const type = val('type'), visitor = Protocols.isVisitor(type), paired = Protocols.hasPairingSecret(type);
+  const unixTarget = type === 'tcp' && val('targetKind') === 'unix';
   delete result.hasSecret; delete result.hasHTTPPassword; delete result.secret; delete result.httpPassword;
-  Object.assign(result, {name:val('name').trim(), instanceId:val('instanceId'), type, localHost:val('localHost').trim(), localPort:+val('localPort'),
+  Object.assign(result, {name:val('name').trim(), instanceId:val('instanceId'), type, localHost:unixTarget ? '' : val('localHost').trim(), localPort:unixTarget ? 0 : +val('localPort'), unixSocketPath:unixTarget ? val('unixSocketPath').trim() : '',
    bandwidthKB:visitor ? 0 : +val('bandwidthKB'), bandwidthMode:visitor ? '' : val('bandwidthMode'), proxyProtocolVersion:visitor || ['udp', 'sudp'].includes(type) ? '' : val('proxyProtocolVersion'), enabled:f.enabled.checked, useEncryption:f.useEncryption.checked, useCompression:f.useCompression.checked});
-  const health = visitor ? '' : val('healthCheckType');
+  const health = visitor || unixTarget ? '' : val('healthCheckType');
   Object.assign(result, {healthCheckType:health, healthCheckPath:health === 'http' ? val('healthCheckPath').trim() : '',
    healthCheckTimeoutSeconds:health ? +val('healthCheckTimeoutSeconds') : 0,
    healthCheckIntervalSeconds:health ? +val('healthCheckIntervalSeconds') : 0,
