@@ -48,6 +48,7 @@ type auth struct {
 	oidcLoadErr       error
 	oidcFlows         map[string]oidcFlow
 	oidcStartSlots    chan struct{}
+	passkeys          *passkeyStore
 	hashSlots         chan struct{}
 }
 
