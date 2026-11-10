@@ -65,9 +65,12 @@ func possibleProxyConflicts(s State) map[string]string {
 		if server.Kind != "frps" {
 			continue
 		}
-		for _, port := range []int{server.Port, server.HTTPPort, server.HTTPSPort, server.TCPMuxHTTPConnectPort} {
+		if server.Port > 0 {
+			listeners = append(listeners, localBinding{server.Host, "tcp", server.Name, server.ID, server.Port})
+		}
+		for _, port := range []int{server.HTTPPort, server.HTTPSPort, server.TCPMuxHTTPConnectPort} {
 			if port > 0 {
-				listeners = append(listeners, localBinding{server.Host, "tcp", server.Name, server.ID, port})
+				listeners = append(listeners, localBinding{server.proxyBindHost(), "tcp", server.Name, server.ID, port})
 			}
 		}
 		for _, port := range []int{server.KCPBindPort, server.QUICBindPort} {

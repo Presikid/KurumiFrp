@@ -34,7 +34,16 @@ type Instance struct {
 	SubDomainHost         string `json:"subDomainHost,omitempty"`
 	MaxPortsPerClient     int    `json:"maxPortsPerClient,omitempty"`
 	ServerAllowedPorts    string `json:"serverAllowedPorts,omitempty"`
+	ProxyBindAddr         string `json:"proxyBindAddr,omitempty"`
 }
+
+func (i Instance) proxyBindHost() string {
+	if i.ProxyBindAddr != "" {
+		return i.ProxyBindAddr
+	}
+	return i.Host
+}
+
 type Tunnel struct {
 	ID                   string   `json:"id"`
 	InstanceID           string   `json:"instanceId"`
@@ -199,11 +208,10 @@ func visitorListenerConflicts(s State) map[string]string {
 	conflicts := map[string]string{}
 	for _, i := range s.Instances {
 		if i.Kind == "frps" {
-			// With no proxyBindAddr override, frp binds vhosts to bindAddr.
 			listeners = append(listeners, listener{i.Host, i.Port, i.Name, i.ID, "tcp"})
 			for _, p := range []int{i.HTTPPort, i.HTTPSPort, i.TCPMuxHTTPConnectPort} {
 				if p != 0 {
-					listeners = append(listeners, listener{i.Host, p, i.Name, i.ID, "tcp"})
+					listeners = append(listeners, listener{i.proxyBindHost(), p, i.Name, i.ID, "tcp"})
 				}
 			}
 			for _, p := range []int{i.KCPBindPort, i.QUICBindPort} {
@@ -290,20 +298,21 @@ func validate(s State) error {
 		}
 		if i.Kind == "frps" {
 			seen := map[int]bool{}
-			for _, p := range []int{i.Port, i.HTTPPort, i.HTTPSPort, i.TCPMuxHTTPConnectPort} {
-				if p == 0 {
+			bindings := []serverListener{{i.Host, i.Port, i.Name}, {i.proxyBindHost(), i.HTTPPort, i.Name}, {i.proxyBindHost(), i.HTTPSPort, i.Name}, {i.proxyBindHost(), i.TCPMuxHTTPConnectPort, i.Name}}
+			for _, binding := range bindings {
+				if binding.port == 0 {
 					continue
 				}
-				if !portOK(p) || seen[p] {
+				if !portOK(binding.port) || seen[binding.port] {
 					return fmt.Errorf("服务端监听端口无效或重复")
 				}
-				seen[p] = true
+				seen[binding.port] = true
 				for _, other := range serverListeners {
-					if other.port == p && listenerHostsOverlap(other.host, i.Host) {
+					if other.port == binding.port && listenerHostsOverlap(other.host, binding.host) {
 						return fmt.Errorf("端口或域名冲突：%s / %s", other.name, i.Name)
 					}
 				}
-				serverListeners = append(serverListeners, serverListener{i.Host, p, i.Name})
+				serverListeners = append(serverListeners, binding)
 			}
 			seenUDP := map[int]bool{}
 			for _, p := range []int{i.KCPBindPort, i.QUICBindPort} {

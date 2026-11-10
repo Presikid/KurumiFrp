@@ -40,6 +40,9 @@ func renderProtocolInstance(b *strings.Builder, i Instance) error {
 	if i.SubDomainHost != "" {
 		fmt.Fprintf(b, "subDomainHost = %s\n", quote(i.SubDomainHost))
 	}
+	if i.ProxyBindAddr != "" {
+		fmt.Fprintf(b, "proxyBindAddr = %s\n", quote(i.ProxyBindAddr))
+	}
 	if i.MaxPortsPerClient > 0 {
 		fmt.Fprintf(b, "maxPortsPerClient = %d\n", i.MaxPortsPerClient)
 	}

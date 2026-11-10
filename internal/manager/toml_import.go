@@ -425,10 +425,7 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 			m.unknown(entry, prefix)
 		}
 		i.ServerAllowedPorts = strings.Join(allowedPorts, ",")
-		bind := m.str(root, "proxyBindAddr", "", "")
-		if bind != "" && bind != i.Host {
-			m.issue("proxyBindAddr", "当前产品不能独立保存代理监听地址；运行时使用 bindAddr")
-		}
+		i.ProxyBindAddr = m.str(root, "proxyBindAddr", "", "")
 		i.ServerAllowPlaintext = !m.boolean(root, "transport.tls.force", "", false)
 	} else {
 		i.Host = m.str(root, "serverAddr", "", "0.0.0.0")
