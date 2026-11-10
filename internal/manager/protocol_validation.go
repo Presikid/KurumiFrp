@@ -156,6 +156,9 @@ func dnsServerAddress(value string) (string, bool) {
 }
 
 func validateProtocolInstance(i Instance) error {
+	if i.MaxPortsPerClient < 0 || i.MaxPortsPerClient > 131070 || (i.Kind != "frps" && i.MaxPortsPerClient != 0) {
+		return fmt.Errorf("每客户端端口上限仅适用于服务端，须为 0–131070")
+	}
 	if i.Kind == "frpc" {
 		switch i.ClientTransport {
 		case "", "tcp", "websocket", "wss", "kcp", "quic":
