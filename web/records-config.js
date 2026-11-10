@@ -45,7 +45,7 @@ window.KurumiRecordsConfig = (() => {
     <section class="panel" aria-labelledby="config-export-title"><div class="panel-title"><div><h3 id="config-export-title">导出配置文件</h3><p>选择需要带走的配置或快照</p></div></div><div class="panel-content rc-form">
      <label>导出范围<select id="export-scope"><option value="all">当前配置和全部快照</option><option value="config">仅当前配置</option><option value="snapshots">仅全部快照</option><option value="snapshot">单个快照</option></select></label>
      <label id="export-snapshot-field" hidden>选择快照<select id="export-snapshot">${history.length ? history.map(h => `<option value="${h.revision}">r${h.revision} · ${esc(h.summary)}</option>`).join('') : '<option value="">暂无可导出的快照</option>'}</select></label>
-     <p class="rc-note">此文件包含数据密钥和所选配置，请妥善保管。本机 Webhook 设置不会导出。需要密码保护时可使用上方的加密备份。</p>
+     <p class="rc-note">此文件包含数据密钥和所选配置，请妥善保管。本机 Webhook 和节点设置不会导出。需要密码保护时可使用上方的加密备份。</p>
      <div><button data-action="export-data">导出配置文件</button></div>
     </div></section>
     <section class="panel" aria-labelledby="config-import-title"><div class="panel-title"><div><h3 id="config-import-title">导入配置文件</h3><p>从已有文件恢复配置和快照</p></div></div><div class="panel-content rc-form">

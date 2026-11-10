@@ -24,14 +24,16 @@ type App struct {
 	runtime  RuntimeBackend
 	updater  *update.Manager
 	mu       sync.Mutex
-	store    *Store
-	bin      string
-	addr     string
-	auth     auth
-	procs    map[string]*process
-	traffic  map[string]*trafficSamples // protected by mu, keyed by instance and run ID
-	assets   http.Handler
-	webhooks *webhookDispatcher
+	// Take nodeAccessGate before mu when rotating/revoking a read-only grant.
+	nodeAccessGate sync.RWMutex
+	store          *Store
+	bin            string
+	addr           string
+	auth           auth
+	procs          map[string]*process
+	traffic        map[string]*trafficSamples // protected by mu, keyed by instance and run ID
+	assets         http.Handler
+	webhooks       *webhookDispatcher
 
 	// Lifecycle reservations are protected by mu. Slow operations run without it.
 	operations          map[string]*runtimeOperation
@@ -41,6 +43,7 @@ type App struct {
 	closeErr            error
 	stateCache          *stateResponseCache
 	activeProbes        int
+	activeNodeChecks    int
 	activeBackup        bool
 	activeRegistration  bool
 	activeHealth        bool
@@ -215,6 +218,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(w, 200, map[string]bool{"ok": true})
 		return
 	}
+	// The remote summary has its own narrow, read-only credential.
+	if r.URL.Path == "/api/node/summary" {
+		a.nodeSummaryAPI(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		var p principal
 		var ok bool
@@ -311,6 +319,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.URL.Path == "/api/control" || r.URL.Path == "/api/validate" {
 			a.runtimeAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/nodes" || r.URL.Path == "/api/nodes/check" || r.URL.Path == "/api/nodes/resolve" || r.URL.Path == "/api/nodes/confirm" {
+			a.nodesAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/webhook" {
