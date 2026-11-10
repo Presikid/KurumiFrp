@@ -229,11 +229,13 @@ function renderNodeDetail(node, state) {
 // A status update changes one card, keeping other controls and their focus.
 function paintNodeCheck(node) {
  if (page !== 'nodes' || !/^[a-f0-9]{16}$/.test(node.id)) return;
+ const current = nodesModel?.nodes.find(item => item.id === node.id && item.stamp === node.stamp);
+ if (!current) return;
  const card = document.querySelector(`[data-node-card="${node.id}"]`);
  if (!card) return;
  const state = nodeResults[node.id];
- card.querySelector('.node-detail').innerHTML = renderNodeDetail(node,state);
- card.querySelector('[data-node-action="check"]').disabled = nodeBusy || nodeLoading || !!state?.loading || !node.addresses?.length;
+ card.querySelector('.node-detail').innerHTML = renderNodeDetail(current,state);
+ card.querySelector('[data-node-action="check"]').disabled = nodeBusy || nodeLoading || !!state?.loading || !current.addresses?.length;
 }
 async function loadNodes() {
  if (nodeLoading || page !== 'nodes' || !data) return;
