@@ -21,17 +21,18 @@ import (
 	"unicode/utf8"
 )
 
-// URL and SigningSecret are encrypted with the store key. Older databases
-// omit SigningSecret and therefore send unsigned notifications.
+// URL, SigningSecret and JSONTemplate are encrypted with the store key.
 type webhookConfig struct {
-	Enabled       bool   `json:"enabled"`
-	URL           string `json:"url,omitempty"`
-	Format        string `json:"format,omitempty"`
-	OnStatus      bool   `json:"onStatus"`
-	OnConfig      bool   `json:"onConfig"`
-	OnLoginLimit  bool   `json:"onLoginLimit,omitempty"`
-	OnUpdate      bool   `json:"onUpdate,omitempty"`
-	SigningSecret string `json:"signingSecret,omitempty"`
+	Enabled             bool   `json:"enabled"`
+	URL                 string `json:"url,omitempty"`
+	Format              string `json:"format,omitempty"`
+	OnStatus            bool   `json:"onStatus"`
+	OnConfig            bool   `json:"onConfig"`
+	OnLoginLimit        bool   `json:"onLoginLimit,omitempty"`
+	OnUpdate            bool   `json:"onUpdate,omitempty"`
+	SigningSecret       string `json:"signingSecret,omitempty"`
+	JSONTemplate        string `json:"jsonTemplate,omitempty"`
+	JSONTemplateEnabled bool   `json:"jsonTemplateEnabled,omitempty"`
 }
 
 func (cfg webhookConfig) hasEvents() bool {
@@ -89,6 +90,18 @@ func validateStoredWebhook(s *Store, cfg *webhookConfig) error {
 			return fmt.Errorf("invalid webhook signing secret")
 		}
 	}
+	if cfg.JSONTemplate != "" {
+		plain, err := s.decrypt(cfg.JSONTemplate)
+		if err != nil {
+			return fmt.Errorf("invalid webhook JSON template")
+		}
+		if _, err = parseWebhookJSONTemplate(plain); err != nil {
+			return fmt.Errorf("invalid webhook JSON template")
+		}
+	}
+	if cfg.JSONTemplateEnabled && (cfg.Format != "" || cfg.JSONTemplate == "") {
+		return fmt.Errorf("invalid webhook JSON template settings")
+	}
 	if cfg.Enabled && (cfg.URL == "" || !cfg.hasEvents()) {
 		return fmt.Errorf("incomplete webhook settings")
 	}
@@ -126,6 +139,8 @@ type webhookRuntimeConfig struct {
 	config        webhookConfig
 	target        string
 	signingSecret string
+	templateRaw   string
+	template      *webhookJSONTemplate
 }
 
 type webhookDelivery struct {
@@ -167,10 +182,11 @@ func (d *webhookDispatcher) configure(configs []webhookRuntimeConfig) {
 		seen[next.id] = true
 		order = append(order, next.id)
 		old := d.targets[next.id]
-		if old != nil && old.target == next.target && old.signingSecret == next.signingSecret &&
+		if old != nil && old.target == next.target && old.signingSecret == next.signingSecret && old.templateRaw == next.templateRaw &&
 			old.config.Enabled == next.config.Enabled && old.config.Format == next.config.Format &&
 			old.config.OnStatus == next.config.OnStatus && old.config.OnConfig == next.config.OnConfig &&
-			old.config.OnLoginLimit == next.config.OnLoginLimit && old.config.OnUpdate == next.config.OnUpdate {
+			old.config.OnLoginLimit == next.config.OnLoginLimit && old.config.OnUpdate == next.config.OnUpdate &&
+			old.config.JSONTemplateEnabled == next.config.JSONTemplateEnabled {
 			old.config = next.config // ciphertext may change during key migration
 			continue
 		}
@@ -286,9 +302,9 @@ func (d *webhookDispatcher) run() {
 					d.mu.Unlock()
 					continue
 				}
-				address, format, secret, ctx := target.target, target.config.Format, target.signingSecret, target.ctx
+				address, format, secret, template, ctx := target.target, target.config.Format, target.signingSecret, target.template, target.ctx
 				d.mu.Unlock()
-				result, ok := sendWebhook(ctx, address, format, secret, item.event)
+				result, ok := sendWebhook(ctx, address, format, secret, item.event, template)
 				d.mu.Lock()
 				if d.targets[recipient.id] == target && target.generation == recipient.generation {
 					if ctx.Err() != nil {
@@ -532,7 +548,7 @@ func formatWebhookEventWithChat(format string, event webhookEvent, chatID string
 	}
 }
 
-func sendWebhook(ctx context.Context, target, format, signingSecret string, event webhookEvent) (string, bool) {
+func sendWebhook(ctx context.Context, target, format, signingSecret string, event webhookEvent, template *webhookJSONTemplate) (string, bool) {
 	destination, chatID := target, ""
 	if format == "telegram" {
 		var ok bool
@@ -543,7 +559,18 @@ func sendWebhook(ctx context.Context, target, format, signingSecret string, even
 	} else if !validWebhookURL(target) {
 		return "通知地址无效", false
 	}
-	body, contentType, err := formatWebhookEventWithChat(format, event, chatID)
+	var body []byte
+	var contentType string
+	var err error
+	if template != nil {
+		if format != "" {
+			return "通知生成失败", false
+		}
+		body, err = template.render(event)
+		contentType = "application/json"
+	} else {
+		body, contentType, err = formatWebhookEventWithChat(format, event, chatID)
+	}
 	if err != nil {
 		return "通知生成失败", false
 	}
@@ -609,7 +636,27 @@ func (a *App) configureWebhooks() {
 				signingSecret = plain
 			}
 		}
-		configs = append(configs, webhookRuntimeConfig{id: id, config: cfg, target: target, signingSecret: signingSecret})
+		templateRaw := ""
+		var template *webhookJSONTemplate
+		if cfg.JSONTemplate != "" {
+			plain, err := a.store.decrypt(cfg.JSONTemplate)
+			var parsed *webhookJSONTemplate
+			if err == nil {
+				parsed, err = parseWebhookJSONTemplate(plain)
+			}
+			if err != nil {
+				target = ""
+			} else {
+				templateRaw = plain
+				if cfg.JSONTemplateEnabled {
+					template = parsed
+				}
+			}
+		}
+		if cfg.JSONTemplateEnabled && (cfg.Format != "" || template == nil) {
+			target = ""
+		}
+		configs = append(configs, webhookRuntimeConfig{id: id, config: cfg, target: target, signingSecret: signingSecret, templateRaw: templateRaw, template: template})
 	}
 	if a.store.DB.Webhook != nil {
 		add(legacyWebhookID, *a.store.DB.Webhook)
@@ -623,17 +670,20 @@ func (a *App) configureWebhooks() {
 // Called after authentication and same-origin checks. Decode the request before
 // acquiring a.mu so a slow request body cannot delay instance controls.
 type webhookRequest struct {
-	Revision           uint64  `json:"revision"`
-	Enabled            bool    `json:"enabled"`
-	URL                string  `json:"url"`
-	Format             *string `json:"format"`
-	ClearURL           bool    `json:"clearURL"`
-	OnStatus           bool    `json:"onStatus"`
-	OnConfig           bool    `json:"onConfig"`
-	OnLoginLimit       *bool   `json:"onLoginLimit"`
-	OnUpdate           *bool   `json:"onUpdate"`
-	SigningSecret      string  `json:"signingSecret"`
-	ClearSigningSecret bool    `json:"clearSigningSecret"`
+	Revision            uint64  `json:"revision"`
+	Enabled             bool    `json:"enabled"`
+	URL                 string  `json:"url"`
+	Format              *string `json:"format"`
+	ClearURL            bool    `json:"clearURL"`
+	OnStatus            bool    `json:"onStatus"`
+	OnConfig            bool    `json:"onConfig"`
+	OnLoginLimit        *bool   `json:"onLoginLimit"`
+	OnUpdate            *bool   `json:"onUpdate"`
+	SigningSecret       string  `json:"signingSecret"`
+	ClearSigningSecret  bool    `json:"clearSigningSecret"`
+	JSONTemplate        string  `json:"jsonTemplate"`
+	ClearJSONTemplate   bool    `json:"clearJSONTemplate"`
+	JSONTemplateEnabled *bool   `json:"jsonTemplateEnabled"`
 }
 
 func (a *App) webhookAPI(w http.ResponseWriter, r *http.Request) {
@@ -646,7 +696,8 @@ func (a *App) webhookAPI(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusOK, map[string]any{
 			"revision": revision, "enabled": cfg.Enabled, "hasURL": cfg.URL != "", "hasSigningSecret": cfg.SigningSecret != "",
 			"format": cfg.Format, "onStatus": cfg.OnStatus, "onConfig": cfg.OnConfig,
-			"onLoginLimit": cfg.OnLoginLimit, "onUpdate": cfg.OnUpdate, "status": status,
+			"onLoginLimit": cfg.OnLoginLimit, "onUpdate": cfg.OnUpdate,
+			"hasJSONTemplate": cfg.JSONTemplate != "", "jsonTemplateEnabled": cfg.JSONTemplateEnabled, "status": status,
 		})
 		return
 	}

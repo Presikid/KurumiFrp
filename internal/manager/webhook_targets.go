@@ -38,25 +38,46 @@ func validateStoredWebhookTargets(s *Store, legacy *webhookConfig, targets []web
 	return nil
 }
 
+func rewrapWebhookConfig(oldStore, newStore *Store, cfg webhookConfig) (webhookConfig, error) {
+	if err := validateStoredWebhook(oldStore, &cfg); err != nil {
+		return webhookConfig{}, err
+	}
+	for _, field := range []*string{&cfg.URL, &cfg.SigningSecret} {
+		if *field == "" {
+			continue
+		}
+		plain, err := oldStore.decrypt(*field)
+		if err != nil {
+			return webhookConfig{}, err
+		}
+		*field, err = newStore.encrypt(plain)
+		if err != nil {
+			return webhookConfig{}, err
+		}
+	}
+	if cfg.JSONTemplate != "" {
+		plain, err := oldStore.decrypt(cfg.JSONTemplate)
+		if err != nil {
+			return webhookConfig{}, err
+		}
+		cfg.JSONTemplate, err = newStore.encryptValue(plain)
+		if err != nil {
+			return webhookConfig{}, err
+		}
+	}
+	return cfg, nil
+}
+
 func rewrapWebhookTargets(oldStore, newStore *Store, legacy *webhookConfig, targets []webhookTarget) ([]webhookTarget, error) {
 	if err := validateStoredWebhookTargets(oldStore, legacy, targets); err != nil {
 		return nil, err
 	}
 	next := append([]webhookTarget(nil), targets...)
 	for i := range next {
-		cfg := &next[i].Config
-		for _, field := range []*string{&cfg.URL, &cfg.SigningSecret} {
-			if *field == "" {
-				continue
-			}
-			plain, err := oldStore.decrypt(*field)
-			if err != nil {
-				return nil, err
-			}
-			*field, err = newStore.encrypt(plain)
-			if err != nil {
-				return nil, err
-			}
+		var err error
+		next[i].Config, err = rewrapWebhookConfig(oldStore, newStore, next[i].Config)
+		if err != nil {
+			return nil, err
 		}
 	}
 	return next, nil
@@ -71,7 +92,14 @@ func (a *App) prepareWebhookConfig(previous webhookConfig, req webhookRequest) (
 	if req.ClearSigningSecret && req.SigningSecret != "" {
 		return webhookConfig{}, fmt.Errorf("不能同时清除和设置签名密钥")
 	}
-	cfg := webhookConfig{Enabled: req.Enabled, URL: previous.URL, Format: previous.Format, OnStatus: req.OnStatus, OnConfig: req.OnConfig, OnLoginLimit: previous.OnLoginLimit, OnUpdate: previous.OnUpdate, SigningSecret: previous.SigningSecret}
+	if req.ClearJSONTemplate && req.JSONTemplate != "" {
+		return webhookConfig{}, fmt.Errorf("不能同时清除和设置 JSON 模板")
+	}
+	cfg := webhookConfig{
+		Enabled: req.Enabled, URL: previous.URL, Format: previous.Format,
+		OnStatus: req.OnStatus, OnConfig: req.OnConfig, OnLoginLimit: previous.OnLoginLimit, OnUpdate: previous.OnUpdate,
+		SigningSecret: previous.SigningSecret, JSONTemplate: previous.JSONTemplate, JSONTemplateEnabled: previous.JSONTemplateEnabled,
+	}
 	// Older clients may omit this field; keep the prior format in that case.
 	if req.Format != nil {
 		cfg.Format = *req.Format
@@ -82,6 +110,9 @@ func (a *App) prepareWebhookConfig(previous webhookConfig, req webhookRequest) (
 	}
 	if req.OnUpdate != nil {
 		cfg.OnUpdate = *req.OnUpdate
+	}
+	if req.JSONTemplateEnabled != nil {
+		cfg.JSONTemplateEnabled = *req.JSONTemplateEnabled
 	}
 	if !validWebhookFormat(cfg.Format) {
 		return webhookConfig{}, fmt.Errorf("通知格式无效")
@@ -122,6 +153,33 @@ func (a *App) prepareWebhookConfig(previous webhookConfig, req webhookRequest) (
 			return webhookConfig{}, fmt.Errorf("签名密钥无效，请重新设置或清除")
 		}
 	}
+	if req.ClearJSONTemplate {
+		cfg.JSONTemplate = ""
+	} else if req.JSONTemplate != "" {
+		if _, err := parseWebhookJSONTemplate(req.JSONTemplate); err != nil {
+			return webhookConfig{}, err
+		}
+		existing, _ := a.store.decrypt(cfg.JSONTemplate)
+		if req.JSONTemplate != existing {
+			var err error
+			cfg.JSONTemplate, err = a.store.encryptValue(req.JSONTemplate)
+			if err != nil {
+				return webhookConfig{}, fmt.Errorf("JSON 模板无法保存")
+			}
+		}
+	}
+	if cfg.JSONTemplate != "" {
+		plain, err := a.store.decrypt(cfg.JSONTemplate)
+		if err != nil {
+			return webhookConfig{}, fmt.Errorf("JSON 模板无效，请重新设置或清除")
+		}
+		if _, err = parseWebhookJSONTemplate(plain); err != nil {
+			return webhookConfig{}, fmt.Errorf("JSON 模板无效，请重新设置或清除")
+		}
+	}
+	if cfg.JSONTemplateEnabled && (cfg.Format != "" || cfg.JSONTemplate == "") {
+		return webhookConfig{}, fmt.Errorf("启用 JSON 模板需要已保存的模板和通用 JSON 格式")
+	}
 	if cfg.URL != "" {
 		plain, err := a.store.decrypt(cfg.URL)
 		if err != nil || !validWebhookDestination(cfg.Format, plain) {
@@ -138,41 +196,51 @@ func (a *App) prepareWebhookConfig(previous webhookConfig, req webhookRequest) (
 }
 
 type webhookTargetRequest struct {
-	Revision           uint64  `json:"revision"`
-	Action             string  `json:"action"`
-	ID                 string  `json:"id"`
-	Name               string  `json:"name"`
-	Enabled            *bool   `json:"enabled"`
-	URL                string  `json:"url"`
-	Format             *string `json:"format"`
-	ClearURL           bool    `json:"clearURL"`
-	OnStatus           *bool   `json:"onStatus"`
-	OnConfig           *bool   `json:"onConfig"`
-	OnLoginLimit       *bool   `json:"onLoginLimit"`
-	OnUpdate           *bool   `json:"onUpdate"`
-	SigningSecret      string  `json:"signingSecret"`
-	ClearSigningSecret bool    `json:"clearSigningSecret"`
+	Revision            uint64  `json:"revision"`
+	Action              string  `json:"action"`
+	ID                  string  `json:"id"`
+	Name                string  `json:"name"`
+	Enabled             *bool   `json:"enabled"`
+	URL                 string  `json:"url"`
+	Format              *string `json:"format"`
+	ClearURL            bool    `json:"clearURL"`
+	OnStatus            *bool   `json:"onStatus"`
+	OnConfig            *bool   `json:"onConfig"`
+	OnLoginLimit        *bool   `json:"onLoginLimit"`
+	OnUpdate            *bool   `json:"onUpdate"`
+	SigningSecret       string  `json:"signingSecret"`
+	ClearSigningSecret  bool    `json:"clearSigningSecret"`
+	JSONTemplate        string  `json:"jsonTemplate"`
+	ClearJSONTemplate   bool    `json:"clearJSONTemplate"`
+	JSONTemplateEnabled *bool   `json:"jsonTemplateEnabled"`
 }
 
 func (a *App) webhookTargetsAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		a.mu.Lock()
 		type view struct {
-			ID               string         `json:"id"`
-			Name             string         `json:"name"`
-			Enabled          bool           `json:"enabled"`
-			Format           string         `json:"format"`
-			HasURL           bool           `json:"hasURL"`
-			HasSigningSecret bool           `json:"hasSigningSecret"`
-			OnStatus         bool           `json:"onStatus"`
-			OnConfig         bool           `json:"onConfig"`
-			OnLoginLimit     bool           `json:"onLoginLimit"`
-			OnUpdate         bool           `json:"onUpdate"`
-			Status           map[string]any `json:"status"`
+			ID                  string         `json:"id"`
+			Name                string         `json:"name"`
+			Enabled             bool           `json:"enabled"`
+			Format              string         `json:"format"`
+			HasURL              bool           `json:"hasURL"`
+			HasSigningSecret    bool           `json:"hasSigningSecret"`
+			OnStatus            bool           `json:"onStatus"`
+			OnConfig            bool           `json:"onConfig"`
+			OnLoginLimit        bool           `json:"onLoginLimit"`
+			OnUpdate            bool           `json:"onUpdate"`
+			HasJSONTemplate     bool           `json:"hasJSONTemplate"`
+			JSONTemplateEnabled bool           `json:"jsonTemplateEnabled"`
+			Status              map[string]any `json:"status"`
 		}
 		items := make([]view, 0, len(a.store.DB.Webhooks)+1)
 		add := func(id, name string, cfg webhookConfig) {
-			items = append(items, view{id, name, cfg.Enabled, cfg.Format, cfg.URL != "", cfg.SigningSecret != "", cfg.OnStatus, cfg.OnConfig, cfg.OnLoginLimit, cfg.OnUpdate, a.webhooks.statusFor(id)})
+			items = append(items, view{
+				ID: id, Name: name, Enabled: cfg.Enabled, Format: cfg.Format,
+				HasURL: cfg.URL != "", HasSigningSecret: cfg.SigningSecret != "",
+				OnStatus: cfg.OnStatus, OnConfig: cfg.OnConfig, OnLoginLimit: cfg.OnLoginLimit, OnUpdate: cfg.OnUpdate,
+				HasJSONTemplate: cfg.JSONTemplate != "", JSONTemplateEnabled: cfg.JSONTemplateEnabled, Status: a.webhooks.statusFor(id),
+			})
 		}
 		if a.store.DB.Webhook != nil {
 			add(legacyWebhookID, legacyWebhookName, *a.store.DB.Webhook)
@@ -260,7 +328,12 @@ func (a *App) mutateWebhookTarget(req webhookTargetRequest) (uint64, int, error)
 			if (!isLegacy && !labelOK(name)) || req.Enabled == nil || req.OnStatus == nil || req.OnConfig == nil {
 				return 0, http.StatusBadRequest, fmt.Errorf("请填写目标名称和完整通知选项")
 			}
-			input := webhookRequest{Enabled: *req.Enabled, URL: req.URL, Format: req.Format, ClearURL: req.ClearURL, OnStatus: *req.OnStatus, OnConfig: *req.OnConfig, OnLoginLimit: req.OnLoginLimit, OnUpdate: req.OnUpdate, SigningSecret: req.SigningSecret, ClearSigningSecret: req.ClearSigningSecret}
+			input := webhookRequest{
+				Enabled: *req.Enabled, URL: req.URL, Format: req.Format, ClearURL: req.ClearURL,
+				OnStatus: *req.OnStatus, OnConfig: *req.OnConfig, OnLoginLimit: req.OnLoginLimit, OnUpdate: req.OnUpdate,
+				SigningSecret: req.SigningSecret, ClearSigningSecret: req.ClearSigningSecret,
+				JSONTemplate: req.JSONTemplate, ClearJSONTemplate: req.ClearJSONTemplate, JSONTemplateEnabled: req.JSONTemplateEnabled,
+			}
 			var err error
 			cfg, err = a.prepareWebhookConfig(previous, input)
 			if err != nil {
