@@ -202,6 +202,9 @@ func validateProtocolInstance(i Instance) error {
 	if i.Kind != "frps" && i.ServerAllowedPorts != "" {
 		return fmt.Errorf("允许端口范围仅适用于服务端")
 	}
+	if i.ProxyBindAddr != "" && (i.Kind != "frps" || !hostOK(i.ProxyBindAddr)) {
+		return fmt.Errorf("代理监听地址仅适用于服务端，且必须是有效地址")
+	}
 	if _, err := parseServerAllowedPorts(i.ServerAllowedPorts); err != nil {
 		return err
 	}
