@@ -210,6 +210,18 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.oidcStart(w, r)
 		return
 	}
+	if r.URL.Path == "/api/passkeys/status" && r.Method == http.MethodGet {
+		a.passkeyStatus(w, r)
+		return
+	}
+	if r.URL.Path == "/api/passkeys/login/start" && r.Method == http.MethodPost {
+		a.passkeyLoginStart(w, r)
+		return
+	}
+	if r.URL.Path == "/api/passkeys/login/finish" && r.Method == http.MethodPost {
+		a.passkeyLoginFinish(w, r)
+		return
+	}
 	if r.URL.Path == "/api/launch-login" && r.Method == "POST" {
 		a.launchLogin(w, r)
 		return
