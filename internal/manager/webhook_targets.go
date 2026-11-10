@@ -71,10 +71,17 @@ func (a *App) prepareWebhookConfig(previous webhookConfig, req webhookRequest) (
 	if req.ClearSigningSecret && req.SigningSecret != "" {
 		return webhookConfig{}, fmt.Errorf("不能同时清除和设置签名密钥")
 	}
-	cfg := webhookConfig{Enabled: req.Enabled, URL: previous.URL, Format: previous.Format, OnStatus: req.OnStatus, OnConfig: req.OnConfig, SigningSecret: previous.SigningSecret}
+	cfg := webhookConfig{Enabled: req.Enabled, URL: previous.URL, Format: previous.Format, OnStatus: req.OnStatus, OnConfig: req.OnConfig, OnLoginLimit: previous.OnLoginLimit, OnUpdate: previous.OnUpdate, SigningSecret: previous.SigningSecret}
 	// Older clients may omit this field; keep the prior format in that case.
 	if req.Format != nil {
 		cfg.Format = *req.Format
+	}
+	// An older client cannot clear event choices it does not know about.
+	if req.OnLoginLimit != nil {
+		cfg.OnLoginLimit = *req.OnLoginLimit
+	}
+	if req.OnUpdate != nil {
+		cfg.OnUpdate = *req.OnUpdate
 	}
 	if !validWebhookFormat(cfg.Format) {
 		return webhookConfig{}, fmt.Errorf("通知格式无效")
@@ -124,7 +131,7 @@ func (a *App) prepareWebhookConfig(previous webhookConfig, req webhookRequest) (
 			return webhookConfig{}, fmt.Errorf("通知地址无效，请重新设置")
 		}
 	}
-	if cfg.Enabled && (cfg.URL == "" || (!cfg.OnStatus && !cfg.OnConfig)) {
+	if cfg.Enabled && (cfg.URL == "" || !cfg.hasEvents()) {
 		return webhookConfig{}, fmt.Errorf("启用时需要有效地址，并至少选择一种事件")
 	}
 	return cfg, nil
@@ -141,6 +148,8 @@ type webhookTargetRequest struct {
 	ClearURL           bool    `json:"clearURL"`
 	OnStatus           *bool   `json:"onStatus"`
 	OnConfig           *bool   `json:"onConfig"`
+	OnLoginLimit       *bool   `json:"onLoginLimit"`
+	OnUpdate           *bool   `json:"onUpdate"`
 	SigningSecret      string  `json:"signingSecret"`
 	ClearSigningSecret bool    `json:"clearSigningSecret"`
 }
@@ -157,11 +166,13 @@ func (a *App) webhookTargetsAPI(w http.ResponseWriter, r *http.Request) {
 			HasSigningSecret bool           `json:"hasSigningSecret"`
 			OnStatus         bool           `json:"onStatus"`
 			OnConfig         bool           `json:"onConfig"`
+			OnLoginLimit     bool           `json:"onLoginLimit"`
+			OnUpdate         bool           `json:"onUpdate"`
 			Status           map[string]any `json:"status"`
 		}
 		items := make([]view, 0, len(a.store.DB.Webhooks)+1)
 		add := func(id, name string, cfg webhookConfig) {
-			items = append(items, view{id, name, cfg.Enabled, cfg.Format, cfg.URL != "", cfg.SigningSecret != "", cfg.OnStatus, cfg.OnConfig, a.webhooks.statusFor(id)})
+			items = append(items, view{id, name, cfg.Enabled, cfg.Format, cfg.URL != "", cfg.SigningSecret != "", cfg.OnStatus, cfg.OnConfig, cfg.OnLoginLimit, cfg.OnUpdate, a.webhooks.statusFor(id)})
 		}
 		if a.store.DB.Webhook != nil {
 			add(legacyWebhookID, legacyWebhookName, *a.store.DB.Webhook)
@@ -249,7 +260,7 @@ func (a *App) mutateWebhookTarget(req webhookTargetRequest) (uint64, int, error)
 			if (!isLegacy && !labelOK(name)) || req.Enabled == nil || req.OnStatus == nil || req.OnConfig == nil {
 				return 0, http.StatusBadRequest, fmt.Errorf("请填写目标名称和完整通知选项")
 			}
-			input := webhookRequest{Enabled: *req.Enabled, URL: req.URL, Format: req.Format, ClearURL: req.ClearURL, OnStatus: *req.OnStatus, OnConfig: *req.OnConfig, SigningSecret: req.SigningSecret, ClearSigningSecret: req.ClearSigningSecret}
+			input := webhookRequest{Enabled: *req.Enabled, URL: req.URL, Format: req.Format, ClearURL: req.ClearURL, OnStatus: *req.OnStatus, OnConfig: *req.OnConfig, OnLoginLimit: req.OnLoginLimit, OnUpdate: req.OnUpdate, SigningSecret: req.SigningSecret, ClearSigningSecret: req.ClearSigningSecret}
 			var err error
 			cfg, err = a.prepareWebhookConfig(previous, input)
 			if err != nil {
@@ -257,7 +268,7 @@ func (a *App) mutateWebhookTarget(req webhookTargetRequest) (uint64, int, error)
 			}
 		} else {
 			cfg.Enabled = req.Action == "enable"
-			if cfg.Enabled && (cfg.URL == "" || (!cfg.OnStatus && !cfg.OnConfig)) {
+			if cfg.Enabled && (cfg.URL == "" || !cfg.hasEvents()) {
 				return 0, http.StatusBadRequest, fmt.Errorf("启用时需要有效地址，并至少选择一种事件")
 			}
 		}

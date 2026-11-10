@@ -40,6 +40,7 @@ type App struct {
 	assets           http.Handler
 	webhooks         *webhookDispatcher
 	loginHistory     *loginHistory
+	updateNotices    updateNoticeState
 
 	// Lifecycle reservations are protected by mu. Slow operations run without it.
 	operations          map[string]*runtimeOperation
@@ -156,6 +157,7 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), core: cores, runtime: backend, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2)}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	app.webhooks = newWebhookDispatcher()
 	app.loginHistory = loadLoginHistory(s.dir)
+	app.auth.onLoginLimit = app.webhooks.emitLoginLimit
 	app.configureWebhooks()
 	s.onCommit = app.webhooks.emitConfig
 	ctx, cancel := context.WithCancel(context.Background())

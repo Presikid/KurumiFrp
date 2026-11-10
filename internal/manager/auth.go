@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strconv"
@@ -15,9 +16,10 @@ import (
 )
 
 type attempt struct {
-	count    int
-	inFlight int
-	since    time.Time
+	count         int
+	inFlight      int
+	since         time.Time
+	limitNotified bool
 }
 
 const (
@@ -28,18 +30,21 @@ const (
 )
 
 type auth struct {
-	token            string
-	mu               sync.Mutex
-	attempts         map[string]attempt
-	globalAttempts   attempt
-	sessions         map[string]authSession
-	tickets          map[string]time.Time
-	nextCleanup      time.Time
-	accountPath      string
-	accounts         []localAccount
-	accountsRevision uint64
-	accountLoadErr   error
-	hashSlots        chan struct{}
+	token             string
+	mu                sync.Mutex
+	attempts          map[string]attempt
+	globalAttempts    attempt
+	keysLimitNotified bool
+	nextLimitNotice   time.Time
+	onLoginLimit      func(string)
+	sessions          map[string]authSession
+	tickets           map[string]time.Time
+	nextCleanup       time.Time
+	accountPath       string
+	accounts          []localAccount
+	accountsRevision  uint64
+	accountLoadErr    error
+	hashSlots         chan struct{}
 }
 
 type authSession struct {
@@ -160,18 +165,59 @@ func accountAttemptKey(username string) string {
 // Reservations include in-flight checks so concurrent guesses cannot all
 // pass the limit before their failures are recorded.
 func (a *auth) beginAttempt(key string) error {
+	return a.beginAttemptWithPeer(key, false, "")
+}
+
+func (a *auth) beginAttemptWithPeer(key string, login bool, peer string) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	now := time.Now()
 	a.prune(now)
 	at, known := a.attempts[key]
+	storedAttempt := at
 	if !known || !now.Before(at.since.Add(loginWindow)) {
 		at.count, at.since = 0, now
+		if at.inFlight < maxLoginFailures {
+			at.limitNotified = false
+		}
 	}
 	if a.globalAttempts.since.IsZero() || !now.Before(a.globalAttempts.since.Add(loginWindow)) {
-		a.globalAttempts.count, a.globalAttempts.since = 0, now
+		a.globalAttempts.count, a.globalAttempts.since, a.globalAttempts.limitNotified = 0, now, false
 	}
-	if at.count+at.inFlight >= maxLoginFailures || (key != "token" && a.globalAttempts.count+a.globalAttempts.inFlight >= maxGlobalLoginFailures) || (!known && key != "token" && len(a.attempts) >= maxLoginKeys) {
+	keyLimited := at.count+at.inFlight >= maxLoginFailures
+	globalLimited := key != "token" && a.globalAttempts.count+a.globalAttempts.inFlight >= maxGlobalLoginFailures
+	keysLimited := !known && key != "token" && len(a.attempts) >= maxLoginKeys
+	if !keyLimited {
+		at.limitNotified = false
+	}
+	if a.globalAttempts.count+a.globalAttempts.inFlight < maxGlobalLoginFailures {
+		a.globalAttempts.limitNotified = false
+	}
+	if len(a.attempts) < maxLoginKeys {
+		a.keysLimitNotified = false
+	}
+	if keyLimited || globalLimited || keysLimited {
+		changed := false
+		if login {
+			if keyLimited && !at.limitNotified {
+				at.limitNotified, changed = true, true
+			}
+			if globalLimited && !a.globalAttempts.limitNotified {
+				a.globalAttempts.limitNotified, changed = true, true
+			}
+			if keysLimited && !a.keysLimitNotified {
+				a.keysLimitNotified, changed = true, true
+			}
+		}
+		if known {
+			// A rejected attempt must not change the existing credential budget.
+			storedAttempt.limitNotified = at.limitNotified
+			a.attempts[key] = storedAttempt
+		}
+		callback, notify := a.reserveLimitNotice(now, changed)
+		a.mu.Unlock()
+		if notify && callback != nil {
+			callback(loginPeerIP(peer))
+		}
 		return fmt.Errorf("尝试过于频繁，请稍后再试")
 	}
 	at.inFlight++
@@ -179,34 +225,72 @@ func (a *auth) beginAttempt(key string) error {
 		a.globalAttempts.inFlight++
 	}
 	a.attempts[key] = at
+	a.mu.Unlock()
 	return nil
 }
 
+// Called with a.mu held, limiting all login notices to one per minute.
+func (a *auth) reserveLimitNotice(now time.Time, changed bool) (func(string), bool) {
+	notify := changed && !now.Before(a.nextLimitNotice)
+	if notify {
+		a.nextLimitNotice = now.Add(time.Minute)
+	}
+	return a.onLoginLimit, notify
+}
+
+// Only the network peer is used; forwarding headers are never trusted.
+func loginPeerIP(peer string) string {
+	host, _, err := net.SplitHostPort(peer)
+	if err != nil {
+		return ""
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return ""
+	}
+	return ip.WithZone("").Unmap().String()
+}
+
 func (a *auth) finishAttempt(key string, failed bool) {
+	a.finishAttemptWithPeer(key, failed, false, "")
+}
+
+func (a *auth) finishAttemptWithPeer(key string, failed, login bool, peer string) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	now := time.Now()
 	at := a.attempts[key]
 	if !now.Before(at.since.Add(loginWindow)) {
-		at.count, at.since = 0, now
+		at.count, at.since, at.limitNotified = 0, now, false
 	}
 	if !now.Before(a.globalAttempts.since.Add(loginWindow)) {
-		a.globalAttempts.count, a.globalAttempts.since = 0, now
+		a.globalAttempts.count, a.globalAttempts.since, a.globalAttempts.limitNotified = 0, now, false
 	}
 	at.inFlight--
 	if key != "token" {
 		a.globalAttempts.inFlight--
 	}
+	changed := false
 	if failed {
 		at.count++
 		if key != "token" {
 			a.globalAttempts.count++
+		}
+		if login && at.count >= maxLoginFailures && !at.limitNotified {
+			at.limitNotified, changed = true, true
+		}
+		if login && key != "token" && a.globalAttempts.count >= maxGlobalLoginFailures && !a.globalAttempts.limitNotified {
+			a.globalAttempts.limitNotified, changed = true, true
 		}
 	}
 	if at.count == 0 && at.inFlight == 0 {
 		delete(a.attempts, key)
 	} else {
 		a.attempts[key] = at
+	}
+	callback, notify := a.reserveLimitNotice(now, changed)
+	a.mu.Unlock()
+	if notify && callback != nil {
+		callback(loginPeerIP(peer))
 	}
 }
 
@@ -218,11 +302,11 @@ func (a *auth) login(r *http.Request, token, username, password string) (string,
 	if username != "" {
 		key = accountAttemptKey(username)
 	}
-	if err := a.beginAttempt(key); err != nil {
+	if err := a.beginAttemptWithPeer(key, true, r.RemoteAddr); err != nil {
 		return "", err
 	}
 	failed := false
-	defer func() { a.finishAttempt(key, failed) }()
+	defer func() { a.finishAttemptWithPeer(key, failed, true, r.RemoteAddr) }()
 	if username != "" {
 		var sid string
 		var err error
