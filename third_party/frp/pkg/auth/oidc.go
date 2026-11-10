@@ -24,6 +24,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -267,16 +268,26 @@ type TokenVerifier interface {
 
 type OidcAuthConsumer struct {
 	additionalAuthScopes []v1.AuthScope
+	ctx                  context.Context
 
 	verifier          TokenVerifier
 	mu                sync.RWMutex
 	subjectsFromLogin map[string]struct{}
 }
 
-func NewTokenVerifier(cfg v1.AuthOIDCServerConfig) TokenVerifier {
-	provider, err := oidc.NewProvider(context.Background(), cfg.Issuer)
+func NewTokenVerifier(parent context.Context, cfg v1.AuthOIDCServerConfig) (TokenVerifier, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 8 * time.Second, MaxResponseHeaderBytes: 16 << 10},
+	}
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, client), cfg.Issuer)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("OIDC provider discovery failed: %w", err)
 	}
 	verifierConf := oidc.Config{
 		ClientID:          cfg.Audience,
@@ -284,19 +295,23 @@ func NewTokenVerifier(cfg v1.AuthOIDCServerConfig) TokenVerifier {
 		SkipExpiryCheck:   cfg.SkipExpiryCheck,
 		SkipIssuerCheck:   cfg.SkipIssuerCheck,
 	}
-	return provider.Verifier(&verifierConf)
+	return provider.Verifier(&verifierConf), nil
 }
 
-func NewOidcAuthVerifier(additionalAuthScopes []v1.AuthScope, verifier TokenVerifier) *OidcAuthConsumer {
+func NewOidcAuthVerifier(ctx context.Context, additionalAuthScopes []v1.AuthScope, verifier TokenVerifier) *OidcAuthConsumer {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return &OidcAuthConsumer{
 		additionalAuthScopes: additionalAuthScopes,
+		ctx:                  ctx,
 		verifier:             verifier,
 		subjectsFromLogin:    make(map[string]struct{}),
 	}
 }
 
 func (auth *OidcAuthConsumer) VerifyLogin(loginMsg *msg.Login) (err error) {
-	token, err := auth.verifier.Verify(context.Background(), loginMsg.PrivilegeKey)
+	token, err := auth.verifier.Verify(auth.ctx, loginMsg.PrivilegeKey)
 	if err != nil {
 		return fmt.Errorf("invalid OIDC token in login: %v", err)
 	}
@@ -307,7 +322,7 @@ func (auth *OidcAuthConsumer) VerifyLogin(loginMsg *msg.Login) (err error) {
 }
 
 func (auth *OidcAuthConsumer) verifyPostLoginToken(privilegeKey string) (err error) {
-	token, err := auth.verifier.Verify(context.Background(), privilegeKey)
+	token, err := auth.verifier.Verify(auth.ctx, privilegeKey)
 	if err != nil {
 		return fmt.Errorf("invalid OIDC token in ping: %v", err)
 	}

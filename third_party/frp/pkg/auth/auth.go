@@ -97,31 +97,42 @@ func (a *ServerAuth) EncryptionKey() []byte {
 
 // BuildServerAuth resolves any dynamic auth values and returns a prepared auth runtime.
 // Caller must run validation before calling this function.
-func BuildServerAuth(cfg *v1.AuthServerConfig) (*ServerAuth, error) {
+func BuildServerAuth(ctx context.Context, cfg *v1.AuthServerConfig) (*ServerAuth, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("auth config is nil")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	resolved := *cfg
 	if resolved.Method == v1.AuthMethodToken && resolved.TokenSource != nil {
-		token, err := resolved.TokenSource.Resolve(context.Background())
+		token, err := resolved.TokenSource.Resolve(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve auth.tokenSource: %w", err)
 		}
 		resolved.Token = token
 	}
+	verifier, err := NewAuthVerifier(ctx, resolved)
+	if err != nil {
+		return nil, err
+	}
 	return &ServerAuth{
-		Verifier: NewAuthVerifier(resolved),
+		Verifier: verifier,
 		key:      []byte(resolved.Token),
 	}, nil
 }
 
-func NewAuthVerifier(cfg v1.AuthServerConfig) (authVerifier Verifier) {
+func NewAuthVerifier(ctx context.Context, cfg v1.AuthServerConfig) (Verifier, error) {
 	switch cfg.Method {
 	case v1.AuthMethodToken:
-		authVerifier = NewTokenAuth(cfg.AdditionalScopes, cfg.Token)
+		return NewTokenAuth(cfg.AdditionalScopes, cfg.Token), nil
 	case v1.AuthMethodOIDC:
-		tokenVerifier := NewTokenVerifier(cfg.OIDC)
-		authVerifier = NewOidcAuthVerifier(cfg.AdditionalScopes, tokenVerifier)
+		tokenVerifier, err := NewTokenVerifier(ctx, cfg.OIDC)
+		if err != nil {
+			return nil, err
+		}
+		return NewOidcAuthVerifier(ctx, cfg.AdditionalScopes, tokenVerifier), nil
+	default:
+		return nil, fmt.Errorf("unsupported auth method: %s", cfg.Method)
 	}
-	return authVerifier
 }

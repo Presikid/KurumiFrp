@@ -133,8 +133,8 @@ func (s *Server) Warning() string { return s.warning }
 // Start constructs and starts the upstream Service in this process. It returns
 // after listeners are constructed, not after proxy registration or a health
 // check. Cancellation of ctx stops the service. Start may be called only once.
-// Upstream construction itself cannot be cancelled; a concurrent Stop waits for
-// it to return before the constructed Service can be closed.
+// Authentication discovery observes ctx; other construction steps may still
+// need to finish before a concurrent Stop can close the constructed Service.
 func (s *Server) Start(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("embedded frp server context is nil")
@@ -159,6 +159,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	svc, err := server.NewServiceWithOptions(s.config, server.ServiceOptions{
+		Context:                runCtx,
 		LogSink:                s.options.LogSink,
 		TrafficRecorder:        s.options.TrafficRecorder,
 		AllowControlConnection: s.options.AllowControlConnection,
