@@ -187,7 +187,16 @@ if(location.hash==='#core'){page='core';render();}
  const match=/^#launch=([a-f0-9]{64})$/.exec(location.hash);
  if(!match)return;
  history.replaceState(null,'',location.pathname+location.search+'#core');
- try{await api('launch-login',{ticket:match[1]});page='core';await refresh();}
+ try{
+  for(let attempt=0;;attempt++) {
+   try {await api('launch-login',{ticket:match[1]});break;}
+   catch(error) {
+    if(error.status!==429 || attempt>=9)throw error;
+    await new Promise(resolve=>setTimeout(resolve,500));
+   }
+  }
+  page='core';await refresh();
+ }
  catch(e){$('#login-error').textContent=e.message;}
 })();
 

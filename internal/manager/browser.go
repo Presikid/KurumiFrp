@@ -36,21 +36,26 @@ func (a *App) launchLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	a.auth.mu.Lock()
 	expires, ok := a.auth.tickets[req.Ticket]
-	delete(a.auth.tickets, req.Ticket)
 	for k, t := range a.auth.sessions {
-		if time.Now().After(t) {
+		if !time.Now().Before(t.expires) {
 			delete(a.auth.sessions, k)
 		}
 	}
-	if !ok || time.Now().After(expires) {
+	if !ok || !time.Now().Before(expires) {
+		delete(a.auth.tickets, req.Ticket)
 		a.auth.mu.Unlock()
 		fail(w, 401, fmt.Errorf("启动凭据无效或已过期，请重新打开桌面快捷方式"))
 		return
 	}
-	sid, err := a.auth.newSessionLocked(r, time.Now())
+	sid, err := a.auth.newSessionLocked(r, "", time.Now())
+	if err == nil {
+		// The ticket remains valid only on a transient capacity/gate failure.
+		// Holding auth.mu makes successful consumption strictly single-use.
+		delete(a.auth.tickets, req.Ticket)
+	}
 	a.auth.mu.Unlock()
 	if err != nil {
-		fail(w, http.StatusUnauthorized, err)
+		fail(w, http.StatusTooManyRequests, err)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: "kurumi_session", Value: sid, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 43200})

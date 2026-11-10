@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -31,7 +32,6 @@ type stateResponseCache struct {
 	runtimeMode string
 	procs       map[string]stateProcessSnapshot
 	body        []byte
-	etag        string
 }
 
 func (c *stateResponseCache) matches(next *stateResponseCache) bool {
@@ -141,8 +141,6 @@ func (a *App) stateResponseLocked() (*stateResponseCache, error) {
 		return nil, err
 	}
 	next.body = append(body, '\n')
-	digest := sha256.Sum256(next.body)
-	next.etag = `"` + hex.EncodeToString(digest[:]) + `"`
 	a.stateCache = next
 	return next, nil
 }
@@ -168,12 +166,59 @@ func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	w.Header().Set("ETag", cached.etag)
-	if matchesStateETag(strings.Join(r.Header.Values("If-None-Match"), ","), cached.etag) {
+	// The shared cache contains administrator data. Build a fresh, explicit
+	// per-identity projection before deriving the validator or sending bytes.
+	var body map[string]json.RawMessage
+	if err = json.Unmarshal(cached.body, &body); err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	p := requestPrincipal(r)
+	if !p.admin() {
+		var state State
+		var runtime map[string]RuntimeStatus
+		if json.Unmarshal(body["state"], &state) != nil || json.Unmarshal(body["runtime"], &runtime) != nil {
+			fail(w, http.StatusInternalServerError, fmt.Errorf("无法读取实例状态"))
+			return
+		}
+		visible := State{Instances: []Instance{}, Tunnels: []Tunnel{}}
+		statuses := make(map[string]RuntimeStatus)
+		for _, instance := range state.Instances {
+			if p.canView(instance.ID) {
+				visible.Instances = append(visible.Instances, instance)
+				v := runtime[instance.ID]
+				statuses[instance.ID] = RuntimeStatus{State: v.State, Pending: v.Pending, RunID: v.RunID, Generation: v.Generation}
+			}
+		}
+		for _, tunnel := range state.Tunnels {
+			if p.canView(tunnel.InstanceID) {
+				visible.Tunnels = append(visible.Tunnels, tunnel)
+			}
+		}
+		visibleState, _ := json.Marshal(visible)
+		visibleRuntime, _ := json.Marshal(statuses)
+		body = map[string]json.RawMessage{
+			"version": body["version"], "revision": body["revision"],
+			"state": visibleState, "runtime": visibleRuntime,
+			"runtimeBackend": body["runtimeBackend"], "runtimeAvailable": body["runtimeAvailable"], "binaries": body["binaries"],
+			"history": json.RawMessage(`[]`), "events": json.RawMessage(`[]`), "portWarnings": json.RawMessage(`[]`), "historyLimit": json.RawMessage(`0`),
+		}
+	}
+	body["identity"], _ = json.Marshal(p)
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	encoded = append(encoded, '\n')
+	digest := sha256.Sum256(encoded)
+	etag := `"` + hex.EncodeToString(digest[:]) + `"`
+	w.Header().Set("ETag", etag)
+	if matchesStateETag(strings.Join(r.Header.Values("If-None-Match"), ","), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(cached.body)
+	_, _ = w.Write(encoded)
 }

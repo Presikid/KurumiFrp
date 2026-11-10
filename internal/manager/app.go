@@ -67,6 +67,23 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 	if e != nil {
 		return nil, e
 	}
+	// A damaged account file disables accounts and account mutations, but the
+	// existing local administrator must still be able to start the workbench.
+	accounts, accountsRevision, accountLoadErr := loadAccounts(s.dir)
+	if accountLoadErr == nil {
+		for _, account := range accounts {
+			for _, id := range account.Instances {
+				if _, exists := s.DB.State.Instance(id); !exists {
+					accountLoadErr = fmt.Errorf("账户授权引用了不存在的实例")
+					accounts, accountsRevision = nil, 0
+					break
+				}
+			}
+			if accountLoadErr != nil {
+				break
+			}
+		}
+	}
 	reapPrivateStatuses(s.dir)
 	tokenPath := filepath.Join(s.dir, "access.token")
 	token, e := privateFile(tokenPath)
@@ -121,7 +138,7 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 	if backend == nil {
 		backend = &externalRuntime{core: cores, dir: s.dir}
 	}
-	app := &App{quit: make(chan struct{}), core: cores, runtime: backend, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]time.Time{}}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	app := &App{quit: make(chan struct{}), core: cores, runtime: backend, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2)}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	app.webhooks = newWebhookDispatcher()
 	app.configureWebhook(s.DB.webhookConfig())
 	s.onCommit = app.webhooks.emitConfig
@@ -181,13 +198,15 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/login" && r.Method == "POST" {
 		var input struct {
-			Token string `json:"token"`
+			Token    string `json:"token"`
+			Username string `json:"username"`
+			Password string `json:"password"`
 		}
 		if e := decode(w, r, &input); e != nil {
 			fail(w, 400, e)
 			return
 		}
-		sid, e := a.auth.login(r, input.Token)
+		sid, e := a.auth.login(r, input.Token, input.Username, input.Password)
 		if e != nil {
 			fail(w, 401, e)
 			return
@@ -197,8 +216,35 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
-		if !a.auth.valid(r) {
+		var p principal
+		var ok bool
+		var unlock func()
+		// Account mutations take the target's exclusive gate themselves after
+		// expensive password work. Streams acquire it separately per frame.
+		ungated := (r.Method == http.MethodPost && (r.URL.Path == "/api/accounts" || r.URL.Path == "/api/password" || r.URL.Path == "/api/logout")) || (r.Method == http.MethodGet && r.URL.Path == "/api/logs/stream")
+		if ungated {
+			p, ok = a.auth.identity(r)
+		} else {
+			p, unlock, ok = a.auth.lockRequest(r)
+		}
+		if !ok {
 			fail(w, 401, fmt.Errorf("请先登录"))
+			return
+		}
+		if unlock != nil {
+			defer unlock()
+		}
+		if !routeAllowed(p, r) {
+			fail(w, 403, fmt.Errorf("没有此操作的权限"))
+			return
+		}
+		r = withPrincipal(r, p)
+		if r.URL.Path == "/api/accounts" {
+			a.accountsAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/password" {
+			a.passwordAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/quit" && r.Method == "POST" {
@@ -207,10 +253,29 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.URL.Path == "/api/browser-ticket" && r.Method == "POST" {
+			if !a.auth.localToken(r) {
+				fail(w, http.StatusForbidden, fmt.Errorf("仅本机管理令牌可签发启动凭据"))
+				return
+			}
 			reply(w, 200, map[string]string{"url": a.BrowserURL()})
 			return
 		}
 		if r.URL.Path == "/api/logout" && r.Method == "POST" {
+			// A Bearer credential may accompany a different browser cookie.
+			// Drain the cookie's session, not the Bearer principal's gate.
+			cookieRequest := r.Clone(r.Context())
+			cookieRequest.Header = r.Header.Clone()
+			cookieRequest.Header.Del("Authorization")
+			cookiePrincipal, cookieValid := a.auth.identity(cookieRequest)
+			if cookieValid && cookiePrincipal.gate != nil {
+				cookiePrincipal.gate.Lock()
+				defer cookiePrincipal.gate.Unlock()
+				current, valid := a.auth.identity(cookieRequest)
+				if !valid || current.gate != cookiePrincipal.gate {
+					fail(w, 401, fmt.Errorf("请先登录"))
+					return
+				}
+			}
 			a.auth.logout(r)
 			http.SetCookie(w, &http.Cookie{Name: "kurumi_session", Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
 			reply(w, 200, map[string]bool{"ok": true})
@@ -288,8 +353,39 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		a.mu.Lock()
-		defer a.mu.Unlock()
+		if r.URL.Path == "/api/import" {
+			a.importConfigAPI(w, r)
+			return
+		}
+		// Do not create IDs while an unreadable account file could contain old
+		// grants for them. Instance replacement and deletion have the same
+		// protection in lockStateReplacement.
+		if r.URL.Path == "/api/save" || r.URL.Path == "/api/duplicate" || r.URL.Path == "/api/import/toml" {
+			a.auth.mu.Lock()
+			unavailable := a.auth.accountLoadErr != nil
+			a.auth.mu.Unlock()
+			if unavailable {
+				fail(w, http.StatusServiceUnavailable, fmt.Errorf("账户文件无法读取，修复前不能新增或修改实例"))
+				return
+			}
+		}
+		if r.URL.Path == "/api/delete" || r.URL.Path == "/api/restore" {
+			buffered, err := bufferMutationBody(w, r, 1<<20)
+			if err != nil {
+				fail(w, 400, err)
+				return
+			}
+			r = buffered
+			release, err := a.lockStateReplacement()
+			if err != nil {
+				fail(w, 409, err)
+				return
+			}
+			defer release()
+		} else {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+		}
 		a.api(w, r)
 		return
 	}
@@ -301,6 +397,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
+		if (r.URL.Path == "/api/config" || r.URL.Path == "/api/diff") && !requestPrincipal(r).canView(r.URL.Query().Get("id")) {
+			fail(w, http.StatusForbidden, fmt.Errorf("没有此实例的查看权限"))
+			return
+		}
 		switch r.URL.Path {
 		case "/api/export":
 			a.export(w, r)
@@ -347,10 +447,6 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/import/toml" || r.URL.Path == "/api/import/toml/preview" {
 		a.tomlImportAPI(w, r)
-		return
-	}
-	if r.URL.Path == "/api/import" {
-		a.importConfig(w, r)
 		return
 	}
 	if r.URL.Path == "/api/duplicate" {
@@ -582,6 +678,11 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		if !found {
 			err = fmt.Errorf("对象不存在")
 		} else {
+			if req.Kind == "instance" {
+				if err = a.clearInstanceGrantsLocked(req.ID); err != nil {
+					break
+				}
+			}
 			err = a.store.commit(st, "删除 "+req.Kind+" 草稿")
 			if err == nil && req.Kind == "instance" {
 				delete(a.procs, req.ID)
@@ -599,6 +700,9 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		err = fmt.Errorf("历史版本不存在")
 		for _, h := range a.store.DB.History {
 			if h.Revision == req.Target {
+				if err = a.clearInstanceGrantsLocked(""); err != nil {
+					break
+				}
 				err = a.store.commit(h.State.clone(), fmt.Sprintf("恢复草稿版本 %d", h.Revision))
 				if err == nil {
 					a.discardStoppedRuntimeLocked()

@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// Limit expensive key derivation and large backup allocations per app.
+// Bound expensive backup work and the buffered plain-import allocation per app.
 func (a *App) reserveBackup() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -132,8 +132,12 @@ func (a *App) backupImport(w http.ResponseWriter, r *http.Request) {
 	clone.URL = &u
 	clone.Body = io.NopCloser(bytes.NewReader(plain))
 	clone.ContentLength = int64(len(plain))
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	release, err := a.lockStateReplacement()
+	if err != nil {
+		fail(w, 409, err)
+		return
+	}
+	defer release()
 	if a.closing {
 		fail(w, 409, fmt.Errorf("工作台正在关闭"))
 		return

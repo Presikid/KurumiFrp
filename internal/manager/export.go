@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -9,6 +10,40 @@ import (
 
 	"github.com/Presikid/KurumiFrp/internal/core"
 )
+
+// Bound and consume slow uploads before waiting on other accounts' gates.
+func bufferMutationBody(w http.ResponseWriter, r *http.Request, limit int64) (*http.Request, error) {
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+	if err != nil {
+		return nil, fmt.Errorf("无法读取请求或请求超过大小限制")
+	}
+	clone := r.Clone(r.Context())
+	clone.Body = io.NopCloser(bytes.NewReader(data))
+	clone.ContentLength = int64(len(data))
+	return clone, nil
+}
+
+func (a *App) importConfigAPI(w http.ResponseWriter, r *http.Request) {
+	// Buffering before the permission gates avoids a slow client blocking
+	// revocation; reserve the shared transfer slot to bound that allocation.
+	if !a.reserveBackup() {
+		fail(w, http.StatusConflict, fmt.Errorf("备份或导入操作正在进行或工作台正在关闭"))
+		return
+	}
+	defer a.releaseBackup()
+	buffered, err := bufferMutationBody(w, r, maxStateSize)
+	if err != nil {
+		fail(w, 400, err)
+		return
+	}
+	release, err := a.lockStateReplacement()
+	if err != nil {
+		fail(w, 409, err)
+		return
+	}
+	defer release()
+	a.importConfig(w, buffered)
+}
 
 // Exported files contain the data key and are therefore sensitive credentials.
 func (a *App) export(w http.ResponseWriter, r *http.Request) {
@@ -194,6 +229,12 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	db.Format = currentDatabaseFormat
+	// Authorizations must not attach to different imported instances reusing
+	// old IDs. This write precedes the state replacement and fails closed.
+	if err = a.clearInstanceGrantsLocked(""); err != nil {
+		fail(w, 500, fmt.Errorf("无法撤销原实例授权"))
+		return
+	}
 	previousKey := a.store.key
 	a.store.key = key
 	if err = a.store.write(db); err != nil {

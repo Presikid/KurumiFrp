@@ -123,6 +123,7 @@ function cancelConfigRequest() {
 function cancelPageRequests() {cancelLogRequest(); cancelConfigRequest(); stopLogStream(); logAccessDenied = null;}
 function resetSession() {
  stopRefreshPolling();
+ window.resetAccountView?.();
  Overview.reset();
  window.KurumiInstances.reset();
  ++authGeneration; ++serial;
@@ -190,7 +191,20 @@ async function refresh(silent = false) {
   try {
    const fresh = await api('state',undefined,{conditional:true,headers:stateETag ? {'If-None-Match':stateETag} : {},signal:request.controller.signal});
    if (generation !== authGeneration) return false;
+   let accessChanged = false;
    if (fresh.value !== null) {
+    const scope = value => JSON.stringify([value?.identity || null, (value?.state?.instances || []).map(i => i.id).sort()]);
+    accessChanged = !!data && scope(data) !== scope(fresh.value);
+    if (accessChanged) {
+     ++navigationGeneration; ++registrationEpoch;
+     cancelPageRequests(); window.resetAccountView?.();
+     if (dialog.open) dialog.close(); if (diffDialog.open) diffDialog.close();
+     if (backupDialogEl?.open) backupDialogEl.close(); if (webhookDialogEl?.open) webhookDialogEl.close(); if (healthDialog?.open) healthDialog.close();
+     window.KurumiTOMLImport.close();
+     registrationRequest = null; registrations = Object.create(null); registrationRevision = null; registrationProcesses = Object.create(null);
+     clearTimeout(registrationExpiryTimer); registrationExpiryTimer = null;
+     probeResults = Object.create(null); Overview.reset(); window.KurumiInstances.reset(); $('#content').replaceChildren();
+    }
     const revisionChanged = data && data.revision !== fresh.value.revision;
     if (probeRevision !== fresh.value.revision) {probeResults = Object.create(null); probeRevision = fresh.value.revision;}
     const runtimeChanged = invalidateRegistrationForRuntime(data, fresh.value); invalidateLogsForRuntime(data, fresh.value); data = fresh.value;
@@ -201,13 +215,13 @@ async function refresh(silent = false) {
    }
    if (!data) return false;
    $('#login').hidden = true; $('#app').hidden = false;
-   if (!updateChecked) {updateChecked = true; checkUpdates(true);}
+   if (!updateChecked && data.identity?.role === 'admin') {updateChecked = true; checkUpdates(true);}
    if (!hasSelection()) {
     const revision = `DRAFT / r${data.revision}`;
     if ($('#revision').textContent !== revision) $('#revision').textContent = revision;
     $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
    }
-   if (!silent && !dialog.open && !diffDialog.open && !backupDialogEl?.open && !webhookDialogEl?.open && !healthDialog?.open && !window.KurumiTOMLImport.isOpen()) render();
+   if (accessChanged || (!silent && !dialog.open && !diffDialog.open && !backupDialogEl?.open && !webhookDialogEl?.open && !healthDialog?.open && !window.KurumiTOMLImport.isOpen())) render();
    else if (canSilentRender() && (renderedSnapshot !== stateSnapshot || renderedPage !== page)) renderPreservingScroll();
    applyDeferredConfig();
    refreshRegistration();
@@ -679,6 +693,7 @@ function paintRegistrations(force=false) {
 }
 document.addEventListener('selectionchange',()=>{if(hasSelection())return;if(registrationPaintPending)paintRegistrations();if(page==='tunnels'&&data)RulesPage.paintRuntime(rulesContext());if(page==='logs')paintLogs();if(page==='config')applyDeferredConfig();});
 function refreshRegistration() {
+ if (data?.identity?.role !== 'admin') return;
  if (!data || !['overview','tunnels','instances'].includes(page) || document.hidden || registrationRequest || healthChecking) return;
  const generation=authGeneration, revision=data.revision, epoch=registrationEpoch, processes=processSnapshot(data), started=performance.now();
  const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),15000);
@@ -847,7 +862,7 @@ function openBackupDialog(mode, scope='all', snapshot=0) {
 
 
 function download(name,text,type='application/json'){const u=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');try{a.href=u;a.download=name;document.body.appendChild(a);a.click();}finally{a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);}}
-$('#login-form').addEventListener('submit',async e=>{e.preventDefault();const b=e.target.querySelector('button');b.disabled=true;try{await api('login',{token:e.target.elements.token.value.trim()});e.target.reset();$('#login-error').textContent='';await refresh();}catch(err){$('#login-error').textContent=err.message;}finally{b.disabled=false;}});
+$('#login-form').addEventListener('submit',async e=>{e.preventDefault();const b=e.target.querySelector('button'),username=e.target.elements.username.value.trim(),value=e.target.elements.token.value;b.disabled=true;try{await api('login',username?{username,password:value}:{token:value.trim()});e.target.reset();$('#login-error').textContent='';await refresh();}catch(err){$('#login-error').textContent=err.message;}finally{b.disabled=false;}});
 $('#logout').addEventListener('click',async()=>{try{await api('logout',{});showLogin();announceSessionChange();}catch(e){toast(e.message);}});
 $('#refresh').addEventListener('click',()=>RulesPage.needsSync()?synchronizeRules():refresh());
 $('#theme').addEventListener('click',()=>{document.body.classList.toggle('dark');try{localStorage.setItem('kurumi-theme',document.body.classList.contains('dark')?'dark':'light');}catch(_){/* private browsing may deny storage */}});
