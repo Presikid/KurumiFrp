@@ -19,9 +19,6 @@ type RuntimeConfig struct {
 	// Embedded-only control-entry policy, copied with the instance snapshot.
 	ServerAccessMode string
 	ServerAccessList string
-
-	// Only the compatibility backend uses a file to launch an external core.
-	configPath string
 }
 
 // RuntimeBackend selects, validates and starts runtime instances. Resolve is

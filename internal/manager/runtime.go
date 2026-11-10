@@ -36,7 +36,6 @@ type process struct {
 	appliedConfig       string
 	appliedDigest       string
 	appliedSecretDigest string
-	privateStatus       *privateStatus
 	// Set before publication for an in-process client and kept for this run.
 	registrationReader      ProxyRegistrationReader
 	readiness               RuntimeReadiness
@@ -301,10 +300,10 @@ func (a *App) resolveRuntime(kind string) (string, error) {
 	return a.runtime.Resolve(kind, a.activeCoreID())
 }
 
-func runtimeConfig(i Instance, r Rendered, configPath string) RuntimeConfig {
+func runtimeConfig(i Instance, r Rendered) RuntimeConfig {
 	r.Env = append([]string(nil), r.Env...)
 	r.Secrets = append([]string(nil), r.Secrets...)
-	return RuntimeConfig{InstanceID: i.ID, Kind: i.Kind, Rendered: r, ServerAccessMode: i.ServerAccessMode, ServerAccessList: i.ServerAccessList, configPath: configPath}
+	return RuntimeConfig{InstanceID: i.ID, Kind: i.Kind, Rendered: r, ServerAccessMode: i.ServerAccessMode, ServerAccessList: i.ServerAccessList}
 }
 
 func (a *App) verify(i Instance, r Rendered) (string, error) {
@@ -320,7 +319,7 @@ func (a *App) verifyRuntime(parent context.Context, target string, i Instance, r
 	}
 	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
-	output, err := a.runtime.Verify(ctx, target, runtimeConfig(i, r, ""))
+	output, err := a.runtime.Verify(ctx, target, runtimeConfig(i, r))
 	output = redact(output, r.Secrets)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return output, fmt.Errorf("frp 配置检查超时")
@@ -333,12 +332,7 @@ func (a *App) verifyRuntime(parent context.Context, target string, i Instance, r
 	}
 	return output, nil
 }
-func (a *App) prepareRuntimeConfig(id string, r Rendered) (string, error) {
-	return "", nil
-}
-
-// start is retained for internal callers which already hold a.mu. HTTP control
-// prepares the file outside the lock and calls startPrepared after revalidation.
+// start is retained for internal callers which already hold a.mu.
 func (a *App) start(i Instance, r Rendered) error {
 	if a.closing {
 		return fmt.Errorf("工作台正在关闭")
@@ -350,22 +344,17 @@ func (a *App) start(i Instance, r Rendered) error {
 	if e != nil {
 		return e
 	}
-	configPath, e := a.prepareRuntimeConfig(i.ID, r)
-	if e != nil {
-		return e
-	}
-	return a.startPrepared(i, r, target, configPath, a.activeCoreID(), nil)
+	return a.startPrepared(i, r, target, a.activeCoreID())
 }
 
-// a.mu protects the final launch/publication so a concurrent shutdown, core
-// switch or draft edit cannot pass between the snapshot check and Start.
-func (a *App) startPrepared(i Instance, r Rendered, target, configPath, coreID string, status *privateStatus) error {
-	return a.startPreparedWithSource(i, r, target, configPath, coreID, status, false)
+// a.mu protects final publication from concurrent shutdown or draft changes.
+func (a *App) startPrepared(i Instance, r Rendered, target, coreID string) error {
+	return a.startPreparedWithSource(i, r, target, coreID, false)
 }
 
 // startPreparedWithSource is called with a.mu held. Automatic restoration
 // records later asynchronous startup failures against this generation.
-func (a *App) startPreparedWithSource(i Instance, r Rendered, target, configPath, coreID string, status *privateStatus, autoStart bool) error {
+func (a *App) startPreparedWithSource(i Instance, r Rendered, target, coreID string, autoStart bool) error {
 	if a.closing {
 		return fmt.Errorf("工作台正在关闭")
 	}
@@ -375,10 +364,7 @@ func (a *App) startPreparedWithSource(i Instance, r Rendered, target, configPath
 	if p := a.procs[i.ID]; p.active() {
 		return fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
-	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), coreID: coreID, appliedConfig: r.Text, appliedDigest: r.Digest, appliedSecretDigest: r.SecretDigest, privateStatus: status, monitorReason: r.MonitorReason, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
-	if status != nil {
-		p.appliedConfig = status.baseText
-	}
+	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), coreID: coreID, appliedConfig: r.Text, appliedDigest: r.Digest, appliedSecretDigest: r.SecretDigest, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
 	for _, tunnel := range a.store.DB.State.clone().Tunnels {
 		if tunnel.InstanceID == i.ID && tunnel.Enabled {
 			p.appliedTunnels[tunnel.ID] = tunnel
@@ -387,7 +373,7 @@ func (a *App) startPreparedWithSource(i Instance, r Rendered, target, configPath
 			}
 		}
 	}
-	config := runtimeConfig(i, r, configPath)
+	config := runtimeConfig(i, r)
 	config.RunID = randomHex(8)
 	instance, err := a.runtime.Start(target, config, p.logs)
 	if err != nil {
@@ -399,14 +385,12 @@ func (a *App) startPreparedWithSource(i Instance, r Rendered, target, configPath
 	p.instance = instance
 	if reader, ok := instance.(ProxyRegistrationReader); ok && i.Kind == "frpc" {
 		p.registrationReader = reader
-		p.monitorReason = ""
+	} else if i.Kind == "frpc" {
+		p.monitorReason = "当前运行后端尚未提供代理注册状态"
 	}
 	pid := 0
 	if info, ok := instance.(RuntimePID); ok {
 		pid = info.PID()
-	}
-	if status != nil {
-		status.markStarted(pid)
 	}
 	if a.generations == nil {
 		a.generations = make(map[string]uint64)
@@ -447,7 +431,6 @@ func (a *App) startPreparedWithSource(i Instance, r Rendered, target, configPath
 		if source, ok := instance.(RuntimeServerTrafficReader); ok && i.Kind == "frps" {
 			a.recordServerDailyTraffic(i.ID, config.RunID, p, source.ReadServerTraffic())
 		}
-		status.cleanup()
 		p.logs.Write([]byte("\n"))
 		p.mu.Lock()
 		wasRunning := p.upEmitted
@@ -458,9 +441,6 @@ func (a *App) startPreparedWithSource(i Instance, r Rendered, target, configPath
 		p.status.PID = 0
 		if err != nil {
 			p.status.Exit = safeStatusText(err.Error(), r.Secrets)
-			if status != nil {
-				p.status.Exit += "；如日志显示本机状态端口被占用，可重新启动实例以重新分配端口"
-			}
 		} else {
 			p.status.Exit = "exit 0"
 		}

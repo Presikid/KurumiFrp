@@ -100,7 +100,6 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 			}
 		}
 	}
-	reapPrivateStatuses(s.dir)
 	tokenPath := filepath.Join(s.dir, "access.token")
 	token, e := privateFile(tokenPath)
 	if os.IsNotExist(e) {

@@ -84,28 +84,15 @@ func (r registrationReadings) forTunnel(t Tunnel) proxyObservation {
 	return r.proxies[(registrationQuery{name: t.Name, kind: t.Type}).key()]
 }
 
-// readRegistrations uses the in-process reader when present. The private HTTP
-// source is retained for the current external-process runtime and is fetched
-// once per client, rather than once per proxy. Neither source's own error is
-// returned to the API caller: upstream errors can contain sensitive material.
-func readRegistrations(ctx context.Context, reader ProxyRegistrationReader, legacy *privateStatus, queries []registrationQuery) registrationReadings {
+// Upstream errors are not returned directly to API callers because they may
+// contain sensitive material.
+func readRegistrations(ctx context.Context, reader ProxyRegistrationReader, queries []registrationQuery) registrationReadings {
 	out := registrationReadings{proxies: make(map[string]proxyObservation, len(queries))}
 	if len(queries) == 0 {
 		return out
 	}
 	if reader == nil {
-		values, err := legacy.read(ctx)
-		if err != nil {
-			out.err = err
-			return out
-		}
-		for _, q := range queries {
-			if value, found := values[q.key()]; found {
-				out.proxies[q.key()] = proxyObservation{found: true, status: ProxyRegistrationStatus{
-					Name: value.Name, Type: value.Type, Phase: value.Status, Error: value.Error, RemoteAddr: value.RemoteAddr,
-				}}
-			}
-		}
+		out.err = fmt.Errorf("代理状态接口不可用")
 		return out
 	}
 	for _, q := range queries {

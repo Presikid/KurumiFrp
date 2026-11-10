@@ -12,7 +12,6 @@ type Rendered struct {
 	Secrets       []string
 	SecretDigest  string
 	Digest        string
-	MonitorReason string
 }
 
 // quote encodes a TOML 1.0 basic string. It escapes braces because frp

@@ -25,7 +25,6 @@ type registrationItem struct {
 type registrationSnapshot struct {
 	proc       *process
 	runtime    RuntimeStatus
-	status     *privateStatus
 	reader     ProxyRegistrationReader
 	applied    map[string]Tunnel
 	signatures map[string][32]byte
@@ -100,7 +99,7 @@ func (a *App) registrationAPI(w http.ResponseWriter, r *http.Request) {
 			p.logs.mu.Lock()
 			client.secrets = append([]string(nil), p.logs.secrets...)
 			p.logs.mu.Unlock()
-			client.status, client.reader = p.privateStatus, p.registrationReader
+			client.reader = p.registrationReader
 			client.applied, client.signatures, client.reason = p.appliedTunnels, p.appliedTunnelSignatures, p.monitorReason
 		}
 		clients[i.ID] = client
@@ -133,7 +132,7 @@ func (a *App) registrationAPI(w http.ResponseWriter, r *http.Request) {
 			case <-ctx.Done():
 				return
 			}
-			values := readRegistrations(ctx, item.reader, item.status, item.queries)
+			values := readRegistrations(ctx, item.reader, item.queries)
 			mu.Lock()
 			results[id] = values
 			mu.Unlock()
@@ -285,4 +284,3 @@ func classifyRegistration(c registrationContext) registrationItem {
 	}
 	return item
 }
-
