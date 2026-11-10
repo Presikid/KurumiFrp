@@ -28,7 +28,9 @@ Run is single-use. Close before Run releases constructed resources; concurrent
 Close cancels and joins login/reconnect, prevents subsequent control
 publication, closes the connector's tracked control and work connections, and
 waits for the control worker. TCP/websocket handshakes are interrupted on
-cancellation. Custom connectors and callbacks are not accepted in this profile.
+cancellation. Custom connectors and work-connection callbacks are not accepted
+in this profile. An instance-specific worker-panic notification is used solely
+to stop and report the affected embedded run.
 These lifecycle changes still require validation in the combined workspace and
 are not a runtime guarantee.
 
@@ -75,3 +77,16 @@ The normal build selects the restricted in-process backend. The explicit
 This default is a development candidate, not a release-ready replacement:
 real protocol, multi-instance, cleanup, crash recovery, and installation
 acceptance remain outstanding.
+
+For the embedded profile, a panic in a worker admitted by an instance's
+`lifetime.Scope` signals that instance to stop and is reported in its status.
+The panic value is not exposed. A panicked worker may have unregistered a
+resource before closing it, so even a completed scope wait cannot prove full
+cleanup. Run and cleanup panics use the same conservative rule: Wait remains
+blocked and the generation remains owned until process exit. New embedded runs
+are blocked; already running instances are not stopped by this guard.
+Closing the workbench reports an incomplete shutdown and retains its existing
+lock file; it must be checked after the old process has exited before restart.
+This does not cover bare goroutines, timer callbacks, or goroutines started by
+dependencies, and it does not prove that a panicked worker released every lock
+or resource. Those failures can still affect the workbench process.

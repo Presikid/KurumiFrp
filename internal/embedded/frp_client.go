@@ -45,6 +45,9 @@ type FRPClientOptions struct {
 	// LogSink is dedicated to this generation. Nil retains the restricted
 	// profile's discard logger. Records may contain sensitive upstream details.
 	LogSink *xlog.Sink
+	// OnPanic notifies the owner of a scoped worker or client lifecycle panic.
+	// It must be concurrent-safe, return promptly, and not panic.
+	OnPanic func()
 }
 
 type preparedFRPClient struct {
@@ -160,6 +163,7 @@ func NewFRPClient(options FRPClientOptions) (*Client, error) {
 		Isolated:               true,
 		Traffic:                options.Traffic,
 		LogSink:                options.LogSink,
+		OnWorkerPanic:          options.OnPanic,
 		ConfigSourceAggregator: source.NewAggregator(prepared.source),
 	})
 	if err != nil {
@@ -170,6 +174,7 @@ func NewFRPClient(options FRPClientOptions) (*Client, error) {
 		service.Close()
 		return nil, err
 	}
+	client.onPanic = options.OnPanic
 	return client, nil
 }
 
@@ -177,6 +182,9 @@ type frpService struct{ service *frpclient.Service }
 
 func (s *frpService) Run(ctx context.Context) error {
 	err := s.service.Run(ctx)
+	if errors.Is(err, frpclient.ErrWorkerPanicked) {
+		return ErrClientWorkerPanicked
+	}
 	if ctx.Err() == context.Canceled && errors.Is(err, frpclient.ErrServiceClosed) {
 		// Stop may close the service before its Run goroutine starts.
 		return context.Canceled
