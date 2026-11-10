@@ -26,6 +26,7 @@ type firewallConfig struct {
 	Revision      uint64         `json:"revision"`
 	TableID       string         `json:"tableId"`
 	Enabled       bool           `json:"enabled"`
+	AutoRestore   bool           `json:"autoRestore,omitempty"`
 	RecordBlocked bool           `json:"recordBlocked,omitempty"`
 	Mode          string         `json:"mode"`
 	Ports         string         `json:"ports"`
@@ -59,6 +60,7 @@ type firewallManager struct {
 	loadError     bool
 	last          string // outcome of the last attempt in this process only
 	refreshStatus string
+	restoreStatus string
 	nextRefresh   map[int]time.Time
 }
 
@@ -77,6 +79,9 @@ func loadFirewall(dir string) *firewallManager {
 func validateFirewallConfig(c firewallConfig) error {
 	if c.Version != 1 || c.Revision == 0 || c.Revision > maxJSONRevision || !idPattern.MatchString(c.TableID) {
 		return fmt.Errorf("防火墙配置格式无效")
+	}
+	if !c.Enabled && c.AutoRestore {
+		return fmt.Errorf("关闭过滤时不能启用启动恢复")
 	}
 	if !c.Enabled && len(c.Rules) == 0 && c.Mode == "" && c.Ports == "" && c.Sources == "" && !c.RecordBlocked {
 		return nil
@@ -222,7 +227,7 @@ func (a *App) firewallAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		reply(w, 200, map[string]any{"supported": firewallSupported(), "config": f.config, "lastResult": f.last, "refreshStatus": f.refreshStatus})
+		reply(w, 200, map[string]any{"supported": firewallSupported(), "config": f.config, "lastResult": f.last, "refreshStatus": f.refreshStatus, "restoreStatus": f.restoreStatus})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -243,6 +248,7 @@ func (a *App) firewallAPI(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Revision      uint64          `json:"revision"`
 		Enabled       *bool           `json:"enabled"`
+		AutoRestore   *bool           `json:"autoRestore"`
 		RecordBlocked *bool           `json:"recordBlocked"`
 		Mode          string          `json:"mode"`
 		Ports         string          `json:"ports"`
@@ -275,6 +281,10 @@ func (a *App) firewallAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	next := firewallConfig{Version: 1, Revision: f.config.Revision + 1, TableID: tableID, Enabled: *req.Enabled}
 	if *req.Enabled {
+		next.AutoRestore = f.config.AutoRestore
+		if req.AutoRestore != nil {
+			next.AutoRestore = *req.AutoRestore
+		}
 		if req.Rules != nil {
 			next.Rules = append([]firewallRule{}, (*req.Rules)...)
 			for index := range next.Rules {
@@ -311,6 +321,7 @@ func (a *App) firewallAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	f.config, f.last = next, "unknown"
 	f.refreshStatus = "内核规则状态未确认，自动刷新已暂停"
+	f.restoreStatus = "内核规则状态未确认，自动恢复已暂停"
 	if err = syncMigrationDir(filepath.Dir(f.path)); err != nil {
 		fail(w, 500, fmt.Errorf("防火墙配置已写入，但目录持久化失败；未提交内核规则，请刷新核对"))
 		return
@@ -321,7 +332,8 @@ func (a *App) firewallAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	f.last = "applied"
 	f.resetRefreshLocked(time.Now())
-	reply(w, 200, map[string]any{"config": f.config, "lastResult": f.last, "refreshStatus": f.refreshStatus})
+	f.recordRestoreStatusLocked()
+	reply(w, 200, map[string]any{"config": f.config, "lastResult": f.last, "refreshStatus": f.refreshStatus, "restoreStatus": f.restoreStatus})
 }
 
 // A read is an observation of the named table, not proof that the desired

@@ -39,8 +39,7 @@ func validateFirewallRefresh(refresh *firewallRefresh) error {
 	}
 }
 
-// resetRefreshLocked starts intervals only after a successful manual apply.
-// A process restart leaves kernel state unknown and requires a manual apply.
+// resetRefreshLocked starts intervals only after a confirmed apply or restore.
 func (f *firewallManager) resetRefreshLocked(now time.Time) {
 	f.nextRefresh = make(map[int]time.Time)
 	f.refreshStatus = ""
@@ -59,6 +58,7 @@ func (f *firewallManager) resetRefreshLocked(now time.Time) {
 
 func (a *App) firewallRefreshLoop(ctx context.Context) {
 	defer close(a.firewallDone)
+	a.restoreFirewall(ctx)
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -172,6 +172,7 @@ func (a *App) refreshOneFirewallRule(parent context.Context) {
 		return
 	}
 	f.config, f.last = next, "unknown"
+	f.restoreStatus = "刷新配置的应用结果未确认，启动恢复已暂停"
 	if err = syncMigrationDir(filepath.Dir(f.path)); err != nil {
 		f.refreshStatus = "刷新配置已保存但持久化未确认，自动刷新已暂停，请核对规则"
 		return
@@ -182,4 +183,5 @@ func (a *App) refreshOneFirewallRule(parent context.Context) {
 	}
 	f.last = "applied"
 	f.refreshStatus = fmt.Sprintf("第 %d 条规则已刷新并应用", index+1)
+	f.recordRestoreStatusLocked()
 }
