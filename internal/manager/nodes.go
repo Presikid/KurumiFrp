@@ -731,6 +731,9 @@ func (a *App) nodeCheckAPI(w http.ResponseWriter, r *http.Request) {
 			if principal.canViewRemoteInstance(req.ID, instance.ID, instance.Binding) {
 				_, instance.CanControl = principal.remoteControlGrant(req.ID, instance.ID)
 				instance.CanControl = instance.CanControl && principal.canPerformRemoteAction() && target.ControlCredential != ""
+				if !principal.canReadTraffic() {
+					instance.Traffic = nil
+				}
 				visible = append(visible, instance)
 			}
 		}

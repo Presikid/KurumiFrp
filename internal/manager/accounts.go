@@ -36,6 +36,7 @@ type localAccount struct {
 	Instances       []string      `json:"instances"`
 	ControlInstances *[]string     `json:"controlInstances,omitempty"`
 	AllowedActions  *[]string     `json:"allowedActions,omitempty"`
+	ReadPermissions *accountReadPermissions `json:"readPermissions,omitempty"`
 	AllowLogs       bool          `json:"allowLogs,omitempty"`
 	LogInstances    *[]string     `json:"logInstances,omitempty"`
 	RemoteInstances []remoteGrant `json:"remoteInstances,omitempty"`
@@ -48,6 +49,11 @@ type remoteGrant struct {
 	InstanceID string `json:"instanceId"`
 	Binding    string `json:"binding"`
 	Control    bool   `json:"control,omitempty"`
+}
+
+type accountReadPermissions struct {
+	Config  bool `json:"config"`
+	Traffic bool `json:"traffic"`
 }
 
 type accountFile struct {
@@ -66,6 +72,7 @@ type accountView struct {
 	Instances        []string `json:"instances"`
 	ControlInstances []string `json:"controlInstances"`
 	AllowedActions   []string `json:"allowedActions"`
+	ReadPermissions  accountReadPermissions `json:"readPermissions"`
 	AllowLogs        bool     `json:"allowLogs"`
 	LogInstances     []string `json:"logInstances"`
 	RemoteInstances  []remoteGrant `json:"remoteInstances"`
@@ -119,6 +126,9 @@ func loadAccounts(dir string) ([]localAccount, uint64, error) {
 		if u.AllowedActions != nil && (!validOperatorActions(*u.AllowedActions) || (u.Role != "operator" && len(*u.AllowedActions) != 0)) {
 			return nil, 0, fmt.Errorf("本地账户文件中的操作授权无效；原文件已保留")
 		}
+		if u.Role == "admin" && u.ReadPermissions != nil {
+			return nil, 0, fmt.Errorf("管理员账户的查看权限配置无效；原文件已保留")
+		}
 		names[name], ids[u.ID] = true, true
 		file.Accounts[i].gate = &sync.RWMutex{}
 	}
@@ -151,6 +161,14 @@ func effectiveOperatorActions(user localAccount) []string {
 		return []string{"start", "stop", "restart", "validate"}
 	}
 	return append([]string{}, (*user.AllowedActions)...)
+}
+
+// Accounts created before separate read permissions retain their prior view.
+func effectiveReadPermissions(user localAccount) accountReadPermissions {
+	if user.Role == "admin" || user.ReadPermissions == nil {
+		return accountReadPermissions{Config: true, Traffic: true}
+	}
+	return *user.ReadPermissions
 }
 
 // Deadlines are stored in UTC with whole-second precision. Empty means no
@@ -431,7 +449,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
 		for _, u := range a.auth.accounts {
 			expired := u.Enabled && u.ExpiresAt != "" && !u.activeAt(now)
-			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, ExpiresAt: u.ExpiresAt, Expired: expired, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowedActions: effectiveOperatorActions(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...)})
+			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, ExpiresAt: u.ExpiresAt, Expired: expired, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowedActions: effectiveOperatorActions(u), ReadPermissions: effectiveReadPermissions(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...)})
 		}
 		revision := a.auth.accountsRevision
 		a.auth.mu.Unlock()
@@ -453,6 +471,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		Instances        []string  `json:"instances"`
 		ControlInstances *[]string `json:"controlInstances"`
 		AllowedActions   *[]string `json:"allowedActions"`
+		ReadPermissions  *accountReadPermissions `json:"readPermissions"`
 		AllowLogs        *bool     `json:"allowLogs"`
 		LogInstances     *[]string `json:"logInstances"`
 		RemoteInstances  *[]remoteGrant `json:"remoteInstances"`
@@ -606,6 +625,13 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			u.ExpiresAt = users[index].ExpiresAt
 		}
 		if u.Role != "admin" {
+			if req.ReadPermissions != nil {
+				permissions := *req.ReadPermissions
+				u.ReadPermissions = &permissions
+			} else if index >= 0 && users[index].Role != "admin" && users[index].ReadPermissions != nil {
+				permissions := *users[index].ReadPermissions
+				u.ReadPermissions = &permissions
+			}
 			if req.RemoteInstances != nil {
 				u.RemoteInstances = append([]remoteGrant{}, (*req.RemoteInstances)...)
 			} else if index >= 0 {

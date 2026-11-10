@@ -197,16 +197,24 @@ func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
 		visibleSchedules := make(map[string]instanceSchedule)
 		for _, instance := range state.Instances {
 			if p.canView(instance.ID) {
-				visible.Instances = append(visible.Instances, instance)
+				if p.canReadConfig() {
+					visible.Instances = append(visible.Instances, instance)
+				} else {
+					visible.Instances = append(visible.Instances, Instance{ID: instance.ID, Name: instance.Name, Kind: instance.Kind})
+				}
 				v := runtime[instance.ID]
-				statuses[instance.ID] = RuntimeStatus{State: v.State, Pending: v.Pending, RunID: v.RunID, Generation: v.Generation}
-				if plan, ok := schedules[instance.ID]; ok {
+				status := RuntimeStatus{State: v.State, RunID: v.RunID, Generation: v.Generation}
+				if p.canReadConfig() {
+					status.Pending = v.Pending
+				}
+				statuses[instance.ID] = status
+				if plan, ok := schedules[instance.ID]; ok && p.canReadConfig() {
 					visibleSchedules[instance.ID] = plan
 				}
 			}
 		}
 		for _, tunnel := range state.Tunnels {
-			if p.canView(tunnel.InstanceID) {
+			if p.canReadConfig() && p.canView(tunnel.InstanceID) {
 				visible.Tunnels = append(visible.Tunnels, tunnel)
 			}
 		}
