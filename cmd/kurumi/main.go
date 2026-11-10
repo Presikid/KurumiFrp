@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Presikid/KurumiFrp/internal/core"
 	"github.com/Presikid/KurumiFrp/internal/manager"
 	"github.com/Presikid/KurumiFrp/internal/update"
 	"github.com/Presikid/KurumiFrp/internal/version"
@@ -38,7 +37,6 @@ func run() error {
 	paths := flag.Bool("paths", false, "show resolved native program, data, core and temporary paths")
 	open := flag.Bool("open", false, "open local WebUI with a one-time login ticket")
 	showVersion := flag.Bool("version", false, "print version and exit")
-	verifyBundled := flag.Bool("verify-bundled", false, "verify the packaged offline core")
 	installDir := flag.String("install-dir", "", "installer maintenance target")
 	stop := flag.Bool("stop", false, "stop this data directory's manager and wait for managed instances")
 	check := flag.Bool("check-running", false, "verify the installed manager is responding")
@@ -50,15 +48,6 @@ func run() error {
 	setup := flag.String("cleanup-setup", "", "exact native Setup executable to remove after successful installation")
 	digest := flag.String("cleanup-sha256", "", "expected Setup SHA-256")
 	flag.Parse()
-	if *verifyBundled {
-		if *installDir != "" {
-			if err := validateMaintenanceTarget(*installDir); err != nil {
-				return err
-			}
-			return core.VerifyBundledAt(*installDir)
-		}
-		return core.VerifyBundled()
-	}
 	if *systemUpdate {
 		if distribution != "linux-system" {
 			return fmt.Errorf("system update requires a Linux system installation")
