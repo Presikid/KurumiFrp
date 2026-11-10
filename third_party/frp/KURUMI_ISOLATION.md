@@ -111,3 +111,5 @@ Client proxy wrappers now guard repeated start and stop calls, and a health
 monitor starts at most one worker. The proxy status worker can leave its initial
 health delay and polling loop on cancellation; these changes do not establish
 complete shutdown or protocol interoperability.
+The embedded HTTP health check evaluates the configured target's response
+status without consuming an arbitrarily long body or following redirects.
