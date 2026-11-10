@@ -1,5 +1,3 @@
-//go:build !kurumi_external_runtime
-
 package embedded
 
 import (

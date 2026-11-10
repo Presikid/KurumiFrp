@@ -73,8 +73,11 @@ func New(dir, bin, addr string, assets fs.FS) (*App, error) {
 }
 
 // NewWithRuntime installs the backend before restoring AutoStart instances.
-// A nil backend retains the existing external-core behavior of New.
+// A nil backend selects the in-process runtime used by normal builds.
 func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend) (*App, error) {
+	if backend == nil {
+		backend = NewEmbeddedRuntime()
+	}
 	if e := loopbackListen(addr); e != nil {
 		return nil, e
 	}
@@ -156,9 +159,6 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 			return nil
 		}); e != nil {
 			return nil, e
-		}
-		if backend == nil {
-			backend = &externalRuntime{core: cores, dir: s.dir}
 		}
 	}
 	// Preserve an unmigrated legacy core selection in embedded builds.
