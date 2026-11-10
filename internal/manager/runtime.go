@@ -441,12 +441,18 @@ func (a *App) startPreparedWithSource(i Instance, r Rendered, target, configPath
 	if source, ok := instance.(RuntimeTrafficReader); ok {
 		go a.captureRuntimeTraffic(i.ID, config.RunID, p, source)
 	}
+	if source, ok := instance.(RuntimeServerTrafficReader); ok && i.Kind == "frps" {
+		go a.captureServerDailyTraffic(i.ID, config.RunID, p, source)
+	}
 	go func() {
 		err := instance.Wait()
 		if source, ok := instance.(RuntimeTrafficReader); ok {
 			if snapshot := source.ReadTraffic(); snapshot.Available {
 				_ = a.RecordTrafficSnapshot(i.ID, config.RunID, snapshot)
 			}
+		}
+		if source, ok := instance.(RuntimeServerTrafficReader); ok && i.Kind == "frps" {
+			a.recordServerDailyTraffic(i.ID, config.RunID, p, source.ReadServerTraffic())
 		}
 		status.cleanup()
 		p.logs.Write([]byte("\n"))
@@ -665,6 +671,10 @@ func (a *App) Close() error {
 			}(p)
 		}
 		wg.Wait()
+		if a.trafficDaily != nil {
+			close(a.trafficDaily.stop)
+			<-a.trafficDaily.done
+		}
 		if len(failures) == 0 {
 			if err := a.finishSchedulesAfterShutdown(); err != nil {
 				failures = append(failures, err)

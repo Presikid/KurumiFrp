@@ -19,7 +19,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.admin()
 		case "/api/webhooks":
 			return p.admin()
-		case "/api/state", "/api/config", "/api/diff", "/api/traffic", "/api/server-traffic":
+		case "/api/state", "/api/config", "/api/diff", "/api/traffic", "/api/traffic-history", "/api/server-traffic":
 			return p.admin() || p.Role == "operator" || p.Role == "viewer"
 		case "/api/logs", "/api/logs/stream":
 			return p.canReadLogs(r.URL.Query().Get("id"))

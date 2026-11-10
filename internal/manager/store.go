@@ -42,6 +42,8 @@ type Database struct {
 	Webhooks     []webhookTarget             `json:"webhooks,omitempty"`
 	Nodes        *nodeSettings               `json:"nodes,omitempty"`
 	Schedules    map[string]instanceSchedule `json:"schedules,omitempty"`
+	// Bind local traffic observations to an instance incarnation, not a reused ID.
+	LocalTrafficIDs map[string]string `json:"localTrafficIds,omitempty"`
 }
 type Store struct {
 	dir          string
@@ -366,7 +368,8 @@ func newStore(dir string) (*Store, error) {
 		return nil, e
 	}
 	var header struct {
-		Format int `json:"format"`
+		Format          int             `json:"format"`
+		LocalTrafficIDs json.RawMessage `json:"localTrafficIds"`
 	}
 	if e = json.Unmarshal(b, &header); e != nil {
 		return nil, e
@@ -487,6 +490,13 @@ func newStore(dir string) (*Store, error) {
 	if e = validate(s.DB.State); e != nil {
 		return nil, e
 	}
+	if len(header.LocalTrafficIDs) == 0 {
+		// Older state files have no local identity mapping. Persist one before
+		// loading history so an interrupted upgrade cannot attach old data.
+		s.DB.LocalTrafficIDs = freshLocalTrafficIDs(s.DB.State)
+	} else if e = validateLocalTrafficIDs(s.DB.State, s.DB.LocalTrafficIDs); e != nil {
+		return nil, fmt.Errorf("invalid local traffic identities; original retained: %w", e)
+	}
 	if e = validateSchedules(s.DB.State, s.DB.Schedules); e != nil {
 		return nil, fmt.Errorf("invalid schedules; original retained: %w", e)
 	}
@@ -527,6 +537,14 @@ func newStore(dir string) (*Store, error) {
 			return nil, fmt.Errorf("cannot write migrated configuration; original copy retained: %w", e)
 		}
 		s.DB.Format = currentDatabaseFormat
+	} else if len(header.LocalTrafficIDs) == 0 && len(s.DB.State.Instances) != 0 {
+		matches, err := privateFileMatches(dbPath, b)
+		if err != nil || !matches {
+			return nil, fmt.Errorf("configuration changed while adding traffic identities; original retained")
+		}
+		if e = s.write(s.DB); e != nil {
+			return nil, fmt.Errorf("cannot save traffic identities; original retained: %w", e)
+		}
 	}
 	return s, nil
 }
@@ -652,6 +670,11 @@ func (s *Store) commitRestoring(st State, summary string, restoring bool) error 
 		return e
 	}
 	db.State = st
+	if restoring {
+		db.LocalTrafficIDs = freshLocalTrafficIDs(st)
+	} else {
+		db.LocalTrafficIDs = nextLocalTrafficIDs(s.DB.State, st, s.DB.LocalTrafficIDs)
+	}
 	db.Events = append(append([]Event{}, db.Events...), Event{now(), summary})
 	if len(db.Events) > 200 {
 		db.Events = db.Events[len(db.Events)-200:]
