@@ -80,8 +80,9 @@ const Overview = (() => {
   const rows = proxies.slice(0, 100).map(proxy => `<tr><td>${escape(proxy.name)}</td><td>${escape(proxy.type)}</td><td>${bytes(proxy.receivedBytes)}</td><td>${bytes(proxy.sentBytes)}</td></tr>`).join('');
   const detail = rows ? `<div class="table-wrap"><table><thead><tr><th>代理</th><th>类型</th><th>接收</th><th>发送</th></tr></thead><tbody>${rows}</tbody></table></div>${proxies.length > 100 ? `<p class="small-note">仅显示前 100 条，已保留 ${proxies.length} 条。</p>` : ''}` : '<p class="small-note">尚无可显示的代理明细。</p>';
   const truncated = value.proxiesTruncated ? '<p class="small-note" role="status">代理明细不完整：已达到记录上限或名称、类型过长；未列出的代理仍计入总量。</p>' : '';
+  const proxyDetails = value.detailsAllowed === false ? '<p class="small-note">此账户没有配置详情权限，代理名称与明细未显示。</p>' : `${truncated}<details class="overview-server-details"><summary>已保留的代理明细 · ${proxies.length} 条</summary>${detail}</details>`;
   const state = ({running:'运行中',starting:'启动中',stopping:'停止中',exited:'已退出',stopped:'已停止','autostart-failed':'自动启动失败'})[value.state] || '状态未知';
-  return `<div class="overview-traffic-values"><div><span><i class="overview-key-received"></i>接收 · 用户 → 代理</span><strong>${bytes(value.receivedBytes)}</strong></div><div><span><i class="overview-key-sent"></i>发送 · 代理 → 用户</span><strong>${bytes(value.sentBytes)}</strong></div><small>快照：${escape(sampleTime(value.sampledAt))} · ${state}</small></div>${truncated}<details class="overview-server-details"><summary>已保留的代理明细 · ${proxies.length} 条</summary>${detail}</details>${serverExplanation}`;
+  return `<div class="overview-traffic-values"><div><span><i class="overview-key-received"></i>接收 · 用户 → 代理</span><strong>${bytes(value.receivedBytes)}</strong></div><div><span><i class="overview-key-sent"></i>发送 · 代理 → 用户</span><strong>${bytes(value.sentBytes)}</strong></div><small>快照：${escape(sampleTime(value.sampledAt))} · ${state}</small></div>${proxyDetails}${serverExplanation}`;
  }
 
  function serverTrafficView() {
