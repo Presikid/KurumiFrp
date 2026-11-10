@@ -146,7 +146,7 @@ function paintAccounts() {
  if (!list || !accountData) return;
  const names = Object.fromEntries(data.state.instances.map(i => [i.id, i.name]));
  list.innerHTML = accountData.accounts.length ? `<div class="table-wrap"><table><thead><tr><th>用户</th><th>角色</th><th>状态</th><th>授权实例</th><th>管理</th></tr></thead><tbody>${accountData.accounts.map(u =>
-  `<tr><td>${esc(u.username)}</td><td>${esc(({admin:'管理员',operator:'操作员',viewer:'查看者'})[u.role])}</td><td>${u.enabled?'启用':'停用'}</td><td>${u.role==='admin'?'全部':(u.instances.map(id=>esc(names[id] || ('已不存在：'+id))).join('、') || '无')}${u.role==='operator'?' · 可操作 '+(u.controlInstances || []).length+' 个':''}${u.role!=='admin'&&u.allowLogs?' · 可查看 '+(u.logInstances || []).length+' 个实例日志':''}${u.role!=='admin'?' · 远程可查看 '+(u.remoteInstances || []).length+' 个':''}${u.role==='operator'?'、可操作 '+(u.remoteInstances || []).filter(grant=>grant.control).length+' 个':''}</td><td><div class="actions"><button type="button" data-account-edit="${esc(u.id)}">编辑</button><button type="button" class="danger" data-account-delete="${esc(u.id)}">删除</button></div></td></tr>`
+  `<tr><td>${esc(u.username)}</td><td>${esc(({admin:'管理员',operator:'操作员',viewer:'查看者'})[u.role])}</td><td>${!u.enabled?'停用':u.expired?'已到期':'启用'}${u.expiresAt?'<br><small>到期：'+esc(u.expiresAt)+'</small>':''}</td><td>${u.role==='admin'?'全部':(u.instances.map(id=>esc(names[id] || ('已不存在：'+id))).join('、') || '无')}${u.role==='operator'?' · 可操作 '+(u.controlInstances || []).length+' 个':''}${u.role!=='admin'&&u.allowLogs?' · 可查看 '+(u.logInstances || []).length+' 个实例日志':''}${u.role!=='admin'?' · 远程可查看 '+(u.remoteInstances || []).length+' 个':''}${u.role==='operator'?'、可操作 '+(u.remoteInstances || []).filter(grant=>grant.control).length+' 个':''}</td><td><div class="actions"><button type="button" data-account-edit="${esc(u.id)}">编辑</button><button type="button" class="danger" data-account-delete="${esc(u.id)}">删除</button></div></td></tr>`
  ).join('')}</tbody></table></div>` : '<p>尚未创建本地账户。现有管理令牌可继续使用。</p>';
 }
 
@@ -163,6 +163,7 @@ function showAccountEditor(id = '') {
   <label>用户名<input name="username" required pattern="[A-Za-z0-9][A-Za-z0-9_.-]{2,31}" maxlength="32" value="${esc(u?.username || '')}" ${u?'readonly':''} autocomplete="off"></label>
   <label>角色<select name="role"><option value="viewer" ${!u || u.role==='viewer'?'selected':''}>查看者</option><option value="operator" ${u?.role==='operator'?'selected':''}>操作员</option><option value="admin" ${u?.role==='admin'?'selected':''}>管理员（全部权限）</option></select></label>
   <label class="span-2">${u?'重置密码（留空保留原密码）':'密码（至少 12 字节）'}<input name="password" type="password" autocomplete="new-password" maxlength="1024" ${u?'':'required'}></label>
+  <label class="span-2">账户到期时间（UTC，留空不限）<input name="expiresAt" type="datetime-local" step="1" value="${esc(u?.expiresAt ? u.expiresAt.slice(0,19) : '')}"><small>到期后不能登录，现有会话在下一次请求或日志帧时失效；此处填写 UTC 时间。</small></label>
   <label class="form-check span-2"><input type="checkbox" name="enabled" ${!u || u.enabled?'checked':''}>启用账户</label>
   <fieldset class="span-2" id="account-grants"><legend>可访问的实例</legend>${data.state.instances.length ? data.state.instances.map(i => `<label class="form-check"><input type="checkbox" name="instance" value="${esc(i.id)}" ${grants.has(i.id)?'checked':''}>${esc(i.name)} · ${esc(i.kind)}</label>`).join('') : '<p>当前没有实例。</p>'}<p class="small-note">未选择表示不能访问任何实例；管理员始终可访问全部实例。</p></fieldset>
   <fieldset class="span-2" id="account-controls"><legend>可操作的实例</legend>${data.state.instances.length ? data.state.instances.map(i => `<label class="form-check"><input type="checkbox" name="controlInstance" value="${esc(i.id)}" ${controls.has(i.id)?'checked':''}>${esc(i.name)} · ${esc(i.kind)}</label>`).join('') : '<p>当前没有实例。</p>'}<p class="small-note">可操作实例必须先在上方授权查看；未勾选时仅可查看，不能启停、重启或校验。</p></fieldset>
@@ -303,8 +304,10 @@ $('#content').addEventListener('submit', async e => {
  e.preventDefault();
  const form = e.target, button = form.querySelector('[type=submit]'), error = form.querySelector('.error');
  const role = form.elements.role.value;
+ const localExpiry = form.elements.expiresAt.value;
+ const expiresAt = localExpiry ? (localExpiry.length === 16 ? localExpiry + ':00Z' : localExpiry + 'Z') : '';
  const request = {action:'save', revision:accountData.revision, id:form.elements.id.value, username:form.elements.username.value,
-  role, enabled:form.elements.enabled.checked, password:form.elements.password.value,
+  role, enabled:form.elements.enabled.checked, expiresAt, password:form.elements.password.value,
   instances:role === 'admin' ? [] : [...form.querySelectorAll('[name=instance]:checked')].map(el => el.value),
   controlInstances:role === 'operator' ? [...form.querySelectorAll('[name=controlInstance]:checked')].map(el => el.value) : [], allowLogs:role !== 'admin' && form.elements.allowLogs.checked,
   logInstances:role !== 'admin' && form.elements.allowLogs.checked ? [...form.querySelectorAll('[name=logInstance]:checked')].map(el => el.value) : [],
