@@ -1,13 +1,11 @@
 package manager
 
 import (
-	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -643,86 +641,9 @@ func (a *App) nodeCheckAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, fmt.Errorf("没有此远程节点的查看权限"))
 		return
 	}
-	target, _, code, err := a.reserveNodeLookup(req.ID, req.Stamp)
+	target, summary, code, err := a.checkRemoteNode(r.Context(), req.ID, req.Stamp)
 	if err != nil {
 		fail(w, code, err)
-		return
-	}
-	defer a.releaseNodeLookup()
-	if len(target.Addresses) == 0 {
-		fail(w, 409, fmt.Errorf("请先核对并确认节点解析地址"))
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-	resolved, err := resolveNodeAddresses(ctx, target.URL)
-	if err != nil {
-		fail(w, 502, err)
-		return
-	}
-	if !sameNodeAddresses(resolved, target.Addresses) {
-		fail(w, 409, fmt.Errorf("节点解析地址已变化，请先核对并确认"))
-		return
-	}
-	dial, err := pinnedNodeDialer(target.URL, target.Addresses)
-	if err != nil {
-		fail(w, 502, fmt.Errorf("节点地址不可用"))
-		return
-	}
-	// Recheck the exact record before using the credential. No lock is held for I/O.
-	a.mu.Lock()
-	_, current := a.nodeWithStampLocked(req.ID, req.Stamp)
-	if !current || a.closing || ctx.Err() != nil {
-		a.mu.Unlock()
-		fail(w, 409, fmt.Errorf("节点设置已变化或检查已取消"))
-		return
-	}
-	credential, err := a.store.decrypt(target.Credential)
-	a.mu.Unlock()
-	if err != nil || !nodeTokenPattern.MatchString(credential) {
-		fail(w, 500, fmt.Errorf("无法读取节点授权"))
-		return
-	}
-	reqRemote, err := http.NewRequestWithContext(ctx, http.MethodGet, target.URL+"/api/node/summary", nil)
-	if err != nil {
-		fail(w, 502, fmt.Errorf("节点地址不可用"))
-		return
-	}
-	reqRemote.Header.Set("Authorization", "Bearer "+credential)
-	reqRemote.Header.Set("Accept", "application/json")
-	transport := &http.Transport{Proxy: nil, DialContext: dial, DisableKeepAlives: true, TLSHandshakeTimeout: 3 * time.Second, ResponseHeaderTimeout: 4 * time.Second, MaxResponseHeaderBytes: 16 << 10}
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	response, err := client.Do(reqRemote)
-	if err != nil {
-		fail(w, 502, fmt.Errorf("节点不可用或 HTTPS 证书不受信任，请检查地址和网络"))
-		return
-	}
-	defer response.Body.Close()
-	if response.StatusCode == 401 || response.StatusCode == 403 {
-		fail(w, 502, fmt.Errorf("目标拒绝授权，可能已撤销或替换"))
-		return
-	}
-	if response.StatusCode != 200 {
-		fail(w, 502, fmt.Errorf("节点未返回可用状态（HTTP %d）", response.StatusCode))
-		return
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxNodeResponse+1))
-	if err != nil || len(body) > maxNodeResponse {
-		fail(w, 502, fmt.Errorf("节点响应无效或过大"))
-		return
-	}
-	var summary nodeSummary
-	if err = decodeStrictJSON(body, &summary); err != nil || !validNodeSummary(summary) {
-		fail(w, 502, fmt.Errorf("节点状态格式不受支持"))
-		return
-	}
-	a.mu.Lock()
-	_, current = a.nodeWithStampLocked(req.ID, req.Stamp)
-	a.mu.Unlock()
-	if !current {
-		fail(w, 409, fmt.Errorf("节点设置已变化，请刷新后重新检查"))
 		return
 	}
 	if !principal.admin() {
