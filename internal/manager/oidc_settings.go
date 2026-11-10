@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -12,9 +13,10 @@ import (
 	"unicode/utf8"
 )
 
-// A provider subject is bound only to an existing local account. Public OIDC
-// clients use PKCE and do not require a client secret in this configuration.
+// A provider subject or verified email is bound only to an existing local
+// account. Public OIDC clients use PKCE without a client secret.
 type oidcBinding struct {
+	Kind      string `json:"kind,omitempty"` // empty means the provider subject
 	Subject   string `json:"subject"`
 	AccountID string `json:"accountId"`
 }
@@ -59,10 +61,23 @@ func validateOIDCSettings(cfg oidcSettings) error {
 	}
 	seen := make(map[string]bool, len(cfg.Bindings))
 	for _, binding := range cfg.Bindings {
-		if !oidcTextOK(binding.Subject, 255) || !accountIDPattern.MatchString(binding.AccountID) || seen[binding.Subject] {
-			return fmt.Errorf("账户绑定无效或提供方主体重复")
+		if binding.Kind != "" && binding.Kind != "email" {
+			return fmt.Errorf("账户绑定类型无效")
 		}
-		seen[binding.Subject] = true
+		if !oidcTextOK(binding.Subject, 255) || !accountIDPattern.MatchString(binding.AccountID) {
+			return fmt.Errorf("账户绑定无效")
+		}
+		if binding.Kind == "email" {
+			address, err := mail.ParseAddress(binding.Subject)
+			if err != nil || address.Address != binding.Subject || address.Name != "" || !strings.Contains(binding.Subject, "@") {
+				return fmt.Errorf("绑定的邮箱地址无效")
+			}
+		}
+		key := binding.Kind + "\x00" + binding.Subject
+		if seen[key] {
+			return fmt.Errorf("同一类型的账户绑定不能重复")
+		}
+		seen[key] = true
 	}
 	return nil
 }
