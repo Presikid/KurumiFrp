@@ -46,6 +46,8 @@ type auth struct {
 	accountLoadErr    error
 	oidcSettings      oidcSettings
 	oidcLoadErr       error
+	oidcFlows         map[string]oidcFlow
+	oidcStartSlots    chan struct{}
 	hashSlots         chan struct{}
 }
 
@@ -53,6 +55,7 @@ type authSession struct {
 	expires   time.Time
 	accountID string        // empty for the local access token or launch ticket
 	gate      *sync.RWMutex // root browser session; account sessions use the account gate
+	oidcRevision uint64     // zero for non-OIDC sessions
 }
 
 type principal struct {
@@ -208,6 +211,10 @@ func (a *auth) identityLocked(r *http.Request) (principal, bool) {
 		return principal{}, false
 	}
 	if !ok {
+		return principal{}, false
+	}
+	if session.oidcRevision != 0 && (a.oidcLoadErr != nil || !a.oidcSettings.Enabled || a.oidcSettings.Revision != session.oidcRevision) {
+		delete(a.sessions, c.Value)
 		return principal{}, false
 	}
 	if session.accountID == "" {

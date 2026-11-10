@@ -117,6 +117,7 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 	}
 	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2)}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	app.auth.oidcSettings, app.auth.oidcLoadErr = loadOIDCSettings(s.dir)
+	app.auth.oidcStartSlots = make(chan struct{}, 4)
 	if e = app.recoverSchedules(); e != nil {
 		return nil, e
 	}
@@ -190,8 +191,22 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, 403, fmt.Errorf("Host 不允许；请使用本机或 SSH 转发地址"))
 		return
 	}
+	// This top-level redirect comes from the identity provider. The callback
+	// verifies a one-use state and SameSite cookie before it changes a session.
+	if r.URL.Path == "/api/oidc/callback" && r.Method == http.MethodGet {
+		a.oidcCallback(w, r)
+		return
+	}
 	if !sameOrigin(r) {
 		fail(w, 403, fmt.Errorf("跨站请求被拒绝"))
+		return
+	}
+	if r.URL.Path == "/api/oidc/status" && r.Method == http.MethodGet {
+		a.oidcStatus(w, r)
+		return
+	}
+	if r.URL.Path == "/api/oidc/start" && r.Method == http.MethodPost {
+		a.oidcStart(w, r)
 		return
 	}
 	if r.URL.Path == "/api/launch-login" && r.Method == "POST" {

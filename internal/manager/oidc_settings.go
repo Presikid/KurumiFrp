@@ -152,6 +152,7 @@ func (a *App) oidcSettingsAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.auth.oidcSettings = next
+	clear(a.auth.oidcFlows)
 	if err = syncMigrationDir(a.store.dir); err != nil {
 		fail(w, http.StatusInternalServerError, fmt.Errorf("配置已写入但持久化未确认，请刷新核对"))
 		return
