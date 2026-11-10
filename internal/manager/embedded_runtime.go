@@ -1,4 +1,4 @@
-//go:build kurumi_frp_patched
+//go:build !kurumi_external_runtime
 
 package manager
 
@@ -25,7 +25,7 @@ var embeddedCleanupUnknown atomic.Bool
 
 type embeddedRuntime struct{}
 
-// NewEmbeddedRuntime creates the development in-process backend. It supports
+// NewEmbeddedRuntime creates the in-process backend. It supports
 // only the restricted feature set documented in third_party/frp/KURUMI_ISOLATION.md.
 func NewEmbeddedRuntime() RuntimeBackend { return &embeddedRuntime{} }
 
@@ -207,7 +207,10 @@ func runEmbeddedServer(ctx context.Context, config *v1.ServerConfig, sink *xlog.
 		return errors.New("内嵌服务端启动失败")
 	}
 	<-server.Done()
-	if server.Err() != nil {
+	if err := server.Err(); errors.Is(err, embedded.ErrServerPanicked) {
+		embeddedCleanupUnknown.Store(true)
+		return errors.New("内嵌服务端异常退出，清理状态未知，请重启工作台")
+	} else if err != nil {
 		return errors.New("内嵌服务端意外退出")
 	}
 	return nil
@@ -273,6 +276,10 @@ func (r *embeddedRun) runClient(ctx context.Context, instanceID string, config *
 		embeddedCleanupUnknown.Store(true)
 		return errors.New("内嵌客户端清理状态未知")
 	}
+	if status.Panicked {
+		embeddedCleanupUnknown.Store(true)
+		return errors.New("内嵌客户端异常退出，清理状态未知，请重启工作台")
+	}
 	// The forwarding workers have stopped, so the last payload count is stable.
 	// Preserve it for the manager's final sample before the run is discarded.
 	if snapshot := run.Snapshot(); snapshot.Active {
@@ -321,7 +328,10 @@ func (r *embeddedRun) ReadProxyRegistration(ctx context.Context, name string) (P
 	if !status.Known {
 		return ProxyRegistrationStatus{}, false, nil
 	}
-	return ProxyRegistrationStatus{Name: name, Type: kind, Phase: status.Phase}, true, nil
+	return ProxyRegistrationStatus{
+		Name: name, Type: kind, Phase: status.Phase,
+		Error: status.Error, RemoteAddr: status.RemoteAddr,
+	}, true, nil
 }
 
 // ReadTraffic reports the embedded client's payload counters for this run.

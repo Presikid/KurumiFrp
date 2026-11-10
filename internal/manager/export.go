@@ -45,10 +45,21 @@ func (a *App) importConfigAPI(w http.ResponseWriter, r *http.Request) {
 	a.importConfig(w, buffered)
 }
 
+// Portable files require an explicit core selection. A nil local value can
+// still mean a legacy external selection has yet to be migrated, so normalize
+// only the exported copy and leave the local database untouched.
+func normalizeExportedCore(db *Database) {
+	if db.ActiveCore == nil {
+		id := ""
+		db.ActiveCore = &id
+	}
+}
+
 // Exported files contain the data key and are therefore sensitive credentials.
 func (a *App) export(w http.ResponseWriter, r *http.Request) {
 	scope := r.URL.Query().Get("scope")
 	db := a.store.DB
+	normalizeExportedCore(&db)
 	db.Webhook = nil // Local notification credentials are not exported.
 	db.Nodes = nil   // Node grants and credentials stay on this device.
 	db.Format = currentDatabaseFormat
@@ -154,6 +165,11 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, fmt.Errorf("核心配置无效"))
 		return
 	}
+	if a.core == nil {
+		// The embedded runtime does not manage external cores. Keep this
+		// device's selection (including an unmigrated nil) across imports.
+		db.ActiveCore = a.store.DB.ActiveCore
+	}
 	check := &Store{key: key}
 	revisions := map[uint64]bool{}
 	highestHistoryRevision := uint64(0)
@@ -256,20 +272,22 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		a.configureWebhook(db.webhookConfig())
 		a.webhooks.emitConfig(db.Revision)
 	}
-	if err = a.core.UseConfigActive(*db.ActiveCore, func(id string) error {
-		next := a.store.DB
-		next.ActiveCore = &id
-		if err := incrementRevision(&next); err != nil {
-			return err
+	if a.core != nil {
+		if err = a.core.UseConfigActive(*db.ActiveCore, func(id string) error {
+			next := a.store.DB
+			next.ActiveCore = &id
+			if err := incrementRevision(&next); err != nil {
+				return err
+			}
+			if err := a.store.write(next); err != nil {
+				return err
+			}
+			a.store.DB = next
+			return nil
+		}); err != nil {
+			fail(w, 500, err)
+			return
 		}
-		if err := a.store.write(next); err != nil {
-			return err
-		}
-		a.store.DB = next
-		return nil
-	}); err != nil {
-		fail(w, 500, err)
-		return
 	}
 	reply(w, 200, map[string]any{"ok": true, "revision": db.Revision})
 }

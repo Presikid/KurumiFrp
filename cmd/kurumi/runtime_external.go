@@ -1,4 +1,4 @@
-//go:build !kurumi_frp_patched || !kurumi_embedded_runtime
+//go:build kurumi_external_runtime
 
 package main
 

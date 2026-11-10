@@ -12,6 +12,10 @@ import (
 // Network operations use the core manager's own lock and never block normal
 // configuration editing for the duration of a download.
 func (a *App) coreAPI(w http.ResponseWriter, r *http.Request) {
+	if a.core == nil {
+		fail(w, http.StatusConflict, fmt.Errorf("当前运行后端不使用外部核心管理"))
+		return
+	}
 	if r.Method == "GET" {
 		switch r.URL.Path {
 		case "/api/core":

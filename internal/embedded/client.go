@@ -49,14 +49,24 @@ type ClientStatus struct {
 	State     ClientState
 	StartedAt time.Time
 	Exit      ExitReason
+	Panicked  bool
 }
 
-// Registration describes the latest proxy phase reported by frp. Known is
+// Registration describes the latest proxy status reported by frp. Known is
 // false when the engine has no current status (including during reconnect).
-// Even a running proxy phase is not an end-to-end health or traffic check.
+// Error is a generic message; RemoteAddr is untrusted and callers must sanitize
+// it before display. Running does not establish end-to-end connectivity.
 type Registration struct {
-	Known bool
-	Phase string
+	Known      bool
+	Phase      string
+	Error      string
+	RemoteAddr string
+}
+
+// The frp adapter can project extra status without changing the public service
+// interface used by other lifecycle implementations.
+type proxyDetailsService interface {
+	proxyDetails(name string) (Registration, bool)
 }
 
 // Client owns one service for one instance and is single-use. Create a new
@@ -73,6 +83,7 @@ type Client struct {
 	closeDone   chan struct{}
 	done        chan struct{}
 	closeFailed bool
+	panicked    bool
 }
 
 // NewClient takes ownership of service, including any resources it already
@@ -124,6 +135,7 @@ func (c *Client) run(ctx context.Context) {
 		// Never expose panic values or upstream errors: either can contain secrets.
 		panicked := recover() != nil
 		c.mu.Lock()
+		c.panicked = panicked
 		reason := ExitStopped
 		switch {
 		case panicked:
@@ -220,22 +232,29 @@ func (c *Client) Wait(ctx context.Context) (ClientStatus, error) {
 func (c *Client) Status() ClientStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return ClientStatus{State: c.state, StartedAt: c.startedAt, Exit: c.exit}
+	return ClientStatus{State: c.state, StartedAt: c.startedAt, Exit: c.exit, Panicked: c.panicked}
 }
 
-// ProxyRegistration returns a sanitized phase without the upstream status
-// object, which contains the proxy configuration and server-provided errors.
+// ProxyRegistration returns only selected status fields, never the upstream
+// object containing the proxy configuration or raw server-provided errors.
 func (c *Client) ProxyRegistration(name string) Registration {
 	if c.Status().State != ClientRunning {
 		return Registration{}
 	}
-	phase, known := c.service.ProxyPhase(name)
+	var result Registration
+	var known bool
+	if details, ok := c.service.(proxyDetailsService); ok {
+		result, known = details.proxyDetails(name)
+	} else {
+		result.Phase, known = c.service.ProxyPhase(name)
+	}
 	if !known || c.Status().State != ClientRunning {
 		return Registration{}
 	}
-	switch phase {
+	result.Known = true
+	switch result.Phase {
 	case "new", "wait start", "start error", "running", "check failed", "closed":
-		return Registration{Known: true, Phase: phase}
+		return result
 	default:
 		return Registration{Known: true, Phase: "unknown"}
 	}

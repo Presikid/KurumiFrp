@@ -109,43 +109,49 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 	if e != nil {
 		return nil, e
 	}
-	cores, e := core.New(bin)
-	if e != nil {
-		return nil, e
+	var cores *core.Manager
+	mode, _ := backend.(interface{ runtimeMode() string })
+	embedded := mode != nil && mode.runtimeMode() == "embedded"
+	if !embedded {
+		cores, e = core.New(bin)
+		if e != nil {
+			return nil, e
+		}
+		if s.DB.ActiveCore == nil {
+			status, err := cores.Status()
+			if err != nil {
+				return nil, err
+			}
+			id := status.Active
+			db := s.DB
+			db.ActiveCore = &id
+			if err = s.write(db); err != nil {
+				return nil, err
+			}
+			s.DB = db
+			if err = cores.RemoveLegacyActive(); err != nil {
+				return nil, err
+			}
+		}
+		if e = cores.UseConfigActive(*s.DB.ActiveCore, func(id string) error {
+			db := s.DB
+			db.ActiveCore = &id
+			if err := incrementRevision(&db); err != nil {
+				return err
+			}
+			if err := s.write(db); err != nil {
+				return err
+			}
+			s.DB = db
+			return nil
+		}); e != nil {
+			return nil, e
+		}
+		if backend == nil {
+			backend = &externalRuntime{core: cores, dir: s.dir}
+		}
 	}
-	if s.DB.ActiveCore == nil {
-		status, err := cores.Status()
-		if err != nil {
-			return nil, err
-		}
-		id := status.Active
-		db := s.DB
-		db.ActiveCore = &id
-		if err = s.write(db); err != nil {
-			return nil, err
-		}
-		s.DB = db
-		if err = cores.RemoveLegacyActive(); err != nil {
-			return nil, err
-		}
-	}
-	if e = cores.UseConfigActive(*s.DB.ActiveCore, func(id string) error {
-		db := s.DB
-		db.ActiveCore = &id
-		if err := incrementRevision(&db); err != nil {
-			return err
-		}
-		if err := s.write(db); err != nil {
-			return err
-		}
-		s.DB = db
-		return nil
-	}); e != nil {
-		return nil, e
-	}
-	if backend == nil {
-		backend = &externalRuntime{core: cores, dir: s.dir}
-	}
+	// Preserve an unmigrated legacy core selection in embedded builds.
 	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), core: cores, runtime: backend, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2)}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	app.webhooks = newWebhookDispatcher()
 	app.configureWebhook(s.DB.webhookConfig())
@@ -451,10 +457,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				fail(w, 400, err)
 				return
 			}
-			coreID := ""
-			if a.store.DB.ActiveCore != nil {
-				coreID = *a.store.DB.ActiveCore
-			}
+			coreID := a.activeCoreID()
 			reply(w, 200, compareConfig(i.ID, i.Name, a.store.DB.Revision, p.appliedConfig, current.Text, p.appliedSecretDigest != current.SecretDigest, p.coreID != coreID))
 			return
 		default:
