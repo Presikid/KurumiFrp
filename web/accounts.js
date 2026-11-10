@@ -85,15 +85,22 @@ function showAccountEditor(id = '') {
 $('#content').addEventListener('click', async e => {
  const instanceRead = e.target.closest('[data-instance-read]');
  if (instanceRead) {
-  const d = document.createElement('dialog'), pre = document.createElement('pre'), close = document.createElement('button'), generation = authGeneration;
+  const serverTraffic = instanceRead.dataset.instanceRead === 'server-traffic';
+  const id = instanceRead.dataset.id, runId = data?.runtime?.[id]?.runId || '';
+  const d = document.createElement('dialog'), output = document.createElement(serverTraffic ? 'div' : 'pre'), close = document.createElement('button'), generation = authGeneration;
   d.id = 'instance-read-dialog';
+  if (serverTraffic) d.setAttribute('aria-label', '服务端流量');
   close.textContent = '关闭'; close.type = 'button'; close.addEventListener('click', () => d.close());
-  pre.textContent = '正在读取…'; d.append(close, pre); document.body.appendChild(d);
+  output.textContent = '正在读取…'; d.append(close, output); document.body.appendChild(d);
   d.addEventListener('close', () => d.remove()); d.showModal();
   try {
-   const result = await api(`${instanceRead.dataset.instanceRead}?id=${encodeURIComponent(instanceRead.dataset.id)}`);
-   if (generation === authGeneration && d.open) pre.textContent = result.toml;
-  } catch (err) { if (generation === authGeneration && d.open) pre.textContent = err.message; }
+   const result = await api(`${instanceRead.dataset.instanceRead}?id=${encodeURIComponent(id)}`);
+   if (generation === authGeneration && d.open) {
+    if (!serverTraffic) output.textContent = result.toml;
+    else if (!data?.state.instances.some(instance => instance.id === id) || (data.runtime?.[id]?.runId || '') !== runId || (result.runId || '') !== runId) output.textContent = '实例运行状态已变化，请关闭后重新查看。';
+    else output.innerHTML = Overview.renderServerTraffic(result, esc) + '<p class="small-note">再次打开可读取新快照。</p>';
+   }
+  } catch (err) { if (generation === authGeneration && d.open) output.textContent = err.message; }
   return;
  }
  const edit = e.target.closest('[data-account-edit]'), remove = e.target.closest('[data-account-delete]');

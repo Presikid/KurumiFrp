@@ -104,7 +104,7 @@ window.KurumiInstances = (() => {
    <div class="instance-card__config ${runtime.pending?'instance-card__config--pending':''}"><div><strong>${runtime.pending?'配置待应用':'配置状态'}</strong><p>${configText}</p></div>${runtime.applied?button('diff','查看差异'):''}</div>
    ${runtime.exit?`<div class="instance-card__runtime-message"><strong>运行信息</strong><p>${esc(runtime.exit)}</p></div>`:''}
    <p class="instance-card__error" data-instance-error role="alert" ${error?'':'hidden'}>${error?'操作失败：'+esc(error):''}</p>
-   <div class="instance-card__controls">${!restricted || operator ? (running?button('stop','停止',false,true)+button('restart','重启应用',Boolean(runtime.pending),true):button('start','启动',true,true)) : ''}${restricted?`<button type="button" data-instance-read="config" data-id="${id}">配置预览</button>`:button('logs','日志')+button('health','链路检测')}</div>
+   <div class="instance-card__controls">${!restricted || operator ? (running?button('stop','停止',false,true)+button('restart','重启应用',Boolean(runtime.pending),true):button('start','启动',true,true)) : ''}${restricted?`<button type="button" data-instance-read="config" data-id="${id}">配置预览</button>${role === 'server' ? `<button type="button" data-instance-read="server-traffic" data-id="${id}">服务端流量</button>` : ''}`:button('logs','日志')+button('health','链路检测')}</div>
    <div class="instance-card__actions">${!restricted || operator ? button('validate','校验配置',false,true) : ''}${restricted ? '' : button('edit-instance','编辑')+button('duplicate-instance','复制实例')+button('delete-instance','删除')}</div>
   </article>`;
  }
