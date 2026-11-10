@@ -13,8 +13,7 @@ import (
 	"unicode/utf8"
 )
 
-// A provider subject or verified email is bound only to an existing local
-// account. Public OIDC clients use PKCE without a client secret.
+// A provider subject or verified email is bound only to an existing local account.
 type oidcBinding struct {
 	Kind      string `json:"kind,omitempty"` // empty means the provider subject
 	Subject   string `json:"subject"`
@@ -33,8 +32,24 @@ type oidcSettings struct {
 	Enabled  bool          `json:"enabled"`
 	Issuer   string        `json:"issuer"`
 	ClientID string        `json:"clientId"`
+	ClientAuth string      `json:"clientAuth,omitempty"` // empty, basic, or post
 	Bindings []oidcBinding `json:"bindings"`
 	GroupRules []oidcGroupRule `json:"groupRules,omitempty"`
+}
+
+// The optional confidential-client credential is owned by the process
+// environment; it is never stored in the configuration or returned by the API.
+func oidcClientCredential() (string, bool) {
+	value, exists := os.LookupEnv("KURUMI_OIDC_CLIENT_SECRET")
+	if !exists || value == "" || len(value) > 2048 || !utf8.ValidString(value) {
+		return "", false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return "", false
+		}
+	}
+	return value, true
 }
 
 func oidcTextOK(value string, max int) bool {
@@ -53,7 +68,10 @@ func validateOIDCSettings(cfg oidcSettings) error {
 	if cfg.Version != 1 || cfg.Revision == 0 || cfg.Revision > maxJSONRevision || len(cfg.Bindings) > maxAccounts || len(cfg.GroupRules) > 100 {
 		return fmt.Errorf("单点登录配置无效")
 	}
-	if cfg.Issuer == "" && cfg.ClientID == "" && len(cfg.Bindings) == 0 && len(cfg.GroupRules) == 0 && !cfg.Enabled {
+	if cfg.ClientAuth != "" && cfg.ClientAuth != "basic" && cfg.ClientAuth != "post" {
+		return fmt.Errorf("客户端认证方式无效")
+	}
+	if cfg.Issuer == "" && cfg.ClientID == "" && cfg.ClientAuth == "" && len(cfg.Bindings) == 0 && len(cfg.GroupRules) == 0 && !cfg.Enabled {
 		return nil
 	}
 	u, err := url.Parse(cfg.Issuer)
@@ -121,7 +139,12 @@ func (a *App) oidcSettingsAPI(w http.ResponseWriter, r *http.Request) {
 			fail(w, http.StatusServiceUnavailable, fmt.Errorf("单点登录配置无法读取，原文件已保留"))
 			return
 		}
-		reply(w, http.StatusOK, cfg)
+		_, available := oidcClientCredential()
+		reply(w, http.StatusOK, map[string]any{
+			"version": cfg.Version, "revision": cfg.Revision, "enabled": cfg.Enabled,
+			"issuer": cfg.Issuer, "clientId": cfg.ClientID, "clientAuth": cfg.ClientAuth,
+			"bindings": cfg.Bindings, "groupRules": cfg.GroupRules, "clientCredentialAvailable": available,
+		})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -133,6 +156,7 @@ func (a *App) oidcSettingsAPI(w http.ResponseWriter, r *http.Request) {
 		Enabled  bool          `json:"enabled"`
 		Issuer   string        `json:"issuer"`
 		ClientID string        `json:"clientId"`
+		ClientAuth *string     `json:"clientAuth"`
 		Bindings []oidcBinding `json:"bindings"`
 		GroupRules *[]oidcGroupRule `json:"groupRules"`
 	}
@@ -154,7 +178,14 @@ func (a *App) oidcSettingsAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, fmt.Errorf("请重新读取并明确提交分组规则"))
 		return
 	}
+	if req.ClientAuth == nil && a.auth.oidcSettings.ClientAuth != "" {
+		fail(w, http.StatusBadRequest, fmt.Errorf("请重新读取并明确提交客户端认证方式"))
+		return
+	}
 	next := oidcSettings{Version: 1, Revision: req.Revision + 1, Enabled: req.Enabled, Issuer: req.Issuer, ClientID: req.ClientID, Bindings: append([]oidcBinding{}, req.Bindings...)}
+	if req.ClientAuth != nil {
+		next.ClientAuth = *req.ClientAuth
+	}
 	if req.GroupRules != nil {
 		next.GroupRules = append([]oidcGroupRule{}, (*req.GroupRules)...)
 	}
