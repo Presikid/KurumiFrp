@@ -98,7 +98,7 @@ func possibleProxyConflicts(s State) map[string]string {
 			continue
 		}
 		for _, binding := range listeners {
-			if binding.network != tunnel.Type || binding.port != tunnel.RemotePort || !listenerHostsOverlap(binding.host, server.Host) {
+			if binding.network != tunnel.Type || binding.port != tunnel.RemotePort || !listenerHostsOverlap(binding.host, server.proxyBindHost()) {
 				continue
 			}
 			a, b := binding.id, tunnel.ID
@@ -111,7 +111,7 @@ func possibleProxyConflicts(s State) map[string]string {
 				return conflicts
 			}
 		}
-		listeners = append(listeners, localBinding{server.Host, tunnel.Type, tunnel.Name, tunnel.ID, tunnel.RemotePort})
+		listeners = append(listeners, localBinding{server.proxyBindHost(), tunnel.Type, tunnel.Name, tunnel.ID, tunnel.RemotePort})
 	}
 	loopback := func(host string) bool {
 		if strings.EqualFold(host, "localhost") {
