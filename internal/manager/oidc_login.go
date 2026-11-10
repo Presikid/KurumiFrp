@@ -139,7 +139,14 @@ func (a *App) oidcStart(w http.ResponseWriter, r *http.Request) {
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	config := oauth2.Config{ClientID: cfg.ClientID, Endpoint: endpoint, RedirectURL: scheme + "://" + r.Host + "/api/oidc/callback", Scopes: []string{oidc.ScopeOpenID}}
+	scopes := []string{oidc.ScopeOpenID}
+	for _, binding := range cfg.Bindings {
+		if binding.Kind == "email" {
+			scopes = append(scopes, "email")
+			break
+		}
+	}
+	config := oauth2.Config{ClientID: cfg.ClientID, Endpoint: endpoint, RedirectURL: scheme + "://" + r.Host + "/api/oidc/callback", Scopes: scopes}
 	state, nonce, verifier := randomHex(32), randomHex(32), oauth2.GenerateVerifier()
 	flow := oidcFlow{provider: provider, client: client, oauth: config, verifier: verifier, nonce: nonce, revision: cfg.Revision, accountRevision: accountRevision, expires: time.Now().Add(5 * time.Minute)}
 	address := config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("nonce", nonce))
@@ -226,6 +233,8 @@ func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	var claims struct {
 		AuthorizedParty string `json:"azp"`
+		Email           string `json:"email"`
+		EmailVerified   *bool  `json:"email_verified"`
 	}
 	if idToken.Claims(&claims) != nil || (len(idToken.Audience) > 1 && claims.AuthorizedParty != flow.oauth.ClientID) || (claims.AuthorizedParty != "" && claims.AuthorizedParty != flow.oauth.ClientID) {
 		failRecorded()
@@ -244,12 +253,18 @@ func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		failRecorded()
 		return
 	}
-	accountID, accountName := "", ""
+	accountID, emailAccountID, accountName := "", "", ""
 	for _, binding := range a.auth.oidcSettings.Bindings {
-		if binding.Subject == idToken.Subject {
+		if binding.Kind == "" && binding.Subject == idToken.Subject {
 			accountID = binding.AccountID
-			break
+		} else if binding.Kind == "email" && claims.EmailVerified != nil && *claims.EmailVerified && binding.Subject == claims.Email {
+			emailAccountID = binding.AccountID
 		}
+	}
+	// A subject binding always wins over an email binding. Email is accepted
+	// only from this verified ID token, with an explicit verified claim.
+	if accountID == "" {
+		accountID = emailAccountID
 	}
 	for _, account := range a.auth.accounts {
 		if account.ID == accountID && account.activeAt(time.Now()) {
