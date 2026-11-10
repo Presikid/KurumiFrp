@@ -205,6 +205,10 @@ func validateProtocolInstance(i Instance) error {
 	if i.ProxyBindAddr != "" && (i.Kind != "frps" || !hostOK(i.ProxyBindAddr)) {
 		return fmt.Errorf("代理监听地址仅适用于服务端，且必须是有效地址")
 	}
+	if i.VhostHTTPTimeout < 0 || i.VhostHTTPTimeout > 86400 || i.UserConnTimeout < 0 || i.UserConnTimeout > 86400 ||
+		(i.Kind != "frps" && (i.VhostHTTPTimeout != 0 || i.UserConnTimeout != 0)) {
+		return fmt.Errorf("服务端超时须为 0–86400 秒；0 使用默认值")
+	}
 	if _, err := parseServerAllowedPorts(i.ServerAllowedPorts); err != nil {
 		return err
 	}

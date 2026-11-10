@@ -426,6 +426,8 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 		}
 		i.ServerAllowedPorts = strings.Join(allowedPorts, ",")
 		i.ProxyBindAddr = m.str(root, "proxyBindAddr", "", "")
+		i.VhostHTTPTimeout = m.integer(root, "vhostHTTPTimeout", "", 0)
+		i.UserConnTimeout = m.integer(root, "userConnTimeout", "", 0)
 		i.ServerAllowPlaintext = !m.boolean(root, "transport.tls.force", "", false)
 	} else {
 		i.Host = m.str(root, "serverAddr", "", "0.0.0.0")
