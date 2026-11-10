@@ -171,6 +171,8 @@ type Service struct {
 	running     bool
 	closeOnce   sync.Once
 	closeDone   chan struct{}
+	ready       chan struct{}
+	exiting     chan struct{}
 	serveErrors chan serveResult
 	workScope   *lifetime.Scope
 	workCtx     context.Context
@@ -253,6 +255,8 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 		workScope:         workScope,
 		workCancel:        workCancel,
 		closeDone:         make(chan struct{}),
+		ready:             make(chan struct{}),
+		exiting:           make(chan struct{}),
 		serveErrors:       make(chan serveResult, 1),
 	}
 	// The constructor owns each resource as soon as it is created. Roll back
@@ -539,6 +543,8 @@ func (svr *Service) Run(ctx context.Context) (runErr error) {
 			runErr = errors.Join(runErr, err)
 		}
 	}()
+	// Publish that the run loop has ended before waiting for resource cleanup.
+	defer close(svr.exiting)
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -584,7 +590,28 @@ func (svr *Service) Run(ctx context.Context) (runErr error) {
 		})
 	}
 
-	svr.startWorker("tcp listener", func() error { return svr.HandleListener(svr.listener, false) })
+	// This is the last admission to the same monotonic work scope; if it is
+	// rejected, at least one listener worker may not have started.
+	if !svr.startWorker("tcp listener", func() error { return svr.HandleListener(svr.listener, false) }) {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return errors.New("server work scope stopped before readiness")
+	}
+
+	// Signal only after the listener workers have been admitted. An already
+	// reported listener failure or cancellation takes precedence over readiness.
+	select {
+	case <-ctx.Done():
+		return nil
+	case result := <-svr.serveErrors:
+		if result.err == nil {
+			return fmt.Errorf("%s exited unexpectedly", result.name)
+		}
+		return fmt.Errorf("%s exited: %w", result.name, result.err)
+	default:
+	}
+	close(svr.ready)
 
 	select {
 	case <-ctx.Done():
@@ -600,6 +627,14 @@ func (svr *Service) Run(ctx context.Context) (runErr error) {
 	}
 }
 
+// Ready closes after Run admits its listener workers. It remains open when
+// startup ends first; callers must also observe their completion signal.
+func (svr *Service) Ready() <-chan struct{} { return svr.ready }
+
+// Exiting closes when Run leaves its loop, before cleanup has completed. It
+// may stay open if Run was rejected before it began; observe completion too.
+func (svr *Service) Exiting() <-chan struct{} { return svr.exiting }
+
 func (svr *Service) serve(name string, run func() error) {
 	result := serveResult{name: name, err: run()}
 	select {
@@ -608,8 +643,8 @@ func (svr *Service) serve(name string, run func() error) {
 	}
 }
 
-func (svr *Service) startWorker(name string, run func() error) {
-	lifetime.Go(svr.workCtx, func() { svr.serve(name, run) })
+func (svr *Service) startWorker(name string, run func() error) bool {
+	return lifetime.Go(svr.workCtx, func() { svr.serve(name, run) })
 }
 
 // Close requests shutdown and waits up to the service shutdown timeout.

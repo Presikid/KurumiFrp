@@ -201,6 +201,8 @@ type Service struct {
 	closed      bool
 	started     bool
 	done        chan struct{}
+	ready       chan struct{}
+	exiting     chan struct{}
 	isolateLogs bool
 	logger      *xlog.Logger
 
@@ -355,6 +357,8 @@ func NewService(options ServiceOptions) (*Service, error) {
 		network:          network,
 		ctx:              context.Background(),
 		done:             make(chan struct{}),
+		ready:            make(chan struct{}),
+		exiting:          make(chan struct{}),
 		isolateLogs:      options.Isolated,
 		logger:           logger,
 		auth:             authRuntime,
@@ -429,6 +433,8 @@ func (svr *Service) Run(ctx context.Context) error {
 		svr.lifecycleMu.Unlock()
 		close(svr.done)
 	}()
+	// Publish that the run loop has ended before waiting for resource cleanup.
+	defer close(svr.exiting)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -473,6 +479,13 @@ func (svr *Service) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Run has passed initialization and is about to enter its login/retry loop.
+	// This signals engine readiness only, not a successful login or registration.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	close(svr.ready)
+
 	// first login to frps
 	svr.loopLoginUntilSuccess(10*time.Second, lo.FromPtr(svr.common.LoginFailExit))
 	svr.ctlMu.RLock()
@@ -496,6 +509,14 @@ func (svr *Service) Run(ctx context.Context) error {
 	<-svr.ctx.Done()
 	return nil
 }
+
+// Ready closes once Run is about to enter its login/retry loop. It remains open
+// if startup fails first; callers must also observe their completion signal.
+func (svr *Service) Ready() <-chan struct{} { return svr.ready }
+
+// Exiting closes when Run leaves its loop, before cleanup has completed. It
+// may stay open if Run was rejected before it began; observe completion too.
+func (svr *Service) Exiting() <-chan struct{} { return svr.exiting }
 
 func (svr *Service) keepControllerWorking() {
 	// ctl is swapped under ctlMu in loopLoginUntilSuccess / stop; take a

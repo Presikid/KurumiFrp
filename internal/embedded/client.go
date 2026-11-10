@@ -211,6 +211,24 @@ func (c *Client) Shutdown(ctx context.Context) error {
 // Done closes after the service has exited and cleanup has completed.
 func (c *Client) Done() <-chan struct{} { return c.done }
 
+// Ready signals that the service entered its run loop. A service that does
+// not expose this optional signal returns nil; observe Done for startup failure.
+func (c *Client) Ready() <-chan struct{} {
+	if service, ok := c.service.(interface{ Ready() <-chan struct{} }); ok {
+		return service.Ready()
+	}
+	return nil
+}
+
+// Exiting signals that Run has left the engine loop. It does not establish
+// that resources have been released; Done remains the cleanup boundary.
+func (c *Client) Exiting() <-chan struct{} {
+	if service, ok := c.service.(interface{ Exiting() <-chan struct{} }); ok {
+		return service.Exiting()
+	}
+	return nil
+}
+
 // Wait waits for completion without initiating shutdown. It never returns raw
 // upstream errors or configuration values, which may contain credentials.
 func (c *Client) Wait(ctx context.Context) (ClientStatus, error) {

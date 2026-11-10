@@ -41,6 +41,11 @@ func (a *App) nodeControlPreviewLocked(id string) (nodeControlPreview, error) {
 		status := process.view()
 		state, runID = status.State, status.RunID
 	}
+	// Protocol 1 has no transition states; fail closed until this generation
+	// has reached running or completed cleanup.
+	if state == "starting" || state == "stopping" {
+		return nodeControlPreview{}, fmt.Errorf("实例正在启动或停止，请稍后重新检查")
+	}
 	if instance.AutoStart && a.startupErrors[id] != "" && state != "running" {
 		state = "autostart-failed"
 	}

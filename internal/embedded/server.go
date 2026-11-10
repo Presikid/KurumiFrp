@@ -258,6 +258,30 @@ func (s *Server) Stop(ctx context.Context) error {
 // construction. Previously accepted connection handlers may still be exiting.
 func (s *Server) Done() <-chan struct{} { return s.done }
 
+// Ready returns the upstream run-loop signal after a successful Start.
+// Before construction succeeds it returns nil; Done also reports failure.
+func (s *Server) Ready() <-chan struct{} {
+	s.mu.Lock()
+	svc := s.service
+	s.mu.Unlock()
+	if svc == nil {
+		return nil
+	}
+	return svc.Ready()
+}
+
+// Exiting signals that the upstream Run loop ended, before resource cleanup.
+// It returns nil before a service has been constructed.
+func (s *Server) Exiting() <-chan struct{} {
+	s.mu.Lock()
+	svc := s.service
+	s.mu.Unlock()
+	if svc == nil {
+		return nil
+	}
+	return svc.Exiting()
+}
+
 // Err returns the construction, run, or cleanup error after Done is closed.
 func (s *Server) Err() error {
 	s.mu.Lock()

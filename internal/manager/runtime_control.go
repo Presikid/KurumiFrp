@@ -101,7 +101,7 @@ func (a *App) beginRuntimeOperationLocked(parent context.Context, req runtimeReq
 		return snapshot, nil, http.StatusConflict, fmt.Errorf("此实例正在执行其他操作，请稍后重试")
 	}
 	p := a.procs[req.ID]
-	if !validate && req.Action == "start" && p != nil && p.view().State == "running" {
+	if !validate && req.Action == "start" && p.active() {
 		return snapshot, nil, http.StatusBadRequest, fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
 	if a.nodeOperationVersions == nil {
