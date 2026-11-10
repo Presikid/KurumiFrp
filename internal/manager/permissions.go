@@ -39,9 +39,9 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.admin()
 		case "/api/nodes/check":
 			return p.admin() || p.Role == "operator" || p.Role == "viewer"
-		case "/api/control", "/api/validate":
+		case "/api/control", "/api/validate", "/api/nodes/control":
 			return p.admin() || p.Role == "operator"
-		case "/api/accounts", "/api/quit", "/api/browser-ticket", "/api/probe", "/api/health", "/api/webhook", "/api/backup/export", "/api/backup/import", "/api/core/install", "/api/core/cancel", "/api/core/activate", "/api/update/install", "/api/import", "/api/import/toml", "/api/import/toml/preview", "/api/nodes", "/api/nodes/control", "/api/nodes/resolve", "/api/nodes/confirm", "/api/duplicate", "/api/tunnels/batch-enabled", "/api/tunnels/batch-delete", "/api/tunnels/batch", "/api/save", "/api/delete", "/api/restore", "/api/history-settings":
+		case "/api/accounts", "/api/quit", "/api/browser-ticket", "/api/probe", "/api/health", "/api/webhook", "/api/backup/export", "/api/backup/import", "/api/core/install", "/api/core/cancel", "/api/core/activate", "/api/update/install", "/api/import", "/api/import/toml", "/api/import/toml/preview", "/api/nodes", "/api/nodes/resolve", "/api/nodes/confirm", "/api/duplicate", "/api/tunnels/batch-enabled", "/api/tunnels/batch-delete", "/api/tunnels/batch", "/api/save", "/api/delete", "/api/restore", "/api/history-settings":
 			return p.admin()
 		}
 	}

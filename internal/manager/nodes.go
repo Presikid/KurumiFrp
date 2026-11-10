@@ -50,6 +50,7 @@ type nodeInstanceSummary struct {
 	Kind  string `json:"kind"`
 	State string `json:"state"`
 	Binding string `json:"binding,omitempty"`
+	CanControl bool `json:"canControl,omitempty"`
 }
 
 // This non-secret binding changes when the target instance is replaced, even
@@ -649,6 +650,8 @@ func (a *App) nodeCheckAPI(w http.ResponseWriter, r *http.Request) {
 		visible := make([]nodeInstanceSummary, 0)
 		for _, instance := range summary.Instances {
 			if principal.canViewRemoteInstance(req.ID, instance.ID, instance.Binding) {
+				_, instance.CanControl = principal.remoteControlGrant(req.ID, instance.ID)
+				instance.CanControl = instance.CanControl && target.ControlCredential != ""
 				visible = append(visible, instance)
 			}
 		}
