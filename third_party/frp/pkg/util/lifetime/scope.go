@@ -21,18 +21,9 @@ type Scope struct {
 	resources map[*resource]struct{}
 	work      sync.WaitGroup
 	stopOnce  sync.Once
-	onPanic   func()
 }
 
-func New() *Scope { return NewWithPanicHandler(nil) }
-
-// NewWithPanicHandler reports panics in workers admitted by Go. The handler
-// must be instance-specific, concurrency-safe, prompt, and must not panic.
-// It must trigger shutdown; recovery does not establish that cleanup succeeded.
-// A nil handler retains the ordinary process-fatal panic behavior.
-func NewWithPanicHandler(onPanic func()) *Scope {
-	return &Scope{resources: make(map[*resource]struct{}), onPanic: onPanic}
-}
+func New() *Scope { return &Scope{resources: make(map[*resource]struct{})} }
 
 func WithScope(ctx context.Context, scope *Scope) context.Context {
 	return context.WithValue(ctx, scopeKey{}, scope)
@@ -61,17 +52,7 @@ func Go(ctx context.Context, fn func()) bool {
 	}
 	scope.work.Add(1)
 	scope.mu.Unlock()
-	go func() {
-		defer scope.work.Done()
-		if scope.onPanic != nil {
-			defer func() {
-				if recover() != nil {
-					scope.onPanic()
-				}
-			}()
-		}
-		fn()
-	}()
+	go func() { defer scope.work.Done(); fn() }()
 	return true
 }
 

@@ -66,8 +66,6 @@ var (
 	ErrServiceClosed = errors.New("client service is closed")
 	// ErrServiceRunning reports a second Run attempt on the same client.
 	ErrServiceRunning = errors.New("client service has already been started")
-	// ErrWorkerPanicked omits the panic value, which could contain secrets.
-	ErrWorkerPanicked = errors.New("client service worker panicked")
 )
 
 func (e cancelErr) Error() string {
@@ -126,10 +124,6 @@ type ServiceOptions struct {
 	// Traffic is owned by this service's instance generation. Nil disables
 	// client traffic accounting. A configured binding must cover every rule.
 	Traffic *traffic.Bindings
-
-	// OnWorkerPanic is an isolated-profile lifecycle notification. It must be
-	// concurrent-safe, return promptly, and not panic. It receives no panic value.
-	OnWorkerPanic func()
 }
 
 // setServiceOptionsDefault sets the default values for ServiceOptions.
@@ -214,9 +208,6 @@ type Service struct {
 
 	connectorCreator func(context.Context, *v1.ClientCommonConfig) Connector
 	handleWorkConnCb func(*v1.ProxyBaseConfig, net.Conn, *msg.StartWorkConn) bool
-	onWorkerPanic    func()
-	workerPanic      func() // published before control workers are started
-	workerPanicked   atomic.Bool
 }
 
 // ValidateRestrictedNetworkConfig checks the isolated network profile without
@@ -387,7 +378,6 @@ func NewService(options ServiceOptions) (*Service, error) {
 		storeSource:      storeSource,
 		connectorCreator: options.ConnectorCreator,
 		handleWorkConnCb: options.HandleWorkConnCb,
-		onWorkerPanic:    options.OnWorkerPanic,
 	}
 
 	if webServer != nil {
@@ -400,17 +390,8 @@ func NewService(options ServiceOptions) (*Service, error) {
 	return s, nil
 }
 
-func (svr *Service) Run(ctx context.Context) (runErr error) {
+func (svr *Service) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancelCause(ctx)
-	if svr.isolateLogs {
-		// This defer runs after the service's cleanup defer has joined scoped
-		// workers, so a panic during shutdown is not reported as a clean exit.
-		defer func() {
-			if svr.workerPanicked.Load() {
-				runErr = errors.Join(runErr, ErrWorkerPanicked)
-			}
-		}()
-	}
 	svr.lifecycleMu.Lock()
 	if svr.closed {
 		svr.lifecycleMu.Unlock()
@@ -432,15 +413,6 @@ func (svr *Service) Run(ctx context.Context) (runErr error) {
 	}
 	svr.ctx = xlog.NewContext(ctx, xl)
 	svr.cancel = cancel
-	if svr.isolateLogs {
-		svr.workerPanic = func() {
-			svr.workerPanicked.Store(true)
-			cancel(ErrWorkerPanicked)
-			if svr.onWorkerPanic != nil {
-				svr.onWorkerPanic()
-			}
-		}
-	}
 	svr.lifecycleMu.Unlock()
 	if svr.network != nil {
 		stopNetworkClose := context.AfterFunc(ctx, svr.network.Close)
@@ -623,7 +595,6 @@ func (svr *Service) loopLoginUntilSuccess(maxInterval time.Duration, firstLoginE
 		xl.Infof("login to server success, get run id [%s]", svr.runID)
 
 		sessionCtx.Isolated = svr.isolateLogs
-		sessionCtx.workerPanic = svr.workerPanic
 		ctl, err := NewControl(svr.ctx, sessionCtx)
 		if err != nil {
 			sessionCtx.Conn.Close()
