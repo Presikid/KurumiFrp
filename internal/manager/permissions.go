@@ -27,6 +27,9 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.canReadConfig() && (p.admin() || p.Role == "operator" || p.Role == "viewer")
 		case "/api/traffic", "/api/traffic-history", "/api/server-traffic":
 			return p.canReadTraffic() && (p.admin() || p.Role == "operator" || p.Role == "viewer")
+		case "/api/client-traffic":
+			// Applied rule names are configuration details as well as traffic data.
+			return p.canReadTraffic() && p.canReadConfig() && (p.admin() || p.Role == "operator" || p.Role == "viewer")
 		case "/api/logs", "/api/logs/stream":
 			return p.canReadLogs(r.URL.Query().Get("id"))
 		case "/api/registration", "/api/core", "/api/core/releases", "/api/core/release", "/api/update/status", "/api/update/releases", "/api/export", "/api/webhook", "/api/accounts":

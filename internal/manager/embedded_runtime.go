@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -511,6 +513,38 @@ func (r *embeddedRun) ReadTraffic() TrafficSnapshot {
 		observation.SentBytes = snapshot.Total.Upload
 	}
 	return observation
+}
+
+// Report the applied names in this generation; draft names may have changed.
+// Stop or an uncertain engine state makes the detail unavailable.
+func (r *embeddedRun) ReadClientRuleTraffic() ClientRuleTrafficSnapshot {
+	r.mu.RLock()
+	client, run := r.client, r.traffic
+	r.mu.RUnlock()
+	if client == nil || run == nil || client.Status().State != embedded.ClientRunning || !r.ReadyNow() {
+		return ClientRuleTrafficSnapshot{}
+	}
+	raw := run.Snapshot()
+	if !raw.Active || !r.ReadyNow() {
+		return ClientRuleTrafficSnapshot{}
+	}
+	rules := make([]ClientRuleTraffic, 0, len(raw.Rules))
+	for key, counts := range raw.Rules {
+		kind, name, ok := strings.Cut(key, ":")
+		if !ok || name == "" || (kind != "proxy" && kind != "visitor") {
+			return ClientRuleTrafficSnapshot{}
+		}
+		rules = append(rules, ClientRuleTraffic{
+			Name: name, Kind: kind, ReceivedBytes: counts.Download, SentBytes: counts.Upload,
+		})
+	}
+	sort.Slice(rules, func(i, j int) bool {
+		if rules[i].Kind != rules[j].Kind {
+			return rules[i].Kind < rules[j].Kind
+		}
+		return rules[i].Name < rules[j].Name
+	})
+	return ClientRuleTrafficSnapshot{SampledAt: raw.SampledAt, Available: true, Rules: rules}
 }
 
 // ReadServerTraffic reads the per-service forwarding counter. The embedded
