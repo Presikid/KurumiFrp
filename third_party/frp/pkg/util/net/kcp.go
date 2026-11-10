@@ -66,20 +66,31 @@ func ListenKcpWithContext(ctx context.Context, address string) (l *KCPListener, 
 					continue
 				}
 			}
-			conn.SetStreamMode(true)
-			conn.SetWriteDelay(true)
-			conn.SetNoDelay(1, 20, 2, 1)
-			conn.SetMtu(1350)
-			conn.SetWindowSize(1024, 1024)
-			conn.SetACKNoDelay(false)
+			handedOff := func() bool {
+				owned := true
+				defer func() {
+					if owned {
+						_ = conn.Close()
+					}
+				}()
+				conn.SetStreamMode(true)
+				conn.SetWriteDelay(true)
+				conn.SetNoDelay(1, 20, 2, 1)
+				conn.SetMtu(1350)
+				conn.SetWindowSize(1024, 1024)
+				conn.SetACKNoDelay(false)
 
-			select {
-			case <-l.done:
-				conn.Close()
+				select {
+				case <-l.done:
+					return false
+				case l.acceptCh <- conn:
+					// The caller of Accept owns the connection after delivery.
+					owned = false
+					return true
+				}
+			}()
+			if !handedOff {
 				return
-			case l.acceptCh <- conn:
-				// A ready handoff may win when Close races with it. Once delivered,
-				// the connection is owned by the caller of Accept.
 			}
 		}
 	}) {

@@ -46,6 +46,14 @@ func NewWebsocketListenerWithContext(ctx context.Context, ln net.Listener) (wl *
 
 	muxer := http.NewServeMux()
 	muxer.Handle(FrpWebsocketPath, websocket.Handler(func(c *websocket.Conn) {
+		done, ok := lifetime.Enter(ctx)
+		if !ok {
+			_ = c.Close()
+			return
+		}
+		defer done()
+		defer lifetime.Recover(ctx)
+		defer c.Close()
 		// The tunnel payload is a raw byte stream (yamux), not UTF-8 text.
 		// Send it as binary frames; otherwise RFC 6455-compliant intermediaries
 		// (e.g. API gateways/reverse proxies) UTF-8-validate the default text
