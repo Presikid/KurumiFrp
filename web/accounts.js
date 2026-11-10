@@ -62,7 +62,7 @@ function paintAccounts() {
  if (!list || !accountData) return;
  const names = Object.fromEntries(data.state.instances.map(i => [i.id, i.name]));
  list.innerHTML = accountData.accounts.length ? `<div class="table-wrap"><table><thead><tr><th>用户</th><th>角色</th><th>状态</th><th>授权实例</th><th>管理</th></tr></thead><tbody>${accountData.accounts.map(u =>
-  `<tr><td>${esc(u.username)}</td><td>${esc(({admin:'管理员',operator:'操作员',viewer:'查看者'})[u.role])}</td><td>${u.enabled?'启用':'停用'}</td><td>${u.role==='admin'?'全部':(u.instances.map(id=>esc(names[id] || ('已不存在：'+id))).join('、') || '无')}${u.role!=='admin'&&u.allowLogs?' · 可查看日志':''}</td><td><div class="actions"><button type="button" data-account-edit="${esc(u.id)}">编辑</button><button type="button" class="danger" data-account-delete="${esc(u.id)}">删除</button></div></td></tr>`
+  `<tr><td>${esc(u.username)}</td><td>${esc(({admin:'管理员',operator:'操作员',viewer:'查看者'})[u.role])}</td><td>${u.enabled?'启用':'停用'}</td><td>${u.role==='admin'?'全部':(u.instances.map(id=>esc(names[id] || ('已不存在：'+id))).join('、') || '无')}${u.role==='operator'?' · 可操作 '+(u.controlInstances || []).length+' 个':''}${u.role!=='admin'&&u.allowLogs?' · 可查看日志':''}</td><td><div class="actions"><button type="button" data-account-edit="${esc(u.id)}">编辑</button><button type="button" class="danger" data-account-delete="${esc(u.id)}">删除</button></div></td></tr>`
  ).join('')}</tbody></table></div>` : '<p>尚未创建本地账户。现有管理令牌可继续使用。</p>';
 }
 
@@ -71,17 +71,24 @@ function showAccountEditor(id = '') {
  if (!host || !accountData) return;
  const u = accountData.accounts.find(item => item.id === id);
  const grants = new Set(u?.instances || []);
+ const controls = new Set(u?.controlInstances || []);
  host.innerHTML = `<form id="account-form"><h3>${u?'编辑账户':'新建账户'}</h3><input type="hidden" name="id" value="${esc(u?.id || '')}"><div class="form-grid">
   <label>用户名<input name="username" required pattern="[A-Za-z0-9][A-Za-z0-9_.-]{2,31}" maxlength="32" value="${esc(u?.username || '')}" ${u?'readonly':''} autocomplete="off"></label>
   <label>角色<select name="role"><option value="viewer" ${!u || u.role==='viewer'?'selected':''}>查看者</option><option value="operator" ${u?.role==='operator'?'selected':''}>操作员</option><option value="admin" ${u?.role==='admin'?'selected':''}>管理员（全部权限）</option></select></label>
   <label class="span-2">${u?'重置密码（留空保留原密码）':'密码（至少 12 字节）'}<input name="password" type="password" autocomplete="new-password" maxlength="1024" ${u?'':'required'}></label>
   <label class="form-check span-2"><input type="checkbox" name="enabled" ${!u || u.enabled?'checked':''}>启用账户</label>
   <fieldset class="span-2" id="account-grants"><legend>可访问的实例</legend>${data.state.instances.length ? data.state.instances.map(i => `<label class="form-check"><input type="checkbox" name="instance" value="${esc(i.id)}" ${grants.has(i.id)?'checked':''}>${esc(i.name)} · ${esc(i.kind)}</label>`).join('') : '<p>当前没有实例。</p>'}<p class="small-note">未选择表示不能访问任何实例；管理员始终可访问全部实例。</p></fieldset>
+  <fieldset class="span-2" id="account-controls"><legend>可操作的实例</legend>${data.state.instances.length ? data.state.instances.map(i => `<label class="form-check"><input type="checkbox" name="controlInstance" value="${esc(i.id)}" ${controls.has(i.id)?'checked':''}>${esc(i.name)} · ${esc(i.kind)}</label>`).join('') : '<p>当前没有实例。</p>'}<p class="small-note">可操作实例必须先在上方授权查看；未勾选时仅可查看，不能启停、重启或校验。</p></fieldset>
   <div class="span-2" id="account-log-grant"><label class="form-check"><input type="checkbox" name="allowLogs" ${u?.allowLogs?'checked':''}>允许查看已授权实例的运行日志</label><p class="small-note">默认关闭。日志可能包含地址、用户名和其他敏感内容；请仅授予可信账户。</p></div>
   </div><div class="actions"><button class="primary" type="submit">保存账户</button><button type="button" data-account-new>新建账户</button></div><p class="error" role="alert"></p></form>`;
  const form = $('#account-form');
- const updateGrants = () => { const admin = form.elements.role.value === 'admin'; $('#account-grants').hidden = admin; $('#account-log-grant').hidden = admin; };
- form.elements.role.addEventListener('change', updateGrants); updateGrants();
+ const updateGrants = () => {
+  const role = form.elements.role.value, admin = role === 'admin';
+  $('#account-grants').hidden = admin; $('#account-log-grant').hidden = admin; $('#account-controls').hidden = role !== 'operator';
+  const visible = new Set([...form.querySelectorAll('[name=instance]:checked')].map(el => el.value));
+  form.querySelectorAll('[name=controlInstance]').forEach(el => {el.disabled = !visible.has(el.value); if (el.disabled) el.checked = false;});
+ };
+ form.addEventListener('change', updateGrants); updateGrants();
 }
 
 $('#content').addEventListener('click', async e => {
@@ -155,7 +162,8 @@ $('#content').addEventListener('submit', async e => {
  const role = form.elements.role.value;
  const request = {action:'save', revision:accountData.revision, id:form.elements.id.value, username:form.elements.username.value,
   role, enabled:form.elements.enabled.checked, password:form.elements.password.value,
-  instances:role === 'admin' ? [] : [...form.querySelectorAll('[name=instance]:checked')].map(el => el.value), allowLogs:role !== 'admin' && form.elements.allowLogs.checked};
+  instances:role === 'admin' ? [] : [...form.querySelectorAll('[name=instance]:checked')].map(el => el.value),
+  controlInstances:role === 'operator' ? [...form.querySelectorAll('[name=controlInstance]:checked')].map(el => el.value) : [], allowLogs:role !== 'admin' && form.elements.allowLogs.checked};
  button.disabled = true; error.textContent = '';
  try {
   await api('accounts', request); form.elements.password.value = ''; toast('账户已保存');
