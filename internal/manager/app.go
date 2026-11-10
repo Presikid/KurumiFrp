@@ -41,6 +41,7 @@ type App struct {
 	assets           http.Handler
 	webhooks         *webhookDispatcher
 	loginHistory     *loginHistory
+	firewall         *firewallManager
 	updateNotices    updateNoticeState
 
 	// Lifecycle reservations are protected by mu. Slow operations run without it.
@@ -166,6 +167,7 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 		return nil, e
 	}
 	app.trafficDaily = loadTrafficDaily(s.dir, s.DB.State, s.DB.LocalTrafficIDs)
+	app.firewall = loadFirewall(s.dir)
 	s.beforeCommit = func(before, after State) error {
 		for id, op := range app.operations {
 			if op.scheduled && scheduleDraftChanged(before, after, id) {
@@ -291,6 +293,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r = withPrincipal(r, p)
+		if r.URL.Path == "/api/firewall" {
+			a.firewallAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/accounts" {
 			a.accountsAPI(w, r)
 			return
