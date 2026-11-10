@@ -77,6 +77,12 @@ upstream errors and warnings; callers must not expose those blindly. The parser
 returns stage-only diagnostics and warnings because raw TOML can itself contain
 credentials. Crypto, logging and cleanup changes still require real
 interoperability and concurrent runtime validation.
+Server-side frp OIDC discovery now returns an initialization error instead of
+panicking when the provider is unavailable. Discovery and token verification
+use the server's context and an HTTP client with a ten-second timeout. A remote
+key-set fetch managed by the OIDC dependency may still outlive an individual
+verification until that HTTP timeout. This does not implement OIDC login to the
+workbench, and neither authentication path has been validated at runtime here.
 The workbench and manager's default entry points select the restricted
 in-process backend; the old external-backend build switch has been removed.
 This default is a development candidate, not a release-ready replacement:

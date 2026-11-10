@@ -194,6 +194,9 @@ type Service struct {
 
 // ServiceOptions controls additional features for an embedded server.
 type ServiceOptions struct {
+	// Context cancels authentication setup and verification for this service.
+	// A nil value uses context.Background for standalone callers.
+	Context context.Context
 	// EnableMemoryMetrics allows in-process statistics queries without a dashboard.
 	EnableMemoryMetrics bool
 	// LogSink is dedicated to this service and consumed even if construction fails.
@@ -245,7 +248,7 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 		return nil, err
 	}
 
-	authRuntime, err := auth.BuildServerAuth(&cfg.Auth)
+	authRuntime, err := auth.BuildServerAuth(options.Context, &cfg.Auth)
 	if err != nil {
 		return nil, err
 	}
