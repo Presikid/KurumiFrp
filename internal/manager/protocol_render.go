@@ -89,6 +89,9 @@ func renderProtocolTunnel(b *strings.Builder, t Tunnel, secret func(string, stri
 		if (t.Type == "http" || t.Type == "https" || t.Type == "tcpmux") && t.Subdomain != "" {
 			fmt.Fprintf(b, "subdomain = %s\n", quote(t.Subdomain))
 		}
+		if t.Type == "http" && t.HostHeaderRewrite != "" {
+			fmt.Fprintf(b, "hostHeaderRewrite = %s\n", quote(t.HostHeaderRewrite))
+		}
 		if t.Type == "tcpmux" {
 			mux := t.Multiplexer
 			if mux == "" {

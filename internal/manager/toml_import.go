@@ -313,6 +313,9 @@ func (m *tomlMapper) mapRule(store *Store, t *tomlTable, prefix, instanceID stri
 				r.HTTPPassword = m.secret(store, password, prefix+"httpPassword")
 			}
 		}
+		if typ == "http" {
+			r.HostHeaderRewrite = m.str(t, "hostHeaderRewrite", prefix, "")
+		}
 		if typ == "stcp" || typ == "xtcp" || typ == "sudp" {
 			r.AllowUsers = m.strings(t, "allowUsers", prefix)
 		}

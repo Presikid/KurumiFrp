@@ -42,6 +42,7 @@ type Tunnel struct {
 	LocalPort            int      `json:"localPort"`
 	RemotePort           int      `json:"remotePort"`
 	Domains              []string `json:"domains"`
+	HostHeaderRewrite    string   `json:"hostHeaderRewrite,omitempty"`
 	ProbePath            string   `json:"probePath,omitempty"`
 	ProbeMethod          string   `json:"probeMethod,omitempty"`
 	HealthCheckType      string   `json:"healthCheckType,omitempty"`
@@ -355,6 +356,9 @@ func validate(s State) error {
 		}
 		if err := validateRuleHealthCheck(t); err != nil {
 			return err
+		}
+		if t.HostHeaderRewrite != "" && (t.Type != "http" || !validHostHeaderRewrite(t.HostHeaderRewrite)) {
+			return fmt.Errorf("HTTP Host 重写值无效或不适用于此协议")
 		}
 		endpoint := strings.ToLower(i.Host) + fmt.Sprintf(":%d/", i.Port)
 		if ip := net.ParseIP(i.Host); ip != nil {

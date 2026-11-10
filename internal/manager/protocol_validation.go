@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"golang.org/x/net/http/httpguts"
 )
 
 func isVisitor(kind string) bool {
@@ -15,6 +17,10 @@ func isVisitor(kind string) bool {
 
 func validSubdomain(value string) bool {
 	return value == "" || (hostOK(value) && !strings.Contains(value, ".") && net.ParseIP(value) == nil)
+}
+
+func validHostHeaderRewrite(value string) bool {
+	return len(value) <= 512 && protocolTextOK(value) && httpguts.ValidHostHeader(value)
 }
 
 // Preserve the effective namespace when an existing Visitor changes client.

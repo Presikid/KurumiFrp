@@ -67,6 +67,7 @@ const ProtocolEditor = (() => {
     <div class="health-check-options">${field('healthCheckMaxFailed', '连续失败次数（0 使用默认）', v.healthCheckMaxFailed ?? 0, 'number', 'min="0" max="1000" step="1"')}</div>
     <div class="subdomain-field">${field('subdomain', '子域名（可选）', v.subdomain || '')}</div>
     <p class="subdomain-field small-note span-2">至少填写一个自定义域名或子域名；子域名需要在服务端配置后缀。</p>
+    <div class="http-routing-field span-2">${field('hostHeaderRewrite', '转发时重写 Host（可选）', v.hostHeaderRewrite || '', 'text', 'maxlength="512" placeholder="例如 internal.example.com"')}</div>
     <div class="tcpmux-field"><label>多路复用器<select name="multiplexer"><option value="" ${!v.multiplexer ? 'selected' : ''}>默认 · httpconnect</option><option value="httpconnect" ${v.multiplexer === 'httpconnect' ? 'selected' : ''}>httpconnect</option></select></label></div>
     <p class="tcpmux-field small-note span-2">TCPMUX 自定义域名支持 * 和 *.example.com。</p>
     <div class="tcpmux-field">${field('httpUser', 'HTTP 认证用户名（可选）', v.httpUser || '')}</div>
@@ -141,6 +142,7 @@ const ProtocolEditor = (() => {
   visible(form, '.port-field', ['tcp', 'udp'].includes(type));
   visible(form, '.domain-field', ['http', 'https', 'tcpmux'].includes(type));
   visible(form, '.subdomain-field', ['http', 'https', 'tcpmux'].includes(type));
+  visible(form, '.http-routing-field', type === 'http');
   visible(form, '.probe-field', ['http', 'https'].includes(type));
   visible(form, '.health-check-field', !visitor);
   visible(form, '.health-check-options', !visitor && f.healthCheckType.value !== '');
@@ -205,6 +207,7 @@ const ProtocolEditor = (() => {
    result.subdomain = val('subdomain').trim();
   } else result.subdomain = '';
   if (['http', 'https'].includes(type)) { result.probePath = val('probePath').trim(); result.probeMethod = val('probeMethod'); }
+  result.hostHeaderRewrite = type === 'http' ? val('hostHeaderRewrite').trim() : '';
   if (paired) {
    result.secret = val('secret');
    if (visitor) { result.serverName = val('serverName').trim(); result.serverUser = val('serverUser').trim(); }
