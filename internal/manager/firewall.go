@@ -1,3 +1,7 @@
+// The nftables rule layout is adapted from FRP Manager's panel/firewall.go
+// (https://github.com/Gogowwww/frp-manager), licensed under Apache-2.0.
+// KurumiFRP changes it to use an explicit port set, a per-profile table and
+// manual application. The license text is in internal/embedded/LICENSE-frp.
 package manager
 
 import (

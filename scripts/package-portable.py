@@ -59,6 +59,7 @@ def main():
             with tarfile.open(path, "w:gz") as tar:
                 add_bytes(tar, "kurumifrp", binary.read_bytes(), 0o755)
                 add_bytes(tar, "README.txt", README.encode("utf-8"), 0o644)
+                add_bytes(tar, "NOTICE", (ROOT / "internal/embedded/NOTICE").read_bytes(), 0o644)
                 add_bytes(tar, "LICENSE-frp", (ROOT / "internal/embedded/LICENSE-frp").read_bytes(), 0o644)
             print(f"Built {path.name}", flush=True)
 
