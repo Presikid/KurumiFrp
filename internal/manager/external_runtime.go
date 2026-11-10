@@ -39,6 +39,9 @@ func childEnv(extra []string) []string {
 }
 
 func (b *externalRuntime) Verify(parent context.Context, target string, config RuntimeConfig) (string, error) {
+	if config.ServerAccessMode != "" || strings.TrimSpace(config.ServerAccessList) != "" {
+		return "", fmt.Errorf("控制入口来源限制仅支持内嵌服务端")
+	}
 	f, err := os.CreateTemp(b.dir, "verify-*.toml")
 	if err != nil {
 		return "", err
@@ -82,6 +85,9 @@ func (b *externalRuntime) Verify(parent context.Context, target string, config R
 }
 
 func (b *externalRuntime) Start(target string, config RuntimeConfig, output io.Writer) (RuntimeInstance, error) {
+	if config.ServerAccessMode != "" || strings.TrimSpace(config.ServerAccessList) != "" {
+		return nil, fmt.Errorf("控制入口来源限制仅支持内嵌服务端")
+	}
 	cmd := exec.Command(target, "-c", config.configPath)
 	childprocess.Configure(cmd)
 	cmd.Env = childEnv(config.Rendered.Env)

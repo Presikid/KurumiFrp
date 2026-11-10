@@ -151,6 +151,8 @@ type Service struct {
 	rc *controller.ResourceController
 	// Each service has its own counter, including when metrics endpoints are off.
 	trafficCounter *traffic.ServerCounter
+	// Optional instance-owned admission policy for frp control connections.
+	allowControlConnection func(net.Addr) bool
 
 	// web server for dashboard UI and apis
 	webServer     *httppkg.Server
@@ -196,6 +198,10 @@ type ServiceOptions struct {
 	// TrafficRecorder receives the same forwarding deltas as the service counter.
 	// Supply a distinct recorder per service unless aggregate totals are intended.
 	TrafficRecorder TrafficRecorder
+	// AllowControlConnection is called for each connection to the frp control
+	// listener, including work and visitor connections. It must be concurrent-
+	// safe, prompt and non-panicking. It does not filter public proxy traffic.
+	AllowControlConnection func(net.Addr) bool
 	// OnWorkerPanic enables instance-scoped worker recovery and notification.
 	// It must be concurrent-safe, return promptly, and not panic. It receives no
 	// panic value and must cause the owning instance to stop.
@@ -258,11 +264,12 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 	baseWorkCtx, workCancel := context.WithCancel(context.Background())
 	workCtx := xlog.NewContext(lifetime.WithScope(baseWorkCtx, workScope), xl)
 	svr = &Service{
-		xl:             xl,
-		ctlManager:     NewControlManager(clientRegistry),
-		clientRegistry: clientRegistry,
-		pxyManager:     proxy.NewManager(),
-		pluginManager:  plugin.NewManagerWithLogger(xl),
+		xl:                     xl,
+		ctlManager:             NewControlManager(clientRegistry),
+		clientRegistry:         clientRegistry,
+		allowControlConnection: options.AllowControlConnection,
+		pxyManager:             proxy.NewManager(),
+		pluginManager:          plugin.NewManagerWithLogger(xl),
 		rc: &controller.ResourceController{
 			VisitorManager:  visitor.NewManager(),
 			TrafficRecorder: &serviceTrafficRecorder{counter: trafficCounter, observer: options.TrafficRecorder},
@@ -762,6 +769,10 @@ func (svr *Service) closeResources() {
 }
 
 func (svr *Service) handleConnection(ctx context.Context, conn net.Conn, internal bool, session io.Closer) {
+	if svr.allowControlConnection != nil && !svr.allowControlConnection(conn.RemoteAddr()) {
+		_ = conn.Close()
+		return
+	}
 	xl := xlog.FromContextSafe(ctx)
 
 	acceptedConn, err := svr.acceptConnection(ctx, conn)

@@ -306,7 +306,7 @@ func (a *App) resolveRuntime(kind string) (string, error) {
 func runtimeConfig(i Instance, r Rendered, configPath string) RuntimeConfig {
 	r.Env = append([]string(nil), r.Env...)
 	r.Secrets = append([]string(nil), r.Secrets...)
-	return RuntimeConfig{InstanceID: i.ID, Kind: i.Kind, Rendered: r, configPath: configPath}
+	return RuntimeConfig{InstanceID: i.ID, Kind: i.Kind, Rendered: r, ServerAccessMode: i.ServerAccessMode, ServerAccessList: i.ServerAccessList, configPath: configPath}
 }
 
 func (a *App) verify(i Instance, r Rendered) (string, error) {
@@ -317,6 +317,9 @@ func (a *App) verify(i Instance, r Rendered) (string, error) {
 	return a.verifyRuntime(context.Background(), target, i, r)
 }
 func (a *App) verifyRuntime(parent context.Context, target string, i Instance, r Rendered) (string, error) {
+	if err := a.checkControlAccessBackend(i); err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
 	output, err := a.runtime.Verify(ctx, target, runtimeConfig(i, r, ""))
@@ -378,6 +381,9 @@ func (a *App) startPrepared(i Instance, r Rendered, target, configPath, coreID s
 func (a *App) startPreparedWithSource(i Instance, r Rendered, target, configPath, coreID string, status *privateStatus, autoStart bool) error {
 	if a.closing {
 		return fmt.Errorf("工作台正在关闭")
+	}
+	if err := a.checkControlAccessBackend(i); err != nil {
+		return err
 	}
 	if p := a.procs[i.ID]; p.active() {
 		return fmt.Errorf("实例正在运行，请明确选择重启应用")

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
@@ -56,6 +57,9 @@ type Server struct {
 type ServerOptions struct {
 	LogSink         *xlog.Sink
 	TrafficRecorder server.TrafficRecorder
+	// AllowControlConnection filters peers of frp's control listener only.
+	// It must be concurrent-safe, prompt, and must not panic.
+	AllowControlConnection func(net.Addr) bool
 	// OnPanic notifies the owner of a scoped worker or server Run panic. It
 	// must be concurrent-safe, return promptly, and not panic.
 	OnPanic func()
@@ -155,9 +159,10 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	svc, err := server.NewServiceWithOptions(s.config, server.ServiceOptions{
-		LogSink:         s.options.LogSink,
-		TrafficRecorder: s.options.TrafficRecorder,
-		OnWorkerPanic:   s.options.OnPanic,
+		LogSink:                s.options.LogSink,
+		TrafficRecorder:        s.options.TrafficRecorder,
+		AllowControlConnection: s.options.AllowControlConnection,
+		OnWorkerPanic:          s.options.OnPanic,
 	})
 	if err != nil {
 		cancel()

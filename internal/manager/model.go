@@ -34,6 +34,8 @@ type Instance struct {
 	SubDomainHost         string `json:"subDomainHost,omitempty"`
 	MaxPortsPerClient     int    `json:"maxPortsPerClient,omitempty"`
 	ServerAllowedPorts    string `json:"serverAllowedPorts,omitempty"`
+	ServerAccessMode      string `json:"serverAccessMode,omitempty"`
+	ServerAccessList      string `json:"serverAccessList,omitempty"`
 	ProxyBindAddr         string `json:"proxyBindAddr,omitempty"`
 	VhostHTTPTimeout      int    `json:"vhostHTTPTimeout,omitempty"`
 	UserConnTimeout       int    `json:"userConnTimeout,omitempty"`
