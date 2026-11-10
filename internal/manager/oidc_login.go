@@ -22,6 +22,7 @@ type oidcFlow struct {
 	nonce           string
 	revision        uint64
 	accountRevision uint64
+	bindings        []oidcBinding
 	expires         time.Time
 }
 
@@ -148,7 +149,7 @@ func (a *App) oidcStart(w http.ResponseWriter, r *http.Request) {
 	}
 	config := oauth2.Config{ClientID: cfg.ClientID, Endpoint: endpoint, RedirectURL: scheme + "://" + r.Host + "/api/oidc/callback", Scopes: scopes}
 	state, nonce, verifier := randomHex(32), randomHex(32), oauth2.GenerateVerifier()
-	flow := oidcFlow{provider: provider, client: client, oauth: config, verifier: verifier, nonce: nonce, revision: cfg.Revision, accountRevision: accountRevision, expires: time.Now().Add(5 * time.Minute)}
+	flow := oidcFlow{provider: provider, client: client, oauth: config, verifier: verifier, nonce: nonce, revision: cfg.Revision, accountRevision: accountRevision, bindings: append([]oidcBinding{}, cfg.Bindings...), expires: time.Now().Add(5 * time.Minute)}
 	address := config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("nonce", nonce))
 	if !validPublicHTTPSURL(address) {
 		fail(w, http.StatusBadGateway, fmt.Errorf("身份提供方授权地址无效"))
@@ -240,6 +241,32 @@ func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		failRecorded()
 		return
 	}
+	// Some providers put email claims only in UserInfo. Query it only when an
+	// email binding could be needed, never to override an explicit unverified
+	// claim, and require the response to identify the same verified subject.
+	subjectBound, emailBound := false, false
+	for _, binding := range flow.bindings {
+		if binding.Kind == "" && binding.Subject == idToken.Subject {
+			subjectBound = true
+		}
+		if binding.Kind == "email" {
+			emailBound = true
+		}
+	}
+	if !subjectBound && emailBound && (claims.Email == "" || claims.EmailVerified == nil) &&
+		(claims.EmailVerified == nil || *claims.EmailVerified) && tokens.AccessToken != "" && validPublicHTTPSURL(flow.provider.UserInfoEndpoint()) {
+		info, infoErr := flow.provider.UserInfo(ctx, oauth2.StaticTokenSource(tokens))
+		if infoErr == nil && info != nil && info.Subject == idToken.Subject {
+			var infoClaims struct {
+				Email         string `json:"email"`
+				EmailVerified *bool  `json:"email_verified"`
+			}
+			if info.Claims(&infoClaims) == nil && infoClaims.EmailVerified != nil && *infoClaims.EmailVerified &&
+				(claims.Email == "" || claims.Email == infoClaims.Email) {
+				claims.Email, claims.EmailVerified = infoClaims.Email, infoClaims.EmailVerified
+			}
+		}
+	}
 	a.auth.mu.Lock()
 	select {
 	case <-a.quit:
@@ -261,8 +288,8 @@ func (a *App) oidcCallback(w http.ResponseWriter, r *http.Request) {
 			emailAccountID = binding.AccountID
 		}
 	}
-	// A subject binding always wins over an email binding. Email is accepted
-	// only from this verified ID token, with an explicit verified claim.
+	// A subject binding always wins over an email binding. Email requires an
+	// explicit verified claim from the ID token or matching UserInfo response.
 	if accountID == "" {
 		accountID = emailAccountID
 	}
