@@ -6,12 +6,18 @@ import (
 )
 
 func renderProtocolInstance(b *strings.Builder, i Instance) error {
+	if i.TransportMuxDisabled {
+		fmt.Fprintln(b, "transport.tcpMux = false")
+	}
 	if i.Kind == "frpc" {
 		if i.ClientTransport != "" && i.ClientTransport != "tcp" {
 			fmt.Fprintf(b, "transport.protocol = %s\n", quote(i.ClientTransport))
 		}
 		if i.User != "" {
 			fmt.Fprintf(b, "user = %s\n", quote(i.User))
+		}
+		if i.ClientPoolCount > 0 {
+			fmt.Fprintf(b, "transport.poolCount = %d\n", i.ClientPoolCount)
 		}
 		if i.NatHoleSTUNServer != "" {
 			fmt.Fprintf(b, "natHoleStunServer = %s\n", quote(i.NatHoleSTUNServer))
@@ -48,6 +54,9 @@ func renderProtocolInstance(b *strings.Builder, i Instance) error {
 	}
 	if i.UserConnTimeout > 0 {
 		fmt.Fprintf(b, "userConnTimeout = %d\n", i.UserConnTimeout)
+	}
+	if i.ServerMaxPoolCount > 0 {
+		fmt.Fprintf(b, "transport.maxPoolCount = %d\n", i.ServerMaxPoolCount)
 	}
 	if i.MaxPortsPerClient > 0 {
 		fmt.Fprintf(b, "maxPortsPerClient = %d\n", i.MaxPortsPerClient)

@@ -209,6 +209,10 @@ func validateProtocolInstance(i Instance) error {
 		(i.Kind != "frps" && (i.VhostHTTPTimeout != 0 || i.UserConnTimeout != 0)) {
 		return fmt.Errorf("服务端超时须为 0–86400 秒；0 使用默认值")
 	}
+	if i.ClientPoolCount < 0 || i.ClientPoolCount > 10000 || i.ServerMaxPoolCount < 0 || i.ServerMaxPoolCount > 10000 ||
+		(i.Kind != "frpc" && i.ClientPoolCount != 0) || (i.Kind != "frps" && i.ServerMaxPoolCount != 0) {
+		return fmt.Errorf("连接池数量须为 0–10000，且适用于对应的实例类型")
+	}
 	if _, err := parseServerAllowedPorts(i.ServerAllowedPorts); err != nil {
 		return err
 	}

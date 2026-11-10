@@ -37,6 +37,9 @@ type Instance struct {
 	ProxyBindAddr         string `json:"proxyBindAddr,omitempty"`
 	VhostHTTPTimeout      int    `json:"vhostHTTPTimeout,omitempty"`
 	UserConnTimeout       int    `json:"userConnTimeout,omitempty"`
+	ClientPoolCount       int    `json:"clientPoolCount,omitempty"`
+	ServerMaxPoolCount    int    `json:"serverMaxPoolCount,omitempty"`
+	TransportMuxDisabled  bool   `json:"transportMuxDisabled,omitempty"`
 }
 
 func (i Instance) proxyBindHost() string {
