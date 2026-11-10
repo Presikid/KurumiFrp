@@ -33,7 +33,7 @@ func (*embeddedRuntime) runtimeMode() string { return "embedded" }
 
 func (*embeddedRuntime) SupportsControlAccess() bool { return true }
 
-func (*embeddedRuntime) Resolve(kind, _ string) (string, error) {
+func (*embeddedRuntime) Resolve(kind string) (string, error) {
 	if embeddedCleanupUnknown.Load() {
 		return "", errors.New("内嵌核心清理状态未知，请重启工作台")
 	}
@@ -110,7 +110,7 @@ func (*embeddedRuntime) Verify(ctx context.Context, target string, cfg RuntimeCo
 }
 
 func (b *embeddedRuntime) Start(target string, cfg RuntimeConfig, output io.Writer) (RuntimeInstance, error) {
-	resolved, err := b.Resolve(cfg.Kind, "")
+	resolved, err := b.Resolve(cfg.Kind)
 	if err != nil {
 		return nil, err
 	}

@@ -32,7 +32,6 @@ type process struct {
 	done                chan struct{}
 	status              RuntimeStatus
 	logs                *logBuffer
-	coreID              string
 	appliedConfig       string
 	appliedDigest       string
 	appliedSecretDigest string
@@ -297,7 +296,7 @@ func (p *process) viewLocked() RuntimeStatus {
 }
 
 func (a *App) resolveRuntime(kind string) (string, error) {
-	return a.runtime.Resolve(kind, a.activeCoreID())
+	return a.runtime.Resolve(kind)
 }
 
 func runtimeConfig(i Instance, r Rendered) RuntimeConfig {
@@ -344,17 +343,17 @@ func (a *App) start(i Instance, r Rendered) error {
 	if e != nil {
 		return e
 	}
-	return a.startPrepared(i, r, target, a.activeCoreID())
+	return a.startPrepared(i, r, target)
 }
 
 // a.mu protects final publication from concurrent shutdown or draft changes.
-func (a *App) startPrepared(i Instance, r Rendered, target, coreID string) error {
-	return a.startPreparedWithSource(i, r, target, coreID, false)
+func (a *App) startPrepared(i Instance, r Rendered, target string) error {
+	return a.startPreparedWithSource(i, r, target, false)
 }
 
 // startPreparedWithSource is called with a.mu held. Automatic restoration
 // records later asynchronous startup failures against this generation.
-func (a *App) startPreparedWithSource(i Instance, r Rendered, target, coreID string, autoStart bool) error {
+func (a *App) startPreparedWithSource(i Instance, r Rendered, target string, autoStart bool) error {
 	if a.closing {
 		return fmt.Errorf("工作台正在关闭")
 	}
@@ -364,7 +363,7 @@ func (a *App) startPreparedWithSource(i Instance, r Rendered, target, coreID str
 	if p := a.procs[i.ID]; p.active() {
 		return fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
-	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), coreID: coreID, appliedConfig: r.Text, appliedDigest: r.Digest, appliedSecretDigest: r.SecretDigest, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
+	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), appliedConfig: r.Text, appliedDigest: r.Digest, appliedSecretDigest: r.SecretDigest, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
 	for _, tunnel := range a.store.DB.State.clone().Tunnels {
 		if tunnel.InstanceID == i.ID && tunnel.Enabled {
 			p.appliedTunnels[tunnel.ID] = tunnel

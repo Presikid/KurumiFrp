@@ -23,7 +23,7 @@ type RuntimeConfig struct {
 
 // RuntimeBackend selects, validates and starts runtime instances. Resolve is
 // called under the app lock: it must be fast and return the same
-// opaque target while that kind/core selection is unchanged. Start receives a
+// opaque target while the backend remains unchanged. Start receives a
 // verified configuration for that target. Methods must support concurrent
 // calls for different instances. Verify must respect cancellation. Start must
 // return promptly and must not call back into App; an error means it left no
@@ -39,7 +39,7 @@ type RuntimeConfig struct {
 // client/server with the supplied writer. Its handle owns cancellation and
 // resource cleanup; do not use the request context for the instance lifetime.
 type RuntimeBackend interface {
-	Resolve(kind, coreID string) (target string, err error)
+	Resolve(kind string) (target string, err error)
 	Verify(ctx context.Context, target string, config RuntimeConfig) (output string, err error)
 	Start(target string, config RuntimeConfig, output io.Writer) (RuntimeInstance, error)
 }

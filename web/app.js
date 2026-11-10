@@ -75,7 +75,7 @@ paintTransferNotice();
 function toast(text) { $('#toast').textContent = text; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 8000); }
 function showDiff(v) {
  $('#diff-title').textContent = v.instanceName + ' · 配置差异';
- $('#diff-summary').textContent = '新增 '+v.addedCount+' 行 · 移除 '+v.removedCount+' 行'+(v.secretChanged?' · 认证凭据已变化':'')+(v.coreChanged?' · 核心已变化':'')+(v.orderChanged?' · 仅顺序变化':'');
+ $('#diff-summary').textContent = '新增 '+v.addedCount+' 行 · 移除 '+v.removedCount+' 行'+(v.secretChanged?' · 认证凭据已变化':'')+(v.orderChanged?' · 仅顺序变化':'');
  const lines=[...(v.removed||[]).map(x=>'- '+x),...(v.added||[]).map(x=>'+ '+x)];
  $('#diff-content').textContent=(lines.join('\n')||'没有可显示的行变化')+(v.truncated?'\n差异显示已截断':'');
  stopRefreshPolling();

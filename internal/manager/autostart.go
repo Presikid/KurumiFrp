@@ -57,7 +57,7 @@ func (a *App) recordAutoStartFailureLocked(ctx context.Context, req runtimeReque
 	}
 	message := "请手动校验配置后重试"
 	if a.store.DB.Revision != req.Revision {
-		message = "自动恢复期间配置或核心已变化，请检查后手动启动"
+		message = "自动恢复期间配置已变化，请检查后手动启动"
 	} else if len(err.Error()) > 4096 {
 		message = "失败信息过长，已隐藏；请手动校验配置后重试"
 	} else if safe := safeStatusText(err.Error(), snapshot.rendered.Secrets); safe != "" {
@@ -84,5 +84,5 @@ func (a *App) restoreOne(snapshot runtimeSnapshot, op *runtimeOperation) error {
 	}
 	// Scheduled launches have their own failure state; do not attribute them
 	// to restoration merely because the same launch helper is shared.
-	return a.startPreparedWithSource(snapshot.instance, snapshot.rendered, snapshot.target, snapshot.coreID, snapshot.scheduleVersion == "")
+	return a.startPreparedWithSource(snapshot.instance, snapshot.rendered, snapshot.target, snapshot.scheduleVersion == "")
 }
