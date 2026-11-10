@@ -267,6 +267,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r = withPrincipal(r, p)
+		if r.URL.Path == "/api/passkeys" || strings.HasPrefix(r.URL.Path, "/api/passkeys/register/") || r.URL.Path == "/api/passkeys/delete" {
+			a.passkeysAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/oidc/config" {
 			a.oidcSettingsAPI(w, r)
 			return

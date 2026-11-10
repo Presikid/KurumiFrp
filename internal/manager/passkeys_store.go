@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 )
 
@@ -24,6 +25,7 @@ type passkeyRecord struct {
 	Name      string              `json:"name"`
 	RPID      string              `json:"rpId"`
 	CreatedAt string              `json:"createdAt"`
+	Flags     uint8               `json:"flags"`
 	Credential webauthn.Credential `json:"credential"`
 }
 
@@ -47,8 +49,10 @@ func validPasskeyRecords(records []passkeyRecord) bool {
 	counts := make(map[string]int)
 	for _, record := range records {
 		c := record.Credential
+		flags := webauthn.NewCredentialFlags(protocol.AuthenticatorFlags(record.Flags))
 		if !accountIDPattern.MatchString(record.AccountID) || !oidcTextOK(record.Name, 80) || record.RPID != passkeyRPID ||
-			len(c.ID) == 0 || len(c.ID) > 1024 || len(c.PublicKey) == 0 || len(c.PublicKey) > 8192 || ids[string(c.ID)] {
+			len(c.ID) == 0 || len(c.ID) > 1024 || len(c.PublicKey) == 0 || len(c.PublicKey) > 8192 || ids[string(c.ID)] ||
+			c.Flags.UserPresent != flags.UserPresent || c.Flags.UserVerified != flags.UserVerified || c.Flags.BackupEligible != flags.BackupEligible || c.Flags.BackupState != flags.BackupState {
 			return false
 		}
 		if _, err := time.Parse(time.RFC3339, record.CreatedAt); err != nil {
@@ -81,6 +85,9 @@ func loadPasskeys(dir string) *passkeyStore {
 	if decodeStrictJSON(content, &file) != nil || file.Version != 1 || file.Revision == 0 || file.Revision > maxJSONRevision || !validPasskeyRecords(file.Records) {
 		s.loadErr = fmt.Errorf("Passkey 文件无效，原文件已保留")
 		return s
+	}
+	for i := range file.Records {
+		file.Records[i].Credential.Flags = webauthn.NewCredentialFlags(protocol.AuthenticatorFlags(file.Records[i].Flags))
 	}
 	s.data = file
 	return s
