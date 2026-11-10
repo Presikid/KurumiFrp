@@ -275,8 +275,7 @@ func (a *App) runRuntimeOperation(w http.ResponseWriter, req runtimeRequest, val
 		failure(http.StatusBadRequest, err)
 		return
 	}
-	// Do not stop a healthy process when its replacement became stale while the
-	// external verifier was running.
+	// Do not stop a healthy instance when its replacement became stale during verification.
 	a.mu.Lock()
 	status, err = a.checkRuntimeSnapshot(op.ctx, snapshot)
 	a.mu.Unlock()
@@ -291,44 +290,18 @@ func (a *App) runRuntimeOperation(w http.ResponseWriter, req runtimeRequest, val
 		reply(w, http.StatusOK, map[string]any{"ok": true, "output": output, "note": "仅验证配置，不证明网络连通"})
 		return
 	}
-	runtimeRendered, private, err := a.preparePrivateStatus(op.ctx, snapshot.target, snapshot.instance, snapshot.rendered)
-	if err != nil {
-		failure(http.StatusBadRequest, err)
-		return
-	}
-	defer func() {
-		if !started {
-			private.cleanup()
-		}
-	}()
-	// Status setup invokes a verifier outside the lock too. Recheck before
-	// stopping the existing process if the draft/core changed during it.
-	a.mu.Lock()
-	status, err = a.checkRuntimeSnapshot(op.ctx, snapshot)
-	a.mu.Unlock()
-	if err != nil {
-		failure(status, err)
-		return
-	}
 	if req.Action == "restart" {
 		if err = stopProcess(snapshot.process); err != nil {
 			failure(http.StatusBadRequest, err)
 			return
 		}
 	}
-	// Verification deliberately uses an isolated staging file. Do not overwrite
-	// the file of a running process before validation and an explicit restart.
-	configPath, err := a.prepareRuntimeConfig(snapshot.instance.ID, runtimeRendered)
-	if err != nil {
-		failure(http.StatusBadRequest, err)
-		return
-	}
-	// A draft/core switch or shutdown can also happen during the stop wait or
-	// file preparation. Publish a process only after a final, locked recheck.
+	// A draft change or shutdown can happen during the stop wait. Publish a
+	// process only after a final, locked recheck.
 	a.mu.Lock()
 	status, err = a.checkRuntimeSnapshot(op.ctx, snapshot)
 	if err == nil {
-		err = a.startPrepared(snapshot.instance, runtimeRendered, snapshot.target, configPath, snapshot.coreID, private)
+		err = a.startPrepared(snapshot.instance, snapshot.rendered, snapshot.target, snapshot.coreID)
 		if err != nil {
 			status = http.StatusBadRequest
 		} else {

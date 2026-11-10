@@ -166,7 +166,7 @@ func (a *App) healthAPI(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			observed = readRegistrations(ctx, p.registrationReader, p.privateStatus, queries)
+			observed = readRegistrations(ctx, p.registrationReader, queries)
 		}()
 	}
 	for _, t := range tunnels {

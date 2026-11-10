@@ -77,34 +77,12 @@ func (a *App) restoreOne(snapshot runtimeSnapshot, op *runtimeOperation) error {
 		return fmt.Errorf("配置校验失败：%w", err)
 	}
 	a.mu.Lock()
-	_, err := a.checkRuntimeSnapshot(op.ctx, snapshot)
-	a.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	runtimeRendered, private, err := a.preparePrivateStatus(op.ctx, snapshot.target, snapshot.instance, snapshot.rendered)
-	if err != nil {
-		return err
-	}
-	started := false
-	defer func() {
-		if !started {
-			private.cleanup()
-		}
-	}()
-	configPath, err := a.prepareRuntimeConfig(snapshot.instance.ID, runtimeRendered)
-	if err != nil {
-		return fmt.Errorf("无法写入运行配置：%w", err)
-	}
-	a.mu.Lock()
 	defer a.mu.Unlock()
-	_, err = a.checkRuntimeSnapshot(op.ctx, snapshot)
+	_, err := a.checkRuntimeSnapshot(op.ctx, snapshot)
 	if err != nil {
 		return err
 	}
 	// Scheduled launches have their own failure state; do not attribute them
 	// to restoration merely because the same launch helper is shared.
-	err = a.startPreparedWithSource(snapshot.instance, runtimeRendered, snapshot.target, configPath, snapshot.coreID, private, snapshot.scheduleVersion == "")
-	started = err == nil
-	return err
+	return a.startPreparedWithSource(snapshot.instance, snapshot.rendered, snapshot.target, snapshot.coreID, snapshot.scheduleVersion == "")
 }
