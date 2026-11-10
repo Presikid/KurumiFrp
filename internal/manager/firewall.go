@@ -354,3 +354,42 @@ type firewallSeen struct {
 	Protocol string `json:"protocol"`
 	Port     int    `json:"port"`
 }
+
+// Accept a text snapshot without applying or saving a firewall configuration.
+// Comments begin with #; all other entries must be IP addresses or CIDRs.
+func (a *App) firewallImportAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost || r.URL.RawQuery != "" {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if a.firewall == nil || !firewallSupported() {
+		fail(w, 400, fmt.Errorf("当前系统不支持端口访问控制"))
+		return
+	}
+	var req struct {
+		Text string `json:"text"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	if len(req.Text) > firewallMaxSourceBytes {
+		fail(w, 400, fmt.Errorf("来源文件超过大小上限"))
+		return
+	}
+	lines := strings.Split(strings.TrimPrefix(req.Text, "\ufeff"), "\n")
+	for index, line := range lines {
+		line, _, _ = strings.Cut(line, "#")
+		lines[index] = strings.TrimSpace(line)
+	}
+	policy, err := parseSourceAccess("block", strings.Join(lines, "\n"), firewallMaxSourceBytes, firewallMaxSources)
+	if err != nil {
+		fail(w, 400, err)
+		return
+	}
+	prefixes := make([]string, 0, len(policy.prefixes))
+	for _, prefix := range policy.prefixes {
+		prefixes = append(prefixes, prefix.String())
+	}
+	reply(w, 200, map[string]any{"prefixes": prefixes})
+}
