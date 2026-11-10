@@ -37,6 +37,7 @@ type localAccount struct {
 	Instances       []string      `json:"instances"`
 	ControlInstances *[]string     `json:"controlInstances,omitempty"`
 	AllowLogs       bool          `json:"allowLogs,omitempty"`
+	LogInstances    *[]string     `json:"logInstances,omitempty"`
 	RemoteInstances []remoteGrant `json:"remoteInstances,omitempty"`
 	Salt            string        `json:"salt"`
 	Hash            string        `json:"hash"`
@@ -61,6 +62,7 @@ type accountView struct {
 	Instances        []string `json:"instances"`
 	ControlInstances []string `json:"controlInstances"`
 	AllowLogs        bool     `json:"allowLogs"`
+	LogInstances     []string `json:"logInstances"`
 }
 
 type principalContextKey struct{}
@@ -102,6 +104,9 @@ func loadAccounts(dir string) ([]localAccount, uint64, error) {
 		if !accountIDPattern.MatchString(u.ID) || !accountNamePattern.MatchString(u.Username) || !validRole(u.Role) || names[name] || ids[u.ID] || saltErr != nil || len(salt) != 16 || hashErr != nil || len(hash) != 32 || !validGrants(u.Instances) || (u.Role == "admin" && len(u.Instances) != 0) || (u.ControlInstances != nil && (!validGrants(*u.ControlInstances) || !subsetGrants(*u.ControlInstances, u.Instances) || (u.Role != "operator" && len(*u.ControlInstances) != 0))) {
 			return nil, 0, fmt.Errorf("本地账户文件无效")
 		}
+		if u.LogInstances != nil && (!validGrants(*u.LogInstances) || !subsetGrants(*u.LogInstances, u.Instances) || ((u.Role == "admin" || !u.AllowLogs) && len(*u.LogInstances) != 0)) {
+			return nil, 0, fmt.Errorf("本地账户文件中的日志授权无效")
+		}
 		names[name], ids[u.ID] = true, true
 		file.Accounts[i].gate = &sync.RWMutex{}
 	}
@@ -137,6 +142,19 @@ func subsetGrants(selected, allowed []string) bool {
 	return true
 }
 
+func retainGrants(selected, allowed []string) []string {
+	retained := make([]string, 0, len(selected))
+	for _, id := range selected {
+		for _, candidate := range allowed {
+			if id == candidate {
+				retained = append(retained, id)
+				break
+			}
+		}
+	}
+	return retained
+}
+
 // Missing controlInstances preserves the previous operator behavior.
 func effectiveControlInstances(user localAccount) []string {
 	if user.Role != "operator" {
@@ -146,6 +164,17 @@ func effectiveControlInstances(user localAccount) []string {
 		return append([]string{}, user.Instances...)
 	}
 	return append([]string{}, (*user.ControlInstances)...)
+}
+
+// Missing logInstances retains the previous all-visible-instances grant.
+func effectiveLogInstances(user localAccount) []string {
+	if user.Role == "admin" || !user.AllowLogs {
+		return []string{}
+	}
+	if user.LogInstances == nil {
+		return append([]string{}, user.Instances...)
+	}
+	return append([]string{}, (*user.LogInstances)...)
 }
 
 // Caller holds auth.mu. Publishing in-memory state only follows a successful write.
@@ -198,13 +227,12 @@ func (a *App) clearInstanceGrantsLocked(instanceID string) error {
 		}
 		users[i].Instances = grants
 		if user.ControlInstances != nil {
-			controls := make([]string, 0, len(*user.ControlInstances))
-			for _, id := range *user.ControlInstances {
-				if instanceID != "" && id != instanceID {
-					controls = append(controls, id)
-				}
-			}
+			controls := retainGrants(*user.ControlInstances, grants)
 			users[i].ControlInstances = &controls
+		}
+		if user.LogInstances != nil {
+			logs := retainGrants(*user.LogInstances, grants)
+			users[i].LogInstances = &logs
 		}
 	}
 	if !changed {
@@ -309,7 +337,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		views := make([]accountView, 0, len(a.auth.accounts))
 		for _, u := range a.auth.accounts {
-			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowLogs: u.AllowLogs})
+			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u)})
 		}
 		revision := a.auth.accountsRevision
 		a.auth.mu.Unlock()
@@ -330,6 +358,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		Instances        []string  `json:"instances"`
 		ControlInstances *[]string `json:"controlInstances"`
 		AllowLogs        *bool     `json:"allowLogs"`
+		LogInstances     *[]string `json:"logInstances"`
 		Password         string    `json:"password"`
 	}
 	if err := decode(w, r, &req); err != nil {
@@ -348,6 +377,10 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.ControlInstances != nil && (!validGrants(*req.ControlInstances) || !subsetGrants(*req.ControlInstances, req.Instances) || (req.Role != "operator" && len(*req.ControlInstances) != 0)) {
 			fail(w, 400, fmt.Errorf("可操作实例必须属于查看授权，且仅适用于操作员"))
+			return
+		}
+		if req.LogInstances != nil && (!validGrants(*req.LogInstances) || !subsetGrants(*req.LogInstances, req.Instances) || (req.Role == "admin" && len(*req.LogInstances) != 0)) {
+			fail(w, 400, fmt.Errorf("日志授权必须属于可查看实例"))
 			return
 		}
 		if req.Password != "" {
@@ -461,15 +494,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			} else if index >= 0 && users[index].ControlInstances != nil {
 				// Older editors omit this field. Never retain a control grant after
 				// its corresponding view grant has been removed.
-				controls := make([]string, 0, len(*users[index].ControlInstances))
-				for _, id := range *users[index].ControlInstances {
-					for _, allowed := range u.Instances {
-						if id == allowed {
-							controls = append(controls, id)
-							break
-						}
-					}
-				}
+				controls := retainGrants(*users[index].ControlInstances, u.Instances)
 				u.ControlInstances = &controls
 			}
 		}
@@ -482,6 +507,18 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if u.Role == "admin" {
 			u.AllowLogs = false // administrators already have unrestricted access
+		}
+		if u.AllowLogs {
+			if req.LogInstances != nil {
+				logs := append([]string{}, (*req.LogInstances)...)
+				u.LogInstances = &logs
+			} else if index >= 0 && users[index].LogInstances != nil {
+				logs := retainGrants(*users[index].LogInstances, u.Instances)
+				u.LogInstances = &logs
+			}
+		} else if req.LogInstances != nil && len(*req.LogInstances) != 0 {
+			fail(w, 400, fmt.Errorf("请先启用日志权限"))
+			return
 		}
 		if index < 0 {
 			u.ID = randomHex(16)
