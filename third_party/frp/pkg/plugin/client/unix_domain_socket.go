@@ -19,10 +19,12 @@ package client
 import (
 	"context"
 	"net"
+	"time"
 
 	libio "github.com/fatedier/golib/io"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
+	"github.com/fatedier/frp/pkg/util/lifetime"
 	"github.com/fatedier/frp/pkg/util/xlog"
 )
 
@@ -51,12 +53,20 @@ func NewUnixDomainSocketPlugin(_ PluginContext, options v1.ClientPluginOptions) 
 
 func (uds *UnixDomainSocketPlugin) Handle(ctx context.Context, connInfo *ConnectionInfo) {
 	xl := xlog.FromContextSafe(ctx)
-	localConn, err := net.DialUnix("unix", nil, uds.UnixAddr)
+	localConn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "unix", uds.UnixAddr.Name)
 	if err != nil {
 		xl.Warnf("dial to uds %s error: %v", uds.UnixAddr, err)
 		connInfo.Conn.Close()
 		return
 	}
+	release, ok := lifetime.Track(ctx, localConn)
+	if !ok {
+		_ = connInfo.Conn.Close()
+		return
+	}
+	defer release()
+	defer localConn.Close()
+	defer connInfo.Conn.Close()
 	if connInfo.ProxyProtocolHeader != nil {
 		if _, err := connInfo.ProxyProtocolHeader.WriteTo(localConn); err != nil {
 			localConn.Close()
