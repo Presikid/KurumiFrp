@@ -66,3 +66,10 @@ type RuntimePID interface {
 type RuntimeTrafficReader interface {
 	ReadTraffic() TrafficSnapshot
 }
+
+// RuntimeServerTrafficReader reports a server's own forwarding counters for
+// one run. It must be concurrent-safe, and each returned slice is caller-owned.
+// Its byte scope differs from RuntimeTrafficReader's client payload counters.
+type RuntimeServerTrafficReader interface {
+	ReadServerTraffic() ServerTrafficSnapshot
+}

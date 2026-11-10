@@ -15,7 +15,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 	}
 	if r.Method == http.MethodGet {
 		switch r.URL.Path {
-		case "/api/state", "/api/config", "/api/diff", "/api/traffic":
+		case "/api/state", "/api/config", "/api/diff", "/api/traffic", "/api/server-traffic":
 			return p.admin() || p.Role == "operator" || p.Role == "viewer"
 		case "/api/logs", "/api/logs/stream", "/api/registration", "/api/core", "/api/core/releases", "/api/core/release", "/api/update/status", "/api/update/releases", "/api/export", "/api/webhook", "/api/accounts", "/api/nodes":
 			return p.admin()

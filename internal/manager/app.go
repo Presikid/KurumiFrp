@@ -356,6 +356,14 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		if r.URL.Path == "/api/server-traffic" {
+			if r.Method != http.MethodGet {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			a.serverTrafficAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/traffic" {
 			if r.Method != http.MethodGet {
 				w.WriteHeader(http.StatusMethodNotAllowed)

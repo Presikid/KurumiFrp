@@ -18,7 +18,14 @@ package traffic
 import (
 	"math"
 	"sort"
+	"strings"
 	"sync"
+)
+
+const (
+	maxServerProxyEntries   = 1024
+	maxServerProxyNameBytes = 256
+	maxServerProxyTypeBytes = 32
 )
 
 // ServerProxy contains bytes recorded at the forwarding boundary for one proxy
@@ -32,9 +39,10 @@ type ServerProxy struct {
 
 // ServerSnapshot is a point-in-time view of a server instance's counters.
 type ServerSnapshot struct {
-	Received uint64        `json:"received"`
-	Sent     uint64        `json:"sent"`
-	Proxies  []ServerProxy `json:"proxies"`
+	Received         uint64        `json:"received"`
+	Sent             uint64        `json:"sent"`
+	Proxies          []ServerProxy `json:"proxies"`
+	ProxiesTruncated bool          `json:"proxiesTruncated"`
 }
 
 type serverProxyKey struct {
@@ -44,11 +52,13 @@ type serverProxyKey struct {
 // ServerCounter is an in-memory counter for one server instance. Its zero
 // value is ready to use; create a separate counter for each instance. Counts
 // persist until the owner replaces the counter, including across proxy reconnects.
+// Proxy details are bounded; totals continue counting when details are omitted.
 type ServerCounter struct {
-	mu       sync.RWMutex
-	received uint64
-	sent     uint64
-	proxies  map[serverProxyKey]ServerProxy
+	mu               sync.RWMutex
+	received         uint64
+	sent             uint64
+	proxies          map[serverProxyKey]ServerProxy
+	proxiesTruncated bool
 }
 
 // RecordTraffic records positive deltas. It can be called concurrently by the
@@ -67,17 +77,31 @@ func (c *ServerCounter) RecordTraffic(name, proxyType string, received, sent int
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.received = addSaturating(c.received, in)
+	c.sent = addSaturating(c.sent, out)
+	if len(name) > maxServerProxyNameBytes || len(proxyType) > maxServerProxyTypeBytes {
+		c.proxiesTruncated = true
+		return
+	}
 	if c.proxies == nil {
 		c.proxies = make(map[serverProxyKey]ServerProxy)
 	}
 	key := serverProxyKey{name: name, proxyType: proxyType}
-	proxy := c.proxies[key]
-	proxy.Name, proxy.Type = name, proxyType
+	proxy, exists := c.proxies[key]
+	if !exists {
+		if len(c.proxies) >= maxServerProxyEntries {
+			c.proxiesTruncated = true
+			return
+		}
+		// Keep only these bounded strings, not a potentially larger backing buffer.
+		key.name, key.proxyType = strings.Clone(name), strings.Clone(proxyType)
+		proxy.Name, proxy.Type = key.name, key.proxyType
+	} else {
+		key.name, key.proxyType = proxy.Name, proxy.Type
+	}
 	proxy.Received = addSaturating(proxy.Received, in)
 	proxy.Sent = addSaturating(proxy.Sent, out)
 	c.proxies[key] = proxy
-	c.received = addSaturating(c.received, in)
-	c.sent = addSaturating(c.sent, out)
 }
 
 func addSaturating(a, b uint64) uint64 {
@@ -92,9 +116,10 @@ func addSaturating(a, b uint64) uint64 {
 func (c *ServerCounter) Snapshot() ServerSnapshot {
 	c.mu.RLock()
 	snapshot := ServerSnapshot{
-		Received: c.received,
-		Sent:     c.sent,
-		Proxies:  make([]ServerProxy, 0, len(c.proxies)),
+		Received:         c.received,
+		Sent:             c.sent,
+		Proxies:          make([]ServerProxy, 0, len(c.proxies)),
+		ProxiesTruncated: c.proxiesTruncated,
 	}
 	for _, proxy := range c.proxies {
 		snapshot.Proxies = append(snapshot.Proxies, proxy)
@@ -115,5 +140,6 @@ func (c *ServerCounter) Reset() {
 	c.mu.Lock()
 	c.received, c.sent = 0, 0
 	c.proxies = nil
+	c.proxiesTruncated = false
 	c.mu.Unlock()
 }
