@@ -6,7 +6,7 @@
 
 计数范围取决于协议：流式传输可能包含应用协议帧，SUDP 等可能包含帧和心跳。UDP 统计的是实际记录的数据报内容，不代表服务端收到或成功转发的全部数据报。HTTP 的发送量是从代理工作连接读取的字节，不能保证已送达用户。绕过本服务端的 P2P 直连流量无法统计；经过服务端的回退转发仍按相应协议的计数范围记录。不要将这些数字视作精确的网络用量。
 
-计数从每次启动的新服务开始，不持久化、不跨运行代次累计。停止后，当前运行对象的快照仍可读取，但已接受连接的处理可能仍在退出并增加计数。下一次启动、删除实例、替换状态或退出工作台会丢弃该运行代次的数据。计数饱和于 `uint64` 上限，达到上限后不再增加；单项和总量分别饱和。
+这里的运行计数从每次启动的新服务开始，快照本身不持久化。停止后，当前运行对象的快照仍可读取，但已接受连接的处理可能仍在退出并增加计数。下一次启动、删除实例、替换状态或退出工作台会丢弃该运行代次的快照。另有按日保存的采样增量，可能不完整，详见[流量历史](TRAFFIC_HISTORY.md)。计数饱和于 `uint64` 上限，达到上限后不再增加；单项和总量分别饱和。
 
 ## API
 
@@ -34,6 +34,6 @@ The embedded `frps` collects separate per-generation forwarding-boundary counter
 
 Scope varies by protocol: stream counts may include application framing, and SUDP may also include framing and pings. UDP counts recorded datagram contents, not every datagram received or forwarded. HTTP sent counts are bytes read from the proxy work connection and may not reach the user. Direct P2P traffic bypassing this server is not counted; a relayed fallback is counted according to that forwarding protocol. These values are not precise network-usage totals.
 
-A new service starts new in-memory counters. After stop, the retained run can still be read, but accepted handlers may continue recording while they exit. Restarting the instance, deleting it, replacing state, or exiting the workspace discards that generation. Each total and proxy counter saturates independently at the `uint64` maximum.
+A new service starts new in-memory counters. After stop, the retained run can still be read, but accepted handlers may continue recording while they exit. Restarting the instance, deleting it, replacing state, or exiting the workspace discards that generation's snapshot. A separate daily history stores confirmed sample deltas with possible gaps; see [traffic history](TRAFFIC_HISTORY.md). Each total and proxy counter saturates independently at the `uint64` maximum.
 
 `GET /api/server-traffic?id=<instance ID>` requires normal authentication and permission to view that server instance. Only one `frps` ID is accepted. It returns 403 for a missing view grant, 404 for an unknown ID, 400 for invalid ID or kind, and 409 when the instance or run changes while reading. An external backend, an as-yet-unconstructed embedded service, or an absent run produces `available: false` with null totals rather than zero. `reason` is `not_started` or `source_unavailable` when unavailable. All byte counters in JSON are decimal strings to preserve `uint64` precision. The counters are copied consistently; `state` is observed after the copy and can change afterward.
