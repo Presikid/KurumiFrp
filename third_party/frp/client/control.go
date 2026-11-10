@@ -136,7 +136,10 @@ func (ctl *Control) Run(proxyCfgs []v1.ProxyConfigurer, visitorCfgs []v1.Visitor
 }
 
 func (ctl *Control) run(proxyCfgs []v1.ProxyConfigurer, visitorCfgs []v1.VisitorConfigurer, counters *traffic.BindingSnapshot) {
-	go ctl.worker()
+	go func() {
+		defer lifetime.Recover(ctl.ctx)
+		ctl.worker()
+	}()
 
 	// start all proxies
 	ctl.pm.UpdateAllWithTraffic(proxyCfgs, counters)

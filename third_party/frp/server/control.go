@@ -169,7 +169,10 @@ func (cm *ControlManager) Add(ctl *Control) error {
 		}
 		cm.ctlsByRunID[ctl.runID] = entry
 		cm.liveControls[ctl] = struct{}{}
-		go cm.trackControl(ctl)
+		go func() {
+			defer lifetime.Recover(ctl.ctx)
+			cm.trackControl(ctl)
+		}()
 		cm.mu.Unlock()
 		if old != nil {
 			old.runMu.Unlock()
@@ -390,6 +393,7 @@ func (cm *ControlManager) CloseContext(ctx context.Context) error {
 
 	for _, ctl := range ctls {
 		go func(ctl *Control) {
+			defer lifetime.Recover(ctl.ctx)
 			_ = ctl.Close()
 			cm.Remove(ctl)
 		}(ctl)
@@ -581,7 +585,10 @@ func (ctl *Control) startLocked() bool {
 		return false
 	}
 	ctl.state = controlStateRunning
-	go ctl.worker()
+	go func() {
+		defer lifetime.Recover(ctl.ctx)
+		ctl.worker()
+	}()
 	return true
 }
 

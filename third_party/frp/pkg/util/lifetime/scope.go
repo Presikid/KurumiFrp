@@ -58,6 +58,17 @@ func ReportPanic(ctx context.Context) bool {
 	return true
 }
 
+// Recover reports a panic from an owner-managed goroutine that cannot itself
+// join the scope it helps shut down. Cleanup remains the owner's responsibility.
+// Without an instance handler the original panic remains process-fatal.
+func Recover(ctx context.Context) {
+	if value := recover(); value != nil {
+		if !ReportPanic(ctx) {
+			panic(value)
+		}
+	}
+}
+
 // Go starts fn unless this context's scope is already stopping. With no scope
 // it retains normal asynchronous behavior.
 func Go(ctx context.Context, fn func()) bool {

@@ -532,7 +532,17 @@ func (svr *Service) Run(ctx context.Context) (runErr error) {
 
 	done := make(chan struct{})
 	reconnectDone = done
-	go func() { defer close(done); svr.keepControllerWorking() }()
+	go func() {
+		defer close(done)
+		if svr.workerPanic != nil {
+			defer func() {
+				if recover() != nil {
+					svr.workerPanic()
+				}
+			}()
+		}
+		svr.keepControllerWorking()
+	}()
 
 	<-svr.ctx.Done()
 	return nil
