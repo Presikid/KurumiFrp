@@ -10,7 +10,7 @@ const ProtocolEditor = (() => {
  function instance(old) {
   const v = old || {kind:'frpc', host:'127.0.0.1', port:7000, httpPort:0, httpsPort:0, autoStart:false};
   return `<h2>${old ? '编辑实例' : '新建运行实例'}</h2>
-   <p class="muted">保存草稿不会改变运行中的进程。认证令牌留空保留原值；Linux 原生服务监听小于 1024 的端口可能需要额外权限。</p>
+   <p class="muted">保存草稿不会改变运行中的实例。认证令牌留空保留原值；Linux 原生服务监听小于 1024 的端口可能需要额外权限。</p>
    <div class="form-grid">
     ${field('name', '实例名称', v.name, 'text', 'required maxlength="80"')}
     <label>实例类型<select name="kind" ${old ? 'disabled' : ''}><option value="frpc" ${v.kind === 'frpc' ? 'selected' : ''}>frpc · 客户端</option><option value="frps" ${v.kind === 'frps' ? 'selected' : ''}>frps · 服务端</option></select></label>
