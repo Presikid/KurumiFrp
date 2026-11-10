@@ -31,7 +31,7 @@ window.KurumiRecordsConfig = (() => {
     </section>
    </div>
    <section class="panel rc-webhook" aria-labelledby="webhook-title">
-    <div class="panel-title"><div><h3 id="webhook-title">Webhook 通知</h3><p>可选发送实例状态和草稿变更，支持通用 JSON、Discord、Slack 和 ntfy，默认关闭。</p></div><button data-action="webhook-settings">通知设置</button></div>
+    <div class="panel-title"><div><h3 id="webhook-title">Webhook 通知</h3><p>可选发送实例状态和草稿变更，支持通用 JSON、Discord、Slack、ntfy、Telegram 和 Gotify，默认关闭。</p></div><button data-action="webhook-settings">通知设置</button></div>
     <div class="panel-content"><p class="small-note">仅支持公网 HTTPS，不发送配置内容、密钥或日志。通知地址仅保存在本机；导入及恢复保留本机设置，新设备需要重新设置。旧版导出文件可能包含通知地址，请按凭据保管。</p></div>
    </section>
    <section class="panel" aria-labelledby="toml-import-title">
