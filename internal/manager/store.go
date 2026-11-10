@@ -39,6 +39,7 @@ type Database struct {
 	Key          string         `json:"key,omitempty"`
 	ActiveCore   *string        `json:"activeCore"`
 	Webhook      *webhookConfig `json:"webhook,omitempty"`
+	Nodes        *nodeSettings  `json:"nodes,omitempty"`
 }
 type Store struct {
 	dir      string
@@ -465,6 +466,9 @@ func newStore(dir string) (*Store, error) {
 	}
 	if e = validateStoredWebhook(s, s.DB.Webhook); e != nil {
 		return nil, fmt.Errorf("invalid local webhook settings; original retained")
+	}
+	if e = validateStoredNodes(s, s.DB.Nodes); e != nil {
+		return nil, fmt.Errorf("invalid local node settings; original retained")
 	}
 	if s.DB.Revision < 1 || s.DB.Revision > maxJSONRevision {
 		return nil, fmt.Errorf("unsupported database revision; original retained")

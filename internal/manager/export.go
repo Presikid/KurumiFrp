@@ -50,6 +50,7 @@ func (a *App) export(w http.ResponseWriter, r *http.Request) {
 	scope := r.URL.Query().Get("scope")
 	db := a.store.DB
 	db.Webhook = nil // Local notification credentials are not exported.
+	db.Nodes = nil   // Node grants and credentials stay on this device.
 	db.Format = currentDatabaseFormat
 	db.Key = base64.RawStdEncoding.EncodeToString(a.store.key)
 	db.History = append([]Snapshot{}, db.History...)
@@ -217,6 +218,13 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		db.Webhook = &local
+	}
+	// Imported node authority is ignored. Keep this device’s node settings and
+	// re-encrypt outbound credentials under the replacement data key.
+	db.Nodes, err = rewrapNodeSettings(a.store, check, a.store.DB.Nodes)
+	if err != nil {
+		fail(w, 500, fmt.Errorf("无法迁移本机节点设置，未导入配置"))
+		return
 	}
 	// The imported current revision is an untrusted concurrency token. Keep
 	// snapshot labels intact, but allocate a fresh local revision above them.

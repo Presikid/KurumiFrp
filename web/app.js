@@ -86,7 +86,13 @@ async function api(path, body, options = {}) {
  const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST',credentials:'same-origin',headers:{...(body === undefined ? {}:{'Content-Type':'application/json'}),...options.headers},body:body === undefined ? undefined:JSON.stringify(body),signal:options.signal});
  if (options.conditional && response.status === 304) return {value:null,etag:response.headers.get('ETag') || ''};
  const json = await response.json();
- if (!response.ok) {if(response.status === 401 && path !== 'login' && generation === authGeneration) showLogin(); const error = new Error(json.error || `HTTP ${response.status}`); error.status = response.status; throw error;}
+ if (!response.ok) {
+  if (response.status === 401 && path !== 'login' && generation === authGeneration) {
+   const immediate = path === 'logout' || (path === 'nodes' && body?.action === 'issue');
+   if (immediate || !window.KurumiDeferNodeLogout?.()) showLogin();
+  }
+  const error = new Error(json.error || `HTTP ${response.status}`); error.status = response.status; throw error;
+ }
  if (path === 'login' || path === 'launch-login') {resetSession(); announceSessionChange();}
  return options.conditional ? {value:json,etag:response.headers.get('ETag') || ''} : json;
 }
@@ -107,7 +113,7 @@ function stopRefreshPolling() {
 }
 function scheduleRefresh(delay) {
  stopRefreshPolling();
- if (!data || document.hidden || dialog.open || diffDialog.open || backupDialogEl?.open || webhookDialogEl?.open || healthDialog?.open || window.KurumiTOMLImport.isOpen()) return;
+ if (!data || document.hidden || dialog.open || diffDialog.open || backupDialogEl?.open || webhookDialogEl?.open || healthDialog?.open || window.KurumiTOMLImport.isOpen() || window.KurumiNodeDialog?.open) return;
  const wait = delay ?? (Object.values(data.runtime || {}).some(v => v.state === 'running') ? 5000 : 10000);
  refreshTimer = setTimeout(() => {
   refreshTimer = null;
@@ -161,7 +167,7 @@ function receiveSessionChange(signal) {
 if (authChannel) authChannel.onmessage = event => receiveSessionChange(event.data);
 window.addEventListener('storage', event => {if (event.key === authSignalKey) receiveSessionChange(event.newValue);});
 function hasSelection() {return Boolean(window.getSelection()?.toString());}
-function canSilentRender() {const content=$('#content'), active=document.activeElement;return !dialog.open && !diffDialog.open && !backupDialogEl?.open && !webhookDialogEl?.open && !healthDialog?.open && !window.KurumiTOMLImport.isOpen() && !hasSelection() && (active===content || !content.contains(active));}
+function canSilentRender() {const content=$('#content'), active=document.activeElement;return !dialog.open && !diffDialog.open && !backupDialogEl?.open && !webhookDialogEl?.open && !healthDialog?.open && !window.KurumiTOMLImport.isOpen() && !window.KurumiNodeDialog?.open && !hasSelection() && (active===content || !content.contains(active));}
 function renderPreservingScroll() {
  const x = window.scrollX, y = window.scrollY, previousSelected = selected, content = $('#content');
  const top = content.scrollTop, left = content.scrollLeft;
@@ -194,6 +200,7 @@ async function refresh(silent = false) {
    let accessChanged = false;
    if (fresh.value !== null) {
     const scope = value => JSON.stringify([value?.identity || null, (value?.state?.instances || []).map(i => i.id).sort()]);
+    const identityChanged = !!data && JSON.stringify(data.identity || null) !== JSON.stringify(fresh.value.identity || null);
     accessChanged = !!data && scope(data) !== scope(fresh.value);
     if (accessChanged) {
      ++navigationGeneration; ++registrationEpoch;
@@ -201,6 +208,7 @@ async function refresh(silent = false) {
      if (dialog.open) dialog.close(); if (diffDialog.open) diffDialog.close();
      if (backupDialogEl?.open) backupDialogEl.close(); if (webhookDialogEl?.open) webhookDialogEl.close(); if (healthDialog?.open) healthDialog.close();
      window.KurumiTOMLImport.close();
+     if (identityChanged && window.KurumiNodeDialog?.open) window.KurumiNodeDialog.close();
      registrationRequest = null; registrations = Object.create(null); registrationRevision = null; registrationProcesses = Object.create(null);
      clearTimeout(registrationExpiryTimer); registrationExpiryTimer = null;
      probeResults = Object.create(null); Overview.reset(); window.KurumiInstances.reset(); $('#content').replaceChildren();
@@ -221,7 +229,7 @@ async function refresh(silent = false) {
     if ($('#revision').textContent !== revision) $('#revision').textContent = revision;
     $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
    }
-   if (accessChanged || (!silent && !dialog.open && !diffDialog.open && !backupDialogEl?.open && !webhookDialogEl?.open && !healthDialog?.open && !window.KurumiTOMLImport.isOpen())) render();
+   if (accessChanged || (!silent && !dialog.open && !diffDialog.open && !backupDialogEl?.open && !webhookDialogEl?.open && !healthDialog?.open && !window.KurumiTOMLImport.isOpen() && !window.KurumiNodeDialog?.open)) render();
    else if (canSilentRender() && (renderedSnapshot !== stateSnapshot || renderedPage !== page)) renderPreservingScroll();
    applyDeferredConfig();
    refreshRegistration();
@@ -739,7 +747,7 @@ function openTunnelBatchEditor() {
 function updateFields(){
  if(editing) ProtocolEditor.update($('#editor'),editing,data.state.tunnels);
 }
-function navigate(to){if(!titles[to])return;cancelPageRequests();++navigationGeneration;page=to;location.hash=to;render();refreshRegistration();}
+function navigate(to){if(!titles[to] || (to!=='nodes' && window.KurumiNodeNavigationBlocked?.()))return;cancelPageRequests();++navigationGeneration;page=to;location.hash=to;render();refreshRegistration();}
 async function openWebhookDialog() {
  if (!webhookDialogEl) {
   webhookDialogEl=document.createElement('dialog');
@@ -855,7 +863,7 @@ function openBackupDialog(mode, scope='all', snapshot=0) {
  backupDialogEl.dataset.revision=String(data.revision);
  backupDialogEl.innerHTML=mode==='export'
   ? '<form id="backup-form"><h2>导出加密备份</h2><p class="muted">密码不会保存在工作台；遗失密码后无法恢复，请将密码和文件分开保管。</p><div class="form-grid"><label>备份密码<input name="password" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></label><label>确认密码<input name="confirm" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></label></div><div class="dialog-actions"><button type="button" data-backup-cancel>取消</button><button type="submit" class="primary">导出加密文件</button></div><p class="error" role="alert"></p></form>'
-  : '<form id="backup-form"><h2>恢复加密备份</h2><p class="muted">恢复前须停止全部托管实例并等待操作结束。恢复将替换当前配置与历史快照，不会自动启动实例；不会恢复 frp 核心程序及本机管理令牌。</p><div class="form-grid"><label class="span-2">备份文件<input name="file" type="file" accept=".json,application/json" required></label><label class="span-2">备份密码<input name="password" type="password" minlength="12" maxlength="1024" autocomplete="current-password" required></label><label class="form-check span-2"><input name="confirmRestore" type="checkbox" required>确认替换当前配置和历史快照</label></div><p id="backup-status" class="small-note" role="status"></p><div class="dialog-actions"><button type="button" data-backup-cancel>取消</button><button type="submit" class="primary">验证并恢复</button></div><p class="error" role="alert"></p></form>';
+  : '<form id="backup-form"><h2>恢复加密备份</h2><p class="muted">恢复前须停止全部托管实例并等待操作结束。恢复将替换当前配置与历史快照，不会自动启动实例；不会恢复 frp 核心程序、本机管理令牌、Webhook 和节点设置。</p><div class="form-grid"><label class="span-2">备份文件<input name="file" type="file" accept=".json,application/json" required></label><label class="span-2">备份密码<input name="password" type="password" minlength="12" maxlength="1024" autocomplete="current-password" required></label><label class="form-check span-2"><input name="confirmRestore" type="checkbox" required>确认替换当前配置和历史快照</label></div><p id="backup-status" class="small-note" role="status"></p><div class="dialog-actions"><button type="button" data-backup-cancel>取消</button><button type="submit" class="primary">验证并恢复</button></div><p class="error" role="alert"></p></form>';
  stopRefreshPolling();
  backupDialogEl.showModal();
 }
@@ -1146,7 +1154,7 @@ $('#content').addEventListener('click',async e=>{
  }
 });
 $('#content').addEventListener('click',e=>{const b=e.target.closest('[data-backup-action]');if(b)openBackupDialog(b.dataset.backupAction);});
-window.addEventListener('hashchange',()=>{const p=location.hash.slice(1);if(titles[p]&&page!==p){cancelPageRequests();++navigationGeneration;page=p;render();refreshRegistration();}});
+window.addEventListener('hashchange',()=>{const p=location.hash.slice(1);if(p!=='nodes'&&window.KurumiNodeNavigationBlocked?.()){location.hash='nodes';return;}if(titles[p]&&page!==p){cancelPageRequests();++navigationGeneration;page=p;render();refreshRegistration();}});
 page=titles[location.hash.slice(1)]?location.hash.slice(1):'overview';
 // core.js consumes a launch ticket before the first authenticated state request.
 if(!/^#launch=([a-f0-9]{64})$/.test(location.hash))refresh(true);
@@ -1154,5 +1162,5 @@ document.addEventListener('visibilitychange', () => {
  if (document.hidden) {
   stopRefreshPolling();stopLogStream();cancelLogRequest();++registrationEpoch;clearTimeout(registrationExpiryTimer);registrationExpiryTimer=null;registrations=Object.create(null);registrationRevision=null;registrationProcesses=Object.create(null);paintRegistrations(true);
  }
- else if (data && !dialog.open) refresh(true);
+ else if (data && !dialog.open && !window.KurumiTOMLImport.isOpen() && !window.KurumiNodeDialog?.open) refresh(true);
 });
