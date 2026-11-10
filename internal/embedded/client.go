@@ -134,6 +134,7 @@ func (c *Client) Start() error {
 
 func (c *Client) run(ctx context.Context) {
 	var runErr error
+	defer c.reportCleanupPanic()
 	defer func() {
 		// Never expose panic values or upstream errors: either can contain secrets.
 		panicked := recover() != nil
@@ -161,6 +162,14 @@ func (c *Client) run(ctx context.Context) {
 		c.finish(reason)
 	}()
 	runErr = c.service.Run(ctx)
+}
+
+// Leave Done open when the wrapper's cleanup panics: the owner must treat
+// the generation as still occupied until the process exits.
+func (c *Client) reportCleanupPanic() {
+	if recover() != nil && c.onPanic != nil {
+		c.onPanic()
+	}
 }
 
 func (c *Client) closeService() {
@@ -204,6 +213,7 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	if c.state == ClientNew {
 		c.state = ClientStopping
 		go func() {
+			defer c.reportCleanupPanic()
 			c.closeService()
 			<-c.closeDone
 			c.finish(ExitStopped)
