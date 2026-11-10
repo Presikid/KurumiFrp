@@ -4,6 +4,7 @@ titles.nodes = '节点管理';
 const nodesBaseRender = render;
 const nodesBaseResetSession = resetSession;
 let nodesModel = null, nodeResults = Object.create(null), nodeLoading = false;
+let nodeAutoRefresh = false, nodeAutoTimer = null, nodeAutoEpoch = 0, nodeAutoRunning = false;
 window.KurumiRemoteTraffic = instance => {
  const traffic = instance?.traffic;
  if (!traffic || !/^(0|[1-9]\d*)$/.test(traffic.receivedBytes || '') || !/^(0|[1-9]\d*)$/.test(traffic.sentBytes || '')) return '';
@@ -127,8 +128,9 @@ resetSession = function () {
 };
 
 function leaveNodes() {
- if (!nodesModel && !nodeRequest && !nodesDialog?.open) return;
+ if (!nodesModel && !nodeRequest && !nodesDialog?.open && !nodeAutoRefresh && nodeAutoTimer === null) return;
  ++nodePageGeneration;
+ stopNodeAutoRefresh();
  nodeRequest?.abort(); nodeRequest = null; nodeLoading = false;
  for (const controller of nodeCheckRequests) controller.abort();
  nodeCheckRequests.clear();
@@ -140,8 +142,8 @@ function mountNodes() {
  $('#content').innerHTML = header('节点管理','按需查看或控制已授权远程工作台的实例。') + `
  <div id="nodes-screen">
   <div id="node-control-notice" class="notice" role="alert" hidden></div>
-  <section class="panel"><div class="panel-title"><div><h3>远程节点</h3><p>实例状态不代表代理已注册或服务可访问。</p></div><div class="actions"><button data-node-action="reload">刷新列表</button><button class="primary" data-node-action="new">＋ 添加节点</button></div></div>
-   <div class="panel-content"><p class="small-note">先在目标工作台生成只读授权，添加后核对解析地址。检查只连接已确认地址，并验证 HTTPS 证书。</p><div id="nodes-list" role="status">正在读取…</div></div></section>
+  <section class="panel"><div class="panel-title"><div><h3>远程节点</h3><p>实例状态不代表代理已注册或服务可访问。</p></div><div class="actions"><button data-node-action="reload">刷新列表</button><button type="button" data-node-action="auto-refresh" aria-pressed="false">开启自动检查</button><button class="primary" data-node-action="new">＋ 添加节点</button></div></div>
+   <div class="panel-content"><p class="small-note">先在目标工作台生成只读授权，添加后核对解析地址。检查只连接已确认地址，并验证 HTTPS 证书。自动检查只在本页面开启后进行，离开页面即停止；每轮完成后等待 30 秒。</p><div id="nodes-list" role="status">正在读取…</div></div></section>
   <section class="panel"><div class="panel-title"><div><h3>允许其他工作台查看本机</h3><p>只读授权默认只提供本机实例名称、类型和运行状态；流量共享可单独开启。</p></div><span id="node-sharing" class="pill">读取中</span></div>
    <div class="panel-content"><p class="small-note">工作台仍只监听本机。需由管理员配置受信任的 HTTPS 反向代理；只读与控制使用不同授权。流量共享开启后，所有持有当前只读授权的控制端都可读取本机运行中实例的当前计数。</p><div class="actions"><button data-node-action="issue">生成 / 更换只读授权</button><button class="danger" data-node-action="revoke">撤销只读授权</button><button data-node-action="share-traffic">流量共享</button></div><p id="node-page-error" class="error" role="alert"></p></div></section>
   <section class="panel"><div class="panel-title"><div><h3>允许远程启停和重启</h3><p>单独授权，默认关闭。持有者可操作本机全部实例。</p></div><span id="node-control-sharing" class="pill">读取中</span></div>
@@ -182,11 +184,14 @@ function paintNodes() {
  paintNodeControlNotice();
  const list = $('#nodes-list'), sharing = $('#node-sharing'), controlSharing = $('#node-control-sharing');
  const controls = [...$('#nodes-screen').querySelectorAll('button[data-node-action]')];
+ const autoButton = $('#nodes-screen [data-node-action="auto-refresh"]');
+ autoButton.textContent = nodeAutoRefresh ? '停止自动检查' : '开启自动检查';
+ autoButton.setAttribute('aria-pressed', String(nodeAutoRefresh));
  if (!nodesModel) {
   list.textContent = nodeLoading ? '正在读取节点列表…' : '节点列表已过期或未知，请刷新。';
   sharing.textContent = '状态未知'; sharing.className = 'pill';
   controlSharing.textContent = '状态未知'; controlSharing.className = 'pill';
-  controls.forEach(button => {const allowed=button.dataset.nodeAction==='reload' || button.dataset.nodeAction==='ack-control';button.disabled = !allowed || nodeBusy || nodeLoading;});
+  controls.forEach(button => {const allowed=button.dataset.nodeAction==='reload' || button.dataset.nodeAction==='ack-control' || (button.dataset.nodeAction==='auto-refresh' && nodeAutoRefresh);button.disabled = !allowed || nodeBusy || nodeLoading;});
   return;
  }
  sharing.textContent = nodesModel.sharing ? '已允许查看' : '未启用';
@@ -200,24 +205,35 @@ function paintNodes() {
  if (!nodesModel.nodes.length) { list.innerHTML = '<p class="muted">尚未添加远程节点。</p>'; return; }
  list.innerHTML = nodesModel.nodes.map(node => {
   const state = nodeResults[node.id];
-  let detail = '<p class="small-note">尚未检查。状态只在点击检查时更新。</p>';
-  if (state?.loading) detail = '<p class="small-note">正在检查…</p>';
-  else if (state?.error) detail = `<p class="error">${esc(state.error)}</p>`;
-  else if (state?.summary) {
-   const labels = {running:'运行中',stopped:'已停止',exited:'已退出','autostart-failed':'自动启动失败'};
-   const instances = state.summary.instances;
-   detail = `<p class="small-note">检查于 ${esc(new Date(state.checkedAt).toLocaleString('zh-CN'))} · 工作台 ${esc(state.summary.version)} · ${instances.length} 个实例</p>` +
-    (instances.length ? `<ul class="node-instances">${instances.map(i=>{
-     const running = i.state === 'running', action = running ? 'stop' : 'start';
-     const disabled = nodeBusy||nodeLoading||nodeControlNotices.length?'disabled':'';
-     const buttons = node.hasControl ? `<div class="actions"><button type="button" data-node-action="control-${action}" data-node-id="${esc(node.id)}" data-instance-id="${esc(i.id)}" ${disabled}>${running?'停止':'启动'}</button>${running?`<button type="button" data-node-action="control-restart" data-node-id="${esc(node.id)}" data-instance-id="${esc(i.id)}" ${disabled}>重启</button>`:''}</div>` : '';
-     return `<li><strong>${esc(i.name)}</strong><span>${esc(i.kind)} · ${esc(labels[i.state] || '状态未知')}${esc(window.KurumiRemoteTraffic(i))}</span>${buttons}</li>`;
-    }).join('')}</ul>` : '<p class="small-note">目标没有实例。</p>');
-  }
   const addresses = node.addresses || [];
   const pin = addresses.length ? '已确认：' + addresses.join('、') : '尚未确认解析地址';
-  return `<article class="node-card"><div><h3>${esc(node.name)}</h3><code>${esc(node.url)}</code><p class="small-note">${esc(pin)}</p></div><div class="actions"><button data-node-action="resolve" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading?'disabled':''}>核对地址</button><button data-node-action="check" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading||state?.loading||!addresses.length?'disabled':''}>检查状态</button><button data-node-action="edit" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading?'disabled':''}>编辑</button><button class="danger" data-node-action="delete" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading?'disabled':''}>删除</button></div><div class="node-detail">${detail}</div></article>`;
+  return `<article class="node-card" data-node-card="${esc(node.id)}"><div><h3>${esc(node.name)}</h3><code>${esc(node.url)}</code><p class="small-note">${esc(pin)}</p></div><div class="actions"><button data-node-action="resolve" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading?'disabled':''}>核对地址</button><button data-node-action="check" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading||state?.loading||!addresses.length?'disabled':''}>检查状态</button><button data-node-action="edit" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading?'disabled':''}>编辑</button><button class="danger" data-node-action="delete" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading?'disabled':''}>删除</button></div><div class="node-detail">${renderNodeDetail(node,state)}</div></article>`;
  }).join('');
+}
+
+function renderNodeDetail(node, state) {
+ if (state?.loading) return '<p class="small-note">正在检查…</p>';
+ if (state?.error) return `<p class="error">${esc(state.error)}</p>`;
+ if (!state?.summary) return '<p class="small-note">尚未检查。可手动检查或开启自动检查。</p>';
+ const labels = {running:'运行中',stopped:'已停止',exited:'已退出','autostart-failed':'自动启动失败'};
+ const instances = state.summary.instances;
+ return `<p class="small-note">检查于 ${esc(new Date(state.checkedAt).toLocaleString('zh-CN'))} · 工作台 ${esc(state.summary.version)} · ${instances.length} 个实例</p>` +
+  (instances.length ? `<ul class="node-instances">${instances.map(i=>{
+   const running = i.state === 'running', action = running ? 'stop' : 'start';
+   const disabled = nodeBusy||nodeLoading||nodeControlNotices.length?'disabled':'';
+   const buttons = node.hasControl ? `<div class="actions"><button type="button" data-node-action="control-${action}" data-node-id="${esc(node.id)}" data-instance-id="${esc(i.id)}" ${disabled}>${running?'停止':'启动'}</button>${running?`<button type="button" data-node-action="control-restart" data-node-id="${esc(node.id)}" data-instance-id="${esc(i.id)}" ${disabled}>重启</button>`:''}</div>` : '';
+   return `<li><strong>${esc(i.name)}</strong><span>${esc(i.kind)} · ${esc(labels[i.state] || '状态未知')}${esc(window.KurumiRemoteTraffic(i))}</span>${buttons}</li>`;
+  }).join('')}</ul>` : '<p class="small-note">目标没有实例。</p>');
+}
+
+// A status update changes one card, keeping other controls and their focus.
+function paintNodeCheck(node) {
+ if (page !== 'nodes' || !/^[a-f0-9]{16}$/.test(node.id)) return;
+ const card = document.querySelector(`[data-node-card="${node.id}"]`);
+ if (!card) return;
+ const state = nodeResults[node.id];
+ card.querySelector('.node-detail').innerHTML = renderNodeDetail(node,state);
+ card.querySelector('[data-node-action="check"]').disabled = nodeBusy || nodeLoading || !!state?.loading || !node.addresses?.length;
 }
 async function loadNodes() {
  if (nodeLoading || page !== 'nodes' || !data) return;
@@ -479,7 +495,7 @@ async function reviewNodeControlNotice(key) {
 async function checkNode(node) {
  if (nodeBusy || nodeLoading || nodeResults[node.id]?.loading) return;
  const generation = nodePageGeneration, session = authGeneration, controller = new AbortController();
- const pending = {loading:true}; nodeResults[node.id] = pending; nodeCheckRequests.add(controller); paintNodes();
+ const pending = {loading:true}; nodeResults[node.id] = pending; nodeCheckRequests.add(controller); paintNodeCheck(node);
  const timeout = setTimeout(() => controller.abort(), 9000);
  try {
   const result = await api('nodes/check',{id:node.id,stamp:node.stamp},{signal:controller.signal});
@@ -489,8 +505,55 @@ async function checkNode(node) {
  } catch (error) {
   if (generation !== nodePageGeneration || session !== authGeneration || page !== 'nodes' || nodeResults[node.id] !== pending) return;
   nodeResults[node.id] = {error:error.name === 'AbortError' ? '检查超时，请检查网络后重试。' : error.message};
- } finally { clearTimeout(timeout); nodeCheckRequests.delete(controller); if (generation === nodePageGeneration) paintNodes(); }
+ } finally { clearTimeout(timeout); nodeCheckRequests.delete(controller); if (generation === nodePageGeneration) paintNodeCheck(node); }
 }
+
+function stopNodeAutoRefresh() {
+ nodeAutoRefresh = false;
+ ++nodeAutoEpoch;
+ clearTimeout(nodeAutoTimer); nodeAutoTimer = null;
+}
+
+// Reuse the normal, address-pinned check; only one node is requested at a time.
+// A running request may finish after the user stops the automatic cycle.
+async function autoCheckNodes(epoch) {
+ if (!nodeAutoRefresh || epoch !== nodeAutoEpoch || page !== 'nodes' || nodeAutoRunning) return;
+ nodeAutoRunning = true;
+ try {
+  if (!document.hidden && !nodeBusy && !nodeLoading && !nodesDialog?.open && nodesModel) {
+   const nodes = nodesModel.nodes.filter(node => node.addresses?.length);
+   for (const node of nodes) {
+    if (!nodeAutoRefresh || epoch !== nodeAutoEpoch || page !== 'nodes' || document.hidden || nodeBusy || nodeLoading || nodesDialog?.open || document.activeElement?.closest?.('.node-detail') || window.getSelection()?.toString()) break;
+    if (!nodesModel?.nodes.some(current => current.id === node.id && current.stamp === node.stamp)) continue;
+    await checkNode(node);
+   }
+  }
+ } finally {
+  nodeAutoRunning = false;
+  if (nodeAutoRefresh && page === 'nodes' && nodeAutoTimer === null) {
+   const nextEpoch = nodeAutoEpoch, delay = epoch === nextEpoch ? 30000 : 0;
+   nodeAutoTimer = setTimeout(() => {nodeAutoTimer = null; void autoCheckNodes(nextEpoch);}, delay);
+  }
+ }
+}
+
+function toggleNodeAutoRefresh() {
+ if (nodeAutoRefresh) stopNodeAutoRefresh();
+ else {
+  nodeAutoRefresh = true;
+  const epoch = ++nodeAutoEpoch;
+  void autoCheckNodes(epoch);
+ }
+ paintNodes();
+}
+
+document.addEventListener('visibilitychange', () => {
+ if (!document.hidden && nodeAutoRefresh && nodeAutoTimer !== null && page === 'nodes') {
+  clearTimeout(nodeAutoTimer); nodeAutoTimer = null;
+  void autoCheckNodes(nodeAutoEpoch);
+ }
+});
+
 $('#content').addEventListener('click', event => {
  const button = event.target.closest('[data-node-action]');
  if (!button || page !== 'nodes') return;
@@ -499,6 +562,7 @@ $('#content').addEventListener('click', event => {
   void reviewNodeControlNotice(button.dataset.noticeKey);
  }
  else if (action === 'reload') loadNodes();
+ else if (action === 'auto-refresh') toggleNodeAutoRefresh();
  else if (action === 'new') openNodeForm(null);
  else if (action === 'edit' && node) openNodeForm(node);
  else if (action === 'check' && node) checkNode(node);
