@@ -125,6 +125,25 @@ func renderProtocolTunnel(b *strings.Builder, t Tunnel, secret func(string, stri
 		if (t.Type == "http" || t.Type == "https" || t.Type == "tcpmux") && t.Subdomain != "" {
 			fmt.Fprintf(b, "subdomain = %s\n", quote(t.Subdomain))
 		}
+		if t.Type == "http" {
+			for _, group := range []struct {
+				field   string
+				key     string
+				headers []HTTPHeader
+			}{
+				{field: "requestHeaders.set", key: "REQUEST", headers: t.RequestHeaders},
+				{field: "responseHeaders.set", key: "RESPONSE", headers: t.ResponseHeaders},
+			} {
+				for n, header := range group.headers {
+					key := fmt.Sprintf("KURUMI_HTTP_HEADER_%s_%s_%d", group.key, t.ID, n)
+					value, err := secret(header.Value, key)
+					if err != nil {
+						return err
+					}
+					fmt.Fprintf(b, "%s.%s = %s\n", group.field, quote(header.Name), value)
+				}
+			}
+		}
 		if t.Type == "http" && t.HostHeaderRewrite != "" {
 			fmt.Fprintf(b, "hostHeaderRewrite = %s\n", quote(t.HostHeaderRewrite))
 		}

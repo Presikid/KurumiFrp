@@ -94,6 +94,9 @@ type Tunnel struct {
 	HTTPPassword         string   `json:"httpPassword,omitempty"`
 	HasHTTPPassword      bool     `json:"hasHTTPPassword,omitempty"`
 	RouteByHTTPUser      string   `json:"routeByHTTPUser,omitempty"`
+
+	RequestHeaders  []HTTPHeader `json:"requestHeaders,omitempty"`
+	ResponseHeaders []HTTPHeader `json:"responseHeaders,omitempty"`
 }
 type State struct {
 	Instances []Instance `json:"instances"`
@@ -122,6 +125,8 @@ func (s State) clone() State {
 		n.Tunnels[j].Domains = append([]string{}, n.Tunnels[j].Domains...)
 		n.Tunnels[j].Locations = append([]string(nil), n.Tunnels[j].Locations...)
 		n.Tunnels[j].AllowUsers = append([]string(nil), n.Tunnels[j].AllowUsers...)
+		n.Tunnels[j].RequestHeaders = append([]HTTPHeader(nil), n.Tunnels[j].RequestHeaders...)
+		n.Tunnels[j].ResponseHeaders = append([]HTTPHeader(nil), n.Tunnels[j].ResponseHeaders...)
 	}
 	return n
 }
@@ -136,6 +141,12 @@ func (s State) public() State {
 		n.Tunnels[j].Secret = ""
 		n.Tunnels[j].HasHTTPPassword = n.Tunnels[j].HTTPPassword != ""
 		n.Tunnels[j].HTTPPassword = ""
+		for _, headers := range [][]HTTPHeader{n.Tunnels[j].RequestHeaders, n.Tunnels[j].ResponseHeaders} {
+			for k := range headers {
+				headers[k].HasValue = headers[k].Value != ""
+				headers[k].Value = ""
+			}
+		}
 	}
 	return n
 }
@@ -264,6 +275,7 @@ func validate(s State) error {
 	labels := map[string]bool{}
 	ports := map[string]string{}
 	names := map[string]bool{}
+	headerCounts := map[string]int{}
 	type serverListener struct {
 		host string
 		port int
@@ -377,6 +389,13 @@ func validate(s State) error {
 		}
 		if err := validateRuleHealthCheck(t); err != nil {
 			return err
+		}
+		if err := validateHTTPHeaders(t); err != nil {
+			return err
+		}
+		headerCounts[t.InstanceID] += len(t.RequestHeaders) + len(t.ResponseHeaders)
+		if headerCounts[t.InstanceID] > maxHTTPHeadersPerInstance {
+			return fmt.Errorf("每个客户端实例最多支持 128 个自定义 HTTP 头")
 		}
 		if t.HostHeaderRewrite != "" && (t.Type != "http" || !validHostHeaderRewrite(t.HostHeaderRewrite)) {
 			return fmt.Errorf("HTTP Host 重写值无效或不适用于此协议")

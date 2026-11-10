@@ -575,7 +575,9 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		case "tunnel":
 			var edit struct {
 				Tunnel
-				ClearHTTPPassword bool `json:"clearHTTPPassword,omitempty"`
+				ClearHTTPPassword bool            `json:"clearHTTPPassword,omitempty"`
+				RequestHeaders    json.RawMessage `json:"requestHeaders"`
+				ResponseHeaders   json.RawMessage `json:"responseHeaders"`
 			}
 			if err = decodeStrictJSON(req.Value, &edit); err != nil {
 				break
@@ -586,6 +588,8 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				v = old
 				v.Secret = ""
 				v.HTTPPassword = ""
+				// Do not let json.Unmarshal reuse and mutate the old header slices.
+				v.RequestHeaders, v.ResponseHeaders = nil, nil
 				if err = json.Unmarshal(req.Value, &v); err != nil {
 					break
 				}
@@ -618,6 +622,14 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				if err = prepareVisitorTransfer(st, old, &v); err != nil {
 					break
 				}
+			}
+			v.RequestHeaders, err = a.store.mergeHTTPHeaders(edit.RequestHeaders, old.RequestHeaders)
+			if err != nil {
+				break
+			}
+			v.ResponseHeaders, err = a.store.mergeHTTPHeaders(edit.ResponseHeaders, old.ResponseHeaders)
+			if err != nil {
+				break
 			}
 			v.HasSecret = false
 			v.HasHTTPPassword = false

@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/fatedier/frp v0.72.0
 	github.com/pelletier/go-toml/v2 v2.4.3
+	golang.org/x/net v0.62.0
 )
 
 require (
@@ -39,7 +40,6 @@ require (
 	github.com/xtaci/kcp-go/v5 v5.6.73 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
