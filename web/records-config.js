@@ -26,7 +26,7 @@ window.KurumiRecordsConfig = (() => {
       <div class="rc-retention"><label>保留数量（0–100）<input id="history-limit" type="number" min="0" max="100" step="1" value="${data.historyLimit}" data-saved-value="${data.historyLimit}"></label><button data-action="history-settings">保存数量</button></div>
       <p class="small-note">减少数量会立即删除最早的快照；设为 0 则不保留快照。</p>
       <div class="rc-history-list">${history.length ? history.map(h => `<div class="rc-history-item"><div><strong>r${h.revision}</strong><p>${esc(h.summary)}</p><small>${time(h.at)}</small></div><button data-action="restore" data-target="${h.revision}" aria-label="恢复快照 r${h.revision}">恢复</button></div>`).join('') : '<div class="rc-empty-compact"><strong>暂无历史快照</strong><p>修改配置时，会按保留数量保存前一版本。</p></div>'}</div>
-      <p class="small-note rc-history-note">恢复前须停止全部托管实例。恢复只改变草稿，不会自动重新启动实例。</p>
+      <p class="small-note rc-history-note">恢复前须停止全部托管实例。恢复后保留的当前定时计划暂停，已不存在实例的计划删除；不会自动重新启动实例。</p>
      </div>
     </section>
    </div>
@@ -45,12 +45,12 @@ window.KurumiRecordsConfig = (() => {
     <section class="panel" aria-labelledby="config-export-title"><div class="panel-title"><div><h3 id="config-export-title">导出配置文件</h3><p>选择需要带走的配置或快照</p></div></div><div class="panel-content rc-form">
      <label>导出范围<select id="export-scope"><option value="all">当前配置和全部快照</option><option value="config">仅当前配置</option><option value="snapshots">仅全部快照</option><option value="snapshot">单个快照</option></select></label>
      <label id="export-snapshot-field" hidden>选择快照<select id="export-snapshot">${history.length ? history.map(h => `<option value="${h.revision}">r${h.revision} · ${esc(h.summary)}</option>`).join('') : '<option value="">暂无可导出的快照</option>'}</select></label>
-     <p class="rc-note">此文件包含数据密钥和所选配置，请妥善保管。本机 Webhook 和节点设置不会导出。需要密码保护时可使用上方的加密备份。</p>
+     <p class="rc-note">此文件包含数据密钥、所选配置与相关实例的当前定时计划，请妥善保管。快照不保存历史计划；本机 Webhook 和节点设置不会导出。需要密码保护时可使用上方的加密备份。</p>
      <div><button data-action="export-data">导出配置文件</button></div>
     </div></section>
     <section class="panel" aria-labelledby="config-import-title"><div class="panel-title"><div><h3 id="config-import-title">导入配置文件</h3><p>从已有文件恢复配置和快照</p></div></div><div class="panel-content rc-form">
      <label>选择配置文件<input id="import-file" type="file" accept=".json,application/json"></label>
-     <p class="rc-note">导入前须停止全部托管实例，并等待正在进行的操作结束；导入将替换当前配置与历史快照。</p>
+     <p class="rc-note">导入前须停止全部托管实例，并等待正在进行的操作结束；导入将替换当前配置、定时计划与历史快照。导入的计划暂停，须检查后重新启用。</p>
      <div><button data-action="import-data">导入并刷新</button></div>
     </div></section>
    </div>

@@ -389,7 +389,7 @@ async function controlNode(node, instance, action) {
   if (preview.name !== instance.name || preview.kind !== instance.kind || (action === 'start' && running) || (action !== 'start' && !running)) { delete nodeResults[node.id]; toast('目标实例信息或状态已变化，请重新检查。'); return; }
   const label = ({start:'启动',stop:'停止',restart:'重启'})[action];
   const stateLabel = ({running:'运行中',stopped:'已停止',exited:'已退出','autostart-failed':'自动启动失败'})[preview.state] || '状态未知';
-  if (!confirm(`在「${node.name}」${label}实例「${preview.name}」（${preview.kind}）？\n当前状态：${stateLabel}。${action === 'restart' ? '重启会应用目标上的当前草稿；停止后如果启动失败，实例可能保持停止。' : ''}提交后连接中断不能保证取消；结果不明时请先到目标核对。`)) return;
+  if (!confirm(`在「${node.name}」${label}实例「${preview.name}」（${preview.kind}）？\n当前状态：${stateLabel}。${action === 'restart' ? '重启会应用目标上的当前草稿；停止后如果启动失败，实例可能保持停止。' : ''}目标实例如有启用中的定时计划，此操作受理后会暂停计划，须在目标工作台重新启用。提交后连接中断不能保证取消；结果不明时请先到目标核对。`)) return;
   syncNodeControlNotices();
   if (nodeControlNotices.length) { toast('有尚未核对的远程操作，请先核对。'); return; }
   pending = beginNodeControlNotice(node, preview, action);
