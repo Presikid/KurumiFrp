@@ -432,7 +432,9 @@ func (a *App) Close() error {
 		if a.startupDone != nil {
 			<-a.startupDone
 		}
-		a.core.Cancel()
+		if a.core != nil {
+			a.core.Cancel()
+		}
 		// In-flight control operations must finish before the final process
 		// snapshot; no app mutex is held while waiting on them or on children.
 		a.operationWG.Wait()
@@ -457,7 +459,9 @@ func (a *App) Close() error {
 			}(p)
 		}
 		wg.Wait()
-		a.core.Close()
+		if a.core != nil {
+			a.core.Close()
+		}
 		a.closeErr = errors.Join(failures...)
 	})
 	return a.closeErr

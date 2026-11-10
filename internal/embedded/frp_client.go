@@ -1,4 +1,4 @@
-//go:build kurumi_frp_patched
+//go:build !kurumi_external_runtime
 
 package embedded
 
@@ -186,9 +186,22 @@ func (s *frpService) Run(ctx context.Context) error {
 func (s *frpService) Close() { s.service.Close() }
 
 func (s *frpService) ProxyPhase(name string) (string, bool) {
+	status, ok := s.proxyDetails(name)
+	return status.Phase, ok
+}
+
+func (s *frpService) proxyDetails(name string) (Registration, bool) {
 	status, ok := s.service.StatusExporter().GetProxyStatus(name)
 	if !ok || status == nil {
-		return "", false
+		return Registration{}, false
 	}
-	return status.Phase, true
+	result := Registration{Phase: status.Phase}
+	if status.Err != "" {
+		// Server-supplied errors can contain arbitrary details or credentials.
+		result.Error = "核心报告代理错误"
+	}
+	if status.Err == "" || status.Phase == "running" {
+		result.RemoteAddr = status.RemoteAddr
+	}
+	return result, true
 }

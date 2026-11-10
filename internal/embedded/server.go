@@ -20,6 +20,8 @@ var (
 	ErrServerStarted = errors.New("embedded frp server lifecycle has already begun")
 	// ErrServerExited means Run returned without a stop request or context cancellation.
 	ErrServerExited = errors.New("embedded frp server exited unexpectedly")
+	// ErrServerPanicked does not include the panic value, which may contain secrets.
+	ErrServerPanicked = errors.New("embedded frp server panicked")
 )
 
 type serverState uint8
@@ -195,7 +197,15 @@ func (s *Server) TrafficSnapshot() (servertraffic.ServerSnapshot, bool) {
 }
 
 func (s *Server) run(ctx context.Context, svc *server.Service, cancel context.CancelFunc) {
-	runErr := svc.Run(ctx)
+	var runErr error
+	defer func() {
+		if recover() != nil {
+			runErr = ErrServerPanicked
+		}
+		cancel()
+		s.finishAfterClose(svc, runErr)
+	}()
+	runErr = svc.Run(ctx)
 	if ctx.Err() != nil && errors.Is(runErr, server.ErrServiceClosed) &&
 		!errors.Is(runErr, context.DeadlineExceeded) && !errors.Is(runErr, context.Canceled) {
 		// Stop may close the service before its Run goroutine starts.
@@ -203,8 +213,6 @@ func (s *Server) run(ctx context.Context, svc *server.Service, cancel context.Ca
 	} else if ctx.Err() == nil && runErr == nil {
 		runErr = ErrServerExited
 	}
-	cancel()
-	s.finishAfterClose(svc, runErr)
 }
 
 // Wait without a deadline in this background worker so Done only closes after

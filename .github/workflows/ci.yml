@@ -11,26 +11,7 @@ concurrency:
   group: kurumi-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  resolve-frp:
-    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      release: ${{ steps.latest.outputs.release }}
-    steps:
-      # Metadata only. The tag and all package checksums are shared by every architecture.
-      - id: latest
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api repos/fatedier/frp/releases/latest > "$RUNNER_TEMP/frp-release.json"
-          jq -e '.draft == false and .prerelease == false and (.tag_name | test("^v[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}$"))' "$RUNNER_TEMP/frp-release.json" >/dev/null
-          release="$(jq -c '{tag_name,draft,prerelease,assets:[.assets[]|{name,size,digest,browser_download_url}]}' "$RUNNER_TEMP/frp-release.json")"
-          printf 'release=%s\n' "$release" >> "$GITHUB_OUTPUT"
   package:
-    needs: [resolve-frp]
-    env:
-      KURUMI_FRP_RELEASE: ${{ needs.resolve-frp.outputs.release }}
     strategy:
       fail-fast: false
       matrix:
@@ -101,7 +82,9 @@ jobs:
         run: go build -o kurumi ./cmd/kurumi
   release:
     needs: [package, source-macos]
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    # Embedded-runtime release is intentionally gated until the documented
+    # platform, lifecycle and recovery acceptance has been completed.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
