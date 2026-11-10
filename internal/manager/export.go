@@ -213,8 +213,8 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	// Ignore any imported destination. The imported key replaces the local key,
-	// so re-encrypt the existing local destination before committing either.
+	// Ignore imported notification settings. The imported key replaces the local
+	// key, so re-encrypt both local credentials before committing either.
 	db.Webhook = nil
 	if a.store.DB.Webhook != nil {
 		local := *a.store.DB.Webhook
@@ -227,6 +227,17 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 			target, err = a.store.decrypt(local.URL)
 			if err == nil {
 				local.URL, err = check.encrypt(target)
+			}
+			if err != nil {
+				fail(w, 500, fmt.Errorf("无法迁移本机通知设置"))
+				return
+			}
+		}
+		if local.SigningSecret != "" {
+			var secret string
+			secret, err = a.store.decrypt(local.SigningSecret)
+			if err == nil {
+				local.SigningSecret, err = check.encrypt(secret)
 			}
 			if err != nil {
 				fail(w, 500, fmt.Errorf("无法迁移本机通知设置"))
