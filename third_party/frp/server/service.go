@@ -501,8 +501,8 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 	}
 
 	// Start port-manager cleanup workers only after all fallible steps have succeeded.
-	svr.rc.TCPPortManager = ports.NewManager("tcp", cfg.ProxyBindAddr, cfg.AllowPorts)
-	svr.rc.UDPPortManager = ports.NewManager("udp", cfg.ProxyBindAddr, cfg.AllowPorts)
+	svr.rc.TCPPortManager = ports.NewManagerWithContext(svr.workCtx, "tcp", cfg.ProxyBindAddr, cfg.AllowPorts)
+	svr.rc.UDPPortManager = ports.NewManagerWithContext(svr.workCtx, "udp", cfg.ProxyBindAddr, cfg.AllowPorts)
 	svr.rc.TCPGroupCtl = group.NewTCPGroupCtlWithContext(svr.workCtx, svr.rc.TCPPortManager)
 
 	if svr.webServer != nil {
