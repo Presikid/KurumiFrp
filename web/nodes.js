@@ -63,6 +63,24 @@ function finishNodeControlNotice(pending, succeeded) {
  }
  syncNodeControlNotices();
 }
+// The restricted-account view shares the same uncertainty records as the
+// administrator's node page, without exposing node credentials.
+window.KurumiRemoteNotices = {
+ list() {syncNodeControlNotices(); return nodeControlNotices.map(notice => ({...notice}));},
+ begin:beginNodeControlNotice,
+ finish:finishNodeControlNotice,
+ remove(key) {
+  syncNodeControlNotices();
+  if (!nodeControlNotices.some(notice => notice.key === key && notice.phase === 'uncertain')) return false;
+  try {
+   localStorage.removeItem(key);
+   if (localStorage.getItem(key) !== null) return false;
+   if (localNodeControl?.key === key) localNodeControl = null;
+   syncNodeControlNotices();
+   return true;
+  } catch (_) {return false;}
+ }
+};
 function paintNodeControlNotice() {
  const host = $('#node-control-notice'); if (!host) return;
  if (!nodeControlNotices.length) { host.hidden = true; host.replaceChildren(); return; }
@@ -80,7 +98,7 @@ function paintNodeControlNotice() {
 }
 syncNodeControlNotices();
 window.addEventListener('storage', event => {
- if (event.key === null || event.key.startsWith(nodeControlNoticePrefix)) { syncNodeControlNotices(); paintNodes(); }
+ if (event.key === null || event.key.startsWith(nodeControlNoticePrefix)) { syncNodeControlNotices(); paintNodes(); window.KurumiPaintSharedNotices?.(); }
 });
 
 window.KurumiNodeNavigationBlocked = () => Boolean(nodesDialog?.open && (nodeIssuing || nodeIssued));
