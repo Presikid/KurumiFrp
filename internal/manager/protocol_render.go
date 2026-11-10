@@ -13,6 +13,9 @@ func renderProtocolInstance(b *strings.Builder, i Instance) error {
 		if i.ClientTransport != "" && i.ClientTransport != "tcp" {
 			fmt.Fprintf(b, "transport.protocol = %s\n", quote(i.ClientTransport))
 		}
+		if i.ClientBindIP != "" {
+			fmt.Fprintf(b, "transport.connectServerLocalIP = %s\n", quote(i.ClientBindIP))
+		}
 		if i.User != "" {
 			fmt.Fprintf(b, "user = %s\n", quote(i.User))
 		}

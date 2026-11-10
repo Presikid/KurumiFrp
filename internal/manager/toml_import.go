@@ -505,6 +505,7 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 		i.NatHoleSTUNServer = m.str(root, "natHoleStunServer", "", "")
 		i.DNSServer = m.str(root, "dnsServer", "", "")
 		i.ClientTransport = m.str(root, "transport.protocol", "", "")
+		i.ClientBindIP = m.str(root, "transport.connectServerLocalIP", "", "")
 		i.ClientPoolCount = m.integer(root, "transport.poolCount", "", 0)
 		m.sameString(root, "transport.wireProtocol", "", "v1")
 	}

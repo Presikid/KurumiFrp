@@ -196,6 +196,14 @@ func parseServerAllowedPorts(value string) ([]allowedPortRange, error) {
 }
 
 func validateProtocolInstance(i Instance) error {
+	if i.ClientBindIP != "" {
+		if i.Kind != "frpc" || (i.ClientTransport != "" && i.ClientTransport != "tcp" && i.ClientTransport != "websocket" && i.ClientTransport != "wss") {
+			return fmt.Errorf("客户端源地址仅适用于 TCP、WebSocket 和 WSS 连接")
+		}
+		if _, err := netip.ParseAddr(i.ClientBindIP); err != nil || len(i.ClientBindIP) > 64 || !protocolTextOK(i.ClientBindIP) {
+			return fmt.Errorf("客户端源地址须为 IP 地址，不含端口")
+		}
+	}
 	if i.Kind != "frps" && (i.ServerAccessMode != "" || i.ServerAccessList != "") {
 		return fmt.Errorf("控制入口来源限制仅适用于服务端")
 	}
