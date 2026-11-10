@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,7 +30,7 @@ type webhookConfig struct {
 // An empty format preserves the original structured JSON payload.
 func validWebhookFormat(format string) bool {
 	switch format {
-	case "", "discord", "slack", "ntfy":
+	case "", "discord", "slack", "ntfy", "telegram", "gotify":
 		return true
 	default:
 		return false
@@ -53,7 +55,7 @@ func validateStoredWebhook(s *Store, cfg *webhookConfig) error {
 	}
 	if cfg.URL != "" {
 		plain, err := s.decrypt(cfg.URL)
-		if err != nil || !validWebhookURL(plain) {
+		if err != nil || !validWebhookDestination(cfg.Format, plain) {
 			return fmt.Errorf("invalid webhook destination")
 		}
 	}
@@ -228,6 +230,40 @@ func validWebhookURL(raw string) bool {
 	return true
 }
 
+var telegramChatIDPattern = regexp.MustCompile(`^(?:-?[0-9]{1,32}|@[A-Za-z0-9_]{1,64})$`)
+
+// Telegram expects chat_id and text in the JSON body. The administrator enters
+// a complete sendMessage URL containing exactly one chat_id query parameter;
+// keep the token in the path and remove that parameter from the request URL.
+func telegramDestination(raw string) (string, string, bool) {
+	if !validWebhookURL(raw) {
+		return "", "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", "", false
+	}
+	parts := strings.Split(u.Path, "/")
+	if len(parts) < 3 || parts[len(parts)-1] != "sendMessage" || !strings.HasPrefix(parts[len(parts)-2], "bot") || len(parts[len(parts)-2]) <= len("bot") {
+		return "", "", false
+	}
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil || len(query) != 1 || len(query["chat_id"]) != 1 || !telegramChatIDPattern.MatchString(query.Get("chat_id")) {
+		return "", "", false
+	}
+	chatID := query.Get("chat_id")
+	u.RawQuery, u.ForceQuery = "", false
+	return u.String(), chatID, true
+}
+
+func validWebhookDestination(format, raw string) bool {
+	if format == "telegram" {
+		_, _, ok := telegramDestination(raw)
+		return ok
+	}
+	return validWebhookURL(raw)
+}
+
 var nonPublicWebhookRanges = func() []netip.Prefix {
 	blocks := []string{
 		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
@@ -305,6 +341,10 @@ func webhookDial(ctx context.Context, network, address string) (net.Conn, error)
 // All channel-specific payloads are produced here; the original JSON remains
 // byte-for-byte compatible when the stored format is empty.
 func formatWebhookEvent(format string, event webhookEvent) ([]byte, string, error) {
+	return formatWebhookEventWithChat(format, event, "")
+}
+
+func formatWebhookEventWithChat(format string, event webhookEvent, chatID string) ([]byte, string, error) {
 	if format == "" {
 		body, err := json.Marshal(event)
 		return body, "application/json", err
@@ -344,16 +384,39 @@ func formatWebhookEvent(format string, event webhookEvent) ([]byte, string, erro
 		return body, "application/json", err
 	case "ntfy":
 		return []byte(message), "text/plain; charset=utf-8", nil
+	case "telegram":
+		if !telegramChatIDPattern.MatchString(chatID) {
+			return nil, "", fmt.Errorf("invalid chat ID")
+		}
+		body, err := json.Marshal(struct {
+			ChatID string `json:"chat_id"`
+			Text   string `json:"text"`
+		}{ChatID: chatID, Text: message})
+		return body, "application/json", err
+	case "gotify":
+		body, err := json.Marshal(struct {
+			Title    string `json:"title"`
+			Message  string `json:"message"`
+			Priority int    `json:"priority"`
+		}{Title: "KurumiFRP", Message: message, Priority: 5})
+		return body, "application/json", err
 	default:
 		return nil, "", fmt.Errorf("unsupported webhook format")
 	}
 }
 
 func sendWebhook(ctx context.Context, target, format string, event webhookEvent) (string, bool) {
-	if !validWebhookURL(target) {
+	destination, chatID := target, ""
+	if format == "telegram" {
+		var ok bool
+		destination, chatID, ok = telegramDestination(target)
+		if !ok {
+			return "通知地址无效", false
+		}
+	} else if !validWebhookURL(target) {
 		return "通知地址无效", false
 	}
-	body, contentType, err := formatWebhookEvent(format, event)
+	body, contentType, err := formatWebhookEventWithChat(format, event, chatID)
 	if err != nil {
 		return "通知生成失败", false
 	}
@@ -366,7 +429,7 @@ func sendWebhook(ctx context.Context, target, format string, event webhookEvent)
 		Transport: transport, Timeout: 5 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, destination, bytes.NewReader(body))
 	if err != nil {
 		return "通知请求无效", false
 	}
@@ -375,9 +438,22 @@ func sendWebhook(ctx context.Context, target, format string, event webhookEvent)
 	if err != nil {
 		return "发送失败（连接、地址或超时）", false
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Sprintf("HTTP %d", resp.StatusCode), false
+	}
+	if format == "telegram" {
+		const maxTelegramResponse = 64 << 10
+		response, err := io.ReadAll(io.LimitReader(resp.Body, maxTelegramResponse+1))
+		var result struct {
+			OK *bool `json:"ok"`
+		}
+		if err != nil || len(response) > maxTelegramResponse || json.Unmarshal(response, &result) != nil || result.OK == nil {
+			return "目标响应无法确认", false
+		}
+		if !*result.OK {
+			return "目标未接受通知", false
+		}
 	}
 	return fmt.Sprintf("HTTP %d", resp.StatusCode), true
 }
@@ -385,7 +461,7 @@ func sendWebhook(ctx context.Context, target, format string, event webhookEvent)
 func (a *App) configureWebhook(cfg webhookConfig) {
 	target := ""
 	if cfg.URL != "" {
-		if plain, err := a.store.decrypt(cfg.URL); err == nil && validWebhookURL(plain) {
+		if plain, err := a.store.decrypt(cfg.URL); err == nil && validWebhookDestination(cfg.Format, plain) {
 			target = plain
 		}
 	}
@@ -474,9 +550,13 @@ func (a *App) saveWebhook(req webhookRequest) (uint64, int, error) {
 	target := ""
 	if cfg.URL != "" {
 		plain, err := a.store.decrypt(cfg.URL)
-		if err == nil && validWebhookURL(plain) {
-			target = plain
+		if err != nil || !validWebhookDestination(cfg.Format, plain) {
+			if cfg.Format == "telegram" {
+				return 0, http.StatusBadRequest, fmt.Errorf("Telegram 地址须为完整的 sendMessage 地址，并带一个有效的 chat_id")
+			}
+			return 0, http.StatusBadRequest, fmt.Errorf("通知地址无效，请重新设置")
 		}
+		target = plain
 	}
 	if cfg.Enabled && (target == "" || (!cfg.OnStatus && !cfg.OnConfig)) {
 		return 0, http.StatusBadRequest, fmt.Errorf("启用时需要有效地址，并至少选择一种事件")
