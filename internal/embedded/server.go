@@ -165,6 +165,7 @@ func (s *Server) Start(ctx context.Context) error {
 		var pendingCleanup *server.ConstructionCleanupError
 		if errors.As(err, &pendingCleanup) {
 			go func() {
+				defer s.reportCleanupPanic()
 				s.finish(errors.Join(err, pendingCleanup.WaitCleanup(context.Background())))
 			}()
 		} else {
@@ -202,6 +203,7 @@ func (s *Server) TrafficSnapshot() (servertraffic.ServerSnapshot, bool) {
 
 func (s *Server) run(ctx context.Context, svc *server.Service, cancel context.CancelFunc) {
 	var runErr error
+	defer s.reportCleanupPanic()
 	defer func() {
 		if recover() != nil {
 			runErr = ErrServerPanicked
@@ -225,11 +227,20 @@ func (s *Server) run(ctx context.Context, svc *server.Service, cancel context.Ca
 // Wait without a deadline in this background worker so Done only closes after
 // the service has finished cleaning up, even if Stop's caller has timed out.
 func (s *Server) finishAfterClose(svc *server.Service, runErr error) {
+	defer s.reportCleanupPanic()
 	closeErr := svc.CloseContext(context.Background())
 	if svc.WorkerPanicked() {
 		runErr = errors.Join(runErr, ErrServerPanicked)
 	}
 	s.finish(errors.Join(runErr, closeErr))
+}
+
+// Cleanup that panics may leave owned resources or locks behind. Notify the
+// owner without closing Done or claiming that another run can safely start.
+func (s *Server) reportCleanupPanic() {
+	if recover() != nil && s.options.OnPanic != nil {
+		s.options.OnPanic()
+	}
 }
 
 func (s *Server) finish(err error) {
