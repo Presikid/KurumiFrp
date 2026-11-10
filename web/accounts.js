@@ -5,7 +5,7 @@ const accountRenderBase = render;
 let accountData = null, accountLoadSerial = 0;
 window.resetAccountView = () => {
  accountData = null; ++accountLoadSerial;
- for (const d of document.querySelectorAll('#account-password-dialog, #instance-read-dialog')) if (d.open) d.close();
+ for (const d of document.querySelectorAll('#account-password-dialog, #instance-read-dialog, #login-history-dialog')) if (d.open) d.close();
 };
 
 function updateAccountNavigation() {
@@ -37,7 +37,7 @@ render = function () {
  document.title = titles.accounts + ' · KurumiFRP';
  document.querySelectorAll('[data-page]').forEach(el => el.classList.toggle('active', el.dataset.page === page));
  if (!$('#accounts-screen')) {
-  $('#content').innerHTML = header('本地账户', '管理员拥有全部权限；操作员可启停指定实例；查看者只能查看指定实例。') +
+  $('#content').innerHTML = header('本地账户', '管理员拥有全部权限；操作员可启停指定实例；查看者只能查看指定实例。', '<button type="button" data-login-history>登录记录</button>') +
    `<section id="accounts-screen" class="panel"><div class="panel-content"><p class="small-note">现有本机管理令牌和启动快捷方式仍具有完整管理权限。账户配置单独保存，不包含在配置导出和加密备份中。删除实例会撤销该实例授权；导入配置或恢复历史会撤销全部非管理员实例授权，需要重新分配。授权在配置变更之前撤销，即使变更失败也需检查账户设置。</p><div id="account-list">正在读取账户…</div><hr><div id="account-editor"></div></div></section>`;
   accountData = null;
   loadAccounts();
@@ -85,6 +85,7 @@ function showAccountEditor(id = '') {
 }
 
 $('#content').addEventListener('click', async e => {
+ if (e.target.closest('[data-login-history]')) { openLoginHistory(); return; }
  const instanceRead = e.target.closest('[data-instance-read]');
  if (instanceRead) {
   const serverTraffic = instanceRead.dataset.instanceRead === 'server-traffic';
@@ -117,6 +118,35 @@ $('#content').addEventListener('click', async e => {
   toast('账户已删除'); accountData = null; await loadAccounts(); stateETag = ''; await refresh(true);
  } catch (err) { toast(err.message); remove.disabled = false; }
 });
+
+function openLoginHistory() {
+ if (data?.identity?.role !== 'admin' || document.querySelector('#login-history-dialog')) return;
+ const dialog = document.createElement('dialog'), generation = authGeneration;
+ dialog.id = 'login-history-dialog';
+ dialog.innerHTML = '<h2>登录记录</h2><p class="small-note">连接来源是工作台实际收到连接的对端地址，不使用转发请求头；通过反向代理或 SSH 转发时通常显示代理地址。连续失败会限频记录。</p><div data-history-list>正在读取…</div><p class="error" role="alert"></p><div class="dialog-actions"><button type="button" data-close>关闭</button><button type="button" data-clear class="danger" disabled>清空记录</button></div>';
+ document.body.appendChild(dialog);
+ dialog.addEventListener('close', () => dialog.remove());
+ dialog.querySelector('[data-close]').addEventListener('click', () => dialog.close());
+ const list = dialog.querySelector('[data-history-list]'), error = dialog.querySelector('.error'), clear = dialog.querySelector('[data-clear]');
+ async function refreshHistory() {
+  error.textContent = '';
+  try {
+   const result = await api('login-history');
+   if (generation !== authGeneration || !dialog.open) return;
+   const entries = Array.isArray(result.entries) ? result.entries : [];
+   list.innerHTML = `${result.saved ? '' : '<p class="error">记录文件不可读取或保存失败；原文件已保留，请检查数据目录。</p>'}${result.suppressed ? `<p class="small-note">本次运行有 ${Number(result.suppressed)} 次重复失败未逐条记录。</p>` : ''}${entries.length ? `<div class="table-wrap"><table><thead><tr><th>时间</th><th>账户</th><th>连接来源</th><th>结果</th></tr></thead><tbody>${entries.map(item => `<tr><td>${esc(new Date(item.at).toLocaleString('zh-CN'))}</td><td>${esc(item.account)}</td><td>${esc(item.peer)}</td><td>${item.success ? '成功' : '未成功'}</td></tr>`).join('')}</tbody></table></div>` : '<p>暂无记录。</p>'}`;
+   clear.disabled = !result.saved;
+  } catch (err) { if (generation === authGeneration && dialog.open) { error.textContent = err.message; clear.disabled = true; } }
+ }
+ clear.addEventListener('click', async () => {
+  if (!confirm('清空本机保存的登录记录？')) return;
+  clear.disabled = true;
+  try { await api('login-history', {action:'clear'}); if (generation === authGeneration && dialog.open) await refreshHistory(); }
+  catch (err) { if (generation === authGeneration && dialog.open) { error.textContent = err.message; clear.disabled = false; } }
+ });
+ dialog.showModal();
+ void refreshHistory();
+}
 
 $('#content').addEventListener('submit', async e => {
  if (e.target.id !== 'account-form' || !accountData) return;
