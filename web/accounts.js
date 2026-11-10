@@ -95,20 +95,26 @@ $('#content').addEventListener('click', async e => {
  if (e.target.closest('[data-login-history]')) { openLoginHistory(); return; }
  const instanceRead = e.target.closest('[data-instance-read]');
  if (instanceRead) {
-  const serverTraffic = instanceRead.dataset.instanceRead === 'server-traffic';
-  const id = instanceRead.dataset.id, runId = data?.runtime?.[id]?.runId || '';
-  const d = document.createElement('dialog'), output = document.createElement(serverTraffic ? 'div' : 'pre'), close = document.createElement('button'), generation = authGeneration;
+  const mode = instanceRead.dataset.instanceRead;
+  const id = instanceRead.dataset.id, runId = data?.runtime?.[id]?.runId || '', revision = data?.revision;
+  const instance = data?.state.instances.find(item => item.id === id);
+  const d = document.createElement('dialog'), output = document.createElement(mode === 'config' ? 'pre' : 'div'), close = document.createElement('button'), generation = authGeneration;
   d.id = 'instance-read-dialog';
-  if (serverTraffic) d.setAttribute('aria-label', '服务端流量');
+  if (mode !== 'config') d.setAttribute('aria-label', mode === 'traffic-history' ? '流量历史' : '当前流量');
   close.textContent = '关闭'; close.type = 'button'; close.addEventListener('click', () => d.close());
   output.textContent = '正在读取…'; d.append(close, output); document.body.appendChild(d);
   d.addEventListener('close', () => d.remove()); d.showModal();
   try {
-   const result = await api(`${instanceRead.dataset.instanceRead}?id=${encodeURIComponent(id)}`);
+   const result = await api(`${mode}?id=${encodeURIComponent(id)}`);
    if (generation === authGeneration && d.open) {
-    if (!serverTraffic) output.textContent = result.toml;
-    else if (!data?.state.instances.some(instance => instance.id === id) || (data.runtime?.[id]?.runId || '') !== runId || (result.runId || '') !== runId) output.textContent = '实例运行状态已变化，请关闭后重新查看。';
-    else output.innerHTML = Overview.renderServerTraffic(result, esc) + '<p class="small-note">再次打开可读取新快照。</p>';
+    const current = data?.state.instances.find(item => item.id === id);
+    const value = mode === 'traffic' ? result.instances?.[id] : result;
+    if (!instance || !current || current.kind !== instance.kind || data.revision !== revision) output.textContent = '实例配置已变化，请关闭后重新查看。';
+    else if (mode === 'config') output.textContent = result.toml;
+    else if (mode === 'traffic-history' && (value?.instanceId !== id || value.kind !== instance.kind)) output.textContent = '实例状态已变化，请关闭后重新查看。';
+    else if (mode !== 'traffic-history' && (!value || (data.runtime?.[id]?.runId || '') !== runId || (value.runId || '') !== runId)) output.textContent = '实例运行状态已变化，请关闭后重新查看。';
+    else if (mode === 'traffic-history') output.innerHTML = Overview.renderTrafficHistory(value, esc, true);
+    else output.innerHTML = (mode === 'server-traffic' ? Overview.renderServerTraffic(value, esc) : Overview.renderClientTraffic(value, esc)) + '<p class="small-note">再次打开可读取新快照。</p>';
    }
   } catch (err) { if (generation === authGeneration && d.open) output.textContent = err.message; }
   return;
