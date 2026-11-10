@@ -8,7 +8,7 @@ let probeResults = Object.create(null), probing = Object.create(null), probeRevi
 let data, page = 'overview', selected = '', filter = '', protocol = '', editing, editRev, serial = 0, toastTimer, refreshTimer = null;
 let authGeneration = 0, stateETag = '', stateSnapshot = '', renderedSnapshot = '', renderedPage = '', renderedRevision = null;
 let stateRequest = null, logRequest = null, configRequest = null, deferredConfig = null;
-let logFilter = '', logSnapshot = null;
+let logFilter = '', logSnapshot = null, logExportView = null;
 let logStream = null, logPaintFrame = null, logAccessDenied = null;
 let registrationRequest = null, registrations = Object.create(null), registrationRevision = null, registrationProcesses = Object.create(null), registrationEpoch = 0, registrationExpiryTimer = null;
 let registrationPaintPending = false;
@@ -126,7 +126,7 @@ function cancelLogRequest() {
 function cancelConfigRequest() {
  const request = configRequest; configRequest = null; deferredConfig = null; request?.controller.abort();
 }
-function cancelPageRequests() {cancelLogRequest(); cancelConfigRequest(); stopLogStream(); logAccessDenied = null;}
+function cancelPageRequests() {cancelLogRequest(); cancelConfigRequest(); stopLogStream(); logAccessDenied = null; logSnapshot = null; logExportView = null;}
 function resetSession() {
  stopRefreshPolling();
  window.resetAccountView?.();
@@ -392,6 +392,9 @@ function scheduleLogPaint() {
 }
 function showLogMessage(title, detail, count) {
  const output = $('#log-output'), empty = $('#log-empty');
+ logExportView = null;
+ const exportButton = $('#content [data-action="export-logs"]');
+ if (exportButton) exportButton.disabled = true;
  if (!output || !empty) return;
  output.replaceChildren(); output.hidden = true; empty.hidden = false;
  $('#log-empty-title').textContent = title; $('#log-empty-detail').textContent = detail;
@@ -400,8 +403,13 @@ function showLogMessage(title, detail, count) {
 function paintLogs() {
  const output = $('#log-output');
  const clear = $('#content [data-action="clear-log-filter"]');
+ const exportButton = $('#content [data-action="export-logs"]');
  if (clear) clear.hidden = !logFilter;
- if (!output || !logSnapshot || logSnapshot.id !== selected || logSnapshot.runId !== logRunId(data, selected)) return;
+ if (!output || !logSnapshot || logSnapshot.id !== selected || logSnapshot.runId !== logRunId(data, selected)) {
+  logExportView = null;
+  if (exportButton) exportButton.disabled = true;
+  return;
+ }
  const lines = logSnapshot.lines;
  const query = logFilter.toLocaleLowerCase();
  const matches = query ? lines.filter(line => line.toLocaleLowerCase().includes(query)) : lines;
@@ -412,6 +420,10 @@ function paintLogs() {
  $('#log-empty-detail').textContent = noMatch ? '试试其他关键词，或清除筛选查看全部日志。' : '实例有运行输出后，日志会显示在这里。';
  $('#log-empty-clear').hidden = !noMatch;
  const text = matches.join('\n');
+ // Keep the export tied to what was actually painted, even when a text
+ // selection temporarily pauses painting new stream events.
+ logExportView = matches.length ? {id:selected,runId:logSnapshot.runId,filter:logFilter,generation:authGeneration,navigation:navigationGeneration,text} : null;
+ if (exportButton) exportButton.disabled = !logExportView;
  if (output.textContent === text) return;
  const top = output.scrollTop, left = output.scrollLeft, follow = output.scrollHeight - top - output.clientHeight < 36;
  output.textContent = text; output.scrollTop = follow ? output.scrollHeight : top; output.scrollLeft = left;
@@ -611,7 +623,7 @@ function refreshUpdateStatus(generation) {
  })();
  return request.promise;
 }
-function ensureSelected(){if(!data.state.instances.some(i=>i.id===selected)){cancelLogRequest();stopLogStream();logSnapshot=null;logAccessDenied=null;selected=data.state.instances[0]?.id||'';}}
+function ensureSelected(){if(!data.state.instances.some(i=>i.id===selected)){cancelLogRequest();stopLogStream();logSnapshot=null;logExportView=null;logAccessDenied=null;selected=data.state.instances[0]?.id||'';}}
 function picker(){return `<select class="config-picker" id="instance-picker" aria-label="选择实例" ${data.state.instances.length?'':'disabled'}>${data.state.instances.length?data.state.instances.map(i=>`<option value="${esc(i.id)}" ${selected===i.id?'selected':''}>${esc(i.name)} · ${esc(i.kind)}</option>`).join(''):'<option value="">尚无实例</option>'}</select>`;}
 function rulesContext(){return {data,filter,protocol,probingAll,probing,probeBatchProgress,esc,empty,stateOf,registrationFor,registrationText,probeCell};}
 function paintRulesList(){
@@ -952,6 +964,15 @@ $('#content').addEventListener('click',async e=>{
  const b=e.target.closest('button');if(!b||!data)return;if(b.dataset.go){navigate(b.dataset.go);return;}
  const action=b.dataset.action,id=b.dataset.id || (action==='health'?$('#health-instance')?.value:undefined);if(!action)return;
   if(action==='clear-log-filter'){logFilter='';const input=$('#log-filter');if(input){input.value='';input.focus();}paintLogs();return;}
+ if(action==='export-logs'){
+  const view=logExportView, output=$('#log-output');
+  if(page!=='logs'||!view||view.id!==selected||view.runId!==logRunId(data,selected)||view.filter!==logFilter||view.generation!==authGeneration||view.navigation!==navigationGeneration||!data.state.instances.some(i=>i.id===view.id)||(logAccessDenied?.id===view.id&&logAccessDenied.runId===view.runId)||!output||output.hidden||output.textContent!==view.text){
+   logExportView=null;b.disabled=true;toast('日志已变化，请刷新后重新导出');return;
+  }
+  try {download(`kurumi-log-${view.id}-${new Date().toISOString().replace(/[:.]/g,'-')}.txt`,view.text,'text/plain;charset=utf-8');toast('已导出显示的日志，请妥善保管');}
+  catch(err) {toast(err.message || '日志导出失败');}
+  return;
+ }
  const originPage=page, requestGeneration=authGeneration;
  let instanceOperation=null;
  if(action==='refresh-rules'){await synchronizeRules();return;}

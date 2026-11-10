@@ -67,7 +67,7 @@ Windows 快捷方式可以自动打开工作台；手动登录或无桌面环境
 - **事件通知**：可选使用 Webhook 发送实例状态和配置变更，支持通用 JSON、Discord、Slack 和 ntfy 格式，默认关闭；只配置一个地址并保存在本机。[Discord](https://docs.discord.com/developers/resources/webhook) 和 [Slack](https://api.slack.com/messaging/webhooks) 使用传入 Webhook 地址，[ntfy](https://docs.ntfy.sh/publish/) 使用允许发布的完整主题地址。通知仅支持公网 HTTPS，不使用系统代理、不跟随重定向，也不支持单独设置认证请求头。消息只包含事件、时间和实例 ID / 类型或配置版本；HTTP 2xx 只表示对方接受了请求。
 - **远程节点状态**：目标节点单独授权后，可通过可信 HTTPS 入口按需查看实例进程状态；不会远程启停，详见[节点说明](docs/REMOTE_NODES.md)。
 - **软件更新**：已安装的 Windows 和 Linux 原生包可从工作台选择项目发布版本并更新；源码运行版本需要自行更新。
-- **随手看看**：界面支持深浅主题和手机尺寸，运行记录保留当前会话最近的进程输出。
+- **随手看看**：界面支持深浅主题和手机尺寸；运行记录保留当前运行代次最近 200 行进程输出，可按关键词筛选并将显示内容导出为文本。日志可能包含敏感信息，分享前请检查。
 
 frp 核心支持自动安装官方 Windows、Linux 各架构及 macOS amd64 / arm64 版本。KurumiFRP 提供 Windows x64 / ARM64 安装包、Linux amd64 / arm64 的 DEB 和 RPM、Linux armhf / riscv64 的 DEB，以及其他官方 Linux 架构的便携版。便携版更新方法见 [安装说明](docs/INSTALL.md)。核心最低支持 frp 0.60，以往版本的验证记录见 [历史验证记录](docs/VALIDATION.md)。
 
