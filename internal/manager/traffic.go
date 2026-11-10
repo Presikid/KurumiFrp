@@ -104,7 +104,8 @@ func (a *App) RecordTrafficSnapshot(instanceID, runID string, snapshot TrafficSn
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, ok := a.store.DB.State.Instance(instanceID); !ok {
+	instance, ok := a.store.DB.State.Instance(instanceID)
+	if !ok {
 		return fmt.Errorf("实例不存在")
 	}
 	p := a.procs[instanceID]
@@ -129,6 +130,13 @@ func (a *App) RecordTrafficSnapshot(instanceID, runID string, snapshot TrafficSn
 	if a.traffic[instanceID] != samples {
 		a.pruneTrafficLocked()
 		a.traffic[instanceID] = samples
+	}
+	if instance.Kind == "frpc" && a.trafficDaily != nil {
+		a.trafficDaily.observe(a.store.DB.LocalTrafficIDs[instanceID], instance.Kind, trafficDailySample{
+			At: snapshot.SampledAt, RunID: runID, Available: snapshot.Available,
+			Received: snapshot.ReceivedBytes, Sent: snapshot.SentBytes,
+			Discontinuity: snapshot.Discontinuity, EpochKnown: true,
+		}, a.store.DB.LocalTrafficIDs, time.Now().UTC())
 	}
 	return nil
 }

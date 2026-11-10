@@ -63,6 +63,7 @@ func (a *App) export(w http.ResponseWriter, r *http.Request) {
 	db.Webhook = nil // Local notification credentials are not exported.
 	db.Webhooks = nil
 	db.Nodes = nil   // Node grants and credentials stay on this device.
+	db.LocalTrafficIDs = nil // Traffic history identities stay on this device.
 	db.Format = currentDatabaseFormat
 	db.Key = base64.RawStdEncoding.EncodeToString(a.store.key)
 	db.History = append([]Snapshot{}, db.History...)
@@ -107,6 +108,7 @@ func (a *App) export(w http.ResponseWriter, r *http.Request) {
 // Select the data for a password-encrypted export. The caller holds a.mu and
 // clones the selected data before releasing the lock.
 func selectExportScope(db Database, scope string, target uint64) (Database, error) {
+	db.LocalTrafficIDs = nil
 	db.History = append([]Snapshot{}, db.History...)
 	switch scope {
 	case "", "all":
@@ -264,6 +266,8 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	db.Format = currentDatabaseFormat
+	// Imported IDs must never inherit this device's previous observations.
+	db.LocalTrafficIDs = freshLocalTrafficIDs(db.State)
 	// Authorizations must not attach to different imported instances reusing
 	// old IDs. This write precedes the state replacement and fails closed.
 	if err = a.clearInstanceGrantsLocked(""); err != nil {

@@ -37,6 +37,7 @@ type App struct {
 	auth             auth
 	procs            map[string]*process
 	traffic          map[string]*trafficSamples // protected by mu, keyed by instance and run ID
+	trafficDaily     *trafficDailyHistory
 	assets           http.Handler
 	webhooks         *webhookDispatcher
 	loginHistory     *loginHistory
@@ -164,6 +165,7 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 	if e = app.recoverSchedules(); e != nil {
 		return nil, e
 	}
+	app.trafficDaily = loadTrafficDaily(s.dir, s.DB.State, s.DB.LocalTrafficIDs)
 	s.beforeCommit = func(before, after State) error {
 		for id, op := range app.operations {
 			if op.scheduled && scheduleDraftChanged(before, after, id) {
@@ -185,6 +187,7 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 	app.scheduleCancel = scheduleCancel
 	app.scheduleDone = make(chan struct{})
 	go app.scheduleLoop(scheduleCtx)
+	go app.runTrafficDaily()
 	return app, nil
 }
 func (a *App) SetDistribution(distribution string) {
@@ -396,6 +399,14 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				a.backupImport(w, r)
 			}
+			return
+		}
+		if r.URL.Path == "/api/traffic-history" {
+			if r.Method != http.MethodGet {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			a.trafficDailyAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/server-traffic" {
