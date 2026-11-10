@@ -167,7 +167,7 @@ func duplicatedInstance(src Instance, id, name string) Instance {
 		User: src.User, NatHoleSTUNServer: src.NatHoleSTUNServer, DNSServer: src.DNSServer, ClientTransport: src.ClientTransport,
 		LoginFailExit: src.LoginFailExit, ClientTLSDisabled: src.ClientTLSDisabled, ServerAllowPlaintext: src.ServerAllowPlaintext,
 		TCPMuxHTTPConnectPort: src.TCPMuxHTTPConnectPort, TCPMuxPassthrough: src.TCPMuxPassthrough,
-		SubDomainHost: src.SubDomainHost,
+		SubDomainHost: src.SubDomainHost, MaxPortsPerClient: src.MaxPortsPerClient,
 	}
 }
 

@@ -403,6 +403,7 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 		i.TCPMuxHTTPConnectPort = m.integer(root, "tcpmuxHTTPConnectPort", "", 0)
 		i.TCPMuxPassthrough = m.boolean(root, "tcpmuxPassthrough", "", false)
 		i.SubDomainHost = m.str(root, "subDomainHost", "", "")
+		i.MaxPortsPerClient = m.integer(root, "maxPortsPerClient", "", 0)
 		bind := m.str(root, "proxyBindAddr", "", "")
 		if bind != "" && bind != i.Host {
 			m.issue("proxyBindAddr", "当前产品不能独立保存代理监听地址；运行时使用 bindAddr")

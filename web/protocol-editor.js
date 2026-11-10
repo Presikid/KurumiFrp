@@ -29,6 +29,7 @@ const ProtocolEditor = (() => {
     <div class="server-field">${field('httpsPort', 'HTTPS 虚拟主机端口（0 关闭）', v.httpsPort ?? 0, 'number', 'min="0" max="65535" step="1"')}</div>
     <div class="server-field">${field('tcpmuxHTTPConnectPort', 'TCPMUX HTTP CONNECT 端口（0 关闭）', v.tcpmuxHTTPConnectPort ?? 0, 'number', 'min="0" max="65535" step="1"')}</div>
     <div class="server-field">${field('subDomainHost', '服务端子域名后缀（可选）', v.subDomainHost || '')}</div>
+    <div class="server-field span-2">${field('maxPortsPerClient', '每客户端代理端口上限（0 不限）', v.maxPortsPerClient ?? 0, 'number', 'min="0" max="131070" step="1"')}<small>由服务端按客户端连接统计占用的代理端口，不等同于规则数量或流量配额。</small></div>
     <div class="server-field span-2">${check('tcpmuxPassthrough', '启用 TCPMUX 透传（需要设置 HTTP CONNECT 端口）', v.tcpmuxPassthrough)}</div>
     <div class="server-field span-2">${check('serverAllowPlaintext', '允许不使用 TLS 的客户端连接', v.serverAllowPlaintext)}</div>
     <div class="span-2">${check('autoStart', '工作台启动时自动启动此实例', v.autoStart)}</div>
@@ -194,7 +195,7 @@ const ProtocolEditor = (() => {
     httpPort:kind === 'frps' ? +val('httpPort') : 0, httpsPort:kind === 'frps' ? +val('httpsPort') : 0,
     user:kind === 'frpc' ? val('user').trim() : '', natHoleStunServer:kind === 'frpc' ? val('natHoleStunServer').trim() : '', dnsServer:kind === 'frpc' ? val('dnsServer').trim() : '', clientTransport:kind === 'frpc' ? val('clientTransport') : '', loginFailExit:kind === 'frpc' && f.loginFailExit.checked, clientTLSDisabled:kind === 'frpc' && f.clientTLSDisabled.checked, serverAllowPlaintext:kind === 'frps' && f.serverAllowPlaintext.checked, kcpBindPort:kind === 'frps' ? +val('kcpBindPort') : 0, quicBindPort:kind === 'frps' ? +val('quicBindPort') : 0,
     tcpmuxHTTPConnectPort:kind === 'frps' ? +val('tcpmuxHTTPConnectPort') : 0,
-    tcpmuxPassthrough:kind === 'frps' && f.tcpmuxPassthrough.checked, subDomainHost:kind === 'frps' ? val('subDomainHost').trim() : ''});
+    tcpmuxPassthrough:kind === 'frps' && f.tcpmuxPassthrough.checked, subDomainHost:kind === 'frps' ? val('subDomainHost').trim() : '', maxPortsPerClient:kind === 'frps' ? +val('maxPortsPerClient') : 0});
    return result;
   }
   const type = val('type'), visitor = Protocols.isVisitor(type), paired = Protocols.hasPairingSecret(type);
