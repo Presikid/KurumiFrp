@@ -59,6 +59,7 @@ type principal struct {
 	Account           bool     `json:"account"`
 	AllowLogs         bool     `json:"allowLogs,omitempty"`
 	OperableInstances []string `json:"operableInstances,omitempty"`
+	LogInstances      []string `json:"logInstances,omitempty"`
 	Instances         []string `json:"-"`
 	AccountID         string   `json:"-"`
 	gate              *sync.RWMutex
@@ -83,7 +84,18 @@ func (p principal) canOperate(id string) bool {
 	return false
 }
 func (p principal) canReadLogs(id string) bool {
-	return p.admin() || (p.AllowLogs && p.canView(id))
+	if p.admin() {
+		return true
+	}
+	if !p.AllowLogs || !p.canView(id) {
+		return false
+	}
+	for _, allowed := range p.LogInstances {
+		if allowed == id {
+			return true
+		}
+	}
+	return false
 }
 func (p principal) canView(id string) bool {
 	if p.admin() {
@@ -137,7 +149,8 @@ func (a *auth) identityLocked(r *http.Request) (principal, bool) {
 	}
 	for _, account := range a.accounts {
 		if account.ID == session.accountID && account.Enabled {
-			return principal{Name: account.Username, Role: account.Role, Account: true, AllowLogs: account.AllowLogs, Instances: append([]string(nil), account.Instances...), OperableInstances: effectiveControlInstances(account), AccountID: account.ID, gate: account.gate}, true
+			logs := effectiveLogInstances(account)
+			return principal{Name: account.Username, Role: account.Role, Account: true, AllowLogs: account.AllowLogs && len(logs) != 0, Instances: append([]string(nil), account.Instances...), OperableInstances: effectiveControlInstances(account), LogInstances: logs, AccountID: account.ID, gate: account.gate}, true
 		}
 	}
 	delete(a.sessions, c.Value)
