@@ -44,6 +44,8 @@ type auth struct {
 	accounts          []localAccount
 	accountsRevision  uint64
 	accountLoadErr    error
+	oidcSettings      oidcSettings
+	oidcLoadErr       error
 	hashSlots         chan struct{}
 }
 
