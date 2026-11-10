@@ -401,7 +401,7 @@ async function controlNode(node, instance, action) {
   if (!applied?.ok || applied.id!==node.id || applied.stamp!==node.stamp || applied.instanceId!==instance.id) throw new Error('目标结果无效');
   finishNodeControlNotice(pending, true);
   if (session === authGeneration && generation === nodePageGeneration && page === 'nodes') {
-   delete nodeResults[node.id]; toast(`目标已确认${label}，请重新检查状态。`);
+   delete nodeResults[node.id]; toast(`目标已受理${label}请求，请重新检查状态。`);
   }
  } catch (error) {
   if (pending) finishNodeControlNotice(pending, false);

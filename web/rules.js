@@ -21,7 +21,7 @@ const RulesPage = (() => {
   });
  }
  function runtimeText(runtime) {
-  return ({running:'实例运行中',stopped:'实例未启动',exited:'实例已退出','autostart-failed':'自动启动失败'})[runtime.state] || '实例状态未知';
+  return ({starting:'实例启动中',stopping:'实例停止中',running:'实例运行中',stopped:'实例未启动',exited:'实例已退出','autostart-failed':'自动启动失败'})[runtime.state] || '实例状态未知';
  }
  function card(t, ctx) {
   const {esc, data} = ctx;

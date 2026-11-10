@@ -6,7 +6,7 @@ window.KurumiInstances = (() => {
  const operations = new Map();
  const errors = new Map();
  const busyLabels = {start:'启动中…', stop:'停止中…', restart:'重启中…', validate:'校验中…'};
- const stateLabels = {running:'运行中', stopped:'已停止', exited:'已退出', 'autostart-failed':'自动启动失败'};
+ const stateLabels = {starting:'启动中', running:'运行中', stopping:'停止中', stopped:'已停止', exited:'已退出', 'autostart-failed':'自动启动失败'};
 
  function paint(id) {
   const operation = operations.get(id);
@@ -71,6 +71,8 @@ window.KurumiInstances = (() => {
   const operator = data.identity?.role === 'operator';
   const state = runtime.state || 'stopped';
   const running = state === 'running';
+  const starting = state === 'starting';
+  const stopping = state === 'stopping';
   const role = instance.kind === 'frpc' ? 'client' : instance.kind === 'frps' ? 'server' : 'other';
   const roleName = role === 'client' ? '客户端' : role === 'server' ? '服务端' : '实例';
   const roleDescription = role === 'client' ? '连接上游服务端' : role === 'server' ? '在本机监听连接' : '本机运行实例';
@@ -83,7 +85,9 @@ window.KurumiInstances = (() => {
   const operation = operations.get(instance.id);
   const error = errors.get(instance.id);
   let configText;
-  if (runtime.pending) configText = running ? '当前仍使用上次应用的配置；请检查草稿后重启应用。' : '草稿尚未应用；请检查配置后再启动。';
+  if (starting) configText = '实例正在启动，配置是否生效仍待确认。';
+  else if (stopping) configText = '实例正在停止，资源清理完成后可再次启动。';
+  else if (runtime.pending) configText = running ? '当前仍使用上次应用的配置；请检查草稿后重启应用。' : '草稿尚未应用；请检查配置后再启动。';
   else if (runtime.applied) configText = running ? '当前运行配置与草稿一致。' : '草稿与上次应用的配置一致；启动时会重新检查。';
   else configText = running ? '尚未提供运行配置与草稿的比较结果。' : '启动时将检查并应用当前草稿。';
 
@@ -104,7 +108,7 @@ window.KurumiInstances = (() => {
    <div class="instance-card__config ${runtime.pending?'instance-card__config--pending':''}"><div><strong>${runtime.pending?'配置待应用':'配置状态'}</strong><p>${configText}</p></div>${runtime.applied?button('diff','查看差异'):''}</div>
    ${runtime.exit?`<div class="instance-card__runtime-message"><strong>运行信息</strong><p>${esc(runtime.exit)}</p></div>`:''}
    <p class="instance-card__error" data-instance-error role="alert" ${error?'':'hidden'}>${error?'操作失败：'+esc(error):''}</p>
-   <div class="instance-card__controls">${!restricted || operator ? (running?button('stop','停止',false,true)+button('restart','重启应用',Boolean(runtime.pending),true):button('start','启动',true,true)) : ''}${restricted?`<button type="button" data-instance-read="config" data-id="${id}">配置预览</button>${role === 'server' ? `<button type="button" data-instance-read="server-traffic" data-id="${id}">服务端流量</button>` : ''}`:button('logs','日志')+button('health','链路检测')}</div>
+   <div class="instance-card__controls">${!restricted || operator ? (starting||stopping?button('stop','停止',false,true):running?button('stop','停止',false,true)+button('restart','重启应用',Boolean(runtime.pending),true):button('start','启动',true,true)) : ''}${restricted?`<button type="button" data-instance-read="config" data-id="${id}">配置预览</button>${role === 'server' ? `<button type="button" data-instance-read="server-traffic" data-id="${id}">服务端流量</button>` : ''}`:button('logs','日志')+button('health','链路检测')}</div>
    <div class="instance-card__actions">${!restricted || operator ? button('validate','校验配置',false,true) : ''}${restricted ? '' : button('edit-instance','编辑')+button('duplicate-instance','复制实例')+button('delete-instance','删除')}</div>
   </article>`;
  }
