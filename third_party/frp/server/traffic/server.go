@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -46,6 +47,7 @@ type ServerSnapshot struct {
 	// ResetEpoch and its validity are copied under the same lock as totals.
 	ResetEpoch      uint64 `json:"-"`
 	ResetEpochValid bool   `json:"-"`
+	SampledAt       time.Time `json:"-"`
 }
 
 type serverProxyKey struct {
@@ -127,6 +129,7 @@ func (c *ServerCounter) Snapshot() ServerSnapshot {
 		ProxiesTruncated: c.proxiesTruncated,
 		ResetEpoch:       c.resetEpoch,
 		ResetEpochValid:  !c.resetExhausted,
+		SampledAt:        time.Now().UTC(),
 	}
 	for _, proxy := range c.proxies {
 		snapshot.Proxies = append(snapshot.Proxies, proxy)

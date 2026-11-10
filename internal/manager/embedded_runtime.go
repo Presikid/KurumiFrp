@@ -367,7 +367,7 @@ func (r *embeddedRun) runClient(ctx context.Context, instanceID string, config *
 	if snapshot := run.Snapshot(); snapshot.Active {
 		r.mu.Lock()
 		r.finalTraffic = TrafficSnapshot{
-			SampledAt: time.Now().UTC(), Available: true,
+			SampledAt: snapshot.SampledAt, Available: true,
 			ReceivedBytes: snapshot.Total.Download, SentBytes: snapshot.Total.Upload,
 		}
 		r.mu.Unlock()
@@ -490,6 +490,7 @@ func (r *embeddedRun) ReadTraffic() TrafficSnapshot {
 		return observation
 	}
 	snapshot := run.Snapshot()
+	observation.SampledAt = snapshot.SampledAt
 	if snapshot.Active && r.ReadyNow() {
 		observation.Available = true
 		observation.ReceivedBytes = snapshot.Total.Download
@@ -513,7 +514,7 @@ func (r *embeddedRun) ReadServerTraffic() ServerTrafficSnapshot {
 		return ServerTrafficSnapshot{}
 	}
 	snapshot := ServerTrafficSnapshot{
-		SampledAt: time.Now().UTC(), Available: true,
+		SampledAt: raw.SampledAt, Available: true,
 		ReceivedBytes: raw.Received, SentBytes: raw.Sent,
 		ResetEpoch: raw.ResetEpoch, EpochKnown: raw.ResetEpochValid,
 		Proxies:          make([]ServerTrafficProxy, 0, len(raw.Proxies)),

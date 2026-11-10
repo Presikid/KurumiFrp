@@ -8,6 +8,7 @@ import (
 	"errors"
 	"math"
 	"sync"
+	"time"
 )
 
 // Counter receives payload bytes at a single rule's forwarding boundary.
@@ -33,6 +34,7 @@ type Snapshot struct {
 	Active     bool             `json:"active"`
 	Total      Bytes            `json:"total"`
 	Rules      map[string]Bytes `json:"rules"`
+	SampledAt  time.Time        `json:"-"`
 }
 
 // Book tracks the most recent run of each instance. Its zero value is ready
@@ -160,6 +162,7 @@ func (r *Run) Snapshot() Snapshot {
 		Active:     r.active,
 		Total:      r.total,
 		Rules:      make(map[string]Bytes, len(r.rules)),
+		SampledAt:  time.Now().UTC(),
 	}
 	for id, rule := range r.rules {
 		s.Rules[id] = rule.counts
