@@ -20,7 +20,7 @@ const Protocols = Object.freeze({
   if (this.isVisitor(t.type)) return (t.serverUser ? t.serverUser + ' / ' : '') + (t.serverName || '');
   if (this.hasPairingSecret(t.type)) return '私密配对';
   if (['http', 'https', 'tcpmux'].includes(t.type)) {
-   return [...(t.domains || []), ...(t.type === 'tcpmux' && t.subdomain ? [t.subdomain + '（子域名）'] : [])].join(', ');
+   return [...(t.domains || []), ...(t.subdomain ? [t.subdomain + '（子域名）'] : [])].join(', ');
   }
   return ['tcp', 'udp'].includes(t.type) && t.remotePort === 0 ? '动态分配（查看代理状态）' : t.remotePort;
  },

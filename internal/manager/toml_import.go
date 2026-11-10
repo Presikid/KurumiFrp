@@ -300,12 +300,12 @@ func (m *tomlMapper) mapRule(store *Store, t *tomlTable, prefix, instanceID stri
 		}
 		if typ == "http" || typ == "https" || typ == "tcpmux" {
 			r.Domains = m.strings(t, "customDomains", prefix)
-			if (typ == "http" || typ == "https") && (len(r.Domains) == 0 || len(r.Domains) > 16) {
-				m.issue(prefix+"customDomains", "需要 1–16 个域名")
+			r.Subdomain = m.str(t, "subdomain", prefix, "")
+			if (typ == "http" || typ == "https") && (len(r.Domains) > 16 || (len(r.Domains) == 0 && r.Subdomain == "")) {
+				m.issue(prefix+"customDomains / subdomain", "需要自定义域名或子域名，最多 16 个自定义域名")
 			}
 		}
 		if typ == "tcpmux" {
-			r.Subdomain = m.str(t, "subdomain", prefix, "")
 			r.Multiplexer = m.str(t, "multiplexer", prefix, "")
 			r.HTTPUser = m.str(t, "httpUser", prefix, "")
 			r.RouteByHTTPUser = m.str(t, "routeByHTTPUser", prefix, "")

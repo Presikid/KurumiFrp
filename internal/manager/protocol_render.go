@@ -83,8 +83,11 @@ func renderProtocolTunnel(b *strings.Builder, t Tunnel, secret func(string, stri
 		if t.Type == "tcp" || t.Type == "udp" {
 			fmt.Fprintf(b, "remotePort = %d\n", t.RemotePort)
 		}
-		if t.Type == "http" || t.Type == "https" || (t.Type == "tcpmux" && len(t.Domains) > 0) {
+		if (t.Type == "http" || t.Type == "https" || t.Type == "tcpmux") && len(t.Domains) > 0 {
 			renderStringArray(b, "customDomains", t.Domains)
+		}
+		if (t.Type == "http" || t.Type == "https" || t.Type == "tcpmux") && t.Subdomain != "" {
+			fmt.Fprintf(b, "subdomain = %s\n", quote(t.Subdomain))
 		}
 		if t.Type == "tcpmux" {
 			mux := t.Multiplexer
@@ -92,9 +95,6 @@ func renderProtocolTunnel(b *strings.Builder, t Tunnel, secret func(string, stri
 				mux = "httpconnect"
 			}
 			fmt.Fprintf(b, "multiplexer = %s\n", quote(mux))
-			if t.Subdomain != "" {
-				fmt.Fprintf(b, "subdomain = %s\n", quote(t.Subdomain))
-			}
 			if t.HTTPUser != "" {
 				fmt.Fprintf(b, "httpUser = %s\n", quote(t.HTTPUser))
 			}
