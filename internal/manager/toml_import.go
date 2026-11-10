@@ -330,11 +330,26 @@ func (m *tomlMapper) mapRule(store *Store, t *tomlTable, prefix, instanceID stri
 			r.FallbackTimeoutMs = m.integer(t, "fallbackTimeoutMs", prefix, 0)
 		}
 	} else {
+		pluginType := m.str(t, "plugin.type", prefix, "")
 		r.LocalHost = m.str(t, "localIP", prefix, "127.0.0.1")
 		if r.LocalHost == "" {
 			r.LocalHost = "127.0.0.1"
 		}
 		r.LocalPort = m.integer(t, "localPort", prefix, 0)
+		switch pluginType {
+		case "":
+		case "unix_domain_socket":
+			r.UnixSocketPath = m.str(t, "plugin.unixPath", prefix, "")
+			if typ != "tcp" || !strings.HasPrefix(r.UnixSocketPath, "/") || !protocolTextOK(r.UnixSocketPath) {
+				m.issue(prefix+"plugin", "仅支持 TCP 规则使用绝对路径的 Unix 套接字")
+			}
+			if r.LocalPort != 0 || r.LocalHost != "127.0.0.1" {
+				m.issue(prefix+"localIP / localPort", "Unix 套接字规则不能同时保留本地 TCP 地址和端口")
+			}
+			r.LocalHost, r.LocalPort = "", 0
+		default:
+			m.issue(prefix+"plugin.type", "当前产品不支持此客户端插件")
+		}
 		if typ == "tcp" || typ == "udp" {
 			r.RemotePort = m.integer(t, "remotePort", prefix, 0)
 			if r.RemotePort < 0 || r.RemotePort > 65535 {
@@ -400,13 +415,13 @@ func (m *tomlMapper) mapRule(store *Store, t *tomlTable, prefix, instanceID stri
 	if typ == "stcp" || typ == "xtcp" || typ == "sudp" {
 		r.Secret = m.secret(store, m.str(t, "secretKey", prefix, ""), prefix+"secretKey")
 	}
-	if !hostOK(r.LocalHost) {
+	if r.UnixSocketPath == "" && !hostOK(r.LocalHost) {
 		m.issue(prefix+"localIP / bindAddr", "地址不符合当前产品的格式")
 	}
-	if !portOK(r.LocalPort) && !(visitor && supportsUnboundVisitor(r.Type) && r.LocalPort < 0) {
+	if r.UnixSocketPath == "" && !portOK(r.LocalPort) && !(visitor && supportsUnboundVisitor(r.Type) && r.LocalPort < 0) {
 		m.issue(prefix+"localPort / bindPort", "端口无效")
 	}
-	pruneImportTables(t, "transport", "healthCheck", "natTraversal", "requestHeaders", "responseHeaders")
+	pruneImportTables(t, "transport", "healthCheck", "natTraversal", "requestHeaders", "responseHeaders", "plugin")
 	m.unknown(t, prefix)
 	return r
 }

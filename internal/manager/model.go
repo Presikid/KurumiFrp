@@ -58,6 +58,7 @@ type Tunnel struct {
 	Type                 string   `json:"type"`
 	LocalHost            string   `json:"localHost"`
 	LocalPort            int      `json:"localPort"`
+	UnixSocketPath       string   `json:"unixSocketPath,omitempty"`
 	RemotePort           int      `json:"remotePort"`
 	Domains              []string `json:"domains"`
 	Locations            []string `json:"locations,omitempty"`
@@ -368,7 +369,11 @@ func validate(s State) error {
 			return fmt.Errorf("同一实例的规则名称不能重复")
 		}
 		names[key] = true
-		if !hostOK(t.LocalHost) || (!portOK(t.LocalPort) && !(supportsUnboundVisitor(t.Type) && t.LocalPort < 0)) {
+		if t.UnixSocketPath != "" {
+			if t.Type != "tcp" || !strings.HasPrefix(t.UnixSocketPath, "/") || !protocolTextOK(t.UnixSocketPath) || t.LocalHost != "" || t.LocalPort != 0 || t.HealthCheckType != "" || t.HealthCheckPath != "" || t.HealthCheckTimeout != 0 || t.HealthCheckInterval != 0 || t.HealthCheckMaxFailed != 0 {
+				return fmt.Errorf("Unix 套接字仅适用于 TCP 规则；请使用绝对路径并关闭代理健康检查")
+			}
+		} else if !hostOK(t.LocalHost) || (!portOK(t.LocalPort) && !(supportsUnboundVisitor(t.Type) && t.LocalPort < 0)) {
 			return fmt.Errorf("本地地址或端口无效")
 		}
 		if t.BandwidthKB < 0 || t.BandwidthKB > 10000000 {

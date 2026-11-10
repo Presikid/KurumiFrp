@@ -42,6 +42,11 @@ func probeTargetContext(parent context.Context, t Tunnel) ProbeResult {
 		result.Message = "此 Visitor 仅接收回退连接，不监听本地端口"
 		return stampProbe(result)
 	}
+	if t.UnixSocketPath != "" {
+		result.Status = "unsupported"
+		result.Message = "Unix 套接字目标暂不提供工作台检测"
+		return stampProbe(result)
+	}
 	if !hostOK(t.LocalHost) || !portOK(t.LocalPort) {
 		result.Status = "invalid"
 		result.Message = "本地目标地址或端口无效"
