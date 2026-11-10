@@ -16,18 +16,37 @@ import (
 
 const firewallMaxSources = 4096
 const firewallMaxSourceBytes = 256 << 10
+const firewallMaxRules = 16
 
 // Firewall settings are local machine authority and are not portable backups.
 // The kernel table is changed only when an administrator explicitly applies.
 type firewallConfig struct {
-	Version       int    `json:"version"`
-	Revision      uint64 `json:"revision"`
-	TableID       string `json:"tableId"`
-	Enabled       bool   `json:"enabled"`
-	RecordBlocked bool   `json:"recordBlocked,omitempty"`
-	Mode          string `json:"mode"`
-	Ports         string `json:"ports"`
-	Sources       string `json:"sources"`
+	Version       int            `json:"version"`
+	Revision      uint64         `json:"revision"`
+	TableID       string         `json:"tableId"`
+	Enabled       bool           `json:"enabled"`
+	RecordBlocked bool           `json:"recordBlocked,omitempty"`
+	Mode          string         `json:"mode"`
+	Ports         string         `json:"ports"`
+	Sources       string         `json:"sources"`
+	Rules         []firewallRule `json:"rules,omitempty"`
+}
+
+type firewallRule struct {
+	Name    string `json:"name"`
+	Enabled *bool  `json:"enabled,omitempty"`
+	Mode    string `json:"mode"`
+	Ports   string `json:"ports"`
+	Sources string `json:"sources"`
+}
+
+// Version 1 initially stored one rule directly on the config. Keep reading it
+// until an administrator explicitly saves the multi-rule representation.
+func firewallRules(c firewallConfig) []firewallRule {
+	if len(c.Rules) != 0 {
+		return c.Rules
+	}
+	return []firewallRule{{Mode: c.Mode, Ports: c.Ports, Sources: c.Sources}}
 }
 
 type firewallManager struct {
@@ -55,24 +74,45 @@ func validateFirewallConfig(c firewallConfig) error {
 	if c.Version != 1 || c.Revision == 0 || c.Revision > maxJSONRevision || !idPattern.MatchString(c.TableID) {
 		return fmt.Errorf("防火墙配置格式无效")
 	}
-	if !c.Enabled {
-		if c.Mode != "" || c.Ports != "" || c.Sources != "" || c.RecordBlocked {
-			return fmt.Errorf("关闭防火墙时配置应为空")
-		}
+	if !c.Enabled && len(c.Rules) == 0 && c.Mode == "" && c.Ports == "" && c.Sources == "" && !c.RecordBlocked {
 		return nil
 	}
-	if c.Mode != "allow" && c.Mode != "block" {
-		return fmt.Errorf("请选择允许列表或阻止列表")
+	if !c.Enabled && len(c.Rules) == 0 {
+		return fmt.Errorf("关闭防火墙时保留的规则无效")
 	}
-	if _, err := parseSourceAccess(c.Mode, c.Sources, firewallMaxSourceBytes, firewallMaxSources); err != nil {
-		return err
+	if len(c.Rules) > firewallMaxRules || (len(c.Rules) != 0 && (c.Mode != "" || c.Ports != "" || c.Sources != "")) {
+		return fmt.Errorf("防火墙规则数量或格式无效")
 	}
-	ports, err := parseServerAllowedPorts(c.Ports)
-	if err != nil {
-		return err
+	sourceCount, sourceBytes, active := 0, 0, 0
+	for index, rule := range firewallRules(c) {
+		if rule.Enabled == nil || *rule.Enabled {
+			active++
+		}
+		if rule.Name != "" && !nodeNameOK(rule.Name) {
+			return fmt.Errorf("第 %d 条规则名称无效", index+1)
+		}
+		if rule.Mode != "allow" && rule.Mode != "block" {
+			return fmt.Errorf("第 %d 条规则请选择允许或阻止", index+1)
+		}
+		policy, err := parseSourceAccess(rule.Mode, rule.Sources, firewallMaxSourceBytes, firewallMaxSources)
+		if err != nil {
+			return fmt.Errorf("第 %d 条规则：%w", index+1, err)
+		}
+		sourceCount += len(policy.prefixes)
+		sourceBytes += len(rule.Sources)
+		if sourceCount > firewallMaxSources || sourceBytes > firewallMaxSourceBytes {
+			return fmt.Errorf("所有规则的来源地址总数或长度超过上限")
+		}
+		ports, err := parseServerAllowedPorts(rule.Ports)
+		if err != nil {
+			return fmt.Errorf("第 %d 条规则：%w", index+1, err)
+		}
+		if len(ports) == 0 {
+			return fmt.Errorf("第 %d 条规则请指定 TCP/UDP 端口", index+1)
+		}
 	}
-	if len(ports) == 0 {
-		return fmt.Errorf("请指定需要过滤的 TCP/UDP 端口")
+	if c.Enabled && active == 0 {
+		return fmt.Errorf("请至少启用一条规则，或关闭端口来源过滤")
 	}
 	return nil
 }
@@ -89,26 +129,7 @@ func renderFirewall(c firewallConfig) (string, error) {
 	if !c.Enabled {
 		return b.String(), nil
 	}
-	policy, _ := parseSourceAccess(c.Mode, c.Sources, firewallMaxSourceBytes, firewallMaxSources)
-	ranges, _ := parseServerAllowedPorts(c.Ports)
-	ports := make([]string, 0, len(ranges))
-	for _, r := range ranges {
-		if r.start == r.end {
-			ports = append(ports, fmt.Sprintf("%d", r.start))
-		} else {
-			ports = append(ports, fmt.Sprintf("%d-%d", r.start, r.end))
-		}
-	}
-	var ipv4, ipv6 []string
-	for _, p := range policy.prefixes {
-		if p.Addr().Is4() {
-			ipv4 = append(ipv4, p.String())
-		} else {
-			ipv6 = append(ipv6, p.String())
-		}
-	}
 	fmt.Fprintf(&b, "table inet %s {\n", table)
-	fmt.Fprintf(&b, "  set ports { type inet_service; flags interval; auto-merge; elements = { %s } }\n", strings.Join(ports, ", "))
 	writeSet := func(name, kind string, entries []string) {
 		fmt.Fprintf(&b, "  set %s { type %s; flags interval; auto-merge;", name, kind)
 		if len(entries) != 0 {
@@ -116,31 +137,66 @@ func renderFirewall(c firewallConfig) (string, error) {
 		}
 		b.WriteString(" }\n")
 	}
-	writeSet("sources4", "ipv4_addr", ipv4)
-	writeSet("sources6", "ipv6_addr", ipv6)
+	type compiledRule struct {
+		allowOnly bool
+		ipv4      []string
+		ipv6      []string
+	}
+	rules := firewallRules(c)
+	compiled := make([]compiledRule, 0, len(rules))
+	for _, rule := range rules {
+		if rule.Enabled != nil && !*rule.Enabled {
+			continue
+		}
+		index := len(compiled)
+		policy, _ := parseSourceAccess(rule.Mode, rule.Sources, firewallMaxSourceBytes, firewallMaxSources)
+		ranges, _ := parseServerAllowedPorts(rule.Ports)
+		ports := make([]string, 0, len(ranges))
+		for _, r := range ranges {
+			if r.start == r.end {
+				ports = append(ports, fmt.Sprintf("%d", r.start))
+			} else {
+				ports = append(ports, fmt.Sprintf("%d-%d", r.start, r.end))
+			}
+		}
+		next := compiledRule{allowOnly: policy.allowOnly}
+		for _, prefix := range policy.prefixes {
+			if prefix.Addr().Is4() {
+				next.ipv4 = append(next.ipv4, prefix.String())
+			} else {
+				next.ipv6 = append(next.ipv6, prefix.String())
+			}
+		}
+		fmt.Fprintf(&b, "  set r%d_ports { type inet_service; flags interval; auto-merge; elements = { %s } }\n", index, strings.Join(ports, ", "))
+		writeSet(fmt.Sprintf("r%d_sources4", index), "ipv4_addr", next.ipv4)
+		writeSet(fmt.Sprintf("r%d_sources6", index), "ipv6_addr", next.ipv6)
+		compiled = append(compiled, next)
+	}
 	if c.RecordBlocked {
 		b.WriteString("  set seen4 { type ipv4_addr . inet_proto . inet_service; flags dynamic, timeout; timeout 1h; size 1024; }\n")
 		b.WriteString("  set seen6 { type ipv6_addr . inet_proto . inet_service; flags dynamic, timeout; timeout 1h; size 1024; }\n")
 	}
 	b.WriteString("  chain filter {\n    type filter hook prerouting priority -150; policy accept;\n")
 	b.WriteString("    iifname \"lo\" return\n    ct state != new return\n    fib daddr type != local return\n    meta l4proto != { tcp, udp } return\n")
-	op := ""
-	if policy.allowOnly {
-		op = "!= "
-	}
-	writeRule := func(family, source, suffix string) {
-		match := fmt.Sprintf("meta nfproto %s th dport @ports %s saddr %s@sources%s", family, source, op, suffix)
+	writeRule := func(index int, family, source, suffix, op string) {
+		match := fmt.Sprintf("meta nfproto %s th dport @r%d_ports %s saddr %s@r%d_sources%s", family, index, source, op, index, suffix)
 		if c.RecordBlocked {
 			fmt.Fprintf(&b, "    %s update @seen%s { %s saddr . meta l4proto . th dport }\n", match, suffix, source)
 		}
 		// A full record set must not prevent the following rule from dropping.
 		fmt.Fprintf(&b, "    %s counter drop\n", match)
 	}
-	if policy.allowOnly || len(ipv4) != 0 {
-		writeRule("ipv4", "ip", "4")
-	}
-	if policy.allowOnly || len(ipv6) != 0 {
-		writeRule("ipv6", "ip6", "6")
+	for index, rule := range compiled {
+		op := ""
+		if rule.allowOnly {
+			op = "!= "
+		}
+		if rule.allowOnly || len(rule.ipv4) != 0 {
+			writeRule(index, "ipv4", "ip", "4", op)
+		}
+		if rule.allowOnly || len(rule.ipv6) != 0 {
+			writeRule(index, "ipv6", "ip6", "6", op)
+		}
 	}
 	b.WriteString("  }\n}\n")
 	return b.String(), nil
@@ -178,12 +234,13 @@ func (a *App) firewallAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Revision      uint64 `json:"revision"`
-		Enabled       *bool  `json:"enabled"`
-		RecordBlocked *bool `json:"recordBlocked"`
-		Mode          string `json:"mode"`
-		Ports         string `json:"ports"`
-		Sources       string `json:"sources"`
+		Revision      uint64          `json:"revision"`
+		Enabled       *bool           `json:"enabled"`
+		RecordBlocked *bool           `json:"recordBlocked"`
+		Mode          string          `json:"mode"`
+		Ports         string          `json:"ports"`
+		Sources       string          `json:"sources"`
+		Rules         *[]firewallRule `json:"rules"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, 400, err)
@@ -197,18 +254,40 @@ func (a *App) firewallAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, 409, fmt.Errorf("防火墙配置已变化或版本达到上限，请刷新"))
 		return
 	}
+	if req.Rules == nil && len(f.config.Rules) != 0 {
+		fail(w, 409, fmt.Errorf("请刷新到支持多条规则的管理界面"))
+		return
+	}
+	if req.Rules != nil && (req.Mode != "" || req.Ports != "" || req.Sources != "") {
+		fail(w, 400, fmt.Errorf("不能同时提交旧版和多条规则"))
+		return
+	}
 	tableID := f.config.TableID
 	if tableID == "" {
 		tableID = randomHex(8)
 	}
 	next := firewallConfig{Version: 1, Revision: f.config.Revision + 1, TableID: tableID, Enabled: *req.Enabled}
 	if *req.Enabled {
-		next.Mode, next.Ports, next.Sources = req.Mode, strings.TrimSpace(req.Ports), strings.TrimSpace(req.Sources)
+		if req.Rules != nil {
+			next.Rules = append([]firewallRule{}, (*req.Rules)...)
+			for index := range next.Rules {
+				next.Rules[index].Name = strings.TrimSpace(next.Rules[index].Name)
+				next.Rules[index].Ports = strings.TrimSpace(next.Rules[index].Ports)
+				next.Rules[index].Sources = strings.TrimSpace(next.Rules[index].Sources)
+			}
+		} else {
+			next.Mode, next.Ports, next.Sources = req.Mode, strings.TrimSpace(req.Ports), strings.TrimSpace(req.Sources)
+		}
 		if req.RecordBlocked != nil {
 			next.RecordBlocked = *req.RecordBlocked
 		} else {
 			next.RecordBlocked = f.config.RecordBlocked
 		}
+	} else if f.config.Enabled || len(f.config.Rules) != 0 {
+		// Disabling removes the table but keeps the last saved policy for a
+		// future re-enable. Unapplied editor changes are not silently stored.
+		next.Rules = append([]firewallRule{}, firewallRules(f.config)...)
+		next.RecordBlocked = f.config.RecordBlocked
 	}
 	text, err := renderFirewall(next)
 	if err != nil {
