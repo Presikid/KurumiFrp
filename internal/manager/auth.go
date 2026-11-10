@@ -49,6 +49,7 @@ type auth struct {
 	oidcFlows         map[string]oidcFlow
 	oidcStartSlots    chan struct{}
 	passkeys          *passkeyStore
+	passkeyFlows      map[string]passkeyFlow
 	hashSlots         chan struct{}
 }
 
