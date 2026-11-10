@@ -108,7 +108,16 @@ const Overview = (() => {
    at:point.sampledAt, receivedBytesPerSecond:point.receivedBytesPerSecond, sentBytesPerSecond:point.sentBytesPerSecond
   }));
   const note = value.available ? '' : '<p class="small-note">当前采样不可用；图表仅显示此运行代次的历史采样。</p>';
-  return note + trafficChart({samples}, escape) + '<p class="small-note">客户端统计转发载荷，不包含协议开销；不同于服务端统计口径。</p>';
+  const details = Object.hasOwn(value, 'ruleTraffic') ? renderClientRuleTraffic(value.ruleTraffic, escape) : '';
+  return note + trafficChart({samples}, escape) + '<p class="small-note">客户端统计转发载荷，不包含协议开销；不同于服务端统计口径。</p>' + details;
+ }
+
+ function renderClientRuleTraffic(value, escape, open = false) {
+  if (!value?.available) return '<p class="small-note">当前运行代次的规则流量明细不可用，不代表流量为零。</p>';
+  const rules = Array.isArray(value.rules) ? value.rules : [];
+  const rows = rules.map(rule => `<tr><td>${escape(rule.name)}</td><td>${rule.kind === 'visitor' ? 'Visitor' : '代理'}</td><td>${bytes(rule.receivedBytes)}</td><td>${bytes(rule.sentBytes)}</td></tr>`).join('');
+  const body = rows ? `<div class="table-wrap"><table><thead><tr><th>已应用名称</th><th>类型</th><th>接收</th><th>发送</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="small-note">此运行代次没有可显示的规则。</p>';
+  return `<details class="overview-server-details" ${open ? 'open' : ''}><summary>本次运行的规则流量 · ${rules.length} 条</summary><p class="small-note">快照：${escape(sampleTime(value.sampledAt))}。名称为启动时应用的规则，草稿可能已经变化；数据在重启后重置，不能用于计费或配额。</p>${body}</details>`;
  }
 
  function paintTraffic() {
@@ -148,9 +157,12 @@ const Overview = (() => {
   trafficRequest = request;
   request.timeout = setTimeout(() => {request.timedOut = true; request.controller.abort();}, 10000);
   const current = () => trafficRequest === request && trafficInstance === id && selectedInstance()?.kind === kind && trafficContext.revision === revision && (trafficContext.runtime[id]?.runId || '') === runId;
-  load(id, request.controller.signal).then(response => {
+  const ruleTraffic = kind === 'frpc' && trafficContext.loadClientRuleTraffic
+   ? trafficContext.loadClientRuleTraffic(id, request.controller.signal).catch(() => null) : Promise.resolve(null);
+  Promise.all([load(id, request.controller.signal), ruleTraffic]).then(([response, detail]) => {
    if (!current()) return;
-   const value = kind === 'frps' ? response : response?.instances?.[id];
+   let value = kind === 'frps' ? response : response?.instances?.[id];
+   if (kind === 'frpc' && value) value = {...value, ruleTraffic:detail?.instanceId === id && detail.runId === runId ? detail : null};
    const matches = kind === 'frps' ? value?.instanceId === id : !!value;
    trafficResult = matches && (value.runId || '') === runId
     ? {id, runId, revision, value} : {id, runId, revision, error:true, changed:true};
@@ -229,7 +241,7 @@ const Overview = (() => {
   const coreNote = embedded ? '内置核心仍在开发，部分协议和功能暂不可用。' : '指定 frp-dir 中的二进制属于受信任程序；请仅放入官方或自行审计的版本。';
   const {escape, header, badge, instanceRegistrationText, tunnelTable} = helpers;
   if (!instances.some(instance => instance.id === trafficInstance)) trafficInstance = instances[0]?.id || '';
-  trafficContext = {escape, instances, revision:snapshot.revision, runtime:snapshot.runtime || {}, loadServerTraffic:helpers.loadServerTraffic, loadTraffic:helpers.loadTraffic, loadHistory:helpers.loadHistory};
+  trafficContext = {escape, instances, revision:snapshot.revision, runtime:snapshot.runtime || {}, loadServerTraffic:helpers.loadServerTraffic, loadTraffic:helpers.loadTraffic, loadClientRuleTraffic:helpers.loadClientRuleTraffic, loadHistory:helpers.loadHistory};
   const running = instances.filter(instance => snapshot.runtime[instance.id]?.state === 'running').length;
   const pending = instances.filter(instance => snapshot.runtime[instance.id]?.pending).length;
   const enabled = tunnels.filter(tunnel => tunnel.enabled).length;
@@ -270,5 +282,5 @@ const Overview = (() => {
  });
 
  function reset() {pause(); trafficInstance = ''; trafficContext = null; trafficResult = null; historyResult = null;}
- return {render, reset, pause, refresh, renderServerTraffic, renderClientTraffic, renderTrafficHistory};
+ return {render, reset, pause, refresh, renderServerTraffic, renderClientTraffic, renderClientRuleTraffic, renderTrafficHistory};
 })();

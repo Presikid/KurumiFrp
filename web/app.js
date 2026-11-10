@@ -522,7 +522,7 @@ function render() {
   paintUpdate(); renderedSnapshot = stateSnapshot; renderedRevision = data.revision; return;
  }
  if(page==='overview') {
-  content.innerHTML=Overview.render(data,{escape:esc,header,badge,instanceRegistrationText,tunnelTable,loadServerTraffic:(id,signal)=>api('server-traffic?id='+encodeURIComponent(id),undefined,{signal}),loadTraffic:(id,signal)=>api('traffic?id='+encodeURIComponent(id),undefined,{signal}),loadHistory:(id,signal)=>api('traffic-history?id='+encodeURIComponent(id),undefined,{signal})});
+  content.innerHTML=Overview.render(data,{escape:esc,header,badge,instanceRegistrationText,tunnelTable,loadServerTraffic:(id,signal)=>api('server-traffic?id='+encodeURIComponent(id),undefined,{signal}),loadTraffic:(id,signal)=>api('traffic?id='+encodeURIComponent(id),undefined,{signal}),loadClientRuleTraffic:(id,signal)=>api('client-traffic?id='+encodeURIComponent(id),undefined,{signal}),loadHistory:(id,signal)=>api('traffic-history?id='+encodeURIComponent(id),undefined,{signal})});
   Overview.refresh();
  } else if(page==='instances') {
   content.innerHTML=window.KurumiInstances.render(data,{header,empty,esc,registrationText:instanceRegistrationText});

@@ -110,6 +110,7 @@ window.KurumiInstances = (() => {
   const readButton = (mode, label) => `<button type="button" data-instance-read="${mode}" data-id="${id}">${label}</button>`;
   const readActions = restricted ? (showConfig ? readButton('config','配置预览') : '') +
    (showTraffic ? readButton(role === 'server' ? 'server-traffic' : 'traffic','当前流量') + readButton('traffic-history','流量历史') : '') +
+   (showTraffic && showConfig && role === 'client' ? readButton('client-traffic','规则流量') : '') +
    ((data.identity?.logInstances || []).includes(instance.id) ? button('logs','日志') : '')
    : button('logs','日志') + button('health','链路检测');
 

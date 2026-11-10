@@ -104,6 +104,12 @@ type RuntimeTrafficReader interface {
 	ReadTraffic() TrafficSnapshot
 }
 
+// RuntimeClientRuleTrafficReader provides an independent snapshot of the
+// applied client rules for a single run; the returned slice is caller-owned.
+type RuntimeClientRuleTrafficReader interface {
+	ReadClientRuleTraffic() ClientRuleTrafficSnapshot
+}
+
 // RuntimeServerTrafficReader reports a server's own forwarding counters for
 // one run. It must be concurrent-safe, and each returned slice is caller-owned.
 // Its byte scope differs from RuntimeTrafficReader's client payload counters.

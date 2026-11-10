@@ -243,7 +243,7 @@ $('#content').addEventListener('click', async e => {
   const instance = data?.state.instances.find(item => item.id === id);
   const d = document.createElement('dialog'), output = document.createElement(mode === 'config' ? 'pre' : 'div'), close = document.createElement('button'), generation = authGeneration;
   d.id = 'instance-read-dialog';
-  if (mode !== 'config') d.setAttribute('aria-label', mode === 'traffic-history' ? '流量历史' : '当前流量');
+  if (mode !== 'config') d.setAttribute('aria-label', mode === 'traffic-history' ? '流量历史' : mode === 'client-traffic' ? '规则流量' : '当前流量');
   close.textContent = '关闭'; close.type = 'button'; close.addEventListener('click', () => d.close());
   output.textContent = '正在读取…'; d.append(close, output); document.body.appendChild(d);
   d.addEventListener('close', () => d.remove()); d.showModal();
@@ -257,7 +257,7 @@ $('#content').addEventListener('click', async e => {
     else if (mode === 'traffic-history' && (value?.instanceId !== id || value.kind !== instance.kind)) output.textContent = '实例状态已变化，请关闭后重新查看。';
     else if (mode !== 'traffic-history' && (!value || (data.runtime?.[id]?.runId || '') !== runId || (value.runId || '') !== runId)) output.textContent = '实例运行状态已变化，请关闭后重新查看。';
     else if (mode === 'traffic-history') output.innerHTML = Overview.renderTrafficHistory(value, esc, true);
-    else output.innerHTML = (mode === 'server-traffic' ? Overview.renderServerTraffic(value, esc) : Overview.renderClientTraffic(value, esc)) + '<p class="small-note">再次打开可读取新快照。</p>';
+    else output.innerHTML = (mode === 'server-traffic' ? Overview.renderServerTraffic(value, esc) : mode === 'client-traffic' ? Overview.renderClientRuleTraffic(value, esc, true) : Overview.renderClientTraffic(value, esc)) + '<p class="small-note">再次打开可读取新快照。</p>';
    }
   } catch (err) { if (generation === authGeneration && d.open) output.textContent = err.message; }
   return;
