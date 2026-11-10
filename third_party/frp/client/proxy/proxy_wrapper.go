@@ -13,6 +13,7 @@
 // limitations under the License.
 // Modified by KurumiFRP to integrate client traffic accounting.
 // Modified by KurumiFRP: track restricted client proxy workers.
+// Modified by KurumiFRP: make proxy worker startup and shutdown repeatable.
 
 package proxy
 
@@ -92,6 +93,7 @@ type Wrapper struct {
 	lastStartErr     time.Time
 	closeCh          chan struct{}
 	healthNotifyCh   chan struct{}
+	started          bool
 	mu               sync.RWMutex
 
 	xl  *xlog.Logger
@@ -192,6 +194,13 @@ func (pw *Wrapper) SetRunningStatus(remoteAddr string, respErr string) error {
 }
 
 func (pw *Wrapper) Start() {
+	pw.mu.Lock()
+	if pw.started || pw.Phase == ProxyPhaseClosed {
+		pw.mu.Unlock()
+		return
+	}
+	pw.started = true
+	pw.mu.Unlock()
 	lifetime.Go(pw.ctx, pw.checkWorker)
 	if pw.monitor != nil {
 		pw.monitor.Start()
@@ -201,7 +210,14 @@ func (pw *Wrapper) Start() {
 func (pw *Wrapper) Stop() {
 	pw.mu.Lock()
 	defer pw.mu.Unlock()
-	close(pw.closeCh)
+	if pw.Phase == ProxyPhaseClosed {
+		return
+	}
+	select {
+	case <-pw.closeCh:
+	default:
+		close(pw.closeCh)
+	}
 	pw.pxy.Close()
 	if pw.monitor != nil {
 		pw.monitor.Stop()
@@ -222,9 +238,25 @@ func (pw *Wrapper) checkWorker() {
 	xl := pw.xl
 	if pw.monitor != nil {
 		// let monitor do check request first
-		time.Sleep(500 * time.Millisecond)
+		timer := time.NewTimer(500 * time.Millisecond)
+		select {
+		case <-pw.closeCh:
+			timer.Stop()
+			return
+		case <-pw.ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 	}
 	for {
+		select {
+		case <-pw.closeCh:
+			return
+		case <-pw.ctx.Done():
+			return
+		default:
+		}
 		// check proxy status
 		now := time.Now()
 		switch atomic.LoadUint32(&pw.health) {
@@ -262,6 +294,8 @@ func (pw *Wrapper) checkWorker() {
 
 		select {
 		case <-pw.closeCh:
+			return
+		case <-pw.ctx.Done():
 			return
 		case <-time.After(statusCheckInterval):
 		case <-pw.healthNotifyCh:
@@ -347,4 +381,3 @@ func (pw *Wrapper) GetStatus() *WorkingStatus {
 	}
 	return ps
 }
-
