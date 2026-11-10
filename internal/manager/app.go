@@ -58,6 +58,9 @@ type App struct {
 	startupCancel       context.CancelFunc
 	startupErrors       map[string]string
 	autoStartSuppressed map[string]bool
+	scheduleCancel      context.CancelFunc
+	scheduleDone        chan struct{}
+	scheduleBlocks      map[string]string
 	generations         map[string]uint64
 	logStreams          int
 	logStreamsByID      map[string]int
@@ -137,6 +140,9 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 		}
 		if e = cores.UseConfigActive(*s.DB.ActiveCore, func(id string) error {
 			db := s.DB
+			if db.ActiveCore != nil && *db.ActiveCore != id {
+				db.Schedules = pauseAllSchedules(db.Schedules, "核心已变更，请检查后重新启用计划")
+			}
 			db.ActiveCore = &id
 			if err := incrementRevision(&db); err != nil {
 				return err
@@ -155,6 +161,17 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 	}
 	// Preserve an unmigrated legacy core selection in embedded builds.
 	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), core: cores, runtime: backend, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2)}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	if e = app.recoverSchedules(); e != nil {
+		return nil, e
+	}
+	s.beforeCommit = func(before, after State) error {
+		for id, op := range app.operations {
+			if op.scheduled && scheduleDraftChanged(before, after, id) {
+				return fmt.Errorf("定时操作正在执行，请等待结束后修改该实例配置")
+			}
+		}
+		return nil
+	}
 	app.webhooks = newWebhookDispatcher()
 	app.loginHistory = loadLoginHistory(s.dir)
 	app.auth.onLoginLimit = app.webhooks.emitLoginLimit
@@ -164,6 +181,10 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 	app.startupCancel = cancel
 	instances := append([]Instance(nil), s.DB.State.Instances...)
 	go app.restoreAutoStart(ctx, instances)
+	scheduleCtx, scheduleCancel := context.WithCancel(context.Background())
+	app.scheduleCancel = scheduleCancel
+	app.scheduleDone = make(chan struct{})
+	go app.scheduleLoop(scheduleCtx)
 	return app, nil
 }
 func (a *App) SetDistribution(distribution string) {
@@ -343,6 +364,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.URL.Path == "/api/control" || r.URL.Path == "/api/validate" {
 			a.runtimeAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/schedules" {
+			a.scheduleAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/tunnels/export" {
@@ -760,6 +785,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				delete(a.autoStartSuppressed, req.ID)
 				delete(a.generations, req.ID)
 				delete(a.nodeOperationVersions, req.ID)
+				delete(a.scheduleBlocks, req.ID)
 				a.stateCache = nil
 			}
 		}
@@ -773,7 +799,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				if err = a.clearInstanceGrantsLocked(""); err != nil {
 					break
 				}
-				err = a.store.commit(h.State.clone(), fmt.Sprintf("恢复草稿版本 %d", h.Revision))
+				err = a.store.commitRestoring(h.State.clone(), fmt.Sprintf("恢复草稿版本 %d", h.Revision), true)
 				if err == nil {
 					a.discardStoppedRuntimeLocked()
 				}

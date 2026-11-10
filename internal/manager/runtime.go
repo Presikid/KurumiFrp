@@ -625,12 +625,18 @@ func (a *App) Close() error {
 		if a.startupCancel != nil {
 			a.startupCancel()
 		}
+		if a.scheduleCancel != nil {
+			a.scheduleCancel()
+		}
 		for _, op := range a.operations {
 			op.cancel()
 		}
 		a.mu.Unlock()
 		if a.startupDone != nil {
 			<-a.startupDone
+		}
+		if a.scheduleDone != nil {
+			<-a.scheduleDone
 		}
 		if a.core != nil {
 			a.core.Cancel()
@@ -659,6 +665,11 @@ func (a *App) Close() error {
 			}(p)
 		}
 		wg.Wait()
+		if len(failures) == 0 {
+			if err := a.finishSchedulesAfterShutdown(); err != nil {
+				failures = append(failures, err)
+			}
+		}
 		if a.core != nil {
 			a.core.Close()
 		}

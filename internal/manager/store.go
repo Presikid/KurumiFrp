@@ -30,23 +30,25 @@ type Event struct {
 	Message string `json:"message"`
 }
 type Database struct {
-	Format       int            `json:"format"`
-	Revision     uint64         `json:"revision"`
-	State        State          `json:"state"`
-	History      []Snapshot     `json:"history"`
-	HistoryLimit int            `json:"historyLimit"`
-	Events       []Event        `json:"events"`
-	Key          string         `json:"key,omitempty"`
-	ActiveCore   *string        `json:"activeCore"`
-	Webhook      *webhookConfig  `json:"webhook,omitempty"`
-	Webhooks     []webhookTarget `json:"webhooks,omitempty"`
-	Nodes        *nodeSettings   `json:"nodes,omitempty"`
+	Format       int                         `json:"format"`
+	Revision     uint64                      `json:"revision"`
+	State        State                       `json:"state"`
+	History      []Snapshot                  `json:"history"`
+	HistoryLimit int                         `json:"historyLimit"`
+	Events       []Event                     `json:"events"`
+	Key          string                      `json:"key,omitempty"`
+	ActiveCore   *string                     `json:"activeCore"`
+	Webhook      *webhookConfig              `json:"webhook,omitempty"`
+	Webhooks     []webhookTarget             `json:"webhooks,omitempty"`
+	Nodes        *nodeSettings               `json:"nodes,omitempty"`
+	Schedules    map[string]instanceSchedule `json:"schedules,omitempty"`
 }
 type Store struct {
-	dir      string
-	key      []byte
-	DB       Database
-	onCommit func(uint64)
+	dir          string
+	key          []byte
+	DB           Database
+	onCommit     func(uint64)
+	beforeCommit func(State, State) error
 }
 
 // Formats 1 and 2 used a separate master key; format 2 also used snapshot
@@ -485,6 +487,9 @@ func newStore(dir string) (*Store, error) {
 	if e = validate(s.DB.State); e != nil {
 		return nil, e
 	}
+	if e = validateSchedules(s.DB.State, s.DB.Schedules); e != nil {
+		return nil, fmt.Errorf("invalid schedules; original retained: %w", e)
+	}
 	for _, st := range append([]State{s.DB.State}, historyStates(s.DB.History)...) {
 		if e = validate(st); e != nil {
 			return nil, e
@@ -622,13 +627,23 @@ func (s *Store) write(db Database) error {
 	return nil
 }
 func (s *Store) commit(st State, summary string) error {
+	return s.commitRestoring(st, summary, false)
+}
+
+func (s *Store) commitRestoring(st State, summary string, restoring bool) error {
 	if e := validate(st); e != nil {
 		return e
 	}
 	if e := validateVisitorListeners(s.DB.State, st); e != nil {
 		return e
 	}
+	if s.beforeCommit != nil {
+		if e := s.beforeCommit(s.DB.State, st); e != nil {
+			return e
+		}
+	}
 	db := s.DB
+	db.Schedules = schedulesAfterStateChange(db.Schedules, db.State, st, restoring)
 	db.History = append(append([]Snapshot{}, db.History...), Snapshot{db.Revision, now(), summary, db.State.clone()})
 	if len(db.History) > db.HistoryLimit {
 		db.History = db.History[len(db.History)-db.HistoryLimit:]

@@ -29,6 +29,7 @@ func (a *App) releaseBackup() {
 
 func cloneBackupDatabase(db Database) Database {
 	db.State = db.State.clone()
+	db.Schedules = cloneSchedules(db.Schedules)
 	db.History = append([]Snapshot(nil), db.History...)
 	for i := range db.History {
 		db.History[i].State = db.History[i].State.clone()

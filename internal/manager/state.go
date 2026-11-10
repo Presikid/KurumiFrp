@@ -126,12 +126,20 @@ func (a *App) stateResponseLocked() (*stateResponseCache, error) {
 	if len(warnings) > 10 {
 		warnings = append(warnings[:10], "还有其他可能的端口冲突，请检查全部规则。")
 	}
+	plans := cloneSchedules(a.store.DB.Schedules)
+	for id, reason := range a.scheduleBlocks {
+		if plan, ok := plans[id]; ok {
+			plan.Paused, plan.Reason = true, reason
+			plans[id] = plan
+		}
+	}
 	body, err := json.Marshal(map[string]any{
 		"version":          version.Current,
 		"revision":         a.store.DB.Revision,
 		"state":            a.store.DB.State.public(),
 		"portWarnings":     warnings,
 		"runtime":          runtime,
+		"schedules":        plans,
 		"runtimeBackend":   next.runtimeMode,
 		"runtimeAvailable": map[string]bool{"frpc": next.runtimeFRPC, "frps": next.runtimeFRPS},
 		"history":          history,
@@ -179,17 +187,22 @@ func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
 	if !p.admin() {
 		var state State
 		var runtime map[string]RuntimeStatus
-		if json.Unmarshal(body["state"], &state) != nil || json.Unmarshal(body["runtime"], &runtime) != nil {
+		var schedules map[string]instanceSchedule
+		if json.Unmarshal(body["state"], &state) != nil || json.Unmarshal(body["runtime"], &runtime) != nil || json.Unmarshal(body["schedules"], &schedules) != nil {
 			fail(w, http.StatusInternalServerError, fmt.Errorf("无法读取实例状态"))
 			return
 		}
 		visible := State{Instances: []Instance{}, Tunnels: []Tunnel{}}
 		statuses := make(map[string]RuntimeStatus)
+		visibleSchedules := make(map[string]instanceSchedule)
 		for _, instance := range state.Instances {
 			if p.canView(instance.ID) {
 				visible.Instances = append(visible.Instances, instance)
 				v := runtime[instance.ID]
 				statuses[instance.ID] = RuntimeStatus{State: v.State, Pending: v.Pending, RunID: v.RunID, Generation: v.Generation}
+				if plan, ok := schedules[instance.ID]; ok {
+					visibleSchedules[instance.ID] = plan
+				}
 			}
 		}
 		for _, tunnel := range state.Tunnels {
@@ -199,9 +212,10 @@ func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
 		}
 		visibleState, _ := json.Marshal(visible)
 		visibleRuntime, _ := json.Marshal(statuses)
+		visiblePlans, _ := json.Marshal(visibleSchedules)
 		body = map[string]json.RawMessage{
 			"version": body["version"], "revision": body["revision"],
-			"state": visibleState, "runtime": visibleRuntime,
+			"state": visibleState, "runtime": visibleRuntime, "schedules": visiblePlans,
 			"runtimeBackend": body["runtimeBackend"], "runtimeAvailable": body["runtimeAvailable"], "binaries": body["binaries"],
 			"history": json.RawMessage(`[]`), "events": json.RawMessage(`[]`), "portWarnings": json.RawMessage(`[]`), "historyLimit": json.RawMessage(`0`),
 		}

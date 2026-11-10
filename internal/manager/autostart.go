@@ -22,12 +22,13 @@ func (a *App) restoreAutoStart(ctx context.Context, instances []Instance) {
 		}
 		a.mu.Lock()
 		current, ok := a.store.DB.State.Instance(i.ID)
-		if !ok || !current.AutoStart || a.autoStartSuppressed[i.ID] || a.closing || ctx.Err() != nil {
+		plan := a.store.DB.Schedules[i.ID]
+		if !ok || !current.AutoStart || plan.Enabled || a.autoStartSuppressed[i.ID] || a.closing || ctx.Err() != nil {
 			a.mu.Unlock()
 			continue
 		}
 		req := runtimeRequest{Revision: a.store.DB.Revision, ID: i.ID, Action: "start"}
-		snapshot, op, _, err := a.beginRuntimeOperationLocked(ctx, req, false)
+		snapshot, op, _, err := a.beginRuntimeOperationSourceLocked(ctx, req, false, false)
 		if err != nil {
 			a.recordAutoStartFailureLocked(ctx, req, snapshot, err)
 			a.mu.Unlock()
@@ -101,7 +102,9 @@ func (a *App) restoreOne(snapshot runtimeSnapshot, op *runtimeOperation) error {
 	if err != nil {
 		return err
 	}
-	err = a.startPreparedWithSource(snapshot.instance, runtimeRendered, snapshot.target, configPath, snapshot.coreID, private, true)
+	// Scheduled launches have their own failure state; do not attribute them
+	// to restoration merely because the same launch helper is shared.
+	err = a.startPreparedWithSource(snapshot.instance, runtimeRendered, snapshot.target, configPath, snapshot.coreID, private, snapshot.scheduleVersion == "")
 	started = err == nil
 	return err
 }
