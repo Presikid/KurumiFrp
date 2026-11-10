@@ -38,8 +38,9 @@ type Database struct {
 	Events       []Event        `json:"events"`
 	Key          string         `json:"key,omitempty"`
 	ActiveCore   *string        `json:"activeCore"`
-	Webhook      *webhookConfig `json:"webhook,omitempty"`
-	Nodes        *nodeSettings  `json:"nodes,omitempty"`
+	Webhook      *webhookConfig  `json:"webhook,omitempty"`
+	Webhooks     []webhookTarget `json:"webhooks,omitempty"`
+	Nodes        *nodeSettings   `json:"nodes,omitempty"`
 }
 type Store struct {
 	dir      string
@@ -466,6 +467,9 @@ func newStore(dir string) (*Store, error) {
 	}
 	if e = validateStoredWebhook(s, s.DB.Webhook); e != nil {
 		return nil, fmt.Errorf("invalid local webhook settings; original retained")
+	}
+	if e = validateStoredWebhookTargets(s, s.DB.Webhook, s.DB.Webhooks); e != nil {
+		return nil, fmt.Errorf("invalid local webhook targets; original retained")
 	}
 	if e = validateStoredNodes(s, s.DB.Nodes); e != nil {
 		return nil, fmt.Errorf("invalid local node settings; original retained")
