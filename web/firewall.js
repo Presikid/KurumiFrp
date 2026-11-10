@@ -48,6 +48,7 @@ function mountFirewall() {
    <label>来源 IP 或 CIDR 网段<textarea data-rule-sources maxlength="262144" rows="5" placeholder="192.0.2.1&#10;2001:db8::/32"></textarea></label>
    <label>按 AS 号添加网段<input data-rule-asn maxlength="12" placeholder="例如 AS3333"></label><button type="button" data-firewall-asn>查询并加入此规则</button>
    <p data-asn-status class="small-note" role="status">向 RIPEstat 查询近两周观察到的网段；结果可能不完整或过时，不会自动更新或应用。</p>
+   <label>导入地址清单文件<input type="file" data-list-file accept=".txt,.list,text/plain"></label><p data-file-status class="small-note" role="status">文本每行一个 IP 或 CIDR，可用 # 写注释；导入后请核对草稿。</p>
    <button type="button" data-firewall-remove>删除此规则</button>`;
   row.querySelector('[data-rule-name]').value = rule.name || '';
   row.querySelector('[data-rule-enabled]').checked = rule.enabled !== false;
@@ -60,6 +61,16 @@ function mountFirewall() {
   name:row.querySelector('[data-rule-name]').value, enabled:row.querySelector('[data-rule-enabled]').checked, mode:row.querySelector('[data-rule-mode]').value,
   ports:row.querySelector('[data-rule-ports]').value, sources:row.querySelector('[data-rule-sources]').value
  }));
+ const mergeSources = (sources, prefixes) => {
+  if (!Array.isArray(prefixes) || !prefixes.length) throw new Error('未获得地址');
+  const existing = sources.value.split(/[,\r\n]+/).map(value=>value.trim()).filter(Boolean);
+  const merged = [...new Set([...existing, ...prefixes])], text = merged.join('\n');
+  const others = [...rulesHost.querySelectorAll('[data-rule-sources]')].filter(input=>input !== sources).map(input=>input.value);
+  const totalCount = merged.length + others.reduce((count,value)=>count + value.split(/[,\r\n]+/).filter(part=>part.trim()).length,0);
+  const totalBytes = new TextEncoder().encode(text + others.join('')).length;
+  if (totalCount > 4096 || totalBytes > 262144) throw new Error('所有规则合并后的来源列表超过上限');
+  sources.value = text;
+ };
  const refreshSeen = async () => {
   clearTimeout(seenTimer); seenTimer = null;
   if (!current() || !supported || !model?.enabled || !model.recordBlocked || seenRequest) return;
@@ -143,21 +154,35 @@ function mountFirewall() {
   try {
    const result = await api('firewall/asn', {asn:row.querySelector('[data-rule-asn]').value}, {signal:controller.signal});
    if (!current()) return;
-   if (!Array.isArray(result.prefixes) || !result.prefixes.length) throw new Error('未获得网段');
-   const existing = sources.value.split(/[,\r\n]+/).map(value=>value.trim()).filter(Boolean);
-   const merged = [...new Set([...existing, ...result.prefixes])];
-   const text = merged.join('\n');
-   const others = [...rulesHost.querySelectorAll('[data-rule-sources]')].filter(input=>input !== sources).map(input=>input.value);
-   const totalCount = merged.length + others.reduce((count,value)=>count + value.split(/[,\r\n]+/).filter(part=>part.trim()).length,0);
-   const totalBytes = new TextEncoder().encode(text + others.join('')).length;
-   if (totalCount > 4096 || totalBytes > 262144) throw new Error('所有规则合并后的来源列表超过上限');
-   sources.value = text;
+   mergeSources(sources, result.prefixes);
    notice.textContent = `${result.asn} 返回 ${result.prefixes.length} 个网段，已加入草稿；请核对列表，再决定是否保存并应用。数据未自动更新。`;
   } catch (err) {
    if (current()) notice.textContent = '查询失败，来源列表未更改：' + (err.name === 'AbortError' ? '请求超时' : err.message);
   } finally {
    clearTimeout(timeout); busy = false;
    if (current()) { controls.disabled = false; reload.disabled = false; syncEnabled(); }
+  }
+ });
+ form.addEventListener('change', async event => {
+  const input = event.target.closest('[data-list-file]'), row = input?.closest('.firewall-rule');
+  if (!input || !row || !input.files?.length || busy || !model || !supported || !form.elements.enabled.checked) return;
+  const file = input.files[0], notice = row.querySelector('[data-file-status]');
+  busy = true; controls.disabled = true; reload.disabled = true;
+  notice.textContent = '正在读取清单…';
+  const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+   if (file.size === 0 || file.size > 262144) throw new Error('文件为空或超过 256 KiB');
+   const text = await file.text();
+   if (!current() || !row.isConnected) return;
+   const result = await api('firewall/import', {text}, {signal:controller.signal});
+   if (!current() || !row.isConnected) return;
+   mergeSources(row.querySelector('[data-rule-sources]'), result.prefixes);
+   notice.textContent = `已将 ${result.prefixes.length} 个地址加入草稿；请核对后再决定是否应用。`;
+  } catch (err) {
+   if (current() && row.isConnected) notice.textContent = '导入失败，来源列表未更改：' + (err.name === 'AbortError' ? '请求超时' : err.message);
+  } finally {
+   clearTimeout(timeout); busy = false;
+   if (current()) { input.value = ''; controls.disabled = false; reload.disabled = false; syncEnabled(); }
   }
  });
  form.addEventListener('submit', async event => {
