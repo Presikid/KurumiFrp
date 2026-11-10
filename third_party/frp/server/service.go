@@ -702,6 +702,7 @@ func (svr *Service) CloseContext(ctx context.Context) error {
 	}
 	svr.closeOnce.Do(func() {
 		go func() {
+			defer lifetime.Recover(svr.workCtx)
 			svr.closeResources()
 			close(svr.closeDone)
 		}()
