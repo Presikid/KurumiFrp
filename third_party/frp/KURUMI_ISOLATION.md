@@ -97,7 +97,9 @@ port-reservation cleanup, selected
 SUDP bridge workers, XTCP stream-open worker and watchdog, and server shutdown
 worker also report panics to their owning instance. NAT traversal's concurrent
 probe workers and cancellation callback use the same reporting path, and a
-cancelled traversal does not deliberately hand off its closed socket. A failed control or shutdown
+cancelled traversal does not deliberately hand off its closed socket. The server
+KCP accept and WebSocket serve workers also belong to the service scope; HTTP
+handler and third-party library workers still have separate boundaries. A failed control or shutdown
 worker or embedded cleanup wrapper may leave its completion signal open; this intentionally retains ownership
 when cleanup cannot be proved. Other bare goroutines, callbacks, and dependency
 goroutines remain outside this coverage. A recovered panic does not prove that

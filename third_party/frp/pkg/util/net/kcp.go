@@ -15,11 +15,14 @@
 package net
 
 import (
+	"context"
 	"errors"
 	"net"
 	"sync"
 
 	kcp "github.com/xtaci/kcp-go/v5"
+
+	"github.com/fatedier/frp/pkg/util/lifetime"
 )
 
 var ErrKCPListenerClosed = errors.New("kcp listener closed")
@@ -33,6 +36,11 @@ type KCPListener struct {
 }
 
 func ListenKcp(address string) (l *KCPListener, err error) {
+	return ListenKcpWithContext(context.Background(), address)
+}
+
+// ListenKcpWithContext associates the accept worker with the owning service.
+func ListenKcpWithContext(ctx context.Context, address string) (l *KCPListener, err error) {
 	listener, err := kcp.ListenWithOptions(address, nil, 10, 3)
 	if err != nil {
 		return l, err
@@ -46,7 +54,8 @@ func ListenKcp(address string) (l *KCPListener, err error) {
 		done:     make(chan struct{}),
 	}
 
-	go func() {
+	if !lifetime.Go(ctx, func() {
+		defer l.Close()
 		for {
 			conn, err := listener.AcceptKCP()
 			if err != nil {
@@ -73,7 +82,10 @@ func ListenKcp(address string) (l *KCPListener, err error) {
 				// the connection is owned by the caller of Accept.
 			}
 		}
-	}()
+	}) {
+		_ = l.Close()
+		return nil, net.ErrClosed
+	}
 	return l, err
 }
 
