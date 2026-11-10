@@ -104,8 +104,13 @@ func (a *App) oidcStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.auth.mu.Lock()
-	enabled := a.auth.oidcLoadErr == nil && a.auth.oidcSettings.Enabled && a.auth.accountLoadErr == nil
+	settings := a.auth.oidcSettings
+	enabled := a.auth.oidcLoadErr == nil && settings.Enabled && a.auth.accountLoadErr == nil
 	a.auth.mu.Unlock()
+	if settings.ClientAuth != "" {
+		_, available := oidcClientCredential()
+		enabled = enabled && available
+	}
 	reply(w, http.StatusOK, map[string]bool{"enabled": enabled})
 }
 
@@ -134,6 +139,15 @@ func (a *App) oidcStart(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusForbidden, fmt.Errorf("单点登录未启用"))
 		return
 	}
+	credential := ""
+	if cfg.ClientAuth != "" {
+		var available bool
+		credential, available = oidcClientCredential()
+		if !available {
+			fail(w, http.StatusServiceUnavailable, fmt.Errorf("单点登录的客户端认证尚未配置"))
+			return
+		}
+	}
 	client := newOIDCHTTPClient()
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -151,6 +165,9 @@ func (a *App) oidcStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	endpoint.AuthStyle = oauth2.AuthStyleInParams
+	if cfg.ClientAuth == "basic" {
+		endpoint.AuthStyle = oauth2.AuthStyleInHeader
+	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
@@ -162,7 +179,7 @@ func (a *App) oidcStart(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	config := oauth2.Config{ClientID: cfg.ClientID, Endpoint: endpoint, RedirectURL: scheme + "://" + r.Host + "/api/oidc/callback", Scopes: scopes}
+	config := oauth2.Config{ClientID: cfg.ClientID, ClientSecret: credential, Endpoint: endpoint, RedirectURL: scheme + "://" + r.Host + "/api/oidc/callback", Scopes: scopes}
 	state, nonce, verifier := randomHex(32), randomHex(32), oauth2.GenerateVerifier()
 	flow := oidcFlow{provider: provider, client: client, oauth: config, verifier: verifier, nonce: nonce, revision: cfg.Revision, accountRevision: accountRevision, bindings: append([]oidcBinding{}, cfg.Bindings...), groupRules: append([]oidcGroupRule{}, cfg.GroupRules...), expires: time.Now().Add(5 * time.Minute)}
 	address := config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("nonce", nonce))
