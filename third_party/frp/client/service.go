@@ -29,9 +29,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/samber/lo"
 
@@ -60,6 +63,30 @@ type cancelErr struct {
 // profile, not full frp feature isolation or an end-to-end interoperability
 // guarantee. See KURUMI_ISOLATION.md for restrictions and outstanding work.
 const KurumiRestrictedClientProfileVersion = 1
+
+// ValidateRestrictedProxyConfigurer admits only plugins whose connections are
+// owned by the isolated control generation. Other plugin types stay disabled.
+func ValidateRestrictedProxyConfigurer(cfg v1.ProxyConfigurer) error {
+	if cfg == nil {
+		return errors.New("invalid isolated proxy configuration")
+	}
+	value := reflect.ValueOf(cfg)
+	if (value.Kind() == reflect.Ptr && value.IsNil()) || cfg.GetBaseConfig() == nil {
+		return errors.New("invalid isolated proxy configuration")
+	}
+	base := cfg.GetBaseConfig()
+	if base.Plugin.Type == "" {
+		return nil
+	}
+	if _, ok := cfg.(*v1.TCPProxyConfig); !ok || base.Plugin.Type != v1.PluginUnixDomainSocket {
+		return errors.New("proxy plugin is not supported by the isolated client")
+	}
+	opts, ok := base.Plugin.ClientPluginOptions.(*v1.UnixDomainSocketPluginOptions)
+	if !ok || opts == nil || !strings.HasPrefix(opts.UnixPath, "/") || len(opts.UnixPath) > 1024 || strings.ContainsAny(opts.UnixPath, "{}") || strings.IndexFunc(opts.UnixPath, unicode.IsControl) >= 0 || base.HealthCheck.Type != "" {
+		return errors.New("invalid isolated unix socket configuration")
+	}
+	return nil
+}
 
 var (
 	// ErrServiceClosed reports that the client was closed before Run started.
@@ -309,8 +336,8 @@ func NewService(options ServiceOptions) (*Service, error) {
 	visitorCfgs = config.CompleteVisitorConfigurers(visitorCfgs)
 	if options.Isolated {
 		for _, cfg := range proxyCfgs {
-			if cfg.GetBaseConfig().Plugin.Type != "" {
-				return nil, errors.New("proxy plugins are not supported by the isolated client")
+			if err := ValidateRestrictedProxyConfigurer(cfg); err != nil {
+				return nil, err
 			}
 		}
 		for _, cfg := range visitorCfgs {
@@ -691,7 +718,7 @@ func (svr *Service) UpdateAllConfigurer(proxyCfgs []v1.ProxyConfigurer, visitorC
 func (svr *Service) updateAllConfigurerLocked(proxyCfgs []v1.ProxyConfigurer, visitorCfgs []v1.VisitorConfigurer) error {
 	if svr.isolateLogs {
 		for _, cfg := range proxyCfgs {
-			if cfg == nil || cfg.GetBaseConfig() == nil || cfg.GetBaseConfig().Plugin.Type != "" {
+			if err := ValidateRestrictedProxyConfigurer(cfg); err != nil {
 				return errors.New("proxy configuration is not supported by the isolated client")
 			}
 		}

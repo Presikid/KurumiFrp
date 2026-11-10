@@ -36,12 +36,17 @@ are not a runtime guarantee.
 
 The profile rejects virtual networking, admin and metrics servers, includes,
 store sources, OIDC and dynamic token sources, upstream proxies,
-client/visitor plugins, custom hooks and
+client plugins other than the TCP Unix-domain-socket plugin, all visitor plugins, custom hooks and
 unsafe feature overrides. The adapter returns ErrFRPUnsupported for these
 options. XTCP and proxy health checks are available in the development profile,
 but still need end-to-end and failure recovery verification. Other upstream users
 retain normal configuration completion and use the process logger unless they
 explicitly supply an instance sink or logger.
+
+The allowed Unix-domain-socket plugin dials with the control context and tracks
+the local socket in that generation. It requires an absolute socket path and
+does not support frp health checks. As with other proxy streams, dependency
+goroutines and all shutdown or interoperability cases are not yet verified.
 
 Each restricted control generation now owns a separate cancellation scope.
 Its dispatcher, admitted proxy and visitor workers, accepted connections and
