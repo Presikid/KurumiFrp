@@ -32,6 +32,7 @@ type localAccount struct {
 	Username        string        `json:"username"`
 	Role            string        `json:"role"`
 	Enabled         bool          `json:"enabled"`
+	ExpiresAt       string        `json:"expiresAt,omitempty"`
 	Instances       []string      `json:"instances"`
 	ControlInstances *[]string     `json:"controlInstances,omitempty"`
 	AllowLogs       bool          `json:"allowLogs,omitempty"`
@@ -59,6 +60,8 @@ type accountView struct {
 	Username         string   `json:"username"`
 	Role             string   `json:"role"`
 	Enabled          bool     `json:"enabled"`
+	ExpiresAt        string   `json:"expiresAt"`
+	Expired          bool     `json:"expired"`
 	Instances        []string `json:"instances"`
 	ControlInstances []string `json:"controlInstances"`
 	AllowLogs        bool     `json:"allowLogs"`
@@ -96,6 +99,9 @@ func loadAccounts(dir string) ([]localAccount, uint64, error) {
 	}
 	names, ids := map[string]bool{}, map[string]bool{}
 	for i, u := range file.Accounts {
+		if normalized, err := normalizeAccountExpiry(u.ExpiresAt); err != nil || normalized != u.ExpiresAt {
+			return nil, 0, fmt.Errorf("本地账户文件中的到期时间无效；原文件已保留")
+		}
 		if !validRemoteGrants(u.RemoteInstances) || !validRemoteGrantRole(u.Role, u.RemoteInstances) {
 			return nil, 0, fmt.Errorf("本地账户文件中的远程实例授权无效；原文件已保留")
 		}
@@ -115,6 +121,33 @@ func loadAccounts(dir string) ([]localAccount, uint64, error) {
 }
 
 func validRole(role string) bool { return role == "admin" || role == "operator" || role == "viewer" }
+
+// Deadlines are stored in UTC with whole-second precision. Empty means no
+// expiration; an invalid persisted value must never grant access.
+func normalizeAccountExpiry(value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	if len(value) > 40 {
+		return "", fmt.Errorf("账户到期时间无效")
+	}
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil || t.Nanosecond() != 0 || t.UTC().Year() < 1970 || t.UTC().Year() > 9999 {
+		return "", fmt.Errorf("账户到期时间须为带时区的时间，精确到秒")
+	}
+	return t.UTC().Format(time.RFC3339), nil
+}
+
+func (u localAccount) activeAt(now time.Time) bool {
+	if !u.Enabled {
+		return false
+	}
+	if u.ExpiresAt == "" {
+		return true
+	}
+	expires, err := time.Parse(time.RFC3339, u.ExpiresAt)
+	return err == nil && now.Before(expires)
+}
 
 func validGrants(ids []string) bool {
 	if len(ids) > 1000 {
@@ -336,7 +369,7 @@ func (a *auth) loginAccount(r *http.Request, username, password string) (string,
 	if err != nil {
 		return "", false, fmt.Errorf("用户名或密码不正确")
 	}
-	if subtle.ConstantTimeCompare(got, want) != 1 || !account.Enabled {
+	if subtle.ConstantTimeCompare(got, want) != 1 || !account.activeAt(time.Now()) {
 		return "", true, fmt.Errorf("用户名或密码不正确")
 	}
 	a.mu.Lock()
@@ -347,7 +380,7 @@ func (a *auth) loginAccount(r *http.Request, username, password string) (string,
 		return "", false, fmt.Errorf("账户状态已变化，请重试")
 	}
 	for _, current := range a.accounts {
-		if current.ID == account.ID && current.Enabled && current.Salt == account.Salt && current.Hash == account.Hash {
+		if current.ID == account.ID && current.activeAt(time.Now()) && current.Salt == account.Salt && current.Hash == account.Hash {
 			sid, err := a.newSessionLocked(r, current.ID, time.Now())
 			return sid, false, err
 		}
@@ -364,8 +397,10 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		views := make([]accountView, 0, len(a.auth.accounts))
+		now := time.Now()
 		for _, u := range a.auth.accounts {
-			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...)})
+			expired := u.Enabled && u.ExpiresAt != "" && !u.activeAt(now)
+			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, ExpiresAt: u.ExpiresAt, Expired: expired, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...)})
 		}
 		revision := a.auth.accountsRevision
 		a.auth.mu.Unlock()
@@ -383,6 +418,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		Username         string    `json:"username"`
 		Role             string    `json:"role"`
 		Enabled          bool      `json:"enabled"`
+		ExpiresAt        *string   `json:"expiresAt"`
 		Instances        []string  `json:"instances"`
 		ControlInstances *[]string `json:"controlInstances"`
 		AllowLogs        *bool     `json:"allowLogs"`
@@ -398,8 +434,16 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, fmt.Errorf("未知账户操作"))
 		return
 	}
-	var salt, hash string
+	var salt, hash, expiry string
 	if req.Action == "save" {
+		if req.ExpiresAt != nil {
+			var err error
+			expiry, err = normalizeAccountExpiry(*req.ExpiresAt)
+			if err != nil {
+				fail(w, 400, err)
+				return
+			}
+		}
 		if !accountNamePattern.MatchString(req.Username) || !validRole(req.Role) || !validGrants(req.Instances) || (req.Role == "admin" && len(req.Instances) != 0) || (req.ID == "" && req.Password == "") {
 			fail(w, 400, fmt.Errorf("账户名称、角色、授权或密码无效"))
 			return
@@ -520,6 +564,11 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u := localAccount{ID: req.ID, Username: req.Username, Role: req.Role, Enabled: req.Enabled, Instances: append([]string{}, req.Instances...), Salt: salt, Hash: hash}
+		if req.ExpiresAt != nil {
+			u.ExpiresAt = expiry
+		} else if index >= 0 {
+			u.ExpiresAt = users[index].ExpiresAt
+		}
 		if u.Role != "admin" {
 			if req.RemoteInstances != nil {
 				u.RemoteInstances = append([]remoteGrant{}, (*req.RemoteInstances)...)

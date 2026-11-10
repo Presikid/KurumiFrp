@@ -188,7 +188,7 @@ func (a *auth) identityLocked(r *http.Request) (principal, bool) {
 		return principal{Name: "本机管理令牌", Role: "admin", gate: session.gate}, true
 	}
 	for _, account := range a.accounts {
-		if account.ID == session.accountID && account.Enabled {
+		if account.ID == session.accountID && account.activeAt(time.Now()) {
 			logs := effectiveLogInstances(account)
 			return principal{Name: account.Username, Role: account.Role, Account: true, AllowLogs: account.AllowLogs && len(logs) != 0, Instances: append([]string(nil), account.Instances...), OperableInstances: effectiveControlInstances(account), LogInstances: logs, RemoteInstances: append([]remoteGrant(nil), account.RemoteInstances...), AccountID: account.ID, AccountRevision: a.accountsRevision, gate: account.gate}, true
 		}
