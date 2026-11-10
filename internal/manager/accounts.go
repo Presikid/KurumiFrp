@@ -26,8 +26,6 @@ const maxAccounts = 100
 var accountNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$`)
 var accountIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
-// Recognize the 81 draft's remote field, but refuse nonempty grants until the
-// node subsystem can validate and revoke them safely.
 type localAccount struct {
 	gate            *sync.RWMutex `json:"-"`
 	ID              string        `json:"id"`
@@ -46,6 +44,7 @@ type localAccount struct {
 type remoteGrant struct {
 	NodeID     string `json:"nodeId"`
 	InstanceID string `json:"instanceId"`
+	Binding    string `json:"binding"`
 }
 
 type accountFile struct {
@@ -63,6 +62,7 @@ type accountView struct {
 	ControlInstances []string `json:"controlInstances"`
 	AllowLogs        bool     `json:"allowLogs"`
 	LogInstances     []string `json:"logInstances"`
+	RemoteInstances  []remoteGrant `json:"remoteInstances"`
 }
 
 type principalContextKey struct{}
@@ -95,8 +95,8 @@ func loadAccounts(dir string) ([]localAccount, uint64, error) {
 	}
 	names, ids := map[string]bool{}, map[string]bool{}
 	for i, u := range file.Accounts {
-		if len(u.RemoteInstances) != 0 {
-			return nil, 0, fmt.Errorf("本地账户文件包含尚不支持的远端实例授权；原文件已保留")
+		if !validRemoteGrants(u.RemoteInstances) || (u.Role == "admin" && len(u.RemoteInstances) != 0) {
+			return nil, 0, fmt.Errorf("本地账户文件中的远程实例授权无效；原文件已保留")
 		}
 		salt, saltErr := base64.RawStdEncoding.DecodeString(u.Salt)
 		hash, hashErr := base64.RawStdEncoding.DecodeString(u.Hash)
@@ -125,6 +125,21 @@ func validGrants(ids []string) bool {
 			return false
 		}
 		seen[id] = true
+	}
+	return true
+}
+
+func validRemoteGrants(grants []remoteGrant) bool {
+	if len(grants) > 1000 {
+		return false
+	}
+	seen := make(map[string]bool, len(grants))
+	for _, grant := range grants {
+		key := grant.NodeID + ":" + grant.InstanceID
+		if !idPattern.MatchString(grant.NodeID) || !idPattern.MatchString(grant.InstanceID) || !nodeTokenPattern.MatchString(grant.Binding) || seen[key] {
+			return false
+		}
+		seen[key] = true
 	}
 	return true
 }
@@ -337,7 +352,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		views := make([]accountView, 0, len(a.auth.accounts))
 		for _, u := range a.auth.accounts {
-			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u)})
+			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...)})
 		}
 		revision := a.auth.accountsRevision
 		a.auth.mu.Unlock()
@@ -359,6 +374,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		ControlInstances *[]string `json:"controlInstances"`
 		AllowLogs        *bool     `json:"allowLogs"`
 		LogInstances     *[]string `json:"logInstances"`
+		RemoteInstances  *[]remoteGrant `json:"remoteInstances"`
 		Password         string    `json:"password"`
 	}
 	if err := decode(w, r, &req); err != nil {
@@ -381,6 +397,10 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.LogInstances != nil && (!validGrants(*req.LogInstances) || !subsetGrants(*req.LogInstances, req.Instances) || (req.Role == "admin" && len(*req.LogInstances) != 0)) {
 			fail(w, 400, fmt.Errorf("日志授权必须属于可查看实例"))
+			return
+		}
+		if req.RemoteInstances != nil && (!validRemoteGrants(*req.RemoteInstances) || (req.Role == "admin" && len(*req.RemoteInstances) != 0)) {
+			fail(w, 400, fmt.Errorf("远程实例授权无效"))
 			return
 		}
 		if req.Password != "" {
@@ -487,6 +507,13 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u := localAccount{ID: req.ID, Username: req.Username, Role: req.Role, Enabled: req.Enabled, Instances: append([]string{}, req.Instances...), Salt: salt, Hash: hash}
+		if u.Role != "admin" {
+			if req.RemoteInstances != nil {
+				u.RemoteInstances = append([]remoteGrant{}, (*req.RemoteInstances)...)
+			} else if index >= 0 {
+				u.RemoteInstances = append([]remoteGrant{}, users[index].RemoteInstances...)
+			}
+		}
 		if u.Role == "operator" {
 			if req.ControlInstances != nil {
 				controls := append([]string{}, (*req.ControlInstances)...)

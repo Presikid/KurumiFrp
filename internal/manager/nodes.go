@@ -49,6 +49,17 @@ type nodeInstanceSummary struct {
 	Name  string `json:"name"`
 	Kind  string `json:"kind"`
 	State string `json:"state"`
+	Binding string `json:"binding,omitempty"`
+}
+
+// This non-secret binding changes when the target instance is replaced, even
+// if an imported configuration reuses its public instance ID.
+func nodeInstanceBinding(localID string) string {
+	if !validLocalTrafficID(localID) {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("kurumifrp-node-instance-v1:" + localID))
+	return hex.EncodeToString(sum[:])
 }
 
 type nodeSummary struct {
@@ -223,6 +234,23 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		cfg, revision := cloneNodeSettings(a.store.DB.Nodes), a.store.DB.Revision
 		a.mu.Unlock()
+		principal := requestPrincipal(r)
+		if !principal.admin() {
+			type sharedNode struct {
+				ID string `json:"id"`
+				Name string `json:"name"`
+				Stamp string `json:"stamp"`
+				Ready bool `json:"ready"`
+			}
+			items := make([]sharedNode, 0)
+			for _, n := range cfg.Nodes {
+				if principal.canViewRemoteNode(n.ID) {
+					items = append(items, sharedNode{ID: n.ID, Name: n.Name, Stamp: nodeStamp(n), Ready: len(n.Addresses) != 0})
+				}
+			}
+			reply(w, http.StatusOK, map[string]any{"nodes": items})
+			return
+		}
 		type view struct {
 			ID         string   `json:"id"`
 			Name       string   `json:"name"`
@@ -487,7 +515,7 @@ func (a *App) nodeSummaryAPI(w http.ResponseWriter, r *http.Request) {
 		if i.AutoStart && a.startupErrors[i.ID] != "" && state != "running" {
 			state = "autostart-failed"
 		}
-		instances = append(instances, nodeInstanceSummary{ID: i.ID, Name: i.Name, Kind: i.Kind, State: state})
+		instances = append(instances, nodeInstanceSummary{ID: i.ID, Name: i.Name, Kind: i.Kind, State: state, Binding: nodeInstanceBinding(a.store.DB.LocalTrafficIDs[i.ID])})
 	}
 	a.mu.Unlock()
 	reply(w, 200, nodeSummary{Protocol: 1, Version: version.Current, Instances: instances})
@@ -508,6 +536,9 @@ func validNodeSummary(s nodeSummary) bool {
 		if !idPattern.MatchString(i.ID) || ids[i.ID] || !utf8.ValidString(i.Name) || !labelOK(i.Name) || (i.Kind != "frpc" && i.Kind != "frps") {
 			return false
 		}
+		if i.Binding != "" && !nodeTokenPattern.MatchString(i.Binding) {
+			return false
+		}
 		switch i.State {
 		case "running", "stopped", "exited", "autostart-failed":
 		default:
@@ -525,6 +556,11 @@ func (a *App) nodeCheckAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, 400, err)
+		return
+	}
+	principal := requestPrincipal(r)
+	if !principal.canViewRemoteNode(req.ID) {
+		fail(w, http.StatusForbidden, fmt.Errorf("没有此远程节点的查看权限"))
 		return
 	}
 	target, _, code, err := a.reserveNodeLookup(req.ID, req.Stamp)
@@ -608,6 +644,15 @@ func (a *App) nodeCheckAPI(w http.ResponseWriter, r *http.Request) {
 	if !current {
 		fail(w, 409, fmt.Errorf("节点设置已变化，请刷新后重新检查"))
 		return
+	}
+	if !principal.admin() {
+		visible := make([]nodeInstanceSummary, 0)
+		for _, instance := range summary.Instances {
+			if principal.canViewRemoteInstance(req.ID, instance.ID, instance.Binding) {
+				visible = append(visible, instance)
+			}
+		}
+		summary.Instances = visible
 	}
 	reply(w, 200, map[string]any{"id": target.ID, "stamp": req.Stamp, "checkedAt": now(), "summary": summary})
 }
