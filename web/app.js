@@ -88,7 +88,7 @@ async function api(path, body, options = {}) {
  const json = await response.json();
  if (!response.ok) {
   if (response.status === 401 && path !== 'login' && generation === authGeneration) {
-   const immediate = path === 'logout' || (path === 'nodes' && body?.action === 'issue');
+   const immediate = path === 'logout' || (path === 'nodes' && ['issue','issue-control'].includes(body?.action));
    if (immediate || !window.KurumiDeferNodeLogout?.()) showLogin();
   }
   const error = new Error(json.error || `HTTP ${response.status}`); error.status = response.status; throw error;
