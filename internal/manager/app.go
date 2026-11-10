@@ -51,6 +51,7 @@ type App struct {
 	stateCache          *stateResponseCache
 	activeProbes        int
 	activeNodeChecks    int
+	nodeMonitors        map[string]nodeMonitorObservation
 	activeBackup        bool
 	activeRegistration  bool
 	activeHealth        bool
@@ -61,6 +62,7 @@ type App struct {
 	scheduleCancel      context.CancelFunc
 	scheduleDone        chan struct{}
 	firewallDone        chan struct{}
+	nodeMonitorDone     chan struct{}
 	scheduleBlocks      map[string]string
 	generations         map[string]uint64
 	logStreams          int
@@ -142,6 +144,8 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 	go app.scheduleLoop(scheduleCtx)
 	app.firewallDone = make(chan struct{})
 	go app.firewallRefreshLoop(scheduleCtx)
+	app.nodeMonitorDone = make(chan struct{})
+	go app.nodeMonitorLoop(scheduleCtx)
 	go app.runTrafficDaily()
 	return app, nil
 }

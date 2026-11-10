@@ -34,6 +34,7 @@ type remoteNode struct {
 	Credential        string   `json:"credential"`
 	ControlCredential string   `json:"controlCredential,omitempty"`
 	Addresses         []string `json:"addresses,omitempty"`
+	MonitorEnabled    bool     `json:"monitorEnabled,omitempty"`
 }
 
 type nodeSettings struct {
@@ -244,6 +245,12 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		a.mu.Lock()
 		cfg, revision := cloneNodeSettings(a.store.DB.Nodes), a.store.DB.Revision
+		monitors := make(map[string]nodeMonitorView)
+		for _, node := range cfg.Nodes {
+			if observation, ok := a.nodeMonitors[node.ID]; ok && observation.stamp == nodeStamp(node) && node.MonitorEnabled {
+				monitors[node.ID] = nodeMonitorView{State: observation.state, Reason: observation.reason, CheckedAt: observation.checkedAt}
+			}
+		}
 		a.mu.Unlock()
 		principal := requestPrincipal(r)
 		if !principal.admin() {
@@ -269,10 +276,16 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 			Stamp      string   `json:"stamp"`
 			Addresses  []string `json:"addresses"`
 			HasControl bool     `json:"hasControl"`
+			MonitorEnabled bool `json:"monitorEnabled"`
+			MonitorStatus *nodeMonitorView `json:"monitorStatus,omitempty"`
 		}
 		items := make([]view, 0, len(cfg.Nodes))
 		for _, n := range cfg.Nodes {
-			items = append(items, view{n.ID, n.Name, n.URL, nodeStamp(n), append([]string{}, n.Addresses...), n.ControlCredential != ""})
+			item := view{ID: n.ID, Name: n.Name, URL: n.URL, Stamp: nodeStamp(n), Addresses: append([]string{}, n.Addresses...), HasControl: n.ControlCredential != "", MonitorEnabled: n.MonitorEnabled}
+			if observation, ok := monitors[n.ID]; ok {
+				item.MonitorStatus = &observation
+			}
+			items = append(items, item)
 		}
 		reply(w, http.StatusOK, map[string]any{"revision": revision, "sharing": cfg.ReaderHash != "", "shareTraffic": cfg.ShareTraffic, "controlSharing": cfg.ControlHash != "", "nodes": items})
 		return
@@ -407,12 +420,14 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		credential, controlCredential := "", ""
+		monitorEnabled := false
 		var addresses []string
 		if index >= 0 {
 			credential = cfg.Nodes[index].Credential
 			if cfg.Nodes[index].URL == origin {
 				addresses = append([]string(nil), cfg.Nodes[index].Addresses...)
 				controlCredential = cfg.Nodes[index].ControlCredential
+				monitorEnabled = cfg.Nodes[index].MonitorEnabled
 			}
 		}
 		if req.ClearControl {
@@ -442,8 +457,29 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 			}
 			cfg.Nodes = append(cfg.Nodes, remoteNode{ID: id, Name: req.Name, URL: origin, Credential: credential, ControlCredential: controlCredential})
 		} else {
-			cfg.Nodes[index] = remoteNode{ID: req.ID, Name: req.Name, URL: origin, Credential: credential, ControlCredential: controlCredential, Addresses: addresses}
+			cfg.Nodes[index] = remoteNode{ID: req.ID, Name: req.Name, URL: origin, Credential: credential, ControlCredential: controlCredential, Addresses: addresses, MonitorEnabled: monitorEnabled}
 		}
+	case "monitor":
+		if req.Enabled == nil {
+			reject(400, fmt.Errorf("请指定后台检查状态"))
+			return
+		}
+		index := -1
+		for i, node := range cfg.Nodes {
+			if node.ID == req.ID {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			reject(404, fmt.Errorf("节点不存在"))
+			return
+		}
+		if *req.Enabled && len(cfg.Nodes[index].Addresses) == 0 {
+			reject(409, fmt.Errorf("请先核对并确认节点解析地址"))
+			return
+		}
+		cfg.Nodes[index].MonitorEnabled = *req.Enabled
 	case "delete":
 		index := -1
 		for i, n := range cfg.Nodes {
@@ -476,6 +512,9 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.store.DB = db
+	if req.Action == "save" || req.Action == "monitor" || req.Action == "delete" {
+		delete(a.nodeMonitors, req.ID)
+	}
 	unlock()
 	result := map[string]any{"ok": true, "revision": db.Revision}
 	if issued != "" {

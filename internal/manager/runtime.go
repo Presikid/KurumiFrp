@@ -619,6 +619,9 @@ func (a *App) Close() error {
 		if a.firewallDone != nil {
 			<-a.firewallDone
 		}
+		if a.nodeMonitorDone != nil {
+			<-a.nodeMonitorDone
+		}
 		// In-flight control operations must finish before the final process
 		// snapshot; no app mutex is held while waiting on them or on children.
 		a.operationWG.Wait()

@@ -143,7 +143,7 @@ function mountNodes() {
  <div id="nodes-screen">
   <div id="node-control-notice" class="notice" role="alert" hidden></div>
   <section class="panel"><div class="panel-title"><div><h3>远程节点</h3><p>实例状态不代表代理已注册或服务可访问。</p></div><div class="actions"><button data-node-action="reload">刷新列表</button><button type="button" data-node-action="auto-refresh" aria-pressed="false">开启自动检查</button><button class="primary" data-node-action="new">＋ 添加节点</button></div></div>
-   <div class="panel-content"><p class="small-note">先在目标工作台生成只读授权，添加后核对解析地址。检查只连接已确认地址，并验证 HTTPS 证书。自动检查只在本页面开启后进行，离开页面即停止；每轮完成后等待 30 秒。</p><div id="nodes-list" role="status">正在读取…</div></div></section>
+   <div class="panel-content"><p class="small-note">先在目标工作台生成只读授权，添加后核对解析地址。检查只连接已确认地址，并验证 HTTPS 证书。页面自动检查在离开页面后停止；各节点的后台检查可单独启用，工作台运行时继续检查。</p><div id="nodes-list" role="status">正在读取…</div></div></section>
   <section class="panel"><div class="panel-title"><div><h3>允许其他工作台查看本机</h3><p>只读授权默认只提供本机实例名称、类型和运行状态；流量共享可单独开启。</p></div><span id="node-sharing" class="pill">读取中</span></div>
    <div class="panel-content"><p class="small-note">工作台仍只监听本机。需由管理员配置受信任的 HTTPS 反向代理；只读与控制使用不同授权。流量共享开启后，所有持有当前只读授权的控制端都可读取本机运行中实例的当前计数。</p><div class="actions"><button data-node-action="issue">生成 / 更换只读授权</button><button class="danger" data-node-action="revoke">撤销只读授权</button><button data-node-action="share-traffic">流量共享</button></div><p id="node-page-error" class="error" role="alert"></p></div></section>
   <section class="panel"><div class="panel-title"><div><h3>允许远程启停和重启</h3><p>单独授权，默认关闭。持有者可操作本机全部实例。</p></div><span id="node-control-sharing" class="pill">读取中</span></div>
@@ -207,8 +207,17 @@ function paintNodes() {
   const state = nodeResults[node.id];
   const addresses = node.addresses || [];
   const pin = addresses.length ? '已确认：' + addresses.join('、') : '尚未确认解析地址';
-  return `<article class="node-card" data-node-card="${esc(node.id)}"><div><h3>${esc(node.name)}</h3><code>${esc(node.url)}</code><p class="small-note">${esc(pin)}</p></div><div class="actions"><button data-node-action="resolve" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading?'disabled':''}>核对地址</button><button data-node-action="check" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading||state?.loading||!addresses.length?'disabled':''}>检查状态</button><button data-node-action="edit" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading?'disabled':''}>编辑</button><button class="danger" data-node-action="delete" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading?'disabled':''}>删除</button></div><div class="node-detail">${renderNodeDetail(node,state)}</div></article>`;
+  return `<article class="node-card" data-node-card="${esc(node.id)}"><div><h3>${esc(node.name)}</h3><code>${esc(node.url)}</code><p class="small-note">${esc(pin)}</p><p class="small-note node-monitor">${esc(nodeMonitorText(node))}</p></div><div class="actions"><button data-node-action="resolve" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading?'disabled':''}>核对地址</button><button data-node-action="check" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading||state?.loading||!addresses.length?'disabled':''}>检查状态</button><button data-node-action="monitor" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading||(!addresses.length&&!node.monitorEnabled)?'disabled':''}>${node.monitorEnabled?'关闭后台检查':'开启后台检查'}</button><button data-node-action="edit" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading?'disabled':''}>编辑</button><button class="danger" data-node-action="delete" data-node-id="${esc(node.id)}" ${nodeBusy||nodeLoading?'disabled':''}>删除</button></div><div class="node-detail">${renderNodeDetail(node,state)}</div></article>`;
  }).join('');
+}
+
+function nodeMonitorText(node) {
+ if (!node.monitorEnabled) return '后台检查已关闭。';
+ const observation = node.monitorStatus;
+ if (!observation) return '后台检查已启用，等待首次结果。';
+ const labels = {available:'可用',pending:'一次检查未成功，等待复查',unavailable:'连续检查未成功'};
+ const detail = observation.reason === 'address_changed' ? '；解析地址需重新核对' : '';
+ return `后台检查：${labels[observation.state] || '状态未知'}${detail} · ${new Date(observation.checkedAt).toLocaleString('zh-CN')}`;
 }
 
 function renderNodeDetail(node, state) {
@@ -338,7 +347,7 @@ function showIssuedNodeCredential(value, control=false) {
 async function mutateNodes(action, node) {
  if (!nodesModel || nodeBusy || nodeLoading) return;
  const issuing = action === 'issue' || action === 'issue-control';
- const prompt = action === 'issue' ? '生成新的只读授权？旧授权会立即失效。新授权只显示一次。' : action === 'issue-control' ? '生成新的控制授权？持有者可远程启动、停止和重启本机全部实例。旧控制授权会立即失效。' : action === 'revoke' ? '撤销本机只读授权？所有使用它的控制端将无法再查看状态。' : action === 'revoke-control' ? '撤销本机控制授权？已经受理的操作可能仍会完成。' : action === 'share-traffic' ? (nodesModel.shareTraffic ? '关闭本机的远程流量共享？已经发出的数据无法撤回。' : '开启本机的远程流量共享？所有持有当前只读授权的控制端都可读取本机运行中实例的当前计数。') : `从本机删除节点「${node.name}」？这不会撤销目标节点上的授权。`;
+ const prompt = action === 'issue' ? '生成新的只读授权？旧授权会立即失效。新授权只显示一次。' : action === 'issue-control' ? '生成新的控制授权？持有者可远程启动、停止和重启本机全部实例。旧控制授权会立即失效。' : action === 'revoke' ? '撤销本机只读授权？所有使用它的控制端将无法再查看状态。' : action === 'revoke-control' ? '撤销本机控制授权？已经受理的操作可能仍会完成。' : action === 'share-traffic' ? (nodesModel.shareTraffic ? '关闭本机的远程流量共享？已经发出的数据无法撤回。' : '开启本机的远程流量共享？所有持有当前只读授权的控制端都可读取本机运行中实例的当前计数。') : action === 'monitor' ? (node.monitorEnabled ? `关闭节点「${node.name}」的后台检查？` : `开启节点「${node.name}」的后台检查？工作台运行时会定期连接已确认地址。`) : `从本机删除节点「${node.name}」？这不会撤销目标节点上的授权。`;
  if (!confirm(prompt)) return;
  const generation = nodePageGeneration, session = authGeneration;
  let issuedVisible = false;
@@ -350,7 +359,7 @@ async function mutateNodes(action, node) {
   stopRefreshPolling(); stateRequest?.controller.abort(); nodesDialog.showModal();
  }
  try {
-  const result = await nodeMutation({revision:nodesModel.revision,action,id:node?.id || '',enabled:action === 'share-traffic' ? !nodesModel.shareTraffic : undefined});
+  const result = await nodeMutation({revision:nodesModel.revision,action,id:node?.id || '',enabled:action === 'share-traffic' ? !nodesModel.shareTraffic : action === 'monitor' ? !node.monitorEnabled : undefined});
   if (generation !== nodePageGeneration || session !== authGeneration || page !== 'nodes') return;
   if (action === 'delete') delete nodeResults[node.id];
   if (issuing) {
@@ -358,7 +367,7 @@ async function mutateNodes(action, node) {
    showIssuedNodeCredential(result.credential, action === 'issue-control'); issuedVisible = true;
   }
   refreshNodesAfterMutation();
-  if (!issuing) toast(action === 'revoke' ? '已撤销本机只读授权。' : action === 'revoke-control' ? '已撤销本机控制授权。' : action === 'share-traffic' ? '已更新流量共享设置。' : '已从本机删除节点。');
+  if (!issuing) toast(action === 'revoke' ? '已撤销本机只读授权。' : action === 'revoke-control' ? '已撤销本机控制授权。' : action === 'share-traffic' ? '已更新流量共享设置。' : action === 'monitor' ? '已更新后台检查设置。' : '已从本机删除节点。');
  } catch (error) {
   if (generation !== nodePageGeneration || session !== authGeneration || page !== 'nodes') return;
   if (issuedVisible) { markNodesUnknown(); const status=$('#node-page-error'); if(status)status.textContent='授权已生成，但列表刷新失败，请刷新列表。'; return; }
@@ -568,6 +577,7 @@ $('#content').addEventListener('click', event => {
  else if (action === 'new') openNodeForm(null);
  else if (action === 'edit' && node) openNodeForm(node);
  else if (action === 'check' && node) checkNode(node);
+ else if (action === 'monitor' && node) mutateNodes(action, node);
  else if (['control-start','control-stop','control-restart'].includes(action) && node) {
   const instance = nodeResults[node.id]?.summary?.instances.find(i=>i.id===button.dataset.instanceId);
   if (instance) controlNode(node,instance,action.slice('control-'.length));
