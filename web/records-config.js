@@ -66,12 +66,13 @@ window.KurumiRecordsConfig = (() => {
    </section>
    <div class="rc-logs-grid">
     <section class="panel rc-log-panel" aria-labelledby="logs-title">
-     <div class="panel-title"><div><h3 id="logs-title">实例运行日志</h3><p id="log-mode" role="status">${selected ? '正在读取…' : '等待实例'}</p></div><button data-action="refresh-logs" ${selected ? '' : 'disabled'}>刷新日志</button></div>
+     <div class="panel-title"><div><h3 id="logs-title">实例运行日志</h3><p id="log-mode" role="status">${selected ? '正在读取…' : '等待实例'}</p></div><div class="actions"><button data-action="refresh-logs" ${selected ? '' : 'disabled'}>刷新日志</button><button data-action="export-logs" disabled>导出显示内容</button></div></div>
      <div class="panel-content">
       <div class="rc-log-controls"><label>选择实例${picker()}</label><label>筛选当前日志<input id="log-filter" type="search" value="${esc(logFilter)}" placeholder="输入关键词，不区分大小写" ${selected ? '' : 'disabled'}></label><button data-action="clear-log-filter" ${logFilter ? '' : 'hidden'}>清除筛选</button></div>
       <div class="rc-output-heading"><span>运行输出</span><small id="log-count" aria-live="polite">${selected ? '正在读取…' : '尚无实例'}</small></div>
       <pre id="log-output" tabindex="0" aria-label="实例运行日志" hidden></pre>
       <div id="log-empty" class="rc-log-empty" role="status"><span class="rc-empty-mark" aria-hidden="true">⌁</span><strong id="log-empty-title">${selected ? '正在读取日志' : '暂无可选择的实例'}</strong><p id="log-empty-detail">${selected ? '请稍候，正在获取当前实例的运行输出。' : '创建实例后，可在这里查看运行输出。'}</p><button data-action="clear-log-filter" id="log-empty-clear" hidden>清除筛选</button>${selected ? '' : '<button data-go="instances">前往运行实例</button>'}</div>
+      <p class="small-note">导出包含当前显示的筛选结果，最多 200 行；日志可能包含敏感信息，请妥善保管。</p>
      </div>
     </section>
     <section class="panel rc-events" aria-labelledby="events-title"><div class="panel-title"><div><h3 id="events-title">最近配置变更</h3><p>工作台记录的最近操作</p></div></div><div class="panel-content">${recent()}</div></section>
