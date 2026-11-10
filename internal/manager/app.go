@@ -469,6 +469,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		a.batchTunnelEnabledAPI(w, r)
 		return
 	}
+	if r.URL.Path == "/api/tunnels/batch-delete" {
+		a.batchTunnelDeleteAPI(w, r)
+		return
+	}
 	if r.URL.Path == "/api/tunnels/batch" {
 		a.createTunnelBatchAPI(w, r)
 		return

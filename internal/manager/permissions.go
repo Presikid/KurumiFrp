@@ -25,7 +25,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 		switch r.URL.Path {
 		case "/api/control", "/api/validate":
 			return p.admin() || p.Role == "operator"
-		case "/api/accounts", "/api/quit", "/api/browser-ticket", "/api/probe", "/api/health", "/api/webhook", "/api/backup/export", "/api/backup/import", "/api/core/install", "/api/core/cancel", "/api/core/activate", "/api/update/install", "/api/import", "/api/import/toml", "/api/import/toml/preview", "/api/nodes", "/api/nodes/check", "/api/nodes/resolve", "/api/nodes/confirm", "/api/duplicate", "/api/tunnels/batch-enabled", "/api/tunnels/batch", "/api/save", "/api/delete", "/api/restore", "/api/history-settings":
+		case "/api/accounts", "/api/quit", "/api/browser-ticket", "/api/probe", "/api/health", "/api/webhook", "/api/backup/export", "/api/backup/import", "/api/core/install", "/api/core/cancel", "/api/core/activate", "/api/update/install", "/api/import", "/api/import/toml", "/api/import/toml/preview", "/api/nodes", "/api/nodes/check", "/api/nodes/resolve", "/api/nodes/confirm", "/api/duplicate", "/api/tunnels/batch-enabled", "/api/tunnels/batch-delete", "/api/tunnels/batch", "/api/save", "/api/delete", "/api/restore", "/api/history-settings":
 			return p.admin()
 		}
 	}
