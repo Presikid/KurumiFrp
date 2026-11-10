@@ -267,6 +267,9 @@ func (sv *XTCPVisitor) getTunnelConn(ctx context.Context) (net.Conn, error) {
 	if err == nil {
 		return conn, nil
 	}
+	if ctx.Err() != nil {
+		return nil, err
+	}
 	select {
 	case sv.startTunnelCh <- struct{}{}:
 	default:
@@ -363,13 +366,14 @@ type TunnelSession interface {
 }
 
 type KCPTunnelSession struct {
-	session *fmux.Session
-	lConn   *net.UDPConn
-	mu      sync.RWMutex
+	session   *fmux.Session
+	lConn     *net.UDPConn
+	openSlots chan struct{}
+	mu        sync.RWMutex
 }
 
 func NewKCPTunnelSession() TunnelSession {
-	return &KCPTunnelSession{}
+	return &KCPTunnelSession{openSlots: make(chan struct{}, 32)}
 }
 
 func (ks *KCPTunnelSession) Init(ctx context.Context, listenConn *net.UDPConn, raddr *net.UDPAddr) error {
@@ -417,14 +421,56 @@ func (ks *KCPTunnelSession) Init(ctx context.Context, listenConn *net.UDPConn, r
 	return nil
 }
 
-func (ks *KCPTunnelSession) OpenConn(_ context.Context) (net.Conn, error) {
+func (ks *KCPTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	ks.mu.RLock()
 	session := ks.session
 	ks.mu.RUnlock()
 	if session == nil {
 		return nil, ErrNoTunnelSession
 	}
-	conn, err := session.Open()
+	// yamux.Open does not accept a context and may wait for an available SYN
+	// slot. Bound the number of outstanding opens while allowing the caller's
+	// fallback deadline to expire without closing other active streams.
+	select {
+	case ks.openSlots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-session.CloseChan():
+		return nil, ErrNoTunnelSession
+	}
+	type openResult struct {
+		conn net.Conn
+		err  error
+	}
+	result := make(chan openResult)
+	go func() {
+		defer func() { <-ks.openSlots }()
+		conn, err := session.Open()
+		select {
+		case result <- openResult{conn, err}:
+		case <-ctx.Done():
+			if conn != nil {
+				_ = conn.Close()
+			}
+		}
+	}()
+	var conn net.Conn
+	var err error
+	select {
+	case opened := <-result:
+		conn, err = opened.conn, opened.err
+		if ctx.Err() != nil {
+			if conn != nil {
+				_ = conn.Close()
+			}
+			return nil, ctx.Err()
+		}
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	if err != nil {
 		// Another goroutine may have installed a replacement while Open was
 		// failing. Only retire the session that actually failed.
@@ -560,4 +606,3 @@ func (qs *QUICTunnelSession) Close() {
 		qs.listenConn = nil
 	}
 }
-
