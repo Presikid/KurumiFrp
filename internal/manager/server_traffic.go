@@ -45,6 +45,7 @@ type serverTrafficView struct {
 	SentBytes        *uint64              `json:"sentBytes,string"`
 	Proxies          []ServerTrafficProxy `json:"proxies"`
 	ProxiesTruncated bool                 `json:"proxiesTruncated"`
+	DetailsAllowed   bool                 `json:"detailsAllowed"`
 }
 
 // GET /api/server-traffic?id=<instance ID> is authenticated and requires the
@@ -57,7 +58,8 @@ func (a *App) serverTrafficAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := ids[0]
-	if !requestPrincipal(r).canView(id) {
+	principal := requestPrincipal(r)
+	if !principal.canView(id) {
 		fail(w, http.StatusForbidden, fmt.Errorf("没有此实例的查看权限"))
 		return
 	}
@@ -104,7 +106,7 @@ func (a *App) serverTrafficAPI(w http.ResponseWriter, r *http.Request) {
 
 	view := serverTrafficView{
 		InstanceID: id, RunID: status.RunID, State: status.State,
-		Reason: "source_unavailable", Proxies: []ServerTrafficProxy{},
+		Reason: "source_unavailable", Proxies: []ServerTrafficProxy{}, DetailsAllowed: principal.canReadConfig(),
 	}
 	if proc == nil {
 		view.Reason = "not_started"
@@ -112,9 +114,11 @@ func (a *App) serverTrafficAPI(w http.ResponseWriter, r *http.Request) {
 		view.Available, view.Reason = true, ""
 		at, received, sent := snapshot.SampledAt, snapshot.ReceivedBytes, snapshot.SentBytes
 		view.SampledAt, view.ReceivedBytes, view.SentBytes = &at, &received, &sent
-		view.Proxies, view.ProxiesTruncated = snapshot.Proxies, snapshot.ProxiesTruncated
-		if view.Proxies == nil {
-			view.Proxies = []ServerTrafficProxy{}
+		if view.DetailsAllowed {
+			view.Proxies, view.ProxiesTruncated = snapshot.Proxies, snapshot.ProxiesTruncated
+			if view.Proxies == nil {
+				view.Proxies = []ServerTrafficProxy{}
+			}
 		}
 	}
 	reply(w, http.StatusOK, view)
