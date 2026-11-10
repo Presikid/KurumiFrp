@@ -5,6 +5,7 @@ const nodesBaseRender = render;
 const nodesBaseResetSession = resetSession;
 let nodesModel = null, nodeResults = Object.create(null), nodeLoading = false;
 let nodeAutoRefresh = false, nodeAutoTimer = null, nodeAutoEpoch = 0, nodeAutoRunning = false;
+let nodeMonitorTimer = null, nodeMonitorRequest = null;
 window.KurumiRemoteTraffic = instance => {
  const traffic = instance?.traffic;
  if (!traffic || !/^(0|[1-9]\d*)$/.test(traffic.receivedBytes || '') || !/^(0|[1-9]\d*)$/.test(traffic.sentBytes || '')) return '';
@@ -128,9 +129,11 @@ resetSession = function () {
 };
 
 function leaveNodes() {
- if (!nodesModel && !nodeRequest && !nodesDialog?.open && !nodeAutoRefresh && nodeAutoTimer === null) return;
+ if (!nodesModel && !nodeRequest && !nodesDialog?.open && !nodeAutoRefresh && nodeAutoTimer === null && nodeMonitorTimer === null && !nodeMonitorRequest) return;
  ++nodePageGeneration;
  stopNodeAutoRefresh();
+ clearTimeout(nodeMonitorTimer); nodeMonitorTimer = null;
+ nodeMonitorRequest?.abort(); nodeMonitorRequest = null;
  nodeRequest?.abort(); nodeRequest = null; nodeLoading = false;
  for (const controller of nodeCheckRequests) controller.abort();
  nodeCheckRequests.clear();
@@ -143,7 +146,7 @@ function mountNodes() {
  <div id="nodes-screen">
   <div id="node-control-notice" class="notice" role="alert" hidden></div>
   <section class="panel"><div class="panel-title"><div><h3>远程节点</h3><p>实例状态不代表代理已注册或服务可访问。</p></div><div class="actions"><button data-node-action="reload">刷新列表</button><button type="button" data-node-action="auto-refresh" aria-pressed="false">开启自动检查</button><button class="primary" data-node-action="new">＋ 添加节点</button></div></div>
-   <div class="panel-content"><p class="small-note">先在目标工作台生成只读授权，添加后核对解析地址。检查只连接已确认地址，并验证 HTTPS 证书。页面自动检查在离开页面后停止；各节点的后台检查可单独启用，工作台运行时继续检查。</p><div id="nodes-list" role="status">正在读取…</div></div></section>
+   <div class="panel-content"><p class="small-note">先在目标工作台生成只读授权，添加后核对解析地址。检查只连接已确认地址，并验证 HTTPS 证书。页面自动检查在离开页面后停止；各节点的后台检查可单独启用，工作台运行时继续检查。</p><p id="node-monitor-refresh-status" class="small-note" role="status"></p><div id="nodes-list" role="status">正在读取…</div></div></section>
   <section class="panel"><div class="panel-title"><div><h3>允许其他工作台查看本机</h3><p>只读授权默认只提供本机实例名称、类型和运行状态；流量共享可单独开启。</p></div><span id="node-sharing" class="pill">读取中</span></div>
    <div class="panel-content"><p class="small-note">工作台仍只监听本机。需由管理员配置受信任的 HTTPS 反向代理；只读与控制使用不同授权。流量共享开启后，所有持有当前只读授权的控制端都可读取本机运行中实例的当前计数。</p><div class="actions"><button data-node-action="issue">生成 / 更换只读授权</button><button class="danger" data-node-action="revoke">撤销只读授权</button><button data-node-action="share-traffic">流量共享</button></div><p id="node-page-error" class="error" role="alert"></p></div></section>
   <section class="panel"><div class="panel-title"><div><h3>允许远程启停和重启</h3><p>单独授权，默认关闭。持有者可操作本机全部实例。</p></div><span id="node-control-sharing" class="pill">读取中</span></div>
@@ -151,6 +154,7 @@ function mountNodes() {
  </div>`;
  paintNodeControlNotice();
  loadNodes();
+ scheduleNodeMonitorRefresh();
 }
 function ensureNodesDialog() {
  if (nodesDialog) return;
@@ -218,6 +222,51 @@ function nodeMonitorText(node) {
  const labels = {available:'可用',pending:'一次检查未成功，等待复查',unavailable:'连续检查未成功'};
  const detail = observation.reason === 'address_changed' ? '；解析地址需重新核对' : '';
  return `后台检查：${labels[observation.state] || '状态未知'}${detail} · ${new Date(observation.checkedAt).toLocaleString('zh-CN')}`;
+}
+
+function scheduleNodeMonitorRefresh(delay = 30000) {
+ clearTimeout(nodeMonitorTimer); nodeMonitorTimer = null;
+ if (page === 'nodes' && $('#nodes-screen')) nodeMonitorTimer = setTimeout(() => {nodeMonitorTimer = null; void refreshNodeMonitorViews();}, delay);
+}
+
+// Update only the observation text; do not rebuild cards or disturb active controls.
+async function refreshNodeMonitorViews() {
+ if (page !== 'nodes' || !$('#nodes-screen')) return;
+ if (document.hidden || nodeBusy || nodeLoading || nodesDialog?.open || nodeMonitorRequest || !nodesModel?.nodes.some(node=>node.monitorEnabled)) {
+  scheduleNodeMonitorRefresh();
+  return;
+ }
+ const generation = nodePageGeneration, session = authGeneration, model = nodesModel, controller = new AbortController();
+ nodeMonitorRequest = controller;
+ const timeout = setTimeout(() => controller.abort(), 10000);
+ try {
+  const result = await api('nodes', undefined, {signal:controller.signal});
+  if (nodeMonitorRequest !== controller || generation !== nodePageGeneration || session !== authGeneration || page !== 'nodes' || nodesModel !== model) return;
+  const notice = $('#node-monitor-refresh-status');
+  if (!result || !Array.isArray(result.nodes) || result.revision !== nodesModel.revision) {
+   if (notice) notice.textContent = '节点设置已变化，请刷新列表。';
+   return;
+  }
+  for (const node of nodesModel.nodes) {
+   const updated = result.nodes.find(value=>value.id === node.id && value.stamp === node.stamp);
+   if (!updated || !/^[a-f0-9]{16}$/.test(node.id)) continue;
+   node.monitorStatus = updated.monitorStatus;
+   const output = document.querySelector(`[data-node-card="${node.id}"] .node-monitor`);
+   if (output) output.textContent = nodeMonitorText(node);
+  }
+  if (notice) notice.textContent = '';
+ } catch (_) {
+  if (nodeMonitorRequest === controller && generation === nodePageGeneration && session === authGeneration && page === 'nodes' && nodesModel === model) {
+   const notice = $('#node-monitor-refresh-status');
+   if (notice) notice.textContent = '后台检查结果刷新失败，显示的是上次取得的结果。';
+  }
+ } finally {
+  clearTimeout(timeout);
+  if (nodeMonitorRequest === controller) {
+   nodeMonitorRequest = null;
+   if (generation === nodePageGeneration && session === authGeneration && page === 'nodes') scheduleNodeMonitorRefresh();
+  }
+ }
 }
 
 function renderNodeDetail(node, state) {
@@ -559,6 +608,7 @@ function toggleNodeAutoRefresh() {
 }
 
 document.addEventListener('visibilitychange', () => {
+ if (!document.hidden && page === 'nodes' && nodeMonitorTimer !== null) scheduleNodeMonitorRefresh(0);
  if (!document.hidden && nodeAutoRefresh && nodeAutoTimer !== null && page === 'nodes') {
   clearTimeout(nodeAutoTimer); nodeAutoTimer = null;
   void autoCheckNodes(nodeAutoEpoch);
