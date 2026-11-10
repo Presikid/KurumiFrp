@@ -58,7 +58,7 @@ func (a *App) firewallASNAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.firewall.lookupMu.TryLock() {
-		fail(w, 429, fmt.Errorf("已有 AS 网段查询正在进行"))
+		fail(w, 429, fmt.Errorf("已有地址查询正在进行"))
 		return
 	}
 	defer a.firewall.lookupMu.Unlock()
