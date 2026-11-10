@@ -68,6 +68,8 @@ window.KurumiInstances = (() => {
   const name = esc(instance.name);
   const runtime = data.runtime?.[instance.id] || {state:'stopped'};
   const restricted = data.identity?.role !== 'admin';
+  const showConfig = !restricted || !!data.identity?.viewConfig;
+  const showTraffic = !restricted || !!data.identity?.viewTraffic;
   const operator = data.identity?.role === 'operator' && (data.identity?.operableInstances || []).includes(instance.id);
   const can = action => !restricted || (operator && (data.identity?.allowedActions || []).includes(action));
   const state = runtime.state || 'stopped';
@@ -102,17 +104,25 @@ window.KurumiInstances = (() => {
   const vhosts = role === 'server' ? `<div class="instance-card__fact instance-card__fact--wide"><dt>草稿监听端口</dt><dd>HTTP ${esc(instance.httpPort || '关闭')} · HTTPS ${esc(instance.httpsPort || '关闭')} · KCP ${esc(instance.kcpBindPort || '关闭')} · QUIC ${esc(instance.quicBindPort || '关闭')}</dd></div>` : '';
   const started = runtime.started ? `<div class="instance-card__fact instance-card__fact--wide"><dt>${running?'启动时间':'最近启动'}</dt><dd>${esc(formatTime(runtime.started))}</dd></div>` : '';
   const process = runtime.pid ? `<div class="instance-card__fact"><dt>系统进程 PID</dt><dd>${esc(runtime.pid)}</dd></div>` : '';
+  const runtimeActions = starting || stopping ? (can('stop') ? button('stop','停止',false,true) : '')
+   : running ? (can('stop') ? button('stop','停止',false,true) : '') + (can('restart') ? button('restart','重启应用',Boolean(runtime.pending),true) : '')
+   : (can('start') ? button('start','启动',true,true) : '');
+  const readButton = (mode, label) => `<button type="button" data-instance-read="${mode}" data-id="${id}">${label}</button>`;
+  const readActions = restricted ? (showConfig ? readButton('config','配置预览') : '') +
+   (showTraffic ? readButton(role === 'server' ? 'server-traffic' : 'traffic','当前流量') + readButton('traffic-history','流量历史') : '') +
+   ((data.identity?.logInstances || []).includes(instance.id) ? button('logs','日志') : '')
+   : button('logs','日志') + button('health','链路检测');
 
   return `<article class="instance-card instance-card--${role}" data-instance-id="${id}" aria-busy="${operation?'true':'false'}">
    <div class="instance-card__head"><div class="instance-card__identity"><span class="instance-card__symbol" aria-hidden="true">${role === 'client'?'↗':role === 'server'?'▣':'◇'}</span><div><p class="instance-card__kind">${roleName} <span>${roleCode}</span></p><h3>${name}</h3><p class="instance-card__description">${roleDescription}</p></div></div><div class="instance-card__badges"><span class="instance-state instance-state--${statusClass}"><i aria-hidden="true"></i>${stateText}</span>${runtime.pending?'<span class="pill warn">配置待应用</span>':''}</div></div>
-   <div class="instance-card__endpoint"><span>${role === 'client'?'上游服务器地址':role === 'server'?'本机监听地址':'实例地址'} · 草稿</span><code>${esc(endpoint)}</code></div>
-   <dl class="instance-card__facts"><div class="instance-card__fact"><dt>关联规则</dt><dd>${ruleCount} 条</dd></div><div class="instance-card__fact"><dt>认证令牌</dt><dd>${instance.hasToken?'已保存':'缺失'}</dd></div><div class="instance-card__fact"><dt>启动方式</dt><dd>${instance.autoStart?'工作台启动时自动恢复':'手动启动'}</dd></div><div class="instance-card__fact"><dt>定时计划</dt><dd>${esc(planStatus)}</dd></div>${process}${vhosts}${started}</dl>
-   ${plan?.reason?`<div class="instance-card__runtime-message"><strong>计划状态</strong><p>${esc(plan.reason)}</p></div>`:''}
+   ${showConfig?`<div class="instance-card__endpoint"><span>${role === 'client'?'上游服务器地址':role === 'server'?'本机监听地址':'实例地址'} · 草稿</span><code>${esc(endpoint)}</code></div>`:''}
+   ${showConfig?`<dl class="instance-card__facts"><div class="instance-card__fact"><dt>关联规则</dt><dd>${ruleCount} 条</dd></div><div class="instance-card__fact"><dt>认证令牌</dt><dd>${instance.hasToken?'已保存':'缺失'}</dd></div><div class="instance-card__fact"><dt>启动方式</dt><dd>${instance.autoStart?'工作台启动时自动恢复':'手动启动'}</dd></div><div class="instance-card__fact"><dt>定时计划</dt><dd>${esc(planStatus)}</dd></div>${process}${vhosts}${started}</dl>`:''}
+   ${showConfig&&plan?.reason?`<div class="instance-card__runtime-message"><strong>计划状态</strong><p>${esc(plan.reason)}</p></div>`:''}
    ${registration}
-   <div class="instance-card__config ${runtime.pending?'instance-card__config--pending':''}"><div><strong>${runtime.pending?'配置待应用':'配置状态'}</strong><p>${configText}</p></div>${runtime.applied?button('diff','查看差异'):''}</div>
+   ${showConfig?`<div class="instance-card__config ${runtime.pending?'instance-card__config--pending':''}"><div><strong>${runtime.pending?'配置待应用':'配置状态'}</strong><p>${configText}</p></div>${runtime.applied?button('diff','查看差异'):''}</div>`:''}
    ${runtime.exit?`<div class="instance-card__runtime-message"><strong>运行信息</strong><p>${esc(runtime.exit)}</p></div>`:''}
    <p class="instance-card__error" data-instance-error role="alert" ${error?'':'hidden'}>${error?'操作失败：'+esc(error):''}</p>
-   <div class="instance-card__controls">${starting||stopping ? (can('stop')?button('stop','停止',false,true):'') : running ? (can('stop')?button('stop','停止',false,true):'')+(can('restart')?button('restart','重启应用',Boolean(runtime.pending),true):'') : (can('start')?button('start','启动',true,true):'')}${restricted?`<button type="button" data-instance-read="config" data-id="${id}">配置预览</button><button type="button" data-instance-read="${role === 'server' ? 'server-traffic' : 'traffic'}" data-id="${id}">当前流量</button><button type="button" data-instance-read="traffic-history" data-id="${id}">流量历史</button>${(data.identity?.logInstances || []).includes(instance.id) ? button('logs','日志') : ''}`:button('logs','日志')+button('health','链路检测')}</div>
+   <div class="instance-card__controls">${runtimeActions}${readActions}</div>
    <div class="instance-card__actions">${can('validate') ? button('validate','校验配置',false,true) : ''}${restricted ? '' : button('edit-schedule','定时计划')+button('edit-instance','编辑')+button('duplicate-instance','复制实例')+button('delete-instance','删除')}</div>
   </article>`;
  }

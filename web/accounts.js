@@ -169,6 +169,7 @@ function showAccountEditor(id = '') {
   <label class="span-2">账户到期时间（UTC，留空不限）<input name="expiresAt" type="datetime-local" step="1" value="${esc(u?.expiresAt ? u.expiresAt.slice(0,19) : '')}"><small>到期后不能登录，现有会话在下一次请求或日志帧时失效；此处填写 UTC 时间。</small></label>
   <label class="form-check span-2"><input type="checkbox" name="enabled" ${!u || u.enabled?'checked':''}>启用账户</label>
   <fieldset class="span-2" id="account-grants"><legend>可访问的实例</legend>${data.state.instances.length ? data.state.instances.map(i => `<label class="form-check"><input type="checkbox" name="instance" value="${esc(i.id)}" ${grants.has(i.id)?'checked':''}>${esc(i.name)} · ${esc(i.kind)}</label>`).join('') : '<p>当前没有实例。</p>'}<p class="small-note">未选择表示不能访问任何实例；管理员始终可访问全部实例。</p></fieldset>
+  <fieldset class="span-2" id="account-read-permissions"><legend>实例数据查看范围</legend><label class="form-check"><input type="checkbox" name="viewConfig" ${u?.readPermissions?.config !== false?'checked':''}>配置详情和规则</label><label class="form-check"><input type="checkbox" name="viewTraffic" ${u?.readPermissions?.traffic !== false?'checked':''}>当前流量和流量历史</label><p class="small-note">仅适用于已授权查看的实例；远程流量还需要目标开启共享。日志单独授权，日志本身可能包含地址等信息。</p></fieldset>
   <fieldset class="span-2" id="account-controls"><legend>可操作的实例</legend>${data.state.instances.length ? data.state.instances.map(i => `<label class="form-check"><input type="checkbox" name="controlInstance" value="${esc(i.id)}" ${controls.has(i.id)?'checked':''}>${esc(i.name)} · ${esc(i.kind)}</label>`).join('') : '<p>当前没有实例。</p>'}<p class="small-note">可操作实例必须先在上方授权查看；未勾选时仅可查看，不能启停、重启或校验。</p></fieldset>
   <fieldset class="span-2" id="account-actions"><legend>允许的实例操作</legend>${[['start','启动'],['stop','停止'],['restart','重启'],['validate','配置校验']].map(([value,label])=>`<label class="form-check"><input type="checkbox" name="allowedAction" value="${value}" ${allowedActions.has(value)?'checked':''}>${label}</label>`).join('')}<p class="small-note">对有操作授权的本机及远程实例生效；配置校验仅适用于本机。重启会中断实例，失败时实例可能保持停止。</p></fieldset>
   <div class="span-2" id="account-log-grant"><label class="form-check"><input type="checkbox" name="allowLogs" ${u?.allowLogs?'checked':''}>允许查看运行日志</label><p class="small-note">默认关闭。日志可能包含地址、用户名和其他敏感内容；请仅授予可信账户。</p></div>
@@ -178,7 +179,7 @@ function showAccountEditor(id = '') {
  const form = $('#account-form');
  const updateGrants = () => {
   const role = form.elements.role.value, admin = role === 'admin';
-  $('#account-grants').hidden = admin; $('#account-log-grant').hidden = admin; $('#account-controls').hidden = role !== 'operator'; $('#account-actions').hidden = role !== 'operator'; $('#account-logs').hidden = admin || !form.elements.allowLogs.checked; $('#account-remote').hidden = admin;
+  $('#account-grants').hidden = admin; $('#account-read-permissions').hidden = admin; $('#account-log-grant').hidden = admin; $('#account-controls').hidden = role !== 'operator'; $('#account-actions').hidden = role !== 'operator'; $('#account-logs').hidden = admin || !form.elements.allowLogs.checked; $('#account-remote').hidden = admin;
   const visible = new Set([...form.querySelectorAll('[name=instance]:checked')].map(el => el.value));
   form.querySelectorAll('[name=controlInstance], [name=logInstance]').forEach(el => {el.disabled = !visible.has(el.value); if (el.disabled) el.checked = false;});
  };
@@ -315,6 +316,7 @@ $('#content').addEventListener('submit', async e => {
   instances:role === 'admin' ? [] : [...form.querySelectorAll('[name=instance]:checked')].map(el => el.value),
   controlInstances:role === 'operator' ? [...form.querySelectorAll('[name=controlInstance]:checked')].map(el => el.value) : [], allowLogs:role !== 'admin' && form.elements.allowLogs.checked,
   allowedActions:role === 'operator' ? [...form.querySelectorAll('[name=allowedAction]:checked')].map(el => el.value) : [],
+  readPermissions:role === 'admin' ? null : {config:form.elements.viewConfig.checked, traffic:form.elements.viewTraffic.checked},
   logInstances:role !== 'admin' && form.elements.allowLogs.checked ? [...form.querySelectorAll('[name=logInstance]:checked')].map(el => el.value) : [],
   remoteInstances:role === 'admin' ? [] : [...form.remoteGrantChoices.values()].filter(choice => choice.selected).map(choice => ({...choice.grant, control:role === 'operator' && !!choice.grant.control}))};
  button.disabled = true; error.textContent = '';
