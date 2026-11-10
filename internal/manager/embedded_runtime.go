@@ -127,6 +127,7 @@ type embeddedRun struct {
 
 	mu           sync.RWMutex
 	client       *embedded.Client
+	server       *embedded.Server // retained through the end of this generation
 	traffic      *clienttraffic.Run
 	proxyTypes   map[string]string
 	finalTraffic TrafficSnapshot
@@ -157,7 +158,7 @@ func (r *embeddedRun) serve(ctx context.Context, target string, cfg RuntimeConfi
 		return
 	}
 	if cfg.Kind == "frps" {
-		r.err = runEmbeddedServer(ctx, config.server, sink)
+		r.err = r.runServer(ctx, config.server, sink)
 		return
 	}
 	r.err = r.runClient(ctx, cfg.InstanceID, config.client, sink)
@@ -186,11 +187,14 @@ func pumpEmbeddedLogs(sink *xlog.Sink, output io.Writer, stop <-chan struct{}, d
 	}
 }
 
-func runEmbeddedServer(ctx context.Context, config *v1.ServerConfig, sink *xlog.Sink) error {
+func (r *embeddedRun) runServer(ctx context.Context, config *v1.ServerConfig, sink *xlog.Sink) error {
 	server, err := embedded.NewServerWithOptions(config, embedded.ServerOptions{LogSink: sink})
 	if err != nil {
 		return errors.New("无法创建内嵌服务端")
 	}
+	r.mu.Lock()
+	r.server = server
+	r.mu.Unlock()
 	defer func() {
 		if value := recover(); value != nil {
 			embeddedCleanupUnknown.Store(true)
@@ -334,9 +338,8 @@ func (r *embeddedRun) ReadProxyRegistration(ctx context.Context, name string) (P
 	}, true, nil
 }
 
-// ReadTraffic reports the embedded client's payload counters for this run.
-// The server source remains unavailable until its protocol accounting agrees
-// with the manager's payload-only definition.
+// ReadTraffic reports only the embedded client's payload counters for this run.
+// Server forwarding counters use the separate ReadServerTraffic interface.
 func (r *embeddedRun) ReadTraffic() TrafficSnapshot {
 	observation := TrafficSnapshot{SampledAt: time.Now().UTC()}
 	r.mu.RLock()
@@ -355,4 +358,33 @@ func (r *embeddedRun) ReadTraffic() TrafficSnapshot {
 		observation.SentBytes = snapshot.Total.Upload
 	}
 	return observation
+}
+
+// ReadServerTraffic reads the per-service forwarding counter. The embedded
+// Server remains referenced after shutdown: accepted handlers may still finish
+// recording bytes, so a stopped run's snapshot is not necessarily final.
+func (r *embeddedRun) ReadServerTraffic() ServerTrafficSnapshot {
+	r.mu.RLock()
+	server := r.server
+	r.mu.RUnlock()
+	if server == nil {
+		return ServerTrafficSnapshot{}
+	}
+	raw, ok := server.TrafficSnapshot()
+	if !ok {
+		return ServerTrafficSnapshot{}
+	}
+	snapshot := ServerTrafficSnapshot{
+		SampledAt: time.Now().UTC(), Available: true,
+		ReceivedBytes: raw.Received, SentBytes: raw.Sent,
+		Proxies:          make([]ServerTrafficProxy, 0, len(raw.Proxies)),
+		ProxiesTruncated: raw.ProxiesTruncated,
+	}
+	for _, proxy := range raw.Proxies {
+		snapshot.Proxies = append(snapshot.Proxies, ServerTrafficProxy{
+			Name: proxy.Name, Type: proxy.Type,
+			ReceivedBytes: proxy.Received, SentBytes: proxy.Sent,
+		})
+	}
+	return snapshot
 }
