@@ -39,6 +39,7 @@ type App struct {
 	traffic          map[string]*trafficSamples // protected by mu, keyed by instance and run ID
 	assets           http.Handler
 	webhooks         *webhookDispatcher
+	loginHistory     *loginHistory
 
 	// Lifecycle reservations are protected by mu. Slow operations run without it.
 	operations          map[string]*runtimeOperation
@@ -154,6 +155,7 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 	// Preserve an unmigrated legacy core selection in embedded builds.
 	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), core: cores, runtime: backend, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2)}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	app.webhooks = newWebhookDispatcher()
+	app.loginHistory = loadLoginHistory(s.dir)
 	app.configureWebhooks()
 	s.onCommit = app.webhooks.emitConfig
 	ctx, cancel := context.WithCancel(context.Background())
@@ -221,6 +223,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sid, e := a.auth.login(r, input.Token, input.Username, input.Password)
+		a.loginHistory.record(r, a.loginAccountLabel(input.Username), e == nil)
 		if e != nil {
 			fail(w, 401, e)
 			return
@@ -264,6 +267,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r = withPrincipal(r, p)
 		if r.URL.Path == "/api/accounts" {
 			a.accountsAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/login-history" {
+			a.loginHistoryAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/password" {
