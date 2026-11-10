@@ -153,6 +153,9 @@ type Service struct {
 	trafficCounter *traffic.ServerCounter
 	// Optional instance-owned admission policy for frp control connections.
 	allowControlConnection func(net.Addr) bool
+	accessLogMu            sync.Mutex
+	accessLogAt            time.Time
+	accessLogSuppressed    uint64
 
 	// web server for dashboard UI and apis
 	webServer     *httppkg.Server
@@ -768,8 +771,43 @@ func (svr *Service) closeResources() {
 	}
 }
 
+// Report rejected control connections to the instance's existing log stream.
+// Bound log volume independently for each service during repeated attempts.
+func (svr *Service) logDeniedControl(ctx context.Context, remote net.Addr) {
+	now := time.Now()
+	svr.accessLogMu.Lock()
+	if !svr.accessLogAt.IsZero() && now.Sub(svr.accessLogAt) < time.Second {
+		if svr.accessLogSuppressed < ^uint64(0) {
+			svr.accessLogSuppressed++
+		}
+		svr.accessLogMu.Unlock()
+		return
+	}
+	suppressed := svr.accessLogSuppressed
+	svr.accessLogSuppressed = 0
+	svr.accessLogAt = now
+	svr.accessLogMu.Unlock()
+	var ip net.IP
+	switch addr := remote.(type) {
+	case *net.TCPAddr:
+		if addr != nil {
+			ip = addr.IP
+		}
+	case *net.UDPAddr:
+		if addr != nil {
+			ip = addr.IP
+		}
+	}
+	source := "unavailable"
+	if ip != nil {
+		source = ip.String()
+	}
+	xlog.FromContextSafe(ctx).Warnf("control connection denied by source policy; peer=%s, additional suppressed=%d", source, suppressed)
+}
+
 func (svr *Service) handleConnection(ctx context.Context, conn net.Conn, internal bool, session io.Closer) {
 	if svr.allowControlConnection != nil && !svr.allowControlConnection(conn.RemoteAddr()) {
+		svr.logDeniedControl(ctx, conn.RemoteAddr())
 		_ = conn.Close()
 		return
 	}
