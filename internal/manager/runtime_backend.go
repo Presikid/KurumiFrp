@@ -16,6 +16,9 @@ type RuntimeConfig struct {
 	RunID    string
 	Kind     string
 	Rendered Rendered
+	// Embedded-only control-entry policy, copied with the instance snapshot.
+	ServerAccessMode string
+	ServerAccessList string
 
 	// Only the compatibility backend uses a file to launch an external core.
 	configPath string
@@ -42,6 +45,12 @@ type RuntimeBackend interface {
 	Resolve(kind, coreID string) (target string, err error)
 	Verify(ctx context.Context, target string, config RuntimeConfig) (output string, err error)
 	Start(target string, config RuntimeConfig, output io.Writer) (RuntimeInstance, error)
+}
+
+// ControlAccessCapable opts a runtime into enforcing RuntimeConfig's server
+// control-entry policy. A runtime must reject unsupported policy values.
+type ControlAccessCapable interface {
+	SupportsControlAccess() bool
 }
 
 // RuntimeInstance represents exactly one generation. Wait is called once and

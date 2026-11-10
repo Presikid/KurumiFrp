@@ -109,6 +109,15 @@ func (s *Store) render(id string, preview bool) (Rendered, error) {
 	if err := renderInstance(&b, i); err != nil {
 		return r, err
 	}
+	policy, err := parseControlAccess(i.ServerAccessMode, i.ServerAccessList)
+	if err != nil {
+		return r, err
+	}
+	if policy != nil {
+		// A comment makes the policy visible in diffs without inventing an frp
+		// TOML field. A standalone frps ignores it; only our embedded runtime enforces it.
+		fmt.Fprintf(&b, "# KurumiFRP control-entry policy (embedded only): %s\n", policy.summary(i.ServerAccessMode))
+	}
 	v, e := secret(i.Token, "KURUMI_AUTH_TOML")
 	if e != nil {
 		return r, e

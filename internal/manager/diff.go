@@ -62,7 +62,7 @@ func configDiffLines(text string) []string {
 	result := []string{}
 	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+		if trimmed != "" && (!strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "# KurumiFRP control-entry policy (embedded only): ")) {
 			result = append(result, line)
 		}
 	}

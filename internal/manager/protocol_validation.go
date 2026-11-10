@@ -196,6 +196,12 @@ func parseServerAllowedPorts(value string) ([]allowedPortRange, error) {
 }
 
 func validateProtocolInstance(i Instance) error {
+	if i.Kind != "frps" && (i.ServerAccessMode != "" || i.ServerAccessList != "") {
+		return fmt.Errorf("控制入口来源限制仅适用于服务端")
+	}
+	if _, err := parseControlAccess(i.ServerAccessMode, i.ServerAccessList); err != nil {
+		return err
+	}
 	if i.MaxPortsPerClient < 0 || i.MaxPortsPerClient > 131070 || (i.Kind != "frps" && i.MaxPortsPerClient != 0) {
 		return fmt.Errorf("每客户端端口上限仅适用于服务端，须为 0–131070")
 	}

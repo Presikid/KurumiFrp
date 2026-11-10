@@ -31,6 +31,8 @@ func NewEmbeddedRuntime() RuntimeBackend { return &embeddedRuntime{} }
 
 func (*embeddedRuntime) runtimeMode() string { return "embedded" }
 
+func (*embeddedRuntime) SupportsControlAccess() bool { return true }
+
 func (*embeddedRuntime) Resolve(kind, _ string) (string, error) {
 	if embeddedCleanupUnknown.Load() {
 		return "", errors.New("内嵌核心清理状态未知，请重启工作台")
@@ -44,6 +46,7 @@ func (*embeddedRuntime) Resolve(kind, _ string) (string, error) {
 type embeddedConfig struct {
 	client *embedded.ClientConfig
 	server *v1.ServerConfig
+	access *controlAccessPolicy
 	warn   bool
 }
 
@@ -60,6 +63,9 @@ func parseEmbeddedConfig(ctx context.Context, target string, cfg RuntimeConfig) 
 	var result embeddedConfig
 	switch cfg.Kind {
 	case "frpc":
+		if cfg.ServerAccessMode != "" || cfg.ServerAccessList != "" {
+			return result, errors.New("控制入口来源限制仅适用于服务端")
+		}
 		client, warning, err := embedded.ParseClientConfig([]byte(cfg.Rendered.Text), cfg.Rendered.Env)
 		if err != nil || client == nil {
 			return result, errors.New("客户端配置未通过检查")
@@ -71,6 +77,10 @@ func parseEmbeddedConfig(ctx context.Context, target string, cfg RuntimeConfig) 
 		}
 		result.client, result.warn = client, warning != nil
 	case "frps":
+		policy, err := parseControlAccess(cfg.ServerAccessMode, cfg.ServerAccessList)
+		if err != nil {
+			return result, err
+		}
 		server, warning, err := embedded.ParseServerConfig([]byte(cfg.Rendered.Text), cfg.Rendered.Env)
 		if err != nil || server == nil {
 			return result, errors.New("服务端配置未通过检查")
@@ -78,7 +88,7 @@ func parseEmbeddedConfig(ctx context.Context, target string, cfg RuntimeConfig) 
 		if _, err := embedded.NewServer(server); err != nil {
 			return result, errors.New("服务端配置包含当前内嵌核心不支持的功能")
 		}
-		result.server, result.warn = server, warning != nil
+		result.server, result.access, result.warn = server, policy, warning != nil
 	default:
 		return result, errors.New("不支持的实例类型")
 	}
@@ -169,7 +179,7 @@ func (r *embeddedRun) serve(ctx context.Context, target string, cfg RuntimeConfi
 		return
 	}
 	if cfg.Kind == "frps" {
-		r.err = r.runServer(ctx, config.server, sink)
+		r.err = r.runServer(ctx, config.server, config.access, sink)
 		return
 	}
 	r.err = r.runClient(ctx, cfg.InstanceID, config.client, sink)
@@ -249,8 +259,12 @@ func publishEmbeddedReady(ctx context.Context, ready, exiting, done <-chan struc
 	}
 }
 
-func (r *embeddedRun) runServer(ctx context.Context, config *v1.ServerConfig, sink *xlog.Sink) error {
-	server, err := embedded.NewServerWithOptions(config, embedded.ServerOptions{LogSink: sink, OnPanic: r.markCleanupUncertain})
+func (r *embeddedRun) runServer(ctx context.Context, config *v1.ServerConfig, access *controlAccessPolicy, sink *xlog.Sink) error {
+	options := embedded.ServerOptions{LogSink: sink, OnPanic: r.markCleanupUncertain}
+	if access != nil {
+		options.AllowControlConnection = access.permits
+	}
+	server, err := embedded.NewServerWithOptions(config, options)
 	if err != nil {
 		return errors.New("无法创建内嵌服务端")
 	}
