@@ -14,6 +14,9 @@ import (
 	"sync"
 )
 
+const firewallMaxSources = 4096
+const firewallMaxSourceBytes = 256 << 10
+
 // Firewall settings are local machine authority and are not portable backups.
 // The kernel table is changed only when an administrator explicitly applies.
 type firewallConfig struct {
@@ -29,6 +32,7 @@ type firewallConfig struct {
 
 type firewallManager struct {
 	mu        sync.Mutex
+	lookupMu  sync.Mutex
 	path      string
 	config    firewallConfig
 	loadError bool
@@ -37,7 +41,7 @@ type firewallManager struct {
 
 func loadFirewall(dir string) *firewallManager {
 	f := &firewallManager{path: filepath.Join(dir, "firewall.json"), last: "unknown"}
-	data, err := privateFileLimit(f.path, 32<<10)
+	data, err := privateFileLimit(f.path, 512<<10)
 	if os.IsNotExist(err) {
 		return f
 	}
@@ -60,7 +64,7 @@ func validateFirewallConfig(c firewallConfig) error {
 	if c.Mode != "allow" && c.Mode != "block" {
 		return fmt.Errorf("请选择允许列表或阻止列表")
 	}
-	if _, err := parseControlAccess(c.Mode, c.Sources); err != nil {
+	if _, err := parseSourceAccess(c.Mode, c.Sources, firewallMaxSourceBytes, firewallMaxSources); err != nil {
 		return err
 	}
 	ports, err := parseServerAllowedPorts(c.Ports)
@@ -85,7 +89,7 @@ func renderFirewall(c firewallConfig) (string, error) {
 	if !c.Enabled {
 		return b.String(), nil
 	}
-	policy, _ := parseControlAccess(c.Mode, c.Sources)
+	policy, _ := parseSourceAccess(c.Mode, c.Sources, firewallMaxSourceBytes, firewallMaxSources)
 	ranges, _ := parseServerAllowedPorts(c.Ports)
 	ports := make([]string, 0, len(ranges))
 	for _, r := range ranges {

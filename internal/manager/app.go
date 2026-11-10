@@ -301,6 +301,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.firewallSeenAPI(w, r)
 			return
 		}
+		if r.URL.Path == "/api/firewall/asn" {
+			a.firewallASNAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/accounts" {
 			a.accountsAPI(w, r)
 			return

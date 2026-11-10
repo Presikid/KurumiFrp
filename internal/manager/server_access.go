@@ -28,6 +28,10 @@ func (a *App) checkControlAccessBackend(i Instance) error {
 }
 
 func parseControlAccess(mode, entries string) (*controlAccessPolicy, error) {
+	return parseSourceAccess(mode, entries, 8192, 128)
+}
+
+func parseSourceAccess(mode, entries string, maxBytes, maxEntries int) (*controlAccessPolicy, error) {
 	if mode == "" {
 		if strings.TrimSpace(entries) != "" {
 			return nil, fmt.Errorf("关闭来源限制时请清空地址列表")
@@ -37,12 +41,12 @@ func parseControlAccess(mode, entries string) (*controlAccessPolicy, error) {
 	if mode != "allow" && mode != "block" {
 		return nil, fmt.Errorf("服务端控制入口的来源限制模式无效")
 	}
-	if len(entries) > 8192 {
+	if len(entries) > maxBytes {
 		return nil, fmt.Errorf("来源地址列表过长")
 	}
 	parts := strings.FieldsFunc(entries, func(r rune) bool { return r == ',' || r == '\n' || r == '\r' })
-	if len(parts) == 0 || len(parts) > 128 {
-		return nil, fmt.Errorf("来源地址列表须包含 1–128 项")
+	if len(parts) == 0 || len(parts) > maxEntries {
+		return nil, fmt.Errorf("来源地址列表须包含 1–%d 项", maxEntries)
 	}
 	policy := &controlAccessPolicy{allowOnly: mode == "allow"}
 	seen := make(map[netip.Prefix]bool, len(parts))
