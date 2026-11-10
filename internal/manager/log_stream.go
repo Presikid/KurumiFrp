@@ -15,11 +15,11 @@ const (
 	logStreamWriteTimeout    = 5 * time.Second
 )
 
-// Raw backend output can contain arbitrary values. Only administrators may
-// read logs. Call with a.mu held, before the authentication lock.
+// Raw backend output can contain arbitrary values. Restricted accounts need
+// an explicit log grant as well as access to the instance. Call with a.mu held.
 func (a *App) canReadInstanceLogs(r *http.Request, id string) bool {
 	p, ok := a.auth.identity(r)
-	return ok && p.admin() && p.canView(id)
+	return ok && p.canReadLogs(id)
 }
 
 func (a *App) pollLogs(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +111,7 @@ func (a *App) lockLogFrame(r *http.Request, id string, proc *process) (func(), b
 	if !ok {
 		return nil, false
 	}
-	if !p.admin() || !p.canView(id) || !a.logStreamCurrent(r, id, proc) {
+	if !p.canReadLogs(id) || !a.logStreamCurrent(r, id, proc) {
 		unlock()
 		return nil, false
 	}

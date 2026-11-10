@@ -35,6 +35,7 @@ type localAccount struct {
 	Role            string        `json:"role"`
 	Enabled         bool          `json:"enabled"`
 	Instances       []string      `json:"instances"`
+	AllowLogs       bool          `json:"allowLogs,omitempty"`
 	RemoteInstances []remoteGrant `json:"remoteInstances,omitempty"`
 	Salt            string        `json:"salt"`
 	Hash            string        `json:"hash"`
@@ -57,6 +58,7 @@ type accountView struct {
 	Role      string   `json:"role"`
 	Enabled   bool     `json:"enabled"`
 	Instances []string `json:"instances"`
+	AllowLogs bool     `json:"allowLogs"`
 }
 
 type principalContextKey struct{}
@@ -272,7 +274,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		views := make([]accountView, 0, len(a.auth.accounts))
 		for _, u := range a.auth.accounts {
-			views = append(views, accountView{u.ID, u.Username, u.Role, u.Enabled, append([]string{}, u.Instances...)})
+			views = append(views, accountView{u.ID, u.Username, u.Role, u.Enabled, append([]string{}, u.Instances...), u.AllowLogs})
 		}
 		revision := a.auth.accountsRevision
 		a.auth.mu.Unlock()
@@ -291,6 +293,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		Role      string   `json:"role"`
 		Enabled   bool     `json:"enabled"`
 		Instances []string `json:"instances"`
+		AllowLogs *bool    `json:"allowLogs"`
 		Password  string   `json:"password"`
 	}
 	if err := decode(w, r, &req); err != nil {
@@ -411,6 +414,16 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u := localAccount{ID: req.ID, Username: req.Username, Role: req.Role, Enabled: req.Enabled, Instances: append([]string{}, req.Instances...), Salt: salt, Hash: hash}
+		// Older account editors omit this option; preserve it for existing users.
+		if index >= 0 {
+			u.AllowLogs = users[index].AllowLogs
+		}
+		if req.AllowLogs != nil {
+			u.AllowLogs = *req.AllowLogs
+		}
+		if u.Role == "admin" {
+			u.AllowLogs = false // administrators already have unrestricted access
+		}
 		if index < 0 {
 			u.ID = randomHex(16)
 			u.gate = &sync.RWMutex{}
