@@ -43,6 +43,12 @@ func renderProtocolInstance(b *strings.Builder, i Instance) error {
 	if i.ProxyBindAddr != "" {
 		fmt.Fprintf(b, "proxyBindAddr = %s\n", quote(i.ProxyBindAddr))
 	}
+	if i.VhostHTTPTimeout > 0 {
+		fmt.Fprintf(b, "vhostHTTPTimeout = %d\n", i.VhostHTTPTimeout)
+	}
+	if i.UserConnTimeout > 0 {
+		fmt.Fprintf(b, "userConnTimeout = %d\n", i.UserConnTimeout)
+	}
 	if i.MaxPortsPerClient > 0 {
 		fmt.Fprintf(b, "maxPortsPerClient = %d\n", i.MaxPortsPerClient)
 	}

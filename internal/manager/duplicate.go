@@ -168,6 +168,7 @@ func duplicatedInstance(src Instance, id, name string) Instance {
 		LoginFailExit: src.LoginFailExit, ClientTLSDisabled: src.ClientTLSDisabled, ServerAllowPlaintext: src.ServerAllowPlaintext,
 		TCPMuxHTTPConnectPort: src.TCPMuxHTTPConnectPort, TCPMuxPassthrough: src.TCPMuxPassthrough,
 		SubDomainHost: src.SubDomainHost, MaxPortsPerClient: src.MaxPortsPerClient, ServerAllowedPorts: src.ServerAllowedPorts, ProxyBindAddr: src.ProxyBindAddr,
+		VhostHTTPTimeout: src.VhostHTTPTimeout, UserConnTimeout: src.UserConnTimeout,
 	}
 }
 
