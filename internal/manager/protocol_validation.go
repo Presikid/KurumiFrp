@@ -23,6 +23,26 @@ func validHostHeaderRewrite(value string) bool {
 	return len(value) <= 512 && protocolTextOK(value) && httpguts.ValidHostHeader(value)
 }
 
+func validateHTTPTypeLocations(t Tunnel) error {
+	if len(t.Locations) == 0 {
+		return nil
+	}
+	if t.Type != "http" || len(t.Locations) > 64 {
+		return fmt.Errorf("路径前缀仅适用于 HTTP 规则，最多 64 条")
+	}
+	seen := make(map[string]bool, len(t.Locations))
+	for _, location := range t.Locations {
+		if len(location) > 1024 || !strings.HasPrefix(location, "/") || strings.TrimSpace(location) != location || !protocolTextOK(location) {
+			return fmt.Errorf("HTTP 路径前缀无效：每条须以 / 开头且不超过 1024 字节")
+		}
+		if seen[location] {
+			return fmt.Errorf("HTTP 路径前缀不能重复")
+		}
+		seen[location] = true
+	}
+	return nil
+}
+
 // Preserve the effective namespace when an existing Visitor changes client.
 // A fallback name is local to its client, so it must be configured separately
 // after the move instead of being silently rebound to a same-named Visitor.

@@ -92,6 +92,9 @@ func renderProtocolTunnel(b *strings.Builder, t Tunnel, secret func(string, stri
 		if t.Type == "http" && t.HostHeaderRewrite != "" {
 			fmt.Fprintf(b, "hostHeaderRewrite = %s\n", quote(t.HostHeaderRewrite))
 		}
+		if t.Type == "http" && len(t.Locations) > 0 {
+			renderStringArray(b, "locations", t.Locations)
+		}
 		if t.Type == "tcpmux" {
 			mux := t.Multiplexer
 			if mux == "" {
