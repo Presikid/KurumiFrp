@@ -5,16 +5,16 @@ import "path/filepath"
 // Set by native packaging. Source builds retain the explicit-directory CLI.
 var distribution = "source"
 
-func defaultPaths() (string, string, string, error) {
+func defaultPaths() (string, string, error) {
 	switch distribution {
 	case "linux-system":
-		return "/opt/kurumifrp/runtime/data", "/opt/kurumifrp/runtime/cores", "auto", nil
+		return "/opt/kurumifrp/runtime/data", "auto", nil
 	case "windows-installed":
 		root, err := windowsUserRoot()
 		if err != nil {
-			return "", "", "", err
+			return "", "", err
 		}
-		return filepath.Join(root, "data"), filepath.Join(root, "cores"), "auto", nil
+		return filepath.Join(root, "data"), "auto", nil
 	}
-	return "./data", "./frp", "127.0.0.1:9000", nil
+	return "./data", "127.0.0.1:9000", nil
 }

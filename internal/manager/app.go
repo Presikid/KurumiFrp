@@ -69,13 +69,13 @@ type App struct {
 	logStreamsByID      map[string]int
 }
 
-func New(dir, bin, addr string, assets fs.FS) (*App, error) {
-	return NewWithRuntime(dir, bin, addr, assets, nil)
+func New(dir, addr string, assets fs.FS) (*App, error) {
+	return NewWithRuntime(dir, addr, assets, nil)
 }
 
 // NewWithRuntime installs the backend before restoring AutoStart instances.
 // A nil backend selects the in-process runtime used by normal builds.
-func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend) (*App, error) {
+func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*App, error) {
 	if backend == nil {
 		backend = NewEmbeddedRuntime()
 	}
