@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -336,18 +334,7 @@ func (a *App) verifyRuntime(parent context.Context, target string, i Instance, r
 	return output, nil
 }
 func (a *App) prepareRuntimeConfig(id string, r Rendered) (string, error) {
-	if _, ok := a.runtime.(*externalRuntime); !ok {
-		return "", nil
-	}
-	runtimeDir := filepath.Join(a.store.dir, "runtime")
-	if e := os.MkdirAll(runtimeDir, 0700); e != nil {
-		return "", e
-	}
-	configPath := filepath.Join(runtimeDir, id+".toml")
-	if _, e := writeIfChanged(configPath, []byte(r.Text)); e != nil {
-		return "", e
-	}
-	return configPath, nil
+	return "", nil
 }
 
 // start is retained for internal callers which already hold a.mu. HTTP control
@@ -650,9 +637,6 @@ func (a *App) Close() error {
 		if a.scheduleDone != nil {
 			<-a.scheduleDone
 		}
-		if a.core != nil {
-			a.core.Cancel()
-		}
 		// In-flight control operations must finish before the final process
 		// snapshot; no app mutex is held while waiting on them or on children.
 		a.operationWG.Wait()
@@ -685,9 +669,6 @@ func (a *App) Close() error {
 			if err := a.finishSchedulesAfterShutdown(); err != nil {
 				failures = append(failures, err)
 			}
-		}
-		if a.core != nil {
-			a.core.Close()
 		}
 		a.closeErr = errors.Join(failures...)
 	})
