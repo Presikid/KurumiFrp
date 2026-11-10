@@ -248,3 +248,85 @@ func (a *App) passkeyDelete(w http.ResponseWriter, r *http.Request, p principal)
 	if err := a.auth.passkeys.save(records); err != nil { fail(w, 500, err); return }
 	reply(w, 200, map[string]bool{"ok": true})
 }
+
+func (a *App) passkeyStatus(w http.ResponseWriter, r *http.Request) {
+	_, _, err := passkeyWebAuthn(r)
+	a.auth.mu.Lock()
+	available := err == nil && a.auth.passkeys.loadErr == nil && a.auth.accountLoadErr == nil
+	a.auth.mu.Unlock()
+	reply(w, 200, map[string]bool{"available": available})
+}
+
+func (a *App) passkeyLoginStart(w http.ResponseWriter, r *http.Request) {
+	var req struct { Username string `json:"username"` }
+	if err := decode(w, r, &req); err != nil { fail(w, 400, fmt.Errorf("登录请求无效")); return }
+	wa, origin, err := passkeyWebAuthn(r)
+	if err != nil { fail(w, 400, err); return }
+	key := accountAttemptKey(req.Username)
+	if err := a.auth.beginAttemptWithPeer(key, true, r.RemoteAddr); err != nil { fail(w, 429, err); return }
+	failed := false
+	defer func() { a.auth.finishAttemptWithPeer(key, failed, true, r.RemoteAddr) }()
+	a.auth.mu.Lock()
+	defer a.auth.mu.Unlock()
+	if a.auth.passkeys.loadErr != nil || a.auth.accountLoadErr != nil { fail(w, 503, fmt.Errorf("Passkey 暂不可用")); return }
+	var account localAccount
+	for _, candidate := range a.auth.accounts {
+		if strings.EqualFold(candidate.Username, req.Username) && candidate.activeAt(time.Now()) { account = candidate; break }
+	}
+	if account.ID == "" { failed = true; fail(w, 400, fmt.Errorf("账户或 Passkey 不可用")); return }
+	u := a.auth.passkeyUserLocked(account)
+	if len(u.credentials) == 0 { failed = true; fail(w, 400, fmt.Errorf("账户或 Passkey 不可用")); return }
+	options, session, err := wa.BeginLogin(u, webauthn.WithUserVerification(protocol.VerificationRequired))
+	if err != nil { fail(w, 500, fmt.Errorf("无法创建 Passkey 登录请求")); return }
+	flow := passkeyFlow{operation: "login", user: u, session: *session, accountRevision: a.auth.accountsRevision, storeRevision: a.auth.passkeys.data.Revision, origin: origin}
+	if err := a.auth.savePasskeyFlow(w, r, flow); err != nil { fail(w, 429, err); return }
+	reply(w, 200, map[string]any{"options": options})
+}
+
+func (a *App) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
+	wa, origin, err := passkeyWebAuthn(r)
+	if err != nil { fail(w, 400, err); return }
+	a.auth.mu.Lock()
+	flow, ok := a.auth.takePasskeyFlow(w, r, "login", origin)
+	a.auth.mu.Unlock()
+	if !ok { fail(w, 409, fmt.Errorf("登录请求已失效，请重新开始")); return }
+	key := accountAttemptKey(flow.user.name)
+	if err := a.auth.beginAttemptWithPeer(key, true, r.RemoteAddr); err != nil { fail(w, 429, err); return }
+	failed, success := false, false
+	defer func() {
+		a.auth.finishAttemptWithPeer(key, failed, true, r.RemoteAddr)
+		a.loginHistory.record(r, flow.user.name, success)
+	}()
+	if strings.Split(r.Header.Get("Content-Type"), ";")[0] != "application/json" { fail(w, 400, fmt.Errorf("需要 application/json")); return }
+	r.Body = http.MaxBytesReader(w, r.Body, 128<<10)
+	credential, err := wa.FinishLogin(flow.user, flow.session, r)
+	if err != nil || credential == nil || credential.Authenticator.CloneWarning {
+		failed = true; fail(w, 401, fmt.Errorf("Passkey 登录未完成")); return
+	}
+	a.auth.mu.Lock()
+	defer a.auth.mu.Unlock()
+	if a.auth.accountLoadErr != nil || a.auth.passkeys.loadErr != nil || a.auth.accountsRevision != flow.accountRevision || a.auth.passkeys.data.Revision != flow.storeRevision || r.Context().Err() != nil {
+		fail(w, 409, fmt.Errorf("账户或 Passkey 配置已变化，请重新登录")); return
+	}
+	active := false
+	for _, account := range a.auth.accounts {
+		if account.ID == flow.user.id && account.activeAt(time.Now()) { active = true; break }
+	}
+	if !active { fail(w, 401, fmt.Errorf("账户不可用")); return }
+	records, found := append([]passkeyRecord{}, a.auth.passkeys.data.Records...), false
+	for i, record := range records {
+		if record.AccountID == flow.user.id && bytes.Equal(record.Credential.ID, credential.ID) {
+			records[i].Credential = *credential
+			records[i].Flags = uint8(credential.Flags.ProtocolValue())
+			found = true
+			break
+		}
+	}
+	if !found { fail(w, 409, fmt.Errorf("Passkey 已变化，请重新登录")); return }
+	if err := a.auth.passkeys.save(records); err != nil { fail(w, 500, err); return }
+	sid, err := a.auth.newSessionLocked(r, flow.user.id, time.Now())
+	if err != nil { fail(w, 503, fmt.Errorf("无法创建登录会话")); return }
+	http.SetCookie(w, &http.Cookie{Name: "kurumi_session", Value: sid, Path: "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode, MaxAge: 43200})
+	success = true
+	reply(w, 200, map[string]bool{"ok": true})
+}
