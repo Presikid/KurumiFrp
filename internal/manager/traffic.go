@@ -272,7 +272,13 @@ func (a *App) trafficAPI(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	now := time.Now().UTC()
 	items := make(map[string]instanceTraffic)
+	p := requestPrincipal(r)
 	if filtered {
+		if !p.canView(ids[0]) {
+			a.mu.Unlock()
+			fail(w, http.StatusForbidden, fmt.Errorf("没有此实例的查看权限"))
+			return
+		}
 		if _, ok := a.store.DB.State.Instance(ids[0]); !ok {
 			a.mu.Unlock()
 			fail(w, http.StatusNotFound, fmt.Errorf("实例不存在"))
@@ -281,7 +287,9 @@ func (a *App) trafficAPI(w http.ResponseWriter, r *http.Request) {
 		items[ids[0]] = trafficView(a.procs[ids[0]], a.traffic[ids[0]], now)
 	} else {
 		for _, instance := range a.store.DB.State.Instances {
-			items[instance.ID] = trafficView(a.procs[instance.ID], a.traffic[instance.ID], now)
+			if p.canView(instance.ID) {
+				items[instance.ID] = trafficView(a.procs[instance.ID], a.traffic[instance.ID], now)
+			}
 		}
 	}
 	a.mu.Unlock()

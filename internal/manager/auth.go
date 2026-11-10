@@ -6,91 +6,336 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 type attempt struct {
-	count int
-	since time.Time
+	count    int
+	inFlight int
+	since    time.Time
 }
 
-const maxLoginSources = 1000
-const loginWindow = time.Minute
+const (
+	maxLoginKeys           = 1000
+	maxLoginFailures       = 10
+	maxGlobalLoginFailures = 200
+	loginWindow            = time.Minute
+)
 
 type auth struct {
-	token       string
-	mu          sync.Mutex
-	attempts    map[string]attempt
-	sessions    map[string]time.Time
-	tickets     map[string]time.Time
-	nextCleanup time.Time
+	token            string
+	mu               sync.Mutex
+	attempts         map[string]attempt
+	globalAttempts   attempt
+	sessions         map[string]authSession
+	tickets          map[string]time.Time
+	nextCleanup      time.Time
+	accountPath      string
+	accounts         []localAccount
+	accountsRevision uint64
+	accountLoadErr   error
+	hashSlots        chan struct{}
 }
 
-func (a *auth) valid(r *http.Request) bool {
+type authSession struct {
+	expires   time.Time
+	accountID string        // empty for the local access token or launch ticket
+	gate      *sync.RWMutex // root browser session; account sessions use the account gate
+}
+
+type principal struct {
+	Name      string   `json:"name"`
+	Role      string   `json:"role"`
+	Account   bool     `json:"account"`
+	Instances []string `json:"-"`
+	AccountID string   `json:"-"`
+	gate      *sync.RWMutex
+}
+
+func (p principal) admin() bool { return p.Role == "admin" }
+func (p principal) canOperate(id string) bool {
+	if p.admin() {
+		return true
+	}
+	if p.Role != "operator" {
+		return false
+	}
+	return p.canView(id)
+}
+func (p principal) canView(id string) bool {
+	if p.admin() {
+		return true
+	}
+	if id == "" {
+		return false
+	}
+	for _, allowed := range p.Instances {
+		if allowed == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *auth) localToken(r *http.Request) bool {
+	header := r.Header.Get("Authorization")
+	if !strings.HasPrefix(header, "Bearer ") {
+		return false
+	}
+	t := strings.TrimPrefix(header, "Bearer ")
+	return t != "" && subtle.ConstantTimeCompare([]byte(t), []byte(a.token)) == 1
+}
+
+func (a *auth) identity(r *http.Request) (principal, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); t != "" && subtle.ConstantTimeCompare([]byte(t), []byte(a.token)) == 1 {
-		return true
+	return a.identityLocked(r)
+}
+
+// identityLocked checks the current session and account while a.mu is held.
+func (a *auth) identityLocked(r *http.Request) (principal, bool) {
+	if a.localToken(r) {
+		return principal{Name: "本机管理令牌", Role: "admin"}, true
 	}
 	c, e := r.Cookie("kurumi_session")
 	if e != nil {
-		return false
+		return principal{}, false
 	}
-	expiry, ok := a.sessions[c.Value]
-	if ok && !time.Now().Before(expiry) {
+	session, ok := a.sessions[c.Value]
+	if ok && !time.Now().Before(session.expires) {
 		delete(a.sessions, c.Value)
-		return false
+		return principal{}, false
 	}
-	return ok
-}
-func (a *auth) login(r *http.Request, token string) (string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-	now := time.Now()
-	// Sweep at most once per second; an expired entry for this source is
-	// handled immediately even between sweeps. Never evict a live counter:
-	// rotating addresses must not reset an existing source's rate limit.
-	a.prune(now)
-	at, known := a.attempts[ip]
-	if known && !now.Before(at.since.Add(loginWindow)) {
-		delete(a.attempts, ip)
-		at, known = attempt{}, false
+	if !ok {
+		return principal{}, false
 	}
-	if at.count >= 10 || (!known && len(a.attempts) >= maxLoginSources) {
-		return "", fmt.Errorf("尝试过于频繁，请稍后再试")
+	if session.accountID == "" {
+		return principal{Name: "本机管理令牌", Role: "admin", gate: session.gate}, true
 	}
-	if at.count == 0 {
-		at.since = now
-	}
-	at.count++
-	a.attempts[ip] = at
-	if subtle.ConstantTimeCompare([]byte(token), []byte(a.token)) != 1 {
-		return "", fmt.Errorf("访问令牌不正确")
-	}
-	return a.newSessionLocked(r, now)
-}
-
-// Rotate the cookie presented by this browser only after successful login.
-// A stream using that old session is then rejected on its next recheck.
-func (a *auth) newSessionLocked(r *http.Request, now time.Time) (string, error) {
-	oldID := ""
-	if cookie, err := r.Cookie("kurumi_session"); err == nil {
-		if _, ok := a.sessions[cookie.Value]; ok {
-			oldID = cookie.Value
+	for _, account := range a.accounts {
+		if account.ID == session.accountID && account.Enabled {
+			return principal{Name: account.Username, Role: account.Role, Account: true, Instances: append([]string(nil), account.Instances...), AccountID: account.ID, gate: account.gate}, true
 		}
 	}
-	if len(a.sessions) >= 64 && oldID == "" {
-		return "", fmt.Errorf("会话数量达到上限")
+	delete(a.sessions, c.Value)
+	return principal{}, false
+}
+
+// Both account login and password changes use the same credential budget.
+// Fold aliases without consulting the account list, including for unknown names.
+func accountAttemptKey(username string) string {
+	if len(username) > 32 {
+		return "invalid-account"
+	}
+	name := strings.Map(func(r rune) rune {
+		folded := r
+		for {
+			if folded >= 'A' && folded <= 'Z' {
+				return folded + ('a' - 'A')
+			}
+			if folded >= 'a' && folded <= 'z' {
+				return folded
+			}
+			folded = unicode.SimpleFold(folded)
+			if folded == r {
+				return r
+			}
+		}
+	}, username)
+	if accountNamePattern.MatchString(name) {
+		return "account:" + name
+	}
+	return "invalid-account"
+}
+
+// Reservations include in-flight checks so concurrent guesses cannot all
+// pass the limit before their failures are recorded.
+func (a *auth) beginAttempt(key string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	a.prune(now)
+	at, known := a.attempts[key]
+	if !known || !now.Before(at.since.Add(loginWindow)) {
+		at.count, at.since = 0, now
+	}
+	if a.globalAttempts.since.IsZero() || !now.Before(a.globalAttempts.since.Add(loginWindow)) {
+		a.globalAttempts.count, a.globalAttempts.since = 0, now
+	}
+	if at.count+at.inFlight >= maxLoginFailures || (key != "token" && a.globalAttempts.count+a.globalAttempts.inFlight >= maxGlobalLoginFailures) || (!known && key != "token" && len(a.attempts) >= maxLoginKeys) {
+		return fmt.Errorf("尝试过于频繁，请稍后再试")
+	}
+	at.inFlight++
+	if key != "token" {
+		a.globalAttempts.inFlight++
+	}
+	a.attempts[key] = at
+	return nil
+}
+
+func (a *auth) finishAttempt(key string, failed bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	at := a.attempts[key]
+	if !now.Before(at.since.Add(loginWindow)) {
+		at.count, at.since = 0, now
+	}
+	if !now.Before(a.globalAttempts.since.Add(loginWindow)) {
+		a.globalAttempts.count, a.globalAttempts.since = 0, now
+	}
+	at.inFlight--
+	if key != "token" {
+		a.globalAttempts.inFlight--
+	}
+	if failed {
+		at.count++
+		if key != "token" {
+			a.globalAttempts.count++
+		}
+	}
+	if at.count == 0 && at.inFlight == 0 {
+		delete(a.attempts, key)
+	} else {
+		a.attempts[key] = at
+	}
+}
+
+func (a *auth) login(r *http.Request, token, username, password string) (string, error) {
+	if username != "" && token != "" {
+		return "", fmt.Errorf("登录信息无效")
+	}
+	key := "token"
+	if username != "" {
+		key = accountAttemptKey(username)
+	}
+	if err := a.beginAttempt(key); err != nil {
+		return "", err
+	}
+	failed := false
+	defer func() { a.finishAttempt(key, failed) }()
+	if username != "" {
+		var sid string
+		var err error
+		sid, failed, err = a.loginAccount(r, username, password)
+		return sid, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if subtle.ConstantTimeCompare([]byte(token), []byte(a.token)) != 1 {
+		failed = true
+		return "", fmt.Errorf("访问令牌不正确")
+	}
+	return a.newSessionLocked(r, "", time.Now())
+}
+
+// A newly authenticated browser replaces its old cookie. Each account can
+// hold at most four sessions, and full capacity evicts an account session so
+// that the local administrator retains a recovery path.
+func (a *auth) newSessionLocked(r *http.Request, accountID string, now time.Time) (string, error) {
+	for sid, session := range a.sessions {
+		if !now.Before(session.expires) {
+			delete(a.sessions, sid)
+		}
+	}
+	// Plan all evictions first. If another session is busy, a failed login must
+	// not log out the browser whose cookie it was trying to replace.
+	removed := make(map[string]bool)
+	held := make(map[*sync.RWMutex]bool)
+	defer func() {
+		for gate := range held {
+			gate.Unlock()
+		}
+	}()
+	reserve := func(sid string) bool {
+		session, exists := a.sessions[sid]
+		if !exists || removed[sid] {
+			return true
+		}
+		gate := session.gate
+		if session.accountID != "" {
+			for _, account := range a.accounts {
+				if account.ID == session.accountID {
+					gate = account.gate
+					break
+				}
+			}
+		}
+		if gate != nil && !held[gate] {
+			// auth.mu is held: never wait for a gate, whose owner may need mu.
+			if !gate.TryLock() {
+				return false
+			}
+			held[gate] = true
+		}
+		removed[sid] = true
+		return true
+	}
+	if cookie, err := r.Cookie("kurumi_session"); err == nil {
+		if !reserve(cookie.Value) {
+			return "", fmt.Errorf("当前会话仍有操作进行，请稍后再试")
+		}
+	}
+	if accountID != "" {
+		count := 0
+		oldest, oldestTime := "", time.Time{}
+		for sid, session := range a.sessions {
+			if session.accountID == accountID && !removed[sid] {
+				count++
+				if oldest == "" || session.expires.Before(oldestTime) {
+					oldest, oldestTime = sid, session.expires
+				}
+			}
+		}
+		if count >= 4 {
+			if !reserve(oldest) {
+				return "", fmt.Errorf("当前账户的操作尚未结束，请稍后再试")
+			}
+		}
+	}
+	if len(a.sessions)-len(removed) >= 64 {
+		type candidate struct {
+			id      string
+			expires time.Time
+			root    bool
+		}
+		var candidates []candidate
+		for sid, session := range a.sessions {
+			if !removed[sid] && (session.accountID != "" || accountID == "") {
+				candidates = append(candidates, candidate{sid, session.expires, session.accountID == ""})
+			}
+		}
+		sort.Slice(candidates, func(i, j int) bool {
+			if candidates[i].root != candidates[j].root {
+				return !candidates[i].root
+			}
+			return candidates[i].expires.Before(candidates[j].expires)
+		})
+		evicted := false
+		for _, candidate := range candidates {
+			if reserve(candidate.id) {
+				evicted = true
+				break
+			}
+		}
+		if !evicted {
+			return "", fmt.Errorf("会话繁忙，请稍后再试")
+		}
+	}
+	for sid := range removed {
+		delete(a.sessions, sid)
 	}
 	sid := randomHex(32)
-	if oldID != "" {
-		delete(a.sessions, oldID)
+	session := authSession{expires: now.Add(12 * time.Hour), accountID: accountID}
+	if accountID == "" {
+		session.gate = &sync.RWMutex{}
 	}
-	a.sessions[sid] = now.Add(12 * time.Hour)
+	a.sessions[sid] = session
 	return sid, nil
 }
 
@@ -100,12 +345,12 @@ func (a *auth) prune(now time.Time) {
 		return
 	}
 	for k, v := range a.attempts {
-		if !now.Before(v.since.Add(loginWindow)) {
+		if v.inFlight == 0 && !now.Before(v.since.Add(loginWindow)) {
 			delete(a.attempts, k)
 		}
 	}
-	for k, expiry := range a.sessions {
-		if !now.Before(expiry) {
+	for k, session := range a.sessions {
+		if !now.Before(session.expires) {
 			delete(a.sessions, k)
 		}
 	}

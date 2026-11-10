@@ -178,6 +178,14 @@ func (a *App) checkRuntimeSnapshot(ctx context.Context, snapshot runtimeSnapshot
 }
 
 func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
+	p := requestPrincipal(r)
+	// Backend errors and verifier output can contain arbitrary local details.
+	failure := func(status int, err error) {
+		if !p.admin() {
+			err = fmt.Errorf("实例操作未完成，请联系管理员查看详情")
+		}
+		fail(w, status, err)
+	}
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -187,13 +195,17 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
+	if !p.canOperate(req.ID) {
+		fail(w, http.StatusForbidden, fmt.Errorf("没有此实例的操作权限"))
+		return
+	}
 	validate := r.URL.Path == "/api/validate"
 	snapshot, op, status, err := a.beginRuntimeOperation(r.Context(), req, validate)
 	if err != nil {
 		if !validate && (req.Action == "start" || req.Action == "restart") && a.webhooks != nil {
 			a.webhooks.emitInstance("instance.start_failed", snapshot.instance.ID, snapshot.instance.Kind)
 		}
-		fail(w, status, err)
+		failure(status, err)
 		return
 	}
 	defer a.finishRuntimeOperation(req.ID, op)
@@ -209,7 +221,7 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validate && req.Action == "stop" {
 		if err = stopProcess(snapshot.process); err != nil {
-			fail(w, http.StatusBadRequest, err)
+			failure(http.StatusBadRequest, err)
 			return
 		}
 		a.mu.Lock()
@@ -221,7 +233,7 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 
 	output, err := a.verifyRuntime(op.ctx, snapshot.target, snapshot.instance, snapshot.rendered)
 	if err != nil {
-		fail(w, http.StatusBadRequest, err)
+		failure(http.StatusBadRequest, err)
 		return
 	}
 	// Do not stop a healthy process when its replacement became stale while the
@@ -230,16 +242,19 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 	status, err = a.checkRuntimeSnapshot(op.ctx, snapshot)
 	a.mu.Unlock()
 	if err != nil {
-		fail(w, status, err)
+		failure(status, err)
 		return
 	}
 	if validate {
+		if !p.admin() {
+			output = ""
+		}
 		reply(w, http.StatusOK, map[string]any{"ok": true, "output": output, "note": "仅验证配置，不证明网络连通"})
 		return
 	}
 	runtimeRendered, private, err := a.preparePrivateStatus(op.ctx, snapshot.target, snapshot.instance, snapshot.rendered)
 	if err != nil {
-		fail(w, http.StatusBadRequest, err)
+		failure(http.StatusBadRequest, err)
 		return
 	}
 	defer func() {
@@ -253,12 +268,12 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 	status, err = a.checkRuntimeSnapshot(op.ctx, snapshot)
 	a.mu.Unlock()
 	if err != nil {
-		fail(w, status, err)
+		failure(status, err)
 		return
 	}
 	if req.Action == "restart" {
 		if err = stopProcess(snapshot.process); err != nil {
-			fail(w, http.StatusBadRequest, err)
+			failure(http.StatusBadRequest, err)
 			return
 		}
 	}
@@ -266,7 +281,7 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 	// the file of a running process before validation and an explicit restart.
 	configPath, err := a.prepareRuntimeConfig(snapshot.instance.ID, runtimeRendered)
 	if err != nil {
-		fail(w, http.StatusBadRequest, err)
+		failure(http.StatusBadRequest, err)
 		return
 	}
 	// A draft/core switch or shutdown can also happen during the stop wait or
@@ -284,7 +299,7 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 	revision := a.store.DB.Revision
 	a.mu.Unlock()
 	if err != nil {
-		fail(w, status, err)
+		failure(status, err)
 		return
 	}
 	reply(w, http.StatusOK, map[string]any{"ok": true, "revision": revision})

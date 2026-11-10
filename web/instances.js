@@ -67,6 +67,8 @@ window.KurumiInstances = (() => {
   const id = esc(instance.id);
   const name = esc(instance.name);
   const runtime = data.runtime?.[instance.id] || {state:'stopped'};
+  const restricted = data.identity?.role !== 'admin';
+  const operator = data.identity?.role === 'operator';
   const state = runtime.state || 'stopped';
   const running = state === 'running';
   const role = instance.kind === 'frpc' ? 'client' : instance.kind === 'frps' ? 'server' : 'other';
@@ -89,7 +91,7 @@ window.KurumiInstances = (() => {
    const display = control && operation?.action === action ? busyLabels[action] : label;
    return `<button type="button" ${primary?'class="primary" ':''}data-action="${action}" data-id="${id}" aria-label="${esc(label + ' · ' + instance.name)}"${control?` data-instance-control data-idle-label="${esc(label)}"${operation?' disabled':''}`:''}>${display}</button>`;
   };
-  const registration = role === 'client' ? `<div class="instance-card__registration"><span>代理注册</span><strong data-registration-count="${id}">${esc(registrationText(instance))}</strong></div>` : '';
+  const registration = !restricted && role === 'client' ? `<div class="instance-card__registration"><span>代理注册</span><strong data-registration-count="${id}">${esc(registrationText(instance))}</strong></div>` : '';
   const vhosts = role === 'server' ? `<div class="instance-card__fact instance-card__fact--wide"><dt>草稿监听端口</dt><dd>HTTP ${esc(instance.httpPort || '关闭')} · HTTPS ${esc(instance.httpsPort || '关闭')} · KCP ${esc(instance.kcpBindPort || '关闭')} · QUIC ${esc(instance.quicBindPort || '关闭')}</dd></div>` : '';
   const started = runtime.started ? `<div class="instance-card__fact instance-card__fact--wide"><dt>${running?'启动时间':'最近启动'}</dt><dd>${esc(formatTime(runtime.started))}</dd></div>` : '';
   const process = runtime.pid ? `<div class="instance-card__fact"><dt>系统进程 PID</dt><dd>${esc(runtime.pid)}</dd></div>` : '';
@@ -102,13 +104,14 @@ window.KurumiInstances = (() => {
    <div class="instance-card__config ${runtime.pending?'instance-card__config--pending':''}"><div><strong>${runtime.pending?'配置待应用':'配置状态'}</strong><p>${configText}</p></div>${runtime.applied?button('diff','查看差异'):''}</div>
    ${runtime.exit?`<div class="instance-card__runtime-message"><strong>运行信息</strong><p>${esc(runtime.exit)}</p></div>`:''}
    <p class="instance-card__error" data-instance-error role="alert" ${error?'':'hidden'}>${error?'操作失败：'+esc(error):''}</p>
-   <div class="instance-card__controls">${running?button('stop','停止',false,true)+button('restart','重启应用',Boolean(runtime.pending),true):button('start','启动',true,true)}${button('logs','日志')}${button('health','链路检测')}</div>
-   <div class="instance-card__actions">${button('validate','校验配置',false,true)}${button('edit-instance','编辑')}${button('duplicate-instance','复制实例')}${button('delete-instance','删除')}</div>
+   <div class="instance-card__controls">${!restricted || operator ? (running?button('stop','停止',false,true)+button('restart','重启应用',Boolean(runtime.pending),true):button('start','启动',true,true)) : ''}${restricted?`<button type="button" data-instance-read="config" data-id="${id}">配置预览</button>`:button('logs','日志')+button('health','链路检测')}</div>
+   <div class="instance-card__actions">${!restricted || operator ? button('validate','校验配置',false,true) : ''}${restricted ? '' : button('edit-instance','编辑')+button('duplicate-instance','复制实例')+button('delete-instance','删除')}</div>
   </article>`;
  }
 
  function render(data, helpers) {
   const instances = data.state.instances;
+  const restricted = data.identity?.role !== 'admin';
   const current = instances.filter(i => data.runtime?.[i.id]?.state === 'running').length;
   const pending = instances.filter(i => data.runtime?.[i.id]?.pending).length;
   const groups = [
@@ -122,8 +125,12 @@ window.KurumiInstances = (() => {
    return `<section class="instance-group"><div class="instance-group__heading"><div><h2>${group.name} <span>${members.length}</span></h2><p>${group.description}</p></div></div><div class="instance-grid">${members.map(instance => renderCard(instance, data, helpers.registrationText, helpers.esc)).join('')}</div></section>`;
   }).join('');
 
-  return helpers.header('运行实例','只管理本机实例；上游服务器地址不代表远程管理权限。','<button class="primary" data-action="new-instance">＋ 新建实例</button>') +
-   `<div class="instances-page"><div class="instances-summary" aria-label="实例状态概览"><div><span>实例总数</span><strong>${instances.length}</strong></div><div><span>运行中</span><strong>${current}</strong></div><div><span>配置待应用</span><strong>${pending}</strong></div><p>启动前会检查配置。运行状态不代表代理已注册或链路可达。</p></div>${sections || helpers.empty('添加第一个运行实例','先创建客户端或服务端，再检查配置并启动。','<button data-action="new-instance" class="primary">新建实例</button>','welcome')}</div>`;
+  const title = restricted ? '授权实例' : '运行实例';
+  const subtitle = restricted ? `${helpers.esc(data.identity?.name || '账户')} · ${data.identity?.role === 'operator' ? '操作员' : '查看者'} · 仅显示已授权实例；原始日志仅管理员可见` : '只管理本机实例；上游服务器地址不代表远程管理权限。';
+  const action = restricted ? '' : '<button class="primary" data-action="new-instance">＋ 新建实例</button>';
+  const empty = restricted ? helpers.empty('暂无授权实例','请联系管理员分配实例。') : helpers.empty('添加第一个运行实例','先创建客户端或服务端，再检查配置并启动。','<button data-action="new-instance" class="primary">新建实例</button>','welcome');
+  return helpers.header(title,subtitle,action) +
+   `<div class="instances-page"><div class="instances-summary" aria-label="实例状态概览"><div><span>实例总数</span><strong>${instances.length}</strong></div><div><span>运行中</span><strong>${current}</strong></div><div><span>配置待应用</span><strong>${pending}</strong></div><p>启动前会检查配置。运行状态不代表代理已注册或链路可达。</p></div>${sections || empty}</div>`;
  }
 
  return {render, begin, end, setError, clearError, reset, sync:paint};

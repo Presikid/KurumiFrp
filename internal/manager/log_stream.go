@@ -15,11 +15,11 @@ const (
 	logStreamWriteTimeout    = 5 * time.Second
 )
 
-// Both transports and every stream frame recheck the local administrator
-// session. Account integration must replace this with a live per-instance
-// authorization check. Call with a.mu held, before the authentication lock.
+// Raw backend output can contain arbitrary values. Only administrators may
+// read logs. Call with a.mu held, before the authentication lock.
 func (a *App) canReadInstanceLogs(r *http.Request, id string) bool {
-	return a.auth.valid(r)
+	p, ok := a.auth.identity(r)
+	return ok && p.admin() && p.canView(id)
 }
 
 func (a *App) pollLogs(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +104,20 @@ func (a *App) logStreamCurrent(r *http.Request, id string, p *process) bool {
 	return exists
 }
 
+// Keep the account/session gate only while checking and writing one bounded
+// frame; a long-lived stream must never hold a gate for its whole lifetime.
+func (a *App) lockLogFrame(r *http.Request, id string, proc *process) (func(), bool) {
+	p, unlock, ok := a.auth.lockRequest(r)
+	if !ok {
+		return nil, false
+	}
+	if !p.admin() || !p.canView(id) || !a.logStreamCurrent(r, id, proc) {
+		unlock()
+		return nil, false
+	}
+	return unlock, true
+}
+
 // Bound each JSON allocation and network write. A large snapshot starts with
 // one snapshot event followed by line events, in the same captured order.
 func (a *App) writeLogLines(w http.ResponseWriter, controller *http.ResponseController, r *http.Request, id, runID string, p *process, lines []string, reset bool) bool {
@@ -116,14 +130,17 @@ func (a *App) writeLogLines(w http.ResponseWriter, controller *http.ResponseCont
 			size += len(lines[end])
 			end++
 		}
-		if !a.logStreamCurrent(r, id, p) {
+		unlock, ok := a.lockLogFrame(r, id, p)
+		if !ok {
 			return false
 		}
 		event := "lines"
 		if reset && start == 0 {
 			event = "snapshot"
 		}
-		if err := writeLogEvent(w, controller, event, logStreamLines{id, runID, lines[start:end]}); err != nil {
+		err := writeLogEvent(w, controller, event, logStreamLines{id, runID, lines[start:end]})
+		unlock()
+		if err != nil {
 			return false
 		}
 		if end == len(lines) {
@@ -220,15 +237,19 @@ func (a *App) streamLogs(w http.ResponseWriter, r *http.Request) {
 			if !a.writeLogLines(w, controller, r, id, runID, p, lines, reset) {
 				return
 			}
-			if a.logStreamCurrent(r, id, p) {
+			if unlock, ok := a.lockLogFrame(r, id, p); ok {
 				_ = writeLogEvent(w, controller, "end", logStreamEnd{id, runID})
+				unlock()
 			}
 			return
 		case <-ticker.C:
-			if !a.logStreamCurrent(r, id, p) {
+			unlock, ok := a.lockLogFrame(r, id, p)
+			if !ok {
 				return
 			}
-			if err := writeLogEvent(w, controller, "heartbeat", struct{}{}); err != nil {
+			err := writeLogEvent(w, controller, "heartbeat", struct{}{})
+			unlock()
+			if err != nil {
 				return
 			}
 		}

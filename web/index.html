@@ -20,6 +20,7 @@
   <script src="/toml-import.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/core.js" defer></script>
+  <script src="/accounts.js" defer></script>
   <script src="/shell.js" defer></script>
 </head>
 <body>
@@ -41,9 +42,10 @@
         <div class="login-brand"><span class="brand-mark" aria-hidden="true">Ⅻ</span><span>Kurumi<b>FRP WORKSPACE</b></span></div>
         <p class="eyebrow">WELCOME BACK</p>
         <h2>欢迎回来</h2>
-        <p class="muted login-intro">输入本机管理令牌，进入你的连接工作台。</p>
+        <p class="muted login-intro">使用本机管理令牌或本地账户登录。</p>
         <form id="login-form">
-          <label>访问令牌<input name="token" type="password" autocomplete="current-password" placeholder="粘贴 access.token 中的令牌" required></label>
+          <label>用户名（使用管理令牌时留空）<input name="username" autocomplete="username" maxlength="32"></label>
+          <label>密码或访问令牌<input name="token" type="password" autocomplete="current-password" required></label>
           <button class="primary wide" type="submit">进入工作台 <span aria-hidden="true">→</span></button>
           <p id="login-error" class="error" role="alert"></p>
         </form>
@@ -72,11 +74,13 @@
         <button type="button" data-page="core"><span class="nav-icon" aria-hidden="true">↓</span>核心管理</button>
         <button type="button" data-page="logs"><span class="nav-icon" aria-hidden="true">⌁</span>运行记录</button>
         <button type="button" data-page="update"><span class="nav-icon" aria-hidden="true">↑</span>软件更新</button>
+        <button type="button" data-page="accounts"><span class="nav-icon" aria-hidden="true">♙</span>本地账户</button>
       </nav>
       <div class="sidebar-bottom">
         <div class="local-indicator"><i aria-hidden="true"></i><div>本机工作空间<small>配置与实例集中管理</small></div></div>
         <p>先验证，再应用。<br>进程存活不等于隧道连通。</p>
         <div class="sidebar-actions">
+          <button type="button" id="change-password" class="quiet" hidden>修改账户密码</button>
           <button type="button" id="logout" class="quiet">退出登录 <span aria-hidden="true">↗</span></button>
           <button type="button" id="quit-app" class="quiet">退出程序并停止实例</button>
         </div>
