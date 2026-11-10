@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Modified by KurumiFRP: guard monitor startup in the embedded lifecycle.
+
 package health
 
 import (
@@ -22,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatedier/frp/client/internal/netx"
@@ -55,9 +58,10 @@ type Monitor struct {
 	statusNormalFn func()
 	statusFailedFn func()
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	doneCh chan struct{}
+	ctx       context.Context
+	cancel    context.CancelFunc
+	doneCh    chan struct{}
+	startOnce sync.Once
 
 	timerFactory func(time.Duration) (<-chan time.Time, func())
 }
@@ -108,9 +112,11 @@ func NewMonitor(ctx context.Context, cfg v1.HealthCheckConfig, addr string,
 }
 
 func (monitor *Monitor) Start() {
-	if !lifetime.Go(monitor.ctx, monitor.checkWorker) {
-		close(monitor.doneCh)
-	}
+	monitor.startOnce.Do(func() {
+		if !lifetime.Go(monitor.ctx, monitor.checkWorker) {
+			close(monitor.doneCh)
+		}
+	})
 }
 
 func (monitor *Monitor) Stop() {

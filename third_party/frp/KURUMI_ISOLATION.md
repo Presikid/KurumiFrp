@@ -106,3 +106,8 @@ when cleanup cannot be proved. Other bare goroutines, callbacks, and dependency
 goroutines remain outside this coverage. A recovered panic does not prove that
 locks or resources were released, and uncovered failures can still affect the
 workbench process.
+
+Client proxy wrappers now guard repeated start and stop calls, and a health
+monitor starts at most one worker. The proxy status worker can leave its initial
+health delay and polling loop on cancellation; these changes do not establish
+complete shutdown or protocol interoperability.
