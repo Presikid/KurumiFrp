@@ -339,7 +339,7 @@ func (d *webhookDispatcher) status() map[string]any { return d.statusFor(legacyW
 
 // Public HTTPS destinations only. Validation is repeated at dial time because
 // DNS may change after the configuration is saved.
-func validWebhookURL(raw string) bool {
+func validPublicHTTPSURL(raw string) bool {
 	if len(raw) < 8 || len(raw) > 1024 || strings.TrimSpace(raw) != raw || strings.Contains(raw, "#") {
 		return false
 	}
@@ -357,7 +357,7 @@ func validWebhookURL(raw string) bool {
 			return false
 		}
 	}
-	if ip, err := netip.ParseAddr(host); err == nil && !publicWebhookIP(ip) {
+	if ip, err := netip.ParseAddr(host); err == nil && !publicDestinationIP(ip) {
 		return false
 	}
 	return true
@@ -369,7 +369,7 @@ var telegramChatIDPattern = regexp.MustCompile(`^(?:-?[0-9]{1,32}|@[A-Za-z0-9_]{
 // a complete sendMessage URL containing exactly one chat_id query parameter;
 // keep the token in the path and remove that parameter from the request URL.
 func telegramDestination(raw string) (string, string, bool) {
-	if !validWebhookURL(raw) {
+	if !validPublicHTTPSURL(raw) {
 		return "", "", false
 	}
 	u, err := url.Parse(raw)
@@ -394,10 +394,10 @@ func validWebhookDestination(format, raw string) bool {
 		_, _, ok := telegramDestination(raw)
 		return ok
 	}
-	return validWebhookURL(raw)
+	return validPublicHTTPSURL(raw)
 }
 
-var nonPublicWebhookRanges = func() []netip.Prefix {
+var nonPublicDestinationRanges = func() []netip.Prefix {
 	blocks := []string{
 		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
 		"172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "192.168.0.0/16",
@@ -413,7 +413,7 @@ var nonPublicWebhookRanges = func() []netip.Prefix {
 
 var globalIPv6 = netip.MustParsePrefix("2000::/3")
 
-func publicWebhookIP(ip netip.Addr) bool {
+func publicDestinationIP(ip netip.Addr) bool {
 	ip = ip.Unmap()
 	if !ip.IsValid() || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
 		return false
@@ -421,7 +421,7 @@ func publicWebhookIP(ip netip.Addr) bool {
 	if ip.Is6() && !globalIPv6.Contains(ip) {
 		return false
 	}
-	for _, block := range nonPublicWebhookRanges {
+	for _, block := range nonPublicDestinationRanges {
 		if block.Contains(ip) {
 			return false
 		}
@@ -429,7 +429,7 @@ func publicWebhookIP(ip netip.Addr) bool {
 	return true
 }
 
-func webhookDial(ctx context.Context, network, address string) (net.Conn, error) {
+func dialPublicHTTPS(ctx context.Context, network, address string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, fmt.Errorf("invalid destination")
@@ -449,7 +449,7 @@ func webhookDial(ctx context.Context, network, address string) (net.Conn, error)
 	// Reject mixed results as well as private-only results; never ask the
 	// transport to resolve the hostname a second time.
 	for _, ip := range addresses {
-		if !publicWebhookIP(ip) {
+		if !publicDestinationIP(ip) {
 			return nil, fmt.Errorf("destination is not public")
 		}
 	}
@@ -556,7 +556,7 @@ func sendWebhook(ctx context.Context, target, format, signingSecret string, even
 		if !ok {
 			return "通知地址无效", false
 		}
-	} else if !validWebhookURL(target) {
+	} else if !validPublicHTTPSURL(target) {
 		return "通知地址无效", false
 	}
 	var body []byte
@@ -575,7 +575,7 @@ func sendWebhook(ctx context.Context, target, format, signingSecret string, even
 		return "通知生成失败", false
 	}
 	transport := &http.Transport{
-		Proxy: nil, DialContext: webhookDial, DisableKeepAlives: true,
+		Proxy: nil, DialContext: dialPublicHTTPS, DisableKeepAlives: true,
 		TLSHandshakeTimeout: 4 * time.Second, MaxResponseHeaderBytes: 8192,
 	}
 	defer transport.CloseIdleConnections()

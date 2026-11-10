@@ -120,7 +120,7 @@ func (a *App) prepareWebhookConfig(previous webhookConfig, req webhookRequest) (
 	if req.ClearURL {
 		cfg.URL = ""
 	} else if req.URL != "" {
-		if !validWebhookURL(req.URL) {
+		if !validPublicHTTPSURL(req.URL) {
 			return webhookConfig{}, fmt.Errorf("通知地址须为有效的公网 HTTPS 地址，不允许用户信息或片段")
 		}
 		existing, _ := a.store.decrypt(cfg.URL)

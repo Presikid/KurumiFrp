@@ -373,23 +373,31 @@ func (a *App) firewallImportAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	if len(req.Text) > firewallMaxSourceBytes {
-		fail(w, 400, fmt.Errorf("来源文件超过大小上限"))
+	prefixes, err := parseFirewallList(req.Text)
+	if err != nil {
+		fail(w, 400, err)
 		return
 	}
-	lines := strings.Split(strings.TrimPrefix(req.Text, "\ufeff"), "\n")
+	reply(w, 200, map[string]any{"prefixes": prefixes})
+}
+
+// File and network lists have exactly the same all-or-nothing format.
+func parseFirewallList(text string) ([]string, error) {
+	if len(text) > firewallMaxSourceBytes {
+		return nil, fmt.Errorf("来源文件超过大小上限")
+	}
+	lines := strings.Split(strings.TrimPrefix(text, "\ufeff"), "\n")
 	for index, line := range lines {
 		line, _, _ = strings.Cut(line, "#")
 		lines[index] = strings.TrimSpace(line)
 	}
 	policy, err := parseSourceAccess("block", strings.Join(lines, "\n"), firewallMaxSourceBytes, firewallMaxSources)
 	if err != nil {
-		fail(w, 400, err)
-		return
+		return nil, err
 	}
 	prefixes := make([]string, 0, len(policy.prefixes))
 	for _, prefix := range policy.prefixes {
 		prefixes = append(prefixes, prefix.String())
 	}
-	reply(w, 200, map[string]any{"prefixes": prefixes})
+	return prefixes, nil
 }

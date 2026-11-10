@@ -309,6 +309,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.firewallImportAPI(w, r)
 			return
 		}
+		if r.URL.Path == "/api/firewall/list" {
+			a.firewallListAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/accounts" {
 			a.accountsAPI(w, r)
 			return

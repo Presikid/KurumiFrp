@@ -49,6 +49,8 @@ function mountFirewall() {
    <label>按 AS 号添加网段<input data-rule-asn maxlength="12" placeholder="例如 AS3333"></label><button type="button" data-firewall-asn>查询并加入此规则</button>
    <p data-asn-status class="small-note" role="status">向 RIPEstat 查询近两周观察到的网段；结果可能不完整或过时，不会自动更新或应用。</p>
    <label>导入地址清单文件<input type="file" data-list-file accept=".txt,.list,text/plain"></label><p data-file-status class="small-note" role="status">文本每行一个 IP 或 CIDR，可用 # 写注释；导入后请核对草稿。</p>
+   <label>公网 HTTPS 地址清单<input type="text" inputmode="url" data-list-url maxlength="1024" autocomplete="off" spellcheck="false" placeholder="https://example.org/addresses.txt"></label><button type="button" data-firewall-list>获取并加入此规则</button>
+   <p data-list-status class="small-note" role="status">仅手动获取 UTF-8 文本，不保存地址、自动更新或应用。请核对清单来源和范围。</p>
    <button type="button" data-firewall-remove>删除此规则</button>`;
   row.querySelector('[data-rule-name]').value = rule.name || '';
   row.querySelector('[data-rule-enabled]').checked = rule.enabled !== false;
@@ -144,6 +146,25 @@ function mountFirewall() {
   if (event.target.closest('[data-firewall-remove]')) {
    if (rulesHost.children.length > 1) row.remove();
    else row.querySelector('[data-asn-status]').textContent = '至少保留一条规则；如需停用全部规则，请取消启用。';
+   return;
+  }
+  if (event.target.closest('[data-firewall-list]')) {
+   if (busy || !model || !supported || !form.elements.enabled.checked) return;
+   const notice = row.querySelector('[data-list-status]'), sources = row.querySelector('[data-rule-sources]');
+   busy = true; controls.disabled = true; reload.disabled = true;
+   notice.textContent = '正在获取地址清单…';
+   const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 25000);
+   try {
+    const result = await api('firewall/list', {url:row.querySelector('[data-list-url]').value}, {signal:controller.signal});
+    if (!current() || !row.isConnected) return;
+    mergeSources(sources, result.prefixes);
+    notice.textContent = `已将 ${result.prefixes.length} 个地址加入草稿；请核对后再决定是否应用。地址和清单不会自动更新。`;
+   } catch (err) {
+    if (current() && row.isConnected) notice.textContent = '获取失败，来源列表未更改：' + (err.name === 'AbortError' ? '请求超时' : err.message);
+   } finally {
+    clearTimeout(timeout); busy = false;
+    if (current()) { controls.disabled = false; reload.disabled = false; syncEnabled(); }
+   }
    return;
   }
   if (!event.target.closest('[data-firewall-asn]') || busy || !model || !supported || !form.elements.enabled.checked) return;
