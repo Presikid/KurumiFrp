@@ -24,7 +24,7 @@ import (
 // Node settings are local authority, not portable configuration or snapshot data.
 const maxRemoteNodes = 32
 const maxNodeChecks = 4
-const maxNodeResponse = 32 << 10
+const maxNodeResponse = 64 << 10
 
 var nodeTokenPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 var nodeDNSLabel = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
@@ -39,18 +39,27 @@ type remoteNode struct {
 }
 
 type nodeSettings struct {
-	ReaderHash  string       `json:"readerHash,omitempty"`
-	ControlHash string       `json:"controlHash,omitempty"`
-	Nodes       []remoteNode `json:"nodes,omitempty"`
+	ReaderHash   string       `json:"readerHash,omitempty"`
+	ControlHash  string       `json:"controlHash,omitempty"`
+	ShareTraffic bool         `json:"shareTraffic,omitempty"`
+	Nodes        []remoteNode `json:"nodes,omitempty"`
 }
 
 type nodeInstanceSummary struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Kind  string `json:"kind"`
-	State string `json:"state"`
-	Binding string `json:"binding,omitempty"`
-	CanControl bool `json:"canControl,omitempty"`
+	ID         string       `json:"id"`
+	Name       string       `json:"name"`
+	Kind       string       `json:"kind"`
+	State      string       `json:"state"`
+	Binding    string       `json:"binding,omitempty"`
+	CanControl bool         `json:"canControl,omitempty"`
+	Traffic    *nodeTraffic `json:"traffic,omitempty"`
+}
+
+// Counters describe the target's current run, not a durable usage total.
+type nodeTraffic struct {
+	SampledAt     time.Time `json:"sampledAt"`
+	ReceivedBytes *uint64   `json:"receivedBytes,string"`
+	SentBytes     *uint64   `json:"sentBytes,string"`
 }
 
 // This non-secret binding changes when the target instance is replaced, even
@@ -127,6 +136,9 @@ func validateStoredNodes(s *Store, cfg *nodeSettings) error {
 		(cfg.ControlHash != "" && (!nodeTokenPattern.MatchString(cfg.ControlHash) || cfg.ControlHash == cfg.ReaderHash)) {
 		return fmt.Errorf("invalid node authorization")
 	}
+	if cfg.ShareTraffic && cfg.ReaderHash == "" {
+		return fmt.Errorf("node traffic sharing requires read authorization")
+	}
 	if len(cfg.Nodes) > maxRemoteNodes {
 		return fmt.Errorf("too many remote nodes")
 	}
@@ -155,7 +167,7 @@ func cloneNodeSettings(cfg *nodeSettings) nodeSettings {
 	if cfg == nil {
 		return nodeSettings{}
 	}
-	copy := nodeSettings{ReaderHash: cfg.ReaderHash, ControlHash: cfg.ControlHash, Nodes: append([]remoteNode(nil), cfg.Nodes...)}
+	copy := nodeSettings{ReaderHash: cfg.ReaderHash, ControlHash: cfg.ControlHash, ShareTraffic: cfg.ShareTraffic, Nodes: append([]remoteNode(nil), cfg.Nodes...)}
 	for i := range copy.Nodes {
 		copy.Nodes[i].Addresses = append([]string(nil), copy.Nodes[i].Addresses...)
 	}
@@ -264,7 +276,7 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 		for _, n := range cfg.Nodes {
 			items = append(items, view{n.ID, n.Name, n.URL, nodeStamp(n), append([]string{}, n.Addresses...), n.ControlCredential != ""})
 		}
-		reply(w, http.StatusOK, map[string]any{"revision": revision, "sharing": cfg.ReaderHash != "", "controlSharing": cfg.ControlHash != "", "nodes": items})
+		reply(w, http.StatusOK, map[string]any{"revision": revision, "sharing": cfg.ReaderHash != "", "shareTraffic": cfg.ShareTraffic, "controlSharing": cfg.ControlHash != "", "nodes": items})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -280,6 +292,7 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 		Credential        string `json:"credential"`
 		ControlCredential string `json:"controlCredential"`
 		ClearControl      bool   `json:"clearControl"`
+		Enabled           *bool  `json:"enabled"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, http.StatusBadRequest, err)
@@ -287,7 +300,7 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	// The gate orders changes to the inbound grant after all admitted summary
 	// writes. Always acquire it before mu and release both before writing back.
-	grantChange := req.Action == "issue" || req.Action == "revoke"
+	grantChange := req.Action == "issue" || req.Action == "revoke" || req.Action == "share-traffic"
 	controlChange := req.Action == "issue-control" || req.Action == "revoke-control"
 	if grantChange {
 		a.nodeAccessGate.Lock()
@@ -332,6 +345,13 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	case "revoke":
 		cfg.ReaderHash = ""
+		cfg.ShareTraffic = false
+	case "share-traffic":
+		if req.Enabled == nil || cfg.ReaderHash == "" {
+			reject(400, fmt.Errorf("请先启用只读授权并指定流量共享状态"))
+			return
+		}
+		cfg.ShareTraffic = *req.Enabled
 	case "issue-control":
 		issued = randomHex(32)
 		hash := sha256.Sum256([]byte(issued))
@@ -499,11 +519,21 @@ func (a *App) nodeSummaryAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, fmt.Errorf("节点不可用"))
 		return
 	}
+	type trafficSource struct {
+		index int
+		proc  *process
+		runID string
+	}
 	instances := make([]nodeInstanceSummary, 0, len(a.store.DB.State.Instances))
+	sources := make([]trafficSource, 0)
+	revision := a.store.DB.Revision
 	for _, i := range a.store.DB.State.Instances {
 		state := "stopped"
-		if p := a.procs[i.ID]; p != nil {
-			state = p.view().State
+		p := a.procs[i.ID]
+		status := RuntimeStatus{}
+		if p != nil {
+			status = p.view()
+			state = status.State
 		}
 		// Protocol 1 readers accept a fixed state set. Do not present a
 		// transition as stopped or send an enum old readers reject.
@@ -517,8 +547,52 @@ func (a *App) nodeSummaryAPI(w http.ResponseWriter, r *http.Request) {
 			state = "autostart-failed"
 		}
 		instances = append(instances, nodeInstanceSummary{ID: i.ID, Name: i.Name, Kind: i.Kind, State: state, Binding: nodeInstanceBinding(a.store.DB.LocalTrafficIDs[i.ID])})
+		if cfg.ShareTraffic && state == "running" && p != nil && status.RunID != "" {
+			sources = append(sources, trafficSource{index: len(instances) - 1, proc: p, runID: status.RunID})
+		}
 	}
 	a.mu.Unlock()
+	// Readers may lock a runtime and copy counters. Never hold App.mu while
+	// calling them, and reject a result if its run or configuration changed.
+	for _, source := range sources {
+		var at time.Time
+		var received, sent uint64
+		available := false
+		if instances[source.index].Kind == "frpc" {
+			if reader, ok := source.proc.instance.(RuntimeTrafficReader); ok {
+				snapshot := reader.ReadTraffic()
+				at, received, sent, available = snapshot.SampledAt, snapshot.ReceivedBytes, snapshot.SentBytes, snapshot.Available
+			}
+		} else if reader, ok := source.proc.instance.(RuntimeServerTrafficReader); ok {
+			snapshot := reader.ReadServerTraffic()
+			at, received, sent, available = snapshot.SampledAt, snapshot.ReceivedBytes, snapshot.SentBytes, snapshot.Available
+		}
+		now := time.Now()
+		if available && received != ^uint64(0) && sent != ^uint64(0) && !at.IsZero() && !at.After(now.Add(trafficFutureSkew)) && now.Sub(at) <= trafficFreshness {
+			instances[source.index].Traffic = &nodeTraffic{SampledAt: at.UTC(), ReceivedBytes: &received, SentBytes: &sent}
+		}
+	}
+	if len(sources) != 0 {
+		a.mu.Lock()
+		valid := !a.closing && revision == a.store.DB.Revision
+		for _, source := range sources {
+			if !valid || a.procs[instances[source.index].ID] != source.proc {
+				valid = false
+				break
+			}
+			status := source.proc.view()
+			if status.State != "running" || status.RunID != source.runID {
+				valid = false
+				break
+			}
+		}
+		a.mu.Unlock()
+		if !valid {
+			fail(w, http.StatusServiceUnavailable, fmt.Errorf("实例状态已变化，请稍后重试"))
+			_ = controller.Flush()
+			return
+		}
+	}
 	reply(w, 200, nodeSummary{Protocol: 1, Version: version.Current, Instances: instances})
 	_ = controller.Flush()
 }
@@ -539,6 +613,11 @@ func validNodeSummary(s nodeSummary) bool {
 		}
 		if i.Binding != "" && !nodeTokenPattern.MatchString(i.Binding) {
 			return false
+		}
+		if i.Traffic != nil {
+			if i.State != "running" || i.Traffic.SampledAt.IsZero() || i.Traffic.ReceivedBytes == nil || i.Traffic.SentBytes == nil || *i.Traffic.ReceivedBytes == ^uint64(0) || *i.Traffic.SentBytes == ^uint64(0) {
+				return false
+			}
 		}
 		switch i.State {
 		case "running", "stopped", "exited", "autostart-failed":
