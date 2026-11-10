@@ -43,6 +43,9 @@ type ServerSnapshot struct {
 	Sent             uint64        `json:"sent"`
 	Proxies          []ServerProxy `json:"proxies"`
 	ProxiesTruncated bool          `json:"proxiesTruncated"`
+	// ResetEpoch and its validity are copied under the same lock as totals.
+	ResetEpoch      uint64 `json:"-"`
+	ResetEpochValid bool   `json:"-"`
 }
 
 type serverProxyKey struct {
@@ -59,6 +62,8 @@ type ServerCounter struct {
 	sent             uint64
 	proxies          map[serverProxyKey]ServerProxy
 	proxiesTruncated bool
+	resetEpoch       uint64
+	resetExhausted   bool
 }
 
 // RecordTraffic records positive deltas. It can be called concurrently by the
@@ -120,6 +125,8 @@ func (c *ServerCounter) Snapshot() ServerSnapshot {
 		Sent:             c.sent,
 		Proxies:          make([]ServerProxy, 0, len(c.proxies)),
 		ProxiesTruncated: c.proxiesTruncated,
+		ResetEpoch:       c.resetEpoch,
+		ResetEpochValid:  !c.resetExhausted,
 	}
 	for _, proxy := range c.proxies {
 		snapshot.Proxies = append(snapshot.Proxies, proxy)
@@ -138,6 +145,11 @@ func (c *ServerCounter) Snapshot() ServerSnapshot {
 // concurrently after the reset is included in the new interval.
 func (c *ServerCounter) Reset() {
 	c.mu.Lock()
+	if c.resetEpoch == math.MaxUint64 {
+		c.resetExhausted = true
+	} else {
+		c.resetEpoch++
+	}
 	c.received, c.sent = 0, 0
 	c.proxies = nil
 	c.proxiesTruncated = false

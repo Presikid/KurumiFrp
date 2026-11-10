@@ -27,6 +27,9 @@ type ServerTrafficSnapshot struct {
 	Available        bool
 	ReceivedBytes    uint64
 	SentBytes        uint64
+	// A reset epoch identifies counter discontinuities even when totals grow.
+	ResetEpoch       uint64
+	EpochKnown       bool
 	Proxies          []ServerTrafficProxy
 	ProxiesTruncated bool
 }

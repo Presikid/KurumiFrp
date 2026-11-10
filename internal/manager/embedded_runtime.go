@@ -515,6 +515,7 @@ func (r *embeddedRun) ReadServerTraffic() ServerTrafficSnapshot {
 	snapshot := ServerTrafficSnapshot{
 		SampledAt: time.Now().UTC(), Available: true,
 		ReceivedBytes: raw.Received, SentBytes: raw.Sent,
+		ResetEpoch: raw.ResetEpoch, EpochKnown: raw.ResetEpochValid,
 		Proxies:          make([]ServerTrafficProxy, 0, len(raw.Proxies)),
 		ProxiesTruncated: raw.ProxiesTruncated,
 	}
