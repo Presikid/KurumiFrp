@@ -15,7 +15,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 	}
 	if r.Method == http.MethodGet {
 		switch r.URL.Path {
-		case "/api/login-history", "/api/firewall", "/api/firewall/seen":
+		case "/api/login-history", "/api/firewall", "/api/firewall/seen", "/api/oidc/config":
 			return p.admin()
 		case "/api/webhooks":
 			return p.admin()
@@ -38,7 +38,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 	}
 	if r.Method == http.MethodPost {
 		switch r.URL.Path {
-		case "/api/login-history", "/api/firewall", "/api/firewall/asn", "/api/firewall/ip-asn", "/api/firewall/import", "/api/firewall/list":
+		case "/api/login-history", "/api/firewall", "/api/firewall/asn", "/api/firewall/ip-asn", "/api/firewall/import", "/api/firewall/list", "/api/oidc/config":
 			return p.admin()
 		case "/api/webhooks":
 			return p.admin()

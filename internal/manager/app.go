@@ -116,6 +116,7 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 		return nil, fmt.Errorf("invalid access token file")
 	}
 	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2)}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	app.auth.oidcSettings, app.auth.oidcLoadErr = loadOIDCSettings(s.dir)
 	if e = app.recoverSchedules(); e != nil {
 		return nil, e
 	}
@@ -250,6 +251,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r = withPrincipal(r, p)
+		if r.URL.Path == "/api/oidc/config" {
+			a.oidcSettingsAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/firewall" {
 			a.firewallAPI(w, r)
 			return
