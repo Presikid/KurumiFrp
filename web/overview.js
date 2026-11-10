@@ -100,12 +100,15 @@ const Overview = (() => {
   const result = trafficResult?.id === instance.id && trafficResult.runId === runId && trafficResult.revision === trafficContext.revision ? trafficResult : null;
   if (!result) return '<div class="overview-chart-empty" role="status">正在读取客户端流量…</div>';
   if (result.error) return `<div class="overview-chart-empty" role="status">${result.changed ? '实例运行状态已变化，等待刷新。' : '无法读取客户端流量，请稍后重试。'}</div>`;
-  const value = result.value;
+  return renderClientTraffic(result.value, trafficContext.escape);
+ }
+
+ function renderClientTraffic(value, escape) {
   const samples = (Array.isArray(value.curve) ? value.curve : []).map(point => ({
    at:point.sampledAt, receivedBytesPerSecond:point.receivedBytesPerSecond, sentBytesPerSecond:point.sentBytesPerSecond
   }));
   const note = value.available ? '' : '<p class="small-note">当前采样不可用；图表仅显示此运行代次的历史采样。</p>';
-  return note + trafficChart({samples}, trafficContext.escape) + '<p class="small-note">客户端统计转发载荷，不包含协议开销；不同于服务端统计口径。</p>';
+  return note + trafficChart({samples}, escape) + '<p class="small-note">客户端统计转发载荷，不包含协议开销；不同于服务端统计口径。</p>';
  }
 
  function paintTraffic() {
@@ -168,11 +171,15 @@ const Overview = (() => {
   const result = historyResult?.id === instance.id && historyResult.kind === instance.kind && historyResult.revision === trafficContext.revision ? historyResult : null;
   if (!result) return '<p class="small-note" role="status">正在读取流量历史…</p>';
   if (result.error) return '<p class="small-note" role="status">无法读取流量历史，请稍后重试。</p>';
-  const value = result.value, days = Array.isArray(value.days) ? value.days.slice(-90).reverse() : [];
+  return renderTrafficHistory(result.value, trafficContext.escape);
+ }
+
+ function renderTrafficHistory(value, escape, open = false) {
+  const days = Array.isArray(value.days) ? value.days.slice(-90).reverse() : [];
   const status = value.storageError ? '历史文件读取或写入失败；内存数据可能未保存。' : value.saved ? (value.savedAt ? '最近写入：' + sampleTime(value.savedAt) : '暂无已写入的数据。') : '存在待保存采样，约每 30 秒写入。';
-  const rows = days.map(day => `<tr><td>${trafficContext.escape(day.date)}</td><td>${bytes(day.receivedBytes)}</td><td>${bytes(day.sentBytes)}</td><td>${day.partial ? '不完整' : '已记录'}</td></tr>`).join('');
+  const rows = days.map(day => `<tr><td>${escape(day.date)}</td><td>${bytes(day.receivedBytes)}</td><td>${bytes(day.sentBytes)}</td><td>${day.partial ? '不完整' : '已记录'}</td></tr>`).join('');
   const body = rows ? `<div class="table-wrap"><table><thead><tr><th>UTC 日期</th><th>接收</th><th>发送</th><th>覆盖</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="small-note">尚无可显示的历史采样。</p>';
-  return `<details class="overview-server-details"><summary>近 90 天流量历史</summary><p class="small-note">只累计确认的采样增量；跨日、采样中断、重置和退出时可能遗漏，缺少日期不代表零流量。该记录不适用于计费或强制配额。</p><p class="small-note">${trafficContext.escape(status)}</p>${body}</details>`;
+  return `<details class="overview-server-details" ${open ? 'open' : ''}><summary>近 90 天流量历史</summary><p class="small-note">只累计确认的采样增量；跨日、采样中断、重置和退出时可能遗漏，缺少日期不代表零流量。该记录不适用于计费或强制配额。</p><p class="small-note">${escape(status)}</p>${body}</details>`;
  }
 
  function paintHistory() {
@@ -263,5 +270,5 @@ const Overview = (() => {
  });
 
  function reset() {pause(); trafficInstance = ''; trafficContext = null; trafficResult = null; historyResult = null;}
- return {render, reset, pause, refresh, renderServerTraffic};
+ return {render, reset, pause, refresh, renderServerTraffic, renderClientTraffic, renderTrafficHistory};
 })();
