@@ -74,33 +74,9 @@ func (a *App) firewallASNAPI(w http.ResponseWriter, r *http.Request) {
 
 func fetchASNPrefixes(ctx context.Context, asn string) ([]string, error) {
 	endpoint := "https://stat.ripe.net/data/announced-prefixes/data.json?resource=" + asn + "&sourceapp=KurumiFRP"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	body, err := fetchRIPEstat(ctx, endpoint, 8<<20)
 	if err != nil {
-		return nil, fmt.Errorf("无法准备 AS 网段查询")
-	}
-	req.Header.Set("Accept", "application/json")
-	transport := &http.Transport{
-		Proxy:                  nil,
-		DialContext:            (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
-		TLSHandshakeTimeout:    5 * time.Second,
-		ResponseHeaderTimeout:  10 * time.Second,
-		MaxResponseHeaderBytes: 16 << 10,
-		DisableKeepAlives:      true,
-	}
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("无法连接 RIPEstat；来源列表未更改")
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("RIPEstat 暂不可用；来源列表未更改")
-	}
-	const maxResponse = 8 << 20
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
-	if err != nil || len(body) > maxResponse {
-		return nil, fmt.Errorf("RIPEstat 响应无法读取或超过大小限制")
+		return nil, err
 	}
 	var result struct {
 		Status string `json:"status"`
@@ -135,4 +111,37 @@ func fetchASNPrefixes(ctx context.Context, asn string) ([]string, error) {
 	}
 	sort.Strings(prefixes)
 	return prefixes, nil
+}
+
+// Only internally constructed RIPEstat endpoints are passed here. Response
+// size and time are bounded; the transport does not use proxies or redirects.
+func fetchRIPEstat(ctx context.Context, endpoint string, maxResponse int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("无法准备 RIPEstat 查询")
+	}
+	req.Header.Set("Accept", "application/json")
+	transport := &http.Transport{
+		Proxy:                  nil,
+		DialContext:            (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		TLSHandshakeTimeout:    5 * time.Second,
+		ResponseHeaderTimeout:  10 * time.Second,
+		MaxResponseHeaderBytes: 16 << 10,
+		DisableKeepAlives:      true,
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("无法连接 RIPEstat")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("RIPEstat 暂不可用")
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
+	if err != nil || int64(len(body)) > maxResponse {
+		return nil, fmt.Errorf("RIPEstat 响应无法读取或超过大小限制")
+	}
+	return body, nil
 }

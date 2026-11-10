@@ -23,7 +23,7 @@ render = function () {
     <p class="small-note">地址按逗号或换行分隔。端口适用于 TCP 和 UDP；动态分配的端口需要明确列入范围。</p>
     <button type="submit" class="primary">保存并应用</button>
    </fieldset></form>
-   <section id="firewall-records"><h3>近期拦截记录</h3><p class="small-note">记录并非完整审计日志，只反映此功能捕获的连接尝试；列表按地址排列，不代表时间顺序。</p><div id="firewall-seen" role="status">尚未读取。</div></section>
+   <section id="firewall-records"><h3>近期拦截记录</h3><p class="small-note">记录并非完整审计日志，只反映此功能捕获的连接尝试；列表按地址排列，不代表时间顺序。点击查询 AS 会将所选公网 IP 发送给 RIPEstat；结果不会修改规则。</p><p id="firewall-ip-asn" class="small-note" role="status">尚未查询地址归属。</p><div id="firewall-seen" role="status">尚未读取。</div></section>
   </div></section>`;
  mountFirewall();
 };
@@ -33,7 +33,7 @@ function mountFirewall() {
  const status = $('#firewall-status'), table = $('#firewall-table'), reload = $('#firewall-reload');
  const rulesHost = $('#firewall-rules'), settings = $('#firewall-settings');
  const generation = authGeneration, navigation = navigationGeneration;
- let model = null, supported = false, busy = false, seenTimer = null, seenRequest = null;
+ let model = null, supported = false, busy = false, seenTimer = null, seenRequest = null, seenMarkup = null, ipASNRequest = null;
  const current = () => host.isConnected && generation === authGeneration && navigation === navigationGeneration && page === 'firewall';
  const syncEnabled = () => {
   settings.disabled = !form.elements.enabled.checked;
@@ -90,7 +90,8 @@ function mountFirewall() {
    if (!result.enabled) output.textContent = '保存的配置未启用记录；实际规则仍需独立核对。';
    else {
     const records = Array.isArray(result.records) ? result.records : [];
-    output.innerHTML = (result.partial ? '<p class="small-note">部分记录无法解析或超过显示上限。</p>' : '') + (records.length ? `<div class="table-wrap"><table><thead><tr><th>来源地址</th><th>协议</th><th>目标端口</th></tr></thead><tbody>${records.map(record=>`<tr><td>${esc(record.source)}</td><td>${esc(record.protocol)}</td><td>${esc(record.port)}</td></tr>`).join('')}</tbody></table></div>` : '<p>当前没有可显示的记录。</p>');
+    const markup = (result.partial ? '<p class="small-note">部分记录无法解析或超过显示上限。</p>' : '') + (records.length ? `<div class="table-wrap"><table><thead><tr><th>来源地址</th><th>协议</th><th>目标端口</th><th>路由归属</th></tr></thead><tbody>${records.map(record=>`<tr><td>${esc(record.source)}</td><td>${esc(record.protocol)}</td><td>${esc(record.port)}</td><td><button type="button" data-firewall-ip-asn="${esc(record.source)}">查询 AS</button></td></tr>`).join('')}</tbody></table></div>` : '<p>当前没有可显示的记录。</p>');
+    if (seenMarkup !== markup || !output.firstElementChild) { output.innerHTML = markup; seenMarkup = markup; }
    }
   } catch (_) {
    if (current() && seenRequest === controller) output.textContent = '记录读取失败，实际规则状态未知。';
@@ -108,6 +109,27 @@ function mountFirewall() {
   if (supported && model?.enabled && model.recordBlocked) void refreshSeen();
   else $('#firewall-seen').textContent = supported ? '保存的配置未启用记录；实际规则仍需独立核对。' : '当前系统无法读取内核记录。';
  };
+ host.addEventListener('click', async event => {
+  const button = event.target.closest('[data-firewall-ip-asn]');
+  if (!button || !current()) return;
+  const notice = $('#firewall-ip-asn'), ip = button.dataset.firewallIpAsn;
+  if (ipASNRequest) { notice.textContent = '已有地址查询正在进行。'; return; }
+  const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 25000);
+  ipASNRequest = controller;
+  notice.textContent = '正在向 RIPEstat 查询 ' + ip + '…';
+  try {
+   const result = await api('firewall/ip-asn', {ip}, {signal:controller.signal});
+   if (!current() || ipASNRequest !== controller) return;
+   if (result.ip !== ip || !Array.isArray(result.asns)) throw new Error('响应不匹配');
+   const prefix = result.prefix || '未观测到网段', asns = result.asns.length ? result.asns.join('、') : '未观测到 AS';
+   notice.textContent = `${ip}：${prefix} · ${asns}。这是 RIPEstat 的路由观测快照，可能滞后或不完整。`;
+  } catch (err) {
+   if (current() && ipASNRequest === controller) notice.textContent = '地址查询失败：' + (err.name === 'AbortError' ? '请求超时' : err.message);
+  } finally {
+   clearTimeout(timeout);
+   if (ipASNRequest === controller) ipASNRequest = null;
+  }
+ });
  const load = async () => {
   if (busy) return;
   clearTimeout(seenTimer); seenRequest?.abort(); seenRequest = null;
