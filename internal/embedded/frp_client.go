@@ -184,6 +184,8 @@ func (s *frpService) Run(ctx context.Context) error {
 	return err
 }
 func (s *frpService) Close() { s.service.Close() }
+func (s *frpService) Ready() <-chan struct{} { return s.service.Ready() }
+func (s *frpService) Exiting() <-chan struct{} { return s.service.Exiting() }
 
 func (s *frpService) ProxyPhase(name string) (string, bool) {
 	status, ok := s.proxyDetails(name)

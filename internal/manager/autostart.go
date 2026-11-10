@@ -51,7 +51,7 @@ func (a *App) restoreAutoStart(ctx context.Context, instances []Instance) {
 func (a *App) recordAutoStartFailureLocked(ctx context.Context, req runtimeRequest, snapshot runtimeSnapshot, err error) {
 	latest, exists := a.store.DB.State.Instance(req.ID)
 	p := a.procs[req.ID]
-	if a.closing || ctx.Err() != nil || !exists || !latest.AutoStart || (p != nil && p.view().State == "running") {
+	if a.closing || ctx.Err() != nil || !exists || !latest.AutoStart || p.active() {
 		return
 	}
 	message := "请手动校验配置后重试"
@@ -101,7 +101,7 @@ func (a *App) restoreOne(snapshot runtimeSnapshot, op *runtimeOperation) error {
 	if err != nil {
 		return err
 	}
-	err = a.startPrepared(snapshot.instance, runtimeRendered, snapshot.target, configPath, snapshot.coreID, private)
+	err = a.startPreparedWithSource(snapshot.instance, runtimeRendered, snapshot.target, configPath, snapshot.coreID, private, true)
 	started = err == nil
 	return err
 }

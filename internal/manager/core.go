@@ -89,7 +89,7 @@ func (a *App) coreAPI(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		for _, p := range a.procs {
-			if p.view().State == "running" {
+			if p.active() {
 				fail(w, 409, fmt.Errorf("先停止所有本机实例再切换核心；下载不会打断正在运行的连接"))
 				return
 			}

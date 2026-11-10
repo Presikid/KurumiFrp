@@ -115,15 +115,18 @@ func (b *embeddedRuntime) Start(target string, cfg RuntimeConfig, output io.Writ
 	// access and listener construction run asynchronously outside that lock.
 	cfg.Rendered.Env = append([]string(nil), cfg.Rendered.Env...)
 	ctx, cancel := context.WithCancel(context.Background())
-	run := &embeddedRun{cancel: cancel, done: make(chan struct{})}
+	run := &embeddedRun{cancel: cancel, ready: make(chan struct{}), exiting: make(chan struct{}), done: make(chan struct{})}
 	go run.serve(ctx, target, cfg, sink, output)
 	return run, nil
 }
 
 type embeddedRun struct {
-	cancel context.CancelFunc
-	done   chan struct{}
-	err    error // published by closing done
+	cancel   context.CancelFunc
+	ready    chan struct{}
+	exiting  chan struct{}
+	done     chan struct{}
+	err      error // published by closing done
+	exitOnce sync.Once
 
 	mu           sync.RWMutex
 	client       *embedded.Client
@@ -131,6 +134,7 @@ type embeddedRun struct {
 	traffic      *clienttraffic.Run
 	proxyTypes   map[string]string
 	finalTraffic TrafficSnapshot
+	engineExit   <-chan struct{}
 }
 
 func (r *embeddedRun) serve(ctx context.Context, target string, cfg RuntimeConfig, sink *xlog.Sink, output io.Writer) {
@@ -141,6 +145,7 @@ func (r *embeddedRun) serve(ctx context.Context, target string, cfg RuntimeConfi
 			embeddedCleanupUnknown.Store(true)
 			r.err = errors.New("内嵌核心异常退出，清理状态未知")
 		}
+		r.markEngineExited()
 		r.cancel()
 		r.mu.Lock()
 		r.client, r.traffic, r.proxyTypes = nil, nil, nil
@@ -187,6 +192,46 @@ func pumpEmbeddedLogs(sink *xlog.Sink, output io.Writer, stop <-chan struct{}, d
 	}
 }
 
+func (r *embeddedRun) markEngineExited() {
+	r.exitOnce.Do(func() { close(r.exiting) })
+}
+
+// Track the run loop separately from the later completion of resource cleanup.
+func (r *embeddedRun) observeEngine(exiting, done <-chan struct{}) {
+	r.mu.Lock()
+	r.engineExit = exiting
+	r.mu.Unlock()
+	go func() {
+		select {
+		case <-exiting:
+		case <-done:
+		}
+		r.markEngineExited()
+	}()
+}
+
+// Forward readiness only while this generation has not been cancelled or
+// begun to exit. Completion may occur without a readiness notification.
+func publishEmbeddedReady(ctx context.Context, ready, exiting, done <-chan struct{}, published chan<- struct{}) {
+	select {
+	case <-ready:
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-exiting:
+			return
+		case <-done:
+			return
+		default:
+			close(published)
+		}
+	case <-ctx.Done():
+	case <-exiting:
+	case <-done:
+	}
+}
+
 func (r *embeddedRun) runServer(ctx context.Context, config *v1.ServerConfig, sink *xlog.Sink) error {
 	server, err := embedded.NewServerWithOptions(config, embedded.ServerOptions{LogSink: sink})
 	if err != nil {
@@ -198,18 +243,22 @@ func (r *embeddedRun) runServer(ctx context.Context, config *v1.ServerConfig, si
 	defer func() {
 		if value := recover(); value != nil {
 			embeddedCleanupUnknown.Store(true)
+			r.markEngineExited()
 			_ = server.Stop(context.Background())
 			panic(value)
 		}
 	}()
 	if err = server.Start(ctx); err != nil {
 		// A failed constructor may still own resources during rollback.
+		r.markEngineExited()
 		_ = server.Stop(context.Background())
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			return nil
 		}
 		return errors.New("内嵌服务端启动失败")
 	}
+	r.observeEngine(server.Exiting(), server.Done())
+	publishEmbeddedReady(ctx, server.Ready(), server.Exiting(), server.Done(), r.ready)
 	<-server.Done()
 	if err := server.Err(); errors.Is(err, embedded.ErrServerPanicked) {
 		embeddedCleanupUnknown.Store(true)
@@ -250,11 +299,13 @@ func (r *embeddedRun) runClient(ctx context.Context, instanceID string, config *
 	defer func() {
 		if value := recover(); value != nil {
 			embeddedCleanupUnknown.Store(true)
+			r.markEngineExited()
 			_ = client.Shutdown(context.Background())
 			panic(value)
 		}
 	}()
 	if err = client.Start(); err != nil {
+		r.markEngineExited()
 		if cleanupErr := client.Shutdown(context.Background()); cleanupErr != nil {
 			embeddedCleanupUnknown.Store(true)
 			return errors.New("内嵌客户端清理状态未知")
@@ -270,6 +321,8 @@ func (r *embeddedRun) runClient(ctx context.Context, instanceID string, config *
 	r.client, r.traffic, r.proxyTypes = client, run, types
 	r.mu.Unlock()
 
+	r.observeEngine(client.Exiting(), client.Done())
+	publishEmbeddedReady(ctx, client.Ready(), client.Exiting(), client.Done(), r.ready)
 	select {
 	case <-ctx.Done():
 		_ = client.Shutdown(context.Background())
@@ -305,6 +358,33 @@ func (r *embeddedRun) Wait() error {
 	return r.err
 }
 
+func (r *embeddedRun) Ready() <-chan struct{} { return r.ready }
+func (r *embeddedRun) Done() <-chan struct{}  { return r.exiting }
+
+// Recheck the engine's own signal directly; the forwarding goroutine can be
+// scheduled after Run has already exited. Wait still owns final cleanup.
+func (r *embeddedRun) ReadyNow() bool {
+	select {
+	case <-r.ready:
+	default:
+		return false
+	}
+	r.mu.RLock()
+	exiting := r.engineExit
+	r.mu.RUnlock()
+	if exiting == nil {
+		return false
+	}
+	select {
+	case <-exiting:
+		return false
+	case <-r.exiting:
+		return false
+	default:
+		return true
+	}
+}
+
 func (r *embeddedRun) Stop(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("缺少停止上下文")
@@ -322,6 +402,9 @@ func (r *embeddedRun) ReadProxyRegistration(ctx context.Context, name string) (P
 	if err := ctx.Err(); err != nil {
 		return ProxyRegistrationStatus{}, false, err
 	}
+	if !r.ReadyNow() {
+		return ProxyRegistrationStatus{}, false, nil
+	}
 	r.mu.RLock()
 	client, kind := r.client, r.proxyTypes[name]
 	r.mu.RUnlock()
@@ -329,7 +412,7 @@ func (r *embeddedRun) ReadProxyRegistration(ctx context.Context, name string) (P
 		return ProxyRegistrationStatus{}, false, nil
 	}
 	status := client.ProxyRegistration(name)
-	if !status.Known {
+	if !status.Known || !r.ReadyNow() {
 		return ProxyRegistrationStatus{}, false, nil
 	}
 	return ProxyRegistrationStatus{
@@ -348,11 +431,11 @@ func (r *embeddedRun) ReadTraffic() TrafficSnapshot {
 	if final.Available {
 		return final
 	}
-	if client == nil || run == nil || client.Status().State != embedded.ClientRunning {
+	if client == nil || run == nil || client.Status().State != embedded.ClientRunning || !r.ReadyNow() {
 		return observation
 	}
 	snapshot := run.Snapshot()
-	if snapshot.Active {
+	if snapshot.Active && r.ReadyNow() {
 		observation.Available = true
 		observation.ReceivedBytes = snapshot.Total.Download
 		observation.SentBytes = snapshot.Total.Upload

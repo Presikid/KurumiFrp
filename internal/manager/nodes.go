@@ -476,6 +476,14 @@ func (a *App) nodeSummaryAPI(w http.ResponseWriter, r *http.Request) {
 		if p := a.procs[i.ID]; p != nil {
 			state = p.view().State
 		}
+		// Protocol 1 readers accept a fixed state set. Do not present a
+		// transition as stopped or send an enum old readers reject.
+		if state == "starting" || state == "stopping" {
+			a.mu.Unlock()
+			fail(w, http.StatusServiceUnavailable, fmt.Errorf("实例正在启动或停止，请稍后重试"))
+			_ = controller.Flush()
+			return
+		}
 		if i.AutoStart && a.startupErrors[i.ID] != "" && state != "running" {
 			state = "autostart-failed"
 		}

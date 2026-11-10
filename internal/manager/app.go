@@ -456,7 +456,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			p := a.procs[id]
-			if p == nil || p.appliedConfig == "" {
+			if p == nil || p.appliedConfig == "" || p.view().Applied == "" {
 				fail(w, 409, fmt.Errorf("该实例尚无可比较的已应用配置；请先成功启动一次"))
 				return
 			}

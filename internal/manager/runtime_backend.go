@@ -55,6 +55,18 @@ type RuntimeInstance interface {
 	Stop(ctx context.Context) error
 }
 
+// RuntimeReadiness is optional. Ready closes after the engine enters its run
+// loop; Done closes when that loop exits, before cleanup may have completed.
+// ReadyNow must be concurrent-safe, return promptly without calling App, and
+// recheck that the engine has not exited.
+// Done may close without Ready after startup failure. Wait remains the cleanup
+// boundary. These observations do not establish authentication or reachability.
+type RuntimeReadiness interface {
+	Ready() <-chan struct{}
+	Done() <-chan struct{}
+	ReadyNow() bool
+}
+
 // RuntimePID is optional and is intended for the legacy process adapter.
 // In-process instances should omit it; their reported PID is zero.
 type RuntimePID interface {

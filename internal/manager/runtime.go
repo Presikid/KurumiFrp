@@ -16,8 +16,8 @@ import (
 )
 
 // RuntimeStatus reports instance liveness, not proxy registration or service
-// health. Generation counts successful starts of an ID during this App's
-// lifetime; RunID also distinguishes generations across App lifetimes.
+// health. Generation counts admitted runs of an ID, including startup failures;
+// RunID also distinguishes generations across App lifetimes.
 type RuntimeStatus struct {
 	State      string `json:"state"`
 	PID        int    `json:"pid"`
@@ -36,13 +36,33 @@ type process struct {
 	logs                *logBuffer
 	coreID              string
 	appliedConfig       string
+	appliedDigest       string
 	appliedSecretDigest string
 	privateStatus       *privateStatus
 	// Set before publication for an in-process client and kept for this run.
 	registrationReader      ProxyRegistrationReader
+	readiness               RuntimeReadiness
 	monitorReason           string
+	stopRequested           bool
+	upEmitted               bool
+	downEmitted             bool
+	failedBeforeReady       bool
 	appliedTunnels          map[string]Tunnel
 	appliedTunnelSignatures map[string][32]byte
+}
+
+// An instance remains owned until its Wait and final bookkeeping finish,
+// including while it is starting or stopping.
+func (p *process) active() bool {
+	if p == nil {
+		return false
+	}
+	select {
+	case <-p.done:
+		return false
+	default:
+		return true
+	}
 }
 type logBuffer struct {
 	mu       sync.Mutex
@@ -223,7 +243,16 @@ func (l *logBuffer) updates(cursor uint64, initial bool) ([]string, uint64, bool
 	}
 	return append([]string{}, l.lines[start:]...), l.sequence, reset, l.changed
 }
-func (p *process) view() RuntimeStatus { p.mu.Lock(); defer p.mu.Unlock(); return p.status }
+func (p *process) view() RuntimeStatus {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	status := p.status
+	// The observer goroutine may not have run yet after the engine has exited.
+	if status.State == "running" && p.readiness != nil && !p.readiness.ReadyNow() {
+		status.State = "stopping"
+	}
+	return status
+}
 
 func (a *App) resolveRuntime(kind string) (string, error) {
 	return a.runtime.Resolve(kind, a.activeCoreID())
@@ -279,7 +308,7 @@ func (a *App) start(i Instance, r Rendered) error {
 	if a.closing {
 		return fmt.Errorf("工作台正在关闭")
 	}
-	if p := a.procs[i.ID]; p != nil && p.view().State == "running" {
+	if p := a.procs[i.ID]; p.active() {
 		return fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
 	target, e := a.resolveRuntime(i.Kind)
@@ -296,13 +325,19 @@ func (a *App) start(i Instance, r Rendered) error {
 // a.mu protects the final launch/publication so a concurrent shutdown, core
 // switch or draft edit cannot pass between the snapshot check and Start.
 func (a *App) startPrepared(i Instance, r Rendered, target, configPath, coreID string, status *privateStatus) error {
+	return a.startPreparedWithSource(i, r, target, configPath, coreID, status, false)
+}
+
+// startPreparedWithSource is called with a.mu held. Automatic restoration
+// records later asynchronous startup failures against this generation.
+func (a *App) startPreparedWithSource(i Instance, r Rendered, target, configPath, coreID string, status *privateStatus, autoStart bool) error {
 	if a.closing {
 		return fmt.Errorf("工作台正在关闭")
 	}
-	if p := a.procs[i.ID]; p != nil && p.view().State == "running" {
+	if p := a.procs[i.ID]; p.active() {
 		return fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
-	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), coreID: coreID, appliedConfig: r.Text, appliedSecretDigest: r.SecretDigest, privateStatus: status, monitorReason: r.MonitorReason, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
+	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), coreID: coreID, appliedConfig: r.Text, appliedDigest: r.Digest, appliedSecretDigest: r.SecretDigest, privateStatus: status, monitorReason: r.MonitorReason, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
 	if status != nil {
 		p.appliedConfig = status.baseText
 	}
@@ -339,11 +374,24 @@ func (a *App) startPrepared(i Instance, r Rendered, target, configPath, coreID s
 		a.generations = make(map[string]uint64)
 	}
 	a.generations[i.ID]++
-	p.status = RuntimeStatus{State: "running", PID: pid, Started: now(), RunID: config.RunID, Generation: a.generations[i.ID], Applied: r.Digest}
+	state, startedAt, applied := "running", now(), r.Digest
+	readiness, hasReadiness := instance.(RuntimeReadiness)
+	if hasReadiness {
+		state, startedAt, applied = "starting", "", ""
+		p.readiness = readiness
+	}
+	p.status = RuntimeStatus{State: state, PID: pid, Started: startedAt, RunID: config.RunID, Generation: a.generations[i.ID], Applied: applied}
 	a.procs[i.ID] = p
 	delete(a.startupErrors, i.ID)
-	if a.webhooks != nil {
+	launchRevision := a.store.DB.Revision
+	if !hasReadiness && a.webhooks != nil {
 		a.webhooks.emitInstance("instance.up", i.ID, i.Kind)
+	}
+	if !hasReadiness {
+		p.upEmitted = true
+	}
+	if hasReadiness {
+		go a.publishRuntimeReady(i, p, readiness)
 	}
 	if source, ok := instance.(RuntimeTrafficReader); ok {
 		go a.captureRuntimeTraffic(i.ID, config.RunID, p, source)
@@ -358,6 +406,8 @@ func (a *App) startPrepared(i Instance, r Rendered, target, configPath, coreID s
 		status.cleanup()
 		p.logs.Write([]byte("\n"))
 		p.mu.Lock()
+		wasRunning := p.upEmitted
+		startupFailed := hasReadiness && !p.upEmitted && (p.failedBeforeReady || !p.stopRequested)
 		p.status.State = "exited"
 		p.status.PID = 0
 		if err != nil {
@@ -368,14 +418,94 @@ func (a *App) startPrepared(i Instance, r Rendered, target, configPath, coreID s
 		} else {
 			p.status.Exit = "exit 0"
 		}
-		if a.webhooks != nil {
+		exitMessage := p.status.Exit
+		if a.webhooks != nil && wasRunning && !p.downEmitted {
 			a.webhooks.emitInstance("instance.down", i.ID, i.Kind)
+			p.downEmitted = true
+		} else if a.webhooks != nil && startupFailed {
+			a.webhooks.emitInstance("instance.start_failed", i.ID, i.Kind)
 		}
 		p.mu.Unlock()
+		if autoStart && startupFailed {
+			a.mu.Lock()
+			latest, exists := a.store.DB.State.Instance(i.ID)
+			if !a.closing && exists && latest.AutoStart && a.procs[i.ID] == p {
+				message := exitMessage
+				if err == nil {
+					message = "实例在启动完成前退出"
+				}
+				if a.store.DB.Revision != launchRevision {
+					message = "自动恢复期间配置已变化，请检查后手动启动"
+				}
+				if a.startupErrors == nil {
+					a.startupErrors = make(map[string]string)
+				}
+				a.startupErrors[i.ID] = message
+			}
+			a.mu.Unlock()
+		}
 		close(p.done)
 	}()
 	return nil
 }
+
+// Readiness publication races with stop and completion. Keep the generation
+// reserved until Wait returns, and never publish readiness after stop starts.
+func (a *App) publishRuntimeReady(i Instance, p *process, ready RuntimeReadiness) {
+	select {
+	case <-ready.Ready():
+	case <-ready.Done():
+	case <-p.done:
+		return
+	}
+	a.mu.Lock()
+	if a.closing || a.procs[i.ID] != p {
+		a.mu.Unlock()
+		return
+	}
+	select {
+	case <-a.quit:
+		a.mu.Unlock()
+		return
+	default:
+	}
+	p.mu.Lock()
+	if p.status.State == "starting" && !p.stopRequested && ready.ReadyNow() {
+		p.status.State = "running"
+		p.status.Started = now()
+		p.status.Applied = p.appliedDigest
+		p.upEmitted = true
+		if a.webhooks != nil {
+			a.webhooks.emitInstance("instance.up", i.ID, i.Kind)
+		}
+	}
+	p.mu.Unlock()
+	a.mu.Unlock()
+
+	select {
+	case <-ready.Done():
+	case <-p.done:
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.procs[i.ID] != p {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.status.State != "exited" {
+		if !p.upEmitted && !p.stopRequested {
+			p.failedBeforeReady = true
+		}
+		p.status.State = "stopping"
+		if p.upEmitted && !p.downEmitted && a.webhooks != nil {
+			a.webhooks.emitInstance("instance.down", i.ID, i.Kind)
+			p.downEmitted = true
+		}
+	}
+}
+
 func (a *App) stop(id string) error {
 	a.mu.Lock()
 	p := a.procs[id]
@@ -383,21 +513,31 @@ func (a *App) stop(id string) error {
 	return stopProcess(p)
 }
 func stopProcess(p *process) error {
-	if p == nil || p.view().State != "running" {
+	if !p.active() {
 		return nil
 	}
-	if p.instance == nil {
+	p.mu.Lock()
+	p.stopRequested = true
+	instance := p.instance
+	exited := p.status.State == "exited"
+	if _, hasReadiness := instance.(RuntimeReadiness); !exited && hasReadiness {
+		p.status.State = "stopping"
+	}
+	p.mu.Unlock()
+	if instance == nil {
 		return fmt.Errorf("无法访问托管实例")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	if err := p.instance.Stop(ctx); err != nil {
-		select {
-		case <-p.done:
-			return nil
-		default:
+	if !exited {
+		if err := instance.Stop(ctx); err != nil {
+			select {
+			case <-p.done:
+				return nil
+			default:
+			}
+			return fmt.Errorf("实例停止结果未知，未启动替代实例：%s", safeStatusText(err.Error(), p.logs.secrets))
 		}
-		return fmt.Errorf("实例停止结果未知，未启动替代实例：%s", safeStatusText(err.Error(), p.logs.secrets))
 	}
 	// A successful stop request is not proof that Wait has returned.
 	select {

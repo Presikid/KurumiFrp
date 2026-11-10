@@ -113,7 +113,7 @@ func (a *App) RecordTrafficSnapshot(instanceID, runID string, snapshot TrafficSn
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.status.State != "running" || p.status.RunID != runID {
+	if (p.status.State != "running" && p.status.State != "stopping") || p.status.RunID != runID {
 		return fmt.Errorf("运行代次已变化或实例未运行")
 	}
 	samples := a.traffic[instanceID]

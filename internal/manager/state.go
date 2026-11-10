@@ -66,7 +66,7 @@ func (a *App) observedRuntimeStatusLocked(i Instance, observed stateProcessSnaps
 		rendered, err := a.store.render(i.ID, false)
 		v.Pending = err != nil || v.Applied != rendered.Digest || observed.coreID != a.activeCoreID()
 	}
-	if observed.startupError != "" && v.State != "running" {
+	if observed.startupError != "" && v.State != "running" && v.State != "starting" && v.State != "stopping" {
 		v.State, v.Exit = "autostart-failed", observed.startupError
 	}
 	return v
