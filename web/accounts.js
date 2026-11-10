@@ -5,7 +5,7 @@ const accountRenderBase = render;
 let accountData = null, accountLoadSerial = 0;
 window.resetAccountView = () => {
  accountData = null; ++accountLoadSerial;
- for (const d of document.querySelectorAll('#account-password-dialog, #instance-read-dialog, #login-history-dialog')) if (d.open) d.close();
+ for (const d of document.querySelectorAll('#account-password-dialog, #instance-read-dialog, #login-history-dialog, #oidc-settings-dialog')) if (d.open) d.close();
 };
 
 function updateAccountNavigation() {
@@ -39,7 +39,7 @@ render = function () {
  document.querySelectorAll('[data-page]').forEach(el => el.classList.toggle('active', el.dataset.page === page));
  if (!$('#accounts-screen')) {
   $('#content').innerHTML = header('本地账户', '管理员拥有全部权限；操作员可启停指定实例；查看者只能查看指定实例。', '<button type="button" data-login-history>登录记录</button>') +
-   `<section id="accounts-screen" class="panel"><div class="panel-content"><p class="small-note">现有本机管理令牌和启动快捷方式仍具有完整管理权限。账户配置单独保存，不包含在配置导出和加密备份中。删除实例会撤销该实例授权；导入配置或恢复历史会撤销全部非管理员实例授权，需要重新分配。授权在配置变更之前撤销，即使变更失败也需检查账户设置。</p><div id="account-list">正在读取账户…</div><hr><div id="account-editor"></div></div></section>`;
+   `<section id="accounts-screen" class="panel"><div class="panel-content"><p class="small-note">现有本机管理令牌和启动快捷方式仍具有完整管理权限。账户配置单独保存，不包含在配置导出和加密备份中。删除实例会撤销该实例授权；导入配置或恢复历史会撤销全部非管理员实例授权，需要重新分配。授权在配置变更之前撤销，即使变更失败也需检查账户设置。</p><div class="actions"><button type="button" data-oidc-settings>单点登录设置</button></div><div id="account-list">正在读取账户…</div><hr><div id="account-editor"></div></div></section>`;
   accountData = null;
   loadAccounts();
  }
@@ -234,6 +234,7 @@ function showAccountEditor(id = '') {
 
 $('#content').addEventListener('click', async e => {
  if (e.target.closest('[data-login-history]')) { openLoginHistory(); return; }
+ if (e.target.closest('[data-oidc-settings]')) { openOIDCSettings(); return; }
  const instanceRead = e.target.closest('[data-instance-read]');
  if (instanceRead) {
   const mode = instanceRead.dataset.instanceRead;
@@ -300,6 +301,64 @@ function openLoginHistory() {
  });
  dialog.showModal();
  void refreshHistory();
+}
+
+function openOIDCSettings() {
+ if (data?.identity?.role !== 'admin' || document.querySelector('#oidc-settings-dialog')) return;
+ if (!accountData) {toast('请先等待读取本地账户。'); return;}
+ const accounts = [...accountData.accounts], generation = authGeneration;
+ const dialog = document.createElement('dialog');
+ dialog.id = 'oidc-settings-dialog';
+ dialog.innerHTML = '<h2>单点登录设置</h2><div data-oidc-content>正在读取…</div><p class="error" role="alert"></p><div class="dialog-actions"><button type="button" data-close>关闭</button></div>';
+ document.body.appendChild(dialog);
+ let submitting = false;
+ const current = () => dialog.open && generation === authGeneration && data?.identity?.role === 'admin';
+ const close = dialog.querySelector('[data-close]'), output = dialog.querySelector('[data-oidc-content]'), error = dialog.querySelector('.error');
+ dialog.addEventListener('close', () => dialog.remove());
+ dialog.addEventListener('cancel', e => {if (submitting) e.preventDefault();});
+ close.addEventListener('click', () => {if (!submitting) dialog.close();});
+ dialog.showModal();
+ (async () => {
+  try {
+   const settings = await api('oidc/config');
+   if (!current()) return;
+   output.innerHTML = `<form id="oidc-settings-form"><p class="small-note">使用支持授权码和 PKCE 的公开客户端。发行者与提供方端点须为公网 HTTPS；不保存客户端密钥。只允许明确绑定的本地账户登录。</p><p class="small-note">在提供方登记此工作台当前使用的回调地址：<code data-callback></code>。使用不同端口或主机名时须分别登记。</p><div class="form-grid"><label class="form-check span-2"><input type="checkbox" name="enabled">启用单点登录</label><label class="span-2">发行者地址<input name="issuer" type="url" maxlength="1024" autocomplete="off"></label><label class="span-2">客户端 ID<input name="clientId" maxlength="512" autocomplete="off"></label><fieldset class="span-2"><legend>提供方账户绑定</legend><p class="small-note">填写提供方用户的准确 sub，并选择已有本地账户；不存在的账户需明确移除或更换。</p><div data-bindings></div><button type="button" data-add-binding>添加绑定</button></fieldset></div><p class="small-note">修改设置会使已登录的单点登录会话在下一次请求时失效。本地账户和管理令牌仍可使用。此配置不包含在备份和导出中。</p><button type="submit" class="primary">保存设置</button></form>`;
+   const form = output.querySelector('form'), rows = form.querySelector('[data-bindings]'), save = form.querySelector('[type=submit]');
+   form.querySelector('[data-callback]').textContent = location.origin + '/api/oidc/callback';
+   form.elements.enabled.checked = settings.enabled === true;
+   form.elements.issuer.value = settings.issuer || '';
+   form.elements.clientId.value = settings.clientId || '';
+   const addRow = binding => {
+    if (rows.children.length >= 100) {error.textContent = '最多添加 100 个绑定。'; return;}
+    const row = document.createElement('div'), id = binding.accountId || '';
+    const missing = id && !accounts.some(account => account.id === id);
+    row.className = 'form-grid';
+    row.innerHTML = `<label>提供方用户 sub<input data-subject maxlength="255" value="${esc(binding.subject || '')}" autocomplete="off" required></label><label>本地账户<select data-account required><option value="">请选择账户</option>${missing ? `<option value="${esc(id)}" selected>不存在的账户 ${esc(id)}（需移除或更换）</option>` : ''}${accounts.map(account => `<option value="${esc(account.id)}" ${account.id === id ? 'selected' : ''}>${esc(account.username)}${account.enabled && !account.expired ? '' : '（不可登录）'}</option>`).join('')}</select></label><div class="span-2"><button type="button" data-remove-binding>移除此绑定</button></div>`;
+    row.querySelector('[data-remove-binding]').addEventListener('click', () => row.remove());
+    rows.appendChild(row);
+   };
+   (Array.isArray(settings.bindings) ? settings.bindings : []).forEach(addRow);
+   form.querySelector('[data-add-binding]').addEventListener('click', () => addRow({}));
+   form.addEventListener('submit', async e => {
+    e.preventDefault(); if (submitting || !current()) return;
+    const bindings = [...rows.children].map(row => ({subject:row.querySelector('[data-subject]').value,accountId:row.querySelector('[data-account]').value}));
+    const request = {revision:settings.revision, enabled:form.elements.enabled.checked, issuer:form.elements.issuer.value.trim(), clientId:form.elements.clientId.value.trim(), bindings};
+    const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 20000);
+    submitting = true; save.disabled = true; close.disabled = true; error.textContent = '';
+    try {
+     await api('oidc/config', request, {signal:controller.signal});
+     if (!current()) return;
+     dialog.close(); toast('单点登录设置已保存；现有单点登录会话需重新登录。');
+     stateETag = ''; void refresh(true);
+    } catch (err) {
+     if (!current()) return;
+     const uncertain = err.name === 'AbortError' || !err.status || err.status >= 500;
+     error.textContent = uncertain ? '保存结果尚未确认，请关闭窗口后重新打开并核对配置。' : err.message;
+     if (!uncertain) save.disabled = false;
+    } finally {clearTimeout(timeout); submitting = false; close.disabled = false;}
+   });
+  } catch (err) {if (current()) error.textContent = '读取失败：' + err.message;}
+ })();
 }
 
 $('#content').addEventListener('submit', async e => {
