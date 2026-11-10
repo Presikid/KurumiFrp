@@ -11,7 +11,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // normalizeASN accepts only a numeric ASN, so it cannot alter the fixed URL.
@@ -35,6 +39,31 @@ func normalizeASN(value string) (string, error) {
 	return "AS" + strconv.FormatUint(n, 10), nil
 }
 
+func normalizeASNs(value string) ([]string, error) {
+	if len(value) > 512 {
+		return nil, fmt.Errorf("AS 号列表过长")
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == '，' || r == ';' || r == '；' || unicode.IsSpace(r)
+	})
+	if len(parts) == 0 || len(parts) > 16 {
+		return nil, fmt.Errorf("每次请输入 1–16 个 AS 号")
+	}
+	seen := make(map[string]bool, len(parts))
+	asns := make([]string, 0, len(parts))
+	for _, part := range parts {
+		asn, err := normalizeASN(part)
+		if err != nil {
+			return nil, err
+		}
+		if !seen[asn] {
+			seen[asn] = true
+			asns = append(asns, asn)
+		}
+	}
+	return asns, nil
+}
+
 // The response is an editable snapshot; fetching it does not change rules.
 func (a *App) firewallASNAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost || r.URL.RawQuery != "" {
@@ -52,7 +81,7 @@ func (a *App) firewallASNAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	asn, err := normalizeASN(req.ASN)
+	asns, err := normalizeASNs(req.ASN)
 	if err != nil {
 		fail(w, 400, err)
 		return
@@ -62,14 +91,55 @@ func (a *App) firewallASNAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer a.firewall.lookupMu.Unlock()
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
 	defer cancel()
-	prefixes, err := fetchASNPrefixes(ctx, asn)
+	prefixes, err := fetchASNBatch(ctx, asns)
 	if err != nil {
 		fail(w, 502, err)
 		return
 	}
-	reply(w, 200, map[string]any{"asn": asn, "prefixes": prefixes, "queriedAt": time.Now().UTC().Format(time.RFC3339)})
+	reply(w, 200, map[string]any{"asn": strings.Join(asns, "、"), "asns": asns, "prefixes": prefixes, "queriedAt": time.Now().UTC().Format(time.RFC3339)})
+}
+
+// All queries must succeed and fit the shared limit before any result is
+// returned. The group cancels other requests on the first failure.
+func fetchASNBatch(ctx context.Context, asns []string) ([]string, error) {
+	group, queryCtx := errgroup.WithContext(ctx)
+	group.SetLimit(4)
+	var mu sync.Mutex
+	seen := make(map[string]bool)
+	for _, asn := range asns {
+		asn := asn
+		group.Go(func() (resultErr error) {
+			defer func() {
+				if recover() != nil {
+					resultErr = fmt.Errorf("%s 查询异常", asn)
+				}
+			}()
+			prefixes, err := fetchASNPrefixes(queryCtx, asn)
+			if err != nil {
+				return fmt.Errorf("%s 查询失败：%w", asn, err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			for _, prefix := range prefixes {
+				seen[prefix] = true
+				if len(seen) > firewallMaxSources {
+					return fmt.Errorf("合并网段超过 %d 项上限", firewallMaxSources)
+				}
+			}
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	prefixes := make([]string, 0, len(seen))
+	for prefix := range seen {
+		prefixes = append(prefixes, prefix)
+	}
+	sort.Strings(prefixes)
+	return prefixes, nil
 }
 
 func fetchASNPrefixes(ctx context.Context, asn string) ([]string, error) {
