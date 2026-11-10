@@ -493,12 +493,29 @@ func (ks *KCPTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 	// yamux.Open does not accept a context. Bound outstanding opens per
 	// session and retire one that stays stuck beyond the shared timeout.
 	// A shorter caller deadline alone does not disrupt healthy streams.
+	slotTimer := time.NewTimer(tunnelOpenTimeout)
+	defer slotTimer.Stop()
 	select {
 	case openSlots <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-session.CloseChan():
 		return nil, ErrNoTunnelSession
+	case <-slotTimer.C:
+		return nil, context.DeadlineExceeded
+	}
+	// Both Open and its watchdog may outlive this caller. The control scope
+	// must continue owning them until each has actually finished.
+	openDone, ok := lifetime.Enter(ctx)
+	if !ok {
+		<-openSlots
+		return nil, context.Canceled
+	}
+	watchDone, ok := lifetime.Enter(ctx)
+	if !ok {
+		openDone()
+		<-openSlots
+		return nil, context.Canceled
 	}
 	type openResult struct {
 		conn net.Conn
@@ -506,6 +523,8 @@ func (ks *KCPTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 	}
 	result := make(chan openResult)
 	accepted := make(chan bool, 1)
+	timedOut := make(chan struct{})
+	workerDone := make(chan struct{})
 	// A timeout cannot retire the session after a successful handoff.
 	var completionMu sync.Mutex
 	completed := false
@@ -519,15 +538,24 @@ func (ks *KCPTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 		return true
 	}
 	watchdog := time.AfterFunc(tunnelOpenTimeout, func() {
+		defer watchDone()
 		defer lifetime.Recover(ctx)
 		if finish() {
+			close(timedOut)
 			ks.retire(session)
 		}
 	})
+	stopWatchdog := func() {
+		if watchdog.Stop() {
+			watchDone()
+		}
+	}
 	go func() {
+		defer openDone()
+		defer close(workerDone)
 		defer func() {
 			if finish() {
-				watchdog.Stop()
+				stopWatchdog()
 			}
 			<-openSlots
 		}()
@@ -547,6 +575,10 @@ func (ks *KCPTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 			if conn != nil {
 				_ = conn.Close()
 			}
+		case <-timedOut:
+			if conn != nil {
+				_ = conn.Close()
+			}
 		}
 	}()
 	var conn net.Conn
@@ -562,10 +594,14 @@ func (ks *KCPTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 			accepted <- false
 			return nil, context.DeadlineExceeded
 		}
-		watchdog.Stop()
+		stopWatchdog()
 		accepted <- true
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	case <-timedOut:
+		return nil, context.DeadlineExceeded
+	case <-workerDone:
+		return nil, ErrNoTunnelSession
 	}
 	return conn, err
 }

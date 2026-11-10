@@ -113,3 +113,7 @@ health delay and polling loop on cancellation; these changes do not establish
 complete shutdown or protocol interoperability.
 The embedded HTTP health check evaluates the configured target's response
 status without consuming an arbitrarily long body or following redirects.
+XTCP KCP stream opening and its timeout watchdog retain their control scope
+until they actually finish, even if the caller times out. Timeout wakes the
+caller and retires that session; a late stream is closed. A stuck dependency
+can still delay scope shutdown, which remains unverified at runtime.
