@@ -10,9 +10,11 @@ import (
 )
 
 var (
-	ErrInvalidService = errors.New("embedded client service is nil")
-	ErrClientStarted  = errors.New("embedded client has already been started or closed")
-	ErrCleanupFailed  = errors.New("embedded client cleanup failed")
+	ErrInvalidService       = errors.New("embedded client service is nil")
+	ErrClientStarted        = errors.New("embedded client has already been started or closed")
+	ErrCleanupFailed        = errors.New("embedded client cleanup failed")
+	// ErrClientWorkerPanicked does not include the worker's panic value.
+	ErrClientWorkerPanicked = errors.New("embedded client worker panicked")
 )
 
 // ClientService is the small part of an embedded client engine used by Client.
@@ -133,7 +135,7 @@ func (c *Client) run(ctx context.Context) {
 	var runErr error
 	defer func() {
 		// Never expose panic values or upstream errors: either can contain secrets.
-		panicked := recover() != nil
+		panicked := recover() != nil || errors.Is(runErr, ErrClientWorkerPanicked)
 		c.mu.Lock()
 		c.panicked = panicked
 		reason := ExitStopped

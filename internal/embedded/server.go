@@ -56,6 +56,9 @@ type Server struct {
 type ServerOptions struct {
 	LogSink         *xlog.Sink
 	TrafficRecorder server.TrafficRecorder
+	// OnWorkerPanic is an instance-scoped failure notification. It must be
+	// concurrent-safe, return promptly, and not panic.
+	OnWorkerPanic func()
 }
 
 // NewServer copies, completes, and validates cfg without opening listeners or
@@ -154,6 +157,7 @@ func (s *Server) Start(ctx context.Context) error {
 	svc, err := server.NewServiceWithOptions(s.config, server.ServiceOptions{
 		LogSink:         s.options.LogSink,
 		TrafficRecorder: s.options.TrafficRecorder,
+		OnWorkerPanic:   s.options.OnWorkerPanic,
 	})
 	if err != nil {
 		cancel()
@@ -219,10 +223,16 @@ func (s *Server) run(ctx context.Context, svc *server.Service, cancel context.Ca
 // the service has finished cleaning up, even if Stop's caller has timed out.
 func (s *Server) finishAfterClose(svc *server.Service, runErr error) {
 	closeErr := svc.CloseContext(context.Background())
+	if svc.WorkerPanicked() {
+		runErr = errors.Join(runErr, ErrServerPanicked)
+	}
 	s.finish(errors.Join(runErr, closeErr))
 }
 
 func (s *Server) finish(err error) {
+	if errors.Is(err, server.ErrWorkerPanicked) {
+		err = errors.Join(err, ErrServerPanicked)
+	}
 	s.mu.Lock()
 	s.err = err
 	s.state = serverStopped

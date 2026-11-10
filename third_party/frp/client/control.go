@@ -58,6 +58,8 @@ type SessionContext struct {
 	UDPPacketCodec string
 	// Isolated tracks this control's resource lifetimes before signaling Done.
 	Isolated bool
+	// workerPanic reports a scoped worker panic to the owning client service.
+	workerPanic func()
 }
 
 type Control struct {
@@ -98,7 +100,7 @@ func NewControl(ctx context.Context, sessionCtx *SessionContext) (*Control, erro
 	var scopeCancel context.CancelFunc
 	if sessionCtx.Isolated {
 		ctx, scopeCancel = context.WithCancel(ctx)
-		scope = lifetime.New()
+		scope = lifetime.NewWithPanicHandler(sessionCtx.workerPanic)
 		ctx = lifetime.WithScope(ctx, scope)
 	}
 	ctl := &Control{

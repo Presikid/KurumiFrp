@@ -292,6 +292,10 @@ func (p *process) viewLocked() RuntimeStatus {
 	if status.State == "exited" && p.active() {
 		status.State = "stopping"
 	}
+	if observer, ok := p.readiness.(runtimeWorkerPanicObserver); ok && p.active() && observer.WorkerPanicked() {
+		status.State = "stopping"
+		status.Exit = "内嵌核心工作线程异常，正在停止；清理完成前不会启动替代实例"
+	}
 	return status
 }
 
