@@ -1,10 +1,12 @@
 'use strict';
 
 // The overview consumes the same public state and actions as the rest of the
-// workspace. Traffic is optional until the per-instance API is available.
+// workspace. Server forwarding totals have a separate scope from client payload.
 const Overview = (() => {
  let trafficInstance = '';
  let trafficContext = null;
+ let serverResult = null;
+ let serverRequest = null;
 
  function rate(value) {
   if (value === null) return '—';
@@ -62,6 +64,78 @@ const Overview = (() => {
   return trafficContext?.series?.[trafficInstance];
  }
 
+ function selectedInstance() {
+  return trafficContext?.instances.find(instance => instance.id === trafficInstance);
+ }
+
+ // Server totals arrive as decimal strings; do not round them through Number.
+ function bytes(value) {
+  return typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value)
+   ? value.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' B' : '—';
+ }
+
+ const serverExplanation = '<p class="small-note">内置服务端记录转发边界的字节：接收为用户 → 代理，发送为代理 → 用户；部分流量含协议帧或心跳。UDP 按已记录的数据报内容计数；HTTP 发送量按代理工作连接读取，未必送达用户。绕过本服务端的 P2P 流量不计入。</p><p class="small-note">数据仅属于本次运行，停止后仍可能增加，重新启动后重新计数。</p>';
+
+ function renderServerTraffic(value, escape) {
+  if (!value?.available) return `<div class="overview-server-empty" role="status">当前运行代次没有可用的内置服务端流量数据。</div>${serverExplanation}`;
+  const proxies = Array.isArray(value.proxies) ? value.proxies : [];
+  const rows = proxies.slice(0, 100).map(proxy => `<tr><td>${escape(proxy.name)}</td><td>${escape(proxy.type)}</td><td>${bytes(proxy.receivedBytes)}</td><td>${bytes(proxy.sentBytes)}</td></tr>`).join('');
+  const detail = rows ? `<div class="table-wrap"><table><thead><tr><th>代理</th><th>类型</th><th>接收</th><th>发送</th></tr></thead><tbody>${rows}</tbody></table></div>${proxies.length > 100 ? `<p class="small-note">仅显示前 100 条，已保留 ${proxies.length} 条。</p>` : ''}` : '<p class="small-note">尚无可显示的代理明细。</p>';
+  const truncated = value.proxiesTruncated ? '<p class="small-note" role="status">代理明细不完整：已达到记录上限或名称、类型过长；未列出的代理仍计入总量。</p>' : '';
+  const state = ({running:'运行中',starting:'启动中',stopping:'停止中',exited:'已退出',stopped:'已停止','autostart-failed':'自动启动失败'})[value.state] || '状态未知';
+  return `<div class="overview-traffic-values"><div><span><i class="overview-key-received"></i>接收 · 用户 → 代理</span><strong>${bytes(value.receivedBytes)}</strong></div><div><span><i class="overview-key-sent"></i>发送 · 代理 → 用户</span><strong>${bytes(value.sentBytes)}</strong></div><small>快照：${escape(sampleTime(value.sampledAt))} · ${state}</small></div>${truncated}<details class="overview-server-details"><summary>已保留的代理明细 · ${proxies.length} 条</summary>${detail}</details>${serverExplanation}`;
+ }
+
+ function serverTrafficView() {
+  const instance = selectedInstance();
+  const runId = trafficContext.runtime[instance.id]?.runId || '';
+  const result = serverResult?.id === instance.id && serverResult.runId === runId ? serverResult : null;
+  if (!result) return `<div class="overview-server-empty" role="status">正在读取服务端流量…</div>${serverExplanation}`;
+  if (result.error) return `<div class="overview-server-empty" role="status">${result.changed ? '实例运行状态已变化，等待刷新。' : '无法读取服务端流量，请稍后重试。'}</div>${serverExplanation}`;
+  return renderServerTraffic(result.value, trafficContext.escape);
+ }
+
+ function paintTraffic() {
+  const chart = document.querySelector('#overview-traffic-chart');
+  if (!chart || !trafficContext) return;
+  const open = chart.querySelector('details')?.open;
+  chart.innerHTML = selectedInstance()?.kind === 'frps' ? serverTrafficView() : trafficChart(selectedTraffic(), trafficContext.escape);
+  const details = chart.querySelector('details');
+  if (details && open) details.open = true;
+ }
+
+ function pause() {
+  if (!serverRequest) return;
+  clearTimeout(serverRequest.timeout);
+  serverRequest.controller.abort();
+  serverRequest = null;
+ }
+
+ function refreshServerTraffic() {
+  const instance = selectedInstance();
+  if (!instance || instance.kind !== 'frps' || !trafficContext.loadServerTraffic || document.hidden || !document.querySelector('#overview-traffic-chart')) return;
+  const id = instance.id, runId = trafficContext.runtime[id]?.runId || '';
+  if (serverRequest && serverRequest.id === id && serverRequest.runId === runId) return;
+  pause();
+  const request = {id, runId, controller:new AbortController(), timedOut:false};
+  serverRequest = request;
+  request.timeout = setTimeout(() => {request.timedOut = true; request.controller.abort();}, 10000);
+  const current = () => serverRequest === request && trafficInstance === id && selectedInstance()?.kind === 'frps' && (trafficContext.runtime[id]?.runId || '') === runId;
+  trafficContext.loadServerTraffic(id, request.controller.signal).then(value => {
+   if (!current()) return;
+   serverResult = value?.instanceId === id && (value.runId || '') === runId
+    ? {id, runId, value} : {id, runId, error:true, changed:true};
+   paintTraffic();
+  }).catch(error => {
+   if (!current() || (error.name === 'AbortError' && !request.timedOut)) return;
+   serverResult = {id, runId, error:true};
+   paintTraffic();
+  }).finally(() => {
+   clearTimeout(request.timeout);
+   if (serverRequest === request) serverRequest = null;
+  });
+ }
+
  function render(snapshot, helpers, trafficByInstance = null) {
   const instances = snapshot.state.instances;
   const tunnels = snapshot.state.tunnels;
@@ -75,7 +149,7 @@ const Overview = (() => {
   const coreNote = embedded ? '内置核心仍在开发，部分协议和功能暂不可用。' : '指定 frp-dir 中的二进制属于受信任程序；请仅放入官方或自行审计的版本。';
   const {escape, header, badge, instanceRegistrationText, tunnelTable} = helpers;
   if (!instances.some(instance => instance.id === trafficInstance)) trafficInstance = instances[0]?.id || '';
-  trafficContext = {series:trafficByInstance, escape};
+  trafficContext = {series:trafficByInstance, escape, instances, runtime:snapshot.runtime || {}, loadServerTraffic:helpers.loadServerTraffic};
   const running = instances.filter(instance => snapshot.runtime[instance.id]?.state === 'running').length;
   const pending = instances.filter(instance => snapshot.runtime[instance.id]?.pending).length;
   const enabled = tunnels.filter(tunnel => tunnel.enabled).length;
@@ -98,7 +172,7 @@ const Overview = (() => {
    `<section class="hero overview-hero"><div><p class="eyebrow">KURUMI / CONNECTION WORKSPACE</p><h2>每一条连接，都有迹可循。</h2><p>查看实例运行情况，确认规则状态，再决定何时应用配置。</p></div><div class="hero-graphic" aria-hidden="true"><span class="hero-stamp">KURUMI<br>FRP</span></div></section>` +
    `<section class="metrics overview-metrics" aria-label="状态摘要">${metrics.map(([value, label, note]) => `<div class="metric"><span class="label">${label}</span><strong>${value}</strong><small>${note}</small></div>`).join('')}</section>` +
    `<div class="overview-grid"><section class="panel overview-instances"><div class="panel-title"><div><h3>运行实例</h3><small>实例状态 · 草稿地址与规则</small></div><button class="quiet" data-go="instances">全部实例 →</button></div>${instances.length ? `<div class="overview-instance-list">${instanceRows}</div>${instances.length > 5 ? `<p class="overview-more">显示前 5 个，共 ${instances.length} 个实例。</p>` : ''}` : '<div class="overview-empty"><strong>还没有运行实例</strong><p>先创建一个客户端或服务端实例。</p><button data-action="new-instance">＋ 新建实例</button></div>'}</section>
-   <section class="panel overview-traffic"><div class="panel-title"><div><h3>实例流量</h3><small>接收与发送速率</small></div><span class="pill">每实例</span></div><div class="overview-traffic-body"><label for="overview-traffic-instance">选择实例</label><select id="overview-traffic-instance" ${instances.length ? '' : 'disabled'}>${trafficOptions || '<option value="">暂无实例</option>'}</select><div id="overview-traffic-chart">${trafficChart(selectedTraffic(), escape)}</div></div></section></div>` +
+   <section class="panel overview-traffic"><div class="panel-title"><div><h3>实例流量</h3><small>按实例查看</small></div><span class="pill">每实例</span></div><div class="overview-traffic-body"><label for="overview-traffic-instance">选择实例</label><select id="overview-traffic-instance" ${instances.length ? '' : 'disabled'}>${trafficOptions || '<option value="">暂无实例</option>'}</select><div id="overview-traffic-chart">${selectedInstance()?.kind === 'frps' ? serverTrafficView() : trafficChart(selectedTraffic(), escape)}</div></div></section></div>` +
    `<section class="panel overview-rules"><div class="panel-title"><div><h3>连接规则</h3><small>草稿配置 · ${tunnels.length > 5 ? `显示前 5 条，共 ${tunnels.length} 条` : `共 ${tunnels.length} 条`}</small></div><button class="quiet" data-go="tunnels">全部规则 →</button></div>${tunnelTable(tunnels.slice(0, 5))}</section>` +
    `<section class="panel"><div class="panel-title"><h3>环境与边界</h3><span class="pill accent">LOCAL</span></div><div class="panel-content">${coreRows}<div class="check-row"><span>配置保存</span><span class="pill good">本地持久化</span></div><div class="check-row"><span>远端节点</span><span class="pill">授权后查看与启停</span></div><p class="small-note blank">配置文件包含密钥，请妥善保管。${coreNote}</p></div></section>` +
    `<section class="panel overview-events"><div class="panel-title"><div><h3>最近事件</h3><small>仅显示配置变更记录，进程输出请查看日志</small></div><button class="quiet" data-go="logs">运行记录 →</button></div>${eventRows ? `<ol class="overview-event-list">${eventRows}</ol>` : '<div class="overview-empty"><strong>暂无配置事件</strong><p>保存配置后，最近的变更会显示在这里。</p></div>'}</section>`;
@@ -106,11 +180,13 @@ const Overview = (() => {
 
  document.querySelector('#content').addEventListener('change', event => {
   if (event.target.id !== 'overview-traffic-instance' || !trafficContext) return;
+  pause();
   trafficInstance = event.target.value;
-  const chart = document.querySelector('#overview-traffic-chart');
-  if (chart) chart.innerHTML = trafficChart(selectedTraffic(), trafficContext.escape);
+  serverResult = null;
+  paintTraffic();
+  refreshServerTraffic();
  });
 
- function reset() {trafficInstance = ''; trafficContext = null;}
- return {render, reset};
+ function reset() {pause(); trafficInstance = ''; trafficContext = null; serverResult = null;}
+ return {render, reset, pause, refreshServerTraffic, renderServerTraffic};
 })();

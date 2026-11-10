@@ -126,7 +126,7 @@ function cancelLogRequest() {
 function cancelConfigRequest() {
  const request = configRequest; configRequest = null; deferredConfig = null; request?.controller.abort();
 }
-function cancelPageRequests() {cancelLogRequest(); cancelConfigRequest(); stopLogStream(); logAccessDenied = null; logSnapshot = null; logExportView = null;}
+function cancelPageRequests() {cancelLogRequest(); cancelConfigRequest(); stopLogStream(); Overview.pause(); logAccessDenied = null; logSnapshot = null; logExportView = null;}
 function resetSession() {
  stopRefreshPolling();
  window.resetAccountView?.();
@@ -233,6 +233,7 @@ async function refresh(silent = false) {
    else if (canSilentRender() && (renderedSnapshot !== stateSnapshot || renderedPage !== page)) renderPreservingScroll();
    applyDeferredConfig();
    refreshRegistration();
+   if (page === 'overview') Overview.refreshServerTraffic();
    syncLogStream();
    // Logs have a separate endpoint and can change even when state returns 304.
    // A delayed log response must not block polling the process generation.
@@ -521,7 +522,8 @@ function render() {
   paintUpdate(); renderedSnapshot = stateSnapshot; renderedRevision = data.revision; return;
  }
  if(page==='overview') {
-  content.innerHTML=Overview.render(data,{escape:esc,header,badge,instanceRegistrationText,tunnelTable});
+  content.innerHTML=Overview.render(data,{escape:esc,header,badge,instanceRegistrationText,tunnelTable,loadServerTraffic:(id,signal)=>api('server-traffic?id='+encodeURIComponent(id),undefined,{signal})});
+  Overview.refreshServerTraffic();
  } else if(page==='instances') {
   content.innerHTML=window.KurumiInstances.render(data,{header,empty,esc,registrationText:instanceRegistrationText});
   if(portWarnings) content.insertAdjacentHTML('afterbegin',portWarnings);
@@ -1183,7 +1185,7 @@ page=titles[location.hash.slice(1)]?location.hash.slice(1):'overview';
 if(!/^#launch=([a-f0-9]{64})$/.test(location.hash))refresh(true);
 document.addEventListener('visibilitychange', () => {
  if (document.hidden) {
-  stopRefreshPolling();stopLogStream();cancelLogRequest();++registrationEpoch;clearTimeout(registrationExpiryTimer);registrationExpiryTimer=null;registrations=Object.create(null);registrationRevision=null;registrationProcesses=Object.create(null);paintRegistrations(true);
+  stopRefreshPolling();stopLogStream();cancelLogRequest();Overview.pause();++registrationEpoch;clearTimeout(registrationExpiryTimer);registrationExpiryTimer=null;registrations=Object.create(null);registrationRevision=null;registrationProcesses=Object.create(null);paintRegistrations(true);
  }
  else if (data && !dialog.open && !window.KurumiTOMLImport.isOpen() && !window.KurumiNodeDialog?.open) refresh(true);
 });
