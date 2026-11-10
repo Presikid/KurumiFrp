@@ -42,6 +42,7 @@ type Tunnel struct {
 	LocalPort            int      `json:"localPort"`
 	RemotePort           int      `json:"remotePort"`
 	Domains              []string `json:"domains"`
+	Locations            []string `json:"locations,omitempty"`
 	HostHeaderRewrite    string   `json:"hostHeaderRewrite,omitempty"`
 	ProbePath            string   `json:"probePath,omitempty"`
 	ProbeMethod          string   `json:"probeMethod,omitempty"`
@@ -100,6 +101,7 @@ func (s State) clone() State {
 	n := State{Instances: append([]Instance{}, s.Instances...), Tunnels: append([]Tunnel{}, s.Tunnels...)}
 	for j := range n.Tunnels {
 		n.Tunnels[j].Domains = append([]string{}, n.Tunnels[j].Domains...)
+		n.Tunnels[j].Locations = append([]string(nil), n.Tunnels[j].Locations...)
 		n.Tunnels[j].AllowUsers = append([]string(nil), n.Tunnels[j].AllowUsers...)
 	}
 	return n
@@ -360,6 +362,9 @@ func validate(s State) error {
 		if t.HostHeaderRewrite != "" && (t.Type != "http" || !validHostHeaderRewrite(t.HostHeaderRewrite)) {
 			return fmt.Errorf("HTTP Host 重写值无效或不适用于此协议")
 		}
+		if err := validateHTTPTypeLocations(t); err != nil {
+			return err
+		}
 		endpoint := strings.ToLower(i.Host) + fmt.Sprintf(":%d/", i.Port)
 		if ip := net.ParseIP(i.Host); ip != nil {
 			endpoint = ip.String() + fmt.Sprintf(":%d/", i.Port)
@@ -384,18 +389,34 @@ func validate(s State) error {
 			if !validSubdomain(t.Subdomain) {
 				return fmt.Errorf("HTTP/HTTPS 子域名无效")
 			}
+			claimRoute := func(domain string) error {
+				key := endpoint + t.Type + "/" + domain
+				if t.Type == "https" {
+					return claim(key, t.Name)
+				}
+				locations := t.Locations
+				if len(locations) == 0 {
+					locations = []string{""}
+				}
+				for _, location := range locations {
+					if err := claim(key+"/location/"+location, t.Name); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
 			for _, d := range t.Domains {
 				if !hostOK(d) || net.ParseIP(d) != nil {
 					return fmt.Errorf("虚拟主机域名无效")
 				}
 				if t.Enabled {
-					if err := claim(endpoint+t.Type+"/"+strings.ToLower(d), t.Name); err != nil {
+					if err := claimRoute(strings.ToLower(d)); err != nil {
 						return err
 					}
 				}
 			}
 			if t.Enabled && t.Subdomain != "" {
-				if err := claim(endpoint+t.Type+"/subdomain/"+strings.ToLower(t.Subdomain), t.Name); err != nil {
+				if err := claimRoute("subdomain/"+strings.ToLower(t.Subdomain)); err != nil {
 					return err
 				}
 			}
