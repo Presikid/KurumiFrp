@@ -35,6 +35,7 @@ type localAccount struct {
 	Role            string        `json:"role"`
 	Enabled         bool          `json:"enabled"`
 	Instances       []string      `json:"instances"`
+	ControlInstances *[]string     `json:"controlInstances,omitempty"`
 	AllowLogs       bool          `json:"allowLogs,omitempty"`
 	RemoteInstances []remoteGrant `json:"remoteInstances,omitempty"`
 	Salt            string        `json:"salt"`
@@ -53,12 +54,13 @@ type accountFile struct {
 }
 
 type accountView struct {
-	ID        string   `json:"id"`
-	Username  string   `json:"username"`
-	Role      string   `json:"role"`
-	Enabled   bool     `json:"enabled"`
-	Instances []string `json:"instances"`
-	AllowLogs bool     `json:"allowLogs"`
+	ID               string   `json:"id"`
+	Username         string   `json:"username"`
+	Role             string   `json:"role"`
+	Enabled          bool     `json:"enabled"`
+	Instances        []string `json:"instances"`
+	ControlInstances []string `json:"controlInstances"`
+	AllowLogs        bool     `json:"allowLogs"`
 }
 
 type principalContextKey struct{}
@@ -97,7 +99,7 @@ func loadAccounts(dir string) ([]localAccount, uint64, error) {
 		salt, saltErr := base64.RawStdEncoding.DecodeString(u.Salt)
 		hash, hashErr := base64.RawStdEncoding.DecodeString(u.Hash)
 		name := strings.ToLower(u.Username)
-		if !accountIDPattern.MatchString(u.ID) || !accountNamePattern.MatchString(u.Username) || !validRole(u.Role) || names[name] || ids[u.ID] || saltErr != nil || len(salt) != 16 || hashErr != nil || len(hash) != 32 || !validGrants(u.Instances) || (u.Role == "admin" && len(u.Instances) != 0) {
+		if !accountIDPattern.MatchString(u.ID) || !accountNamePattern.MatchString(u.Username) || !validRole(u.Role) || names[name] || ids[u.ID] || saltErr != nil || len(salt) != 16 || hashErr != nil || len(hash) != 32 || !validGrants(u.Instances) || (u.Role == "admin" && len(u.Instances) != 0) || (u.ControlInstances != nil && (!validGrants(*u.ControlInstances) || !subsetGrants(*u.ControlInstances, u.Instances) || (u.Role != "operator" && len(*u.ControlInstances) != 0))) {
 			return nil, 0, fmt.Errorf("本地账户文件无效")
 		}
 		names[name], ids[u.ID] = true, true
@@ -120,6 +122,30 @@ func validGrants(ids []string) bool {
 		seen[id] = true
 	}
 	return true
+}
+
+func subsetGrants(selected, allowed []string) bool {
+	grants := make(map[string]bool, len(allowed))
+	for _, id := range allowed {
+		grants[id] = true
+	}
+	for _, id := range selected {
+		if !grants[id] {
+			return false
+		}
+	}
+	return true
+}
+
+// Missing controlInstances preserves the previous operator behavior.
+func effectiveControlInstances(user localAccount) []string {
+	if user.Role != "operator" {
+		return []string{}
+	}
+	if user.ControlInstances == nil {
+		return append([]string{}, user.Instances...)
+	}
+	return append([]string{}, (*user.ControlInstances)...)
 }
 
 // Caller holds auth.mu. Publishing in-memory state only follows a successful write.
@@ -171,6 +197,15 @@ func (a *App) clearInstanceGrantsLocked(instanceID string) error {
 			}
 		}
 		users[i].Instances = grants
+		if user.ControlInstances != nil {
+			controls := make([]string, 0, len(*user.ControlInstances))
+			for _, id := range *user.ControlInstances {
+				if instanceID != "" && id != instanceID {
+					controls = append(controls, id)
+				}
+			}
+			users[i].ControlInstances = &controls
+		}
 	}
 	if !changed {
 		return nil
@@ -274,7 +309,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		views := make([]accountView, 0, len(a.auth.accounts))
 		for _, u := range a.auth.accounts {
-			views = append(views, accountView{u.ID, u.Username, u.Role, u.Enabled, append([]string{}, u.Instances...), u.AllowLogs})
+			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowLogs: u.AllowLogs})
 		}
 		revision := a.auth.accountsRevision
 		a.auth.mu.Unlock()
@@ -286,15 +321,16 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Action    string   `json:"action"`
-		Revision  uint64   `json:"revision"`
-		ID        string   `json:"id"`
-		Username  string   `json:"username"`
-		Role      string   `json:"role"`
-		Enabled   bool     `json:"enabled"`
-		Instances []string `json:"instances"`
-		AllowLogs *bool    `json:"allowLogs"`
-		Password  string   `json:"password"`
+		Action           string    `json:"action"`
+		Revision         uint64    `json:"revision"`
+		ID               string    `json:"id"`
+		Username         string    `json:"username"`
+		Role             string    `json:"role"`
+		Enabled          bool      `json:"enabled"`
+		Instances        []string  `json:"instances"`
+		ControlInstances *[]string `json:"controlInstances"`
+		AllowLogs        *bool     `json:"allowLogs"`
+		Password         string    `json:"password"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, 400, err)
@@ -308,6 +344,10 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 	if req.Action == "save" {
 		if !accountNamePattern.MatchString(req.Username) || !validRole(req.Role) || !validGrants(req.Instances) || (req.Role == "admin" && len(req.Instances) != 0) || (req.ID == "" && req.Password == "") {
 			fail(w, 400, fmt.Errorf("账户名称、角色、授权或密码无效"))
+			return
+		}
+		if req.ControlInstances != nil && (!validGrants(*req.ControlInstances) || !subsetGrants(*req.ControlInstances, req.Instances) || (req.Role != "operator" && len(*req.ControlInstances) != 0)) {
+			fail(w, 400, fmt.Errorf("可操作实例必须属于查看授权，且仅适用于操作员"))
 			return
 		}
 		if req.Password != "" {
@@ -414,6 +454,25 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u := localAccount{ID: req.ID, Username: req.Username, Role: req.Role, Enabled: req.Enabled, Instances: append([]string{}, req.Instances...), Salt: salt, Hash: hash}
+		if u.Role == "operator" {
+			if req.ControlInstances != nil {
+				controls := append([]string{}, (*req.ControlInstances)...)
+				u.ControlInstances = &controls
+			} else if index >= 0 && users[index].ControlInstances != nil {
+				// Older editors omit this field. Never retain a control grant after
+				// its corresponding view grant has been removed.
+				controls := make([]string, 0, len(*users[index].ControlInstances))
+				for _, id := range *users[index].ControlInstances {
+					for _, allowed := range u.Instances {
+						if id == allowed {
+							controls = append(controls, id)
+							break
+						}
+					}
+				}
+				u.ControlInstances = &controls
+			}
+		}
 		// Older account editors omit this option; preserve it for existing users.
 		if index >= 0 {
 			u.AllowLogs = users[index].AllowLogs
