@@ -45,6 +45,7 @@ type remoteGrant struct {
 	NodeID     string `json:"nodeId"`
 	InstanceID string `json:"instanceId"`
 	Binding    string `json:"binding"`
+	Control    bool   `json:"control,omitempty"`
 }
 
 type accountFile struct {
@@ -95,7 +96,7 @@ func loadAccounts(dir string) ([]localAccount, uint64, error) {
 	}
 	names, ids := map[string]bool{}, map[string]bool{}
 	for i, u := range file.Accounts {
-		if !validRemoteGrants(u.RemoteInstances) || (u.Role == "admin" && len(u.RemoteInstances) != 0) {
+		if !validRemoteGrants(u.RemoteInstances) || !validRemoteGrantRole(u.Role, u.RemoteInstances) {
 			return nil, 0, fmt.Errorf("本地账户文件中的远程实例授权无效；原文件已保留")
 		}
 		salt, saltErr := base64.RawStdEncoding.DecodeString(u.Salt)
@@ -140,6 +141,18 @@ func validRemoteGrants(grants []remoteGrant) bool {
 			return false
 		}
 		seen[key] = true
+	}
+	return true
+}
+
+func validRemoteGrantRole(role string, grants []remoteGrant) bool {
+	if role == "admin" {
+		return len(grants) == 0
+	}
+	for _, grant := range grants {
+		if grant.Control && role != "operator" {
+			return false
+		}
 	}
 	return true
 }
@@ -399,7 +412,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, fmt.Errorf("日志授权必须属于可查看实例"))
 			return
 		}
-		if req.RemoteInstances != nil && (!validRemoteGrants(*req.RemoteInstances) || (req.Role == "admin" && len(*req.RemoteInstances) != 0)) {
+		if req.RemoteInstances != nil && (!validRemoteGrants(*req.RemoteInstances) || !validRemoteGrantRole(req.Role, *req.RemoteInstances)) {
 			fail(w, 400, fmt.Errorf("远程实例授权无效"))
 			return
 		}
@@ -512,6 +525,11 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 				u.RemoteInstances = append([]remoteGrant{}, (*req.RemoteInstances)...)
 			} else if index >= 0 {
 				u.RemoteInstances = append([]remoteGrant{}, users[index].RemoteInstances...)
+				if u.Role != "operator" {
+					for i := range u.RemoteInstances {
+						u.RemoteInstances[i].Control = false
+					}
+				}
 			}
 		}
 		if u.Role == "operator" {

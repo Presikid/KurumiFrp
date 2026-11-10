@@ -3,6 +3,7 @@ package manager
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -23,6 +24,7 @@ type nodeControlPreview struct {
 	Kind     string `json:"kind"`
 	State    string `json:"state"`
 	Version  string `json:"version"`
+	Binding  string `json:"binding,omitempty"`
 }
 
 // a.mu is held. A process exit has its own mutex, and a new process can only
@@ -52,16 +54,18 @@ func (a *App) nodeControlPreviewLocked(id string) (nodeControlPreview, error) {
 	if state != "running" && state != "stopped" && state != "exited" && state != "autostart-failed" {
 		return nodeControlPreview{}, fmt.Errorf("实例状态未知")
 	}
+	binding := nodeInstanceBinding(a.store.DB.LocalTrafficIDs[id])
 	value, _ := json.Marshal(struct {
 		ID        string `json:"id"`
+		Binding   string `json:"binding"`
 		Revision  uint64 `json:"revision"`
 		State     string `json:"state"`
 		RunID     string `json:"runId"`
 		Epoch     string `json:"epoch"`
 		Operation string `json:"operation"`
-	}{id, a.store.DB.Revision, state, runID, a.nodeControlEpoch, a.nodeOperationVersions[id]})
+	}{id, binding, a.store.DB.Revision, state, runID, a.nodeControlEpoch, a.nodeOperationVersions[id]})
 	sum := sha256.Sum256(value)
-	return nodeControlPreview{Protocol: 1, ID: id, Name: instance.Name, Kind: instance.Kind, State: state, Version: hex.EncodeToString(sum[:])}, nil
+	return nodeControlPreview{Protocol: 1, ID: id, Name: instance.Name, Kind: instance.Kind, State: state, Version: hex.EncodeToString(sum[:]), Binding: binding}, nil
 }
 
 func validNodeControlRequest(id, action, version string, confirmed bool) bool {
@@ -171,7 +175,7 @@ func (a *App) nodeControlAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func validControlPreview(preview nodeControlPreview, id string) bool {
-	if preview.Protocol != 1 || preview.ID != id || !idPattern.MatchString(preview.ID) || !utf8.ValidString(preview.Name) || !labelOK(preview.Name) || (preview.Kind != "frpc" && preview.Kind != "frps") || !nodeTokenPattern.MatchString(preview.Version) {
+	if preview.Protocol != 1 || preview.ID != id || !idPattern.MatchString(preview.ID) || !utf8.ValidString(preview.Name) || !labelOK(preview.Name) || (preview.Kind != "frpc" && preview.Kind != "frps") || !nodeTokenPattern.MatchString(preview.Version) || (preview.Binding != "" && !nodeTokenPattern.MatchString(preview.Binding)) {
 		return false
 	}
 	switch preview.State {
@@ -179,6 +183,15 @@ func validControlPreview(preview nodeControlPreview, id string) bool {
 		return true
 	}
 	return false
+}
+
+// A capability ties an operator's preview to its account, target record,
+// instance incarnation and remote version. The local epoch changes on restart.
+func (a *App) remoteControlCapability(accountID string, accountRevision uint64, nodeID, stamp, instanceID, binding, version string, expires int64) string {
+	mac := hmac.New(sha256.New, []byte(a.nodeControlEpoch))
+	data, _ := json.Marshal([]any{"remote-control-v1", accountID, accountRevision, nodeID, stamp, instanceID, binding, version, expires})
+	_, _ = mac.Write(data)
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // Local administrators use this proxy. DNS is checked against the approved
@@ -191,6 +204,8 @@ func (a *App) nodeControlProxyAPI(w http.ResponseWriter, r *http.Request) {
 		Action     string `json:"action"`
 		Version    string `json:"version"`
 		Confirmed  bool   `json:"confirmed"`
+		Capability string `json:"capability"`
+		CapabilityExpiry int64 `json:"capabilityExpiry"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, 400, err)
@@ -199,6 +214,22 @@ func (a *App) nodeControlProxyAPI(w http.ResponseWriter, r *http.Request) {
 	if !validNodeControlRequest(req.InstanceID, req.Action, req.Version, req.Confirmed) {
 		fail(w, 400, fmt.Errorf("节点操作请求无效"))
 		return
+	}
+	principal := requestPrincipal(r)
+	grant, granted := principal.remoteControlGrant(req.ID, req.InstanceID)
+	if !principal.admin() {
+		if !granted {
+			fail(w, http.StatusForbidden, fmt.Errorf("没有此远程实例的操作权限"))
+			return
+		}
+		if req.Action != "preview" {
+			now := time.Now().Unix()
+			expected := a.remoteControlCapability(principal.AccountID, principal.AccountRevision, req.ID, req.Stamp, req.InstanceID, grant.Binding, req.Version, req.CapabilityExpiry)
+			if req.CapabilityExpiry <= now || req.CapabilityExpiry > now+120 || !nodeTokenPattern.MatchString(req.Capability) || subtle.ConstantTimeCompare([]byte(expected), []byte(req.Capability)) != 1 {
+				fail(w, http.StatusForbidden, fmt.Errorf("操作预览无效，请重新检查"))
+				return
+			}
+		}
 	}
 	target, _, code, err := a.reserveNodeLookup(req.ID, req.Stamp)
 	if err != nil {
@@ -306,7 +337,17 @@ func (a *App) nodeControlProxyAPI(w http.ResponseWriter, r *http.Request) {
 			fail(w, 502, fmt.Errorf("目标状态格式无效"))
 			return
 		}
-		reply(w, 200, map[string]any{"id": target.ID, "stamp": req.Stamp, "preview": preview})
+		result := map[string]any{"id": target.ID, "stamp": req.Stamp, "preview": preview}
+		if !principal.admin() {
+			if preview.Binding != grant.Binding {
+				fail(w, http.StatusForbidden, fmt.Errorf("目标实例已变化，请管理员重新授权"))
+				return
+			}
+			expires := time.Now().Add(2 * time.Minute).Unix()
+			result["capability"] = a.remoteControlCapability(principal.AccountID, principal.AccountRevision, req.ID, req.Stamp, req.InstanceID, grant.Binding, preview.Version, expires)
+			result["capabilityExpiry"] = expires
+		}
+		reply(w, 200, result)
 		return
 	}
 	var result struct {

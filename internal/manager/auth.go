@@ -63,6 +63,7 @@ type principal struct {
 	RemoteInstances   []remoteGrant `json:"-"`
 	Instances         []string `json:"-"`
 	AccountID         string   `json:"-"`
+	AccountRevision   uint64   `json:"-"`
 	gate              *sync.RWMutex
 }
 
@@ -140,6 +141,17 @@ func (p principal) canViewRemoteInstance(nodeID, instanceID, binding string) boo
 	return false
 }
 
+func (p principal) remoteControlGrant(nodeID, instanceID string) (remoteGrant, bool) {
+	if p.Role == "operator" {
+		for _, grant := range p.RemoteInstances {
+			if grant.NodeID == nodeID && grant.InstanceID == instanceID && grant.Control {
+				return grant, true
+			}
+		}
+	}
+	return remoteGrant{}, false
+}
+
 func (a *auth) localToken(r *http.Request) bool {
 	header := r.Header.Get("Authorization")
 	if !strings.HasPrefix(header, "Bearer ") {
@@ -178,7 +190,7 @@ func (a *auth) identityLocked(r *http.Request) (principal, bool) {
 	for _, account := range a.accounts {
 		if account.ID == session.accountID && account.Enabled {
 			logs := effectiveLogInstances(account)
-			return principal{Name: account.Username, Role: account.Role, Account: true, AllowLogs: account.AllowLogs && len(logs) != 0, Instances: append([]string(nil), account.Instances...), OperableInstances: effectiveControlInstances(account), LogInstances: logs, RemoteInstances: append([]remoteGrant(nil), account.RemoteInstances...), AccountID: account.ID, gate: account.gate}, true
+			return principal{Name: account.Username, Role: account.Role, Account: true, AllowLogs: account.AllowLogs && len(logs) != 0, Instances: append([]string(nil), account.Instances...), OperableInstances: effectiveControlInstances(account), LogInstances: logs, RemoteInstances: append([]remoteGrant(nil), account.RemoteInstances...), AccountID: account.ID, AccountRevision: a.accountsRevision, gate: account.gate}, true
 		}
 	}
 	delete(a.sessions, c.Value)
