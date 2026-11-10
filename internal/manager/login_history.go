@@ -3,7 +3,6 @@ package manager
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -73,15 +72,11 @@ func loadLoginHistory(dir string) *loginHistory {
 }
 
 func loginPeer(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
+	peer := loginPeerIP(r.RemoteAddr)
+	if peer == "" {
 		return "未知"
 	}
-	ip, err := netip.ParseAddr(host)
-	if err != nil || ip.Zone() != "" {
-		return "未知"
-	}
-	return ip.Unmap().String()
+	return peer
 }
 
 // Never persist arbitrary user-supplied text from the username field: it may
