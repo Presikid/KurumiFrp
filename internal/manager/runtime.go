@@ -77,10 +77,14 @@ type logBuffer struct {
 
 var ansi = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
-type logRedactor struct{ values []string }
+type logRedactor struct {
+	values []string
+	short  []string
+}
 
 func newLogRedactor(secrets []string) *logRedactor {
 	values := make(map[string]struct{})
+	short := make(map[string]struct{})
 	add := func(s string) {
 		if s != "" {
 			values[s] = struct{}{}
@@ -91,37 +95,63 @@ func newLogRedactor(secrets []string) *logRedactor {
 			values[clean] = struct{}{}
 		}
 	}
-	for _, secret := range secrets {
+	addSecret := func(secret string) {
 		if secret == "" {
-			continue // an empty replacement pattern would match between every byte
+			return // an empty replacement pattern would match between every byte
 		}
-		add(secret)
+		addVariant := func(value string) {
+			add(value)
+			if len(secret) < 8 && value != "" {
+				short[value] = struct{}{}
+			}
+		}
+		addVariant(secret)
 		// A raw multiline secret is split by the line-oriented log buffer.
 		if strings.Contains(secret, "\n") {
 			for _, part := range strings.Split(secret, "\n") {
-				add(part)
-				add(strings.TrimSuffix(part, "\r"))
+				addVariant(part)
+				addVariant(strings.TrimSuffix(part, "\r"))
 			}
 		}
 		jsonText, _ := json.Marshal(secret)
-		add(templateCredential(secret))
-		add("\"" + templateCredential(secret) + "\"")
+		addVariant(templateCredential(secret))
+		addVariant("\"" + templateCredential(secret) + "\"")
 		for _, quoted := range []string{quote(secret), string(jsonText), strconv.Quote(secret)} {
-			add(quoted)
-			add(quoted[1 : len(quoted)-1])
+			addVariant(quoted)
+			addVariant(quoted[1 : len(quoted)-1])
+		}
+	}
+	for _, secret := range secrets {
+		addSecret(secret)
+		// HTTP transports can strip surrounding spaces or tabs before a value
+		// appears in an error. Treat the remaining nonempty value as sensitive.
+		trimmed := strings.Trim(secret, " \t")
+		if trimmed != "" && trimmed != secret {
+			addSecret(trimmed)
 		}
 	}
 	ordered := make([]string, 0, len(values))
 	for value := range values {
 		ordered = append(ordered, value)
 	}
-	return &logRedactor{values: ordered}
+	shortValues := make([]string, 0, len(short))
+	for value := range short {
+		shortValues = append(shortValues, value)
+	}
+	return &logRedactor{values: ordered, short: shortValues}
 }
 
 // Replace masks the union of all matching spans. Matching against the original
 // line matters: replacing one credential first could hide the start of another
 // overlapping credential and leave the latter's tail visible.
 func (r *logRedactor) Replace(s string) string {
+	// A short value can match ordinary text constantly. Do not silently replace
+	// individual characters and make the result look like the original line.
+	for _, value := range r.short {
+		if strings.Contains(s, value) {
+			return "[内容已隐藏：可能包含短密钥]"
+		}
+	}
 	var boundaries []int
 	const maxMatches = 32768
 	matches := 0

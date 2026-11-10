@@ -491,6 +491,9 @@ func newStore(dir string) (*Store, error) {
 			}
 		}
 		for _, t := range st.Tunnels {
+			if e = s.validateStoredHTTPHeaders(t); e != nil {
+				return nil, e
+			}
 			if t.Secret != "" {
 				if _, e = s.decrypt(t.Secret); e != nil {
 					return nil, e
@@ -537,6 +540,11 @@ func (s *Store) encrypt(plain string) (string, error) {
 			return "", fmt.Errorf("密钥不能包含控制字符")
 		}
 	}
+	return s.encryptValue(plain)
+}
+
+// encryptValue seals already-validated UTF-8 data, including an empty value.
+func (s *Store) encryptValue(plain string) (string, error) {
 	block, e := aes.NewCipher(s.key)
 	if e != nil {
 		return "", e

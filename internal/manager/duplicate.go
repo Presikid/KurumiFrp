@@ -195,6 +195,8 @@ func duplicatedTunnel(src Tunnel, id, instanceID, name string) Tunnel {
 		DisableAssistedAddrs: src.DisableAssistedAddrs,
 		Subdomain:            src.Subdomain, HostHeaderRewrite: src.HostHeaderRewrite, Multiplexer: src.Multiplexer, HTTPAuthEnabled: src.HTTPAuthEnabled, HTTPRouteByUser: src.HTTPRouteByUser, HTTPUser: src.HTTPUser,
 		HTTPPassword: src.HTTPPassword, RouteByHTTPUser: src.RouteByHTTPUser,
+		RequestHeaders: append([]HTTPHeader(nil), src.RequestHeaders...),
+		ResponseHeaders: append([]HTTPHeader(nil), src.ResponseHeaders...),
 	}
 }
 

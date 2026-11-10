@@ -140,6 +140,49 @@ func (m *tomlMapper) secret(s *Store, value, path string) string {
 	return enc
 }
 
+func (m *tomlMapper) httpHeaders(store *Store, t *tomlTable, field, prefix string) []HTTPHeader {
+	raw, ok := m.take(t, field+".set", prefix)
+	if !ok {
+		return nil
+	}
+	table, ok := raw.(*tomlTable)
+	if !ok {
+		m.issue(prefix+field+".set", "需要由 HTTP 头名称和字符串值组成的表")
+		return nil
+	}
+	if len(table.values) > maxHTTPHeadersPerDirection {
+		m.issue(prefix+field+".set", "最多支持 32 个 HTTP 头")
+		return nil
+	}
+	names := make([]string, 0, len(table.values))
+	for name := range table.values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	seen := make(map[string]bool, len(names))
+	result := make([]HTTPHeader, 0, len(names))
+	for _, name := range names {
+		path := prefix + field + ".set." + safeImportKey(name)
+		if !validHTTPHeaderName(name) || seen[strings.ToLower(name)] {
+			m.issue(path, "HTTP 头名称无效或与同方向其他名称重复")
+			continue
+		}
+		seen[strings.ToLower(name)] = true
+		value, ok := table.values[name].(string)
+		if !ok || value == "<redacted>" || !validHTTPHeaderValue(value) {
+			m.issue(path, "需要有效的实际 HTTP 头字符串，不能使用脱敏占位符")
+			continue
+		}
+		encrypted, err := store.encryptHTTPHeaderValue(value)
+		if err != nil {
+			m.issue(path, "无法保存 HTTP 头")
+			continue
+		}
+		result = append(result, HTTPHeader{Name: name, Value: encrypted})
+	}
+	return result
+}
+
 var safeTOMLKey = regexp.MustCompile(`^[A-Za-z0-9_-]{1,80}$`)
 
 func safeImportKey(s string) string {
@@ -320,6 +363,8 @@ func (m *tomlMapper) mapRule(store *Store, t *tomlTable, prefix, instanceID stri
 			}
 		}
 		if typ == "http" {
+			r.RequestHeaders = m.httpHeaders(store, t, "requestHeaders", prefix)
+			r.ResponseHeaders = m.httpHeaders(store, t, "responseHeaders", prefix)
 			r.HostHeaderRewrite = m.str(t, "hostHeaderRewrite", prefix, "")
 			r.Locations = m.strings(t, "locations", prefix)
 			r.HTTPRouteByUser = m.str(t, "routeByHTTPUser", prefix, "")
@@ -361,7 +406,7 @@ func (m *tomlMapper) mapRule(store *Store, t *tomlTable, prefix, instanceID stri
 	if !portOK(r.LocalPort) && !(visitor && supportsUnboundVisitor(r.Type) && r.LocalPort < 0) {
 		m.issue(prefix+"localPort / bindPort", "端口无效")
 	}
-	pruneImportTables(t, "transport", "healthCheck", "natTraversal")
+	pruneImportTables(t, "transport", "healthCheck", "natTraversal", "requestHeaders", "responseHeaders")
 	m.unknown(t, prefix)
 	return r
 }
