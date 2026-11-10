@@ -59,6 +59,7 @@ type principal struct {
 	Account           bool     `json:"account"`
 	AllowLogs         bool     `json:"allowLogs,omitempty"`
 	OperableInstances []string `json:"operableInstances,omitempty"`
+	AllowedActions    []string `json:"allowedActions,omitempty"`
 	LogInstances      []string `json:"logInstances,omitempty"`
 	RemoteInstances   []remoteGrant `json:"-"`
 	Instances         []string `json:"-"`
@@ -68,6 +69,25 @@ type principal struct {
 }
 
 func (p principal) admin() bool { return p.Role == "admin" }
+
+func (p principal) canPerformAction(action string) bool {
+	if p.admin() {
+		return true
+	}
+	if p.Role != "operator" {
+		return false
+	}
+	for _, allowed := range p.AllowedActions {
+		if allowed == action {
+			return true
+		}
+	}
+	return false
+}
+
+func (p principal) canPerformRemoteAction() bool {
+	return p.canPerformAction("start") || p.canPerformAction("stop") || p.canPerformAction("restart")
+}
 func (p principal) canOperate(id string) bool {
 	if p.admin() {
 		return true
@@ -190,7 +210,7 @@ func (a *auth) identityLocked(r *http.Request) (principal, bool) {
 	for _, account := range a.accounts {
 		if account.ID == session.accountID && account.activeAt(time.Now()) {
 			logs := effectiveLogInstances(account)
-			return principal{Name: account.Username, Role: account.Role, Account: true, AllowLogs: account.AllowLogs && len(logs) != 0, Instances: append([]string(nil), account.Instances...), OperableInstances: effectiveControlInstances(account), LogInstances: logs, RemoteInstances: append([]remoteGrant(nil), account.RemoteInstances...), AccountID: account.ID, AccountRevision: a.accountsRevision, gate: account.gate}, true
+			return principal{Name: account.Username, Role: account.Role, Account: true, AllowLogs: account.AllowLogs && len(logs) != 0, Instances: append([]string(nil), account.Instances...), OperableInstances: effectiveControlInstances(account), AllowedActions: effectiveOperatorActions(account), LogInstances: logs, RemoteInstances: append([]remoteGrant(nil), account.RemoteInstances...), AccountID: account.ID, AccountRevision: a.accountsRevision, gate: account.gate}, true
 		}
 	}
 	delete(a.sessions, c.Value)

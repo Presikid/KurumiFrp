@@ -218,7 +218,7 @@ func (a *App) nodeControlProxyAPI(w http.ResponseWriter, r *http.Request) {
 	principal := requestPrincipal(r)
 	grant, granted := principal.remoteControlGrant(req.ID, req.InstanceID)
 	if !principal.admin() {
-		if !granted {
+		if !granted || (req.Action == "preview" && !principal.canPerformRemoteAction()) || (req.Action != "preview" && !principal.canPerformAction(req.Action)) {
 			fail(w, http.StatusForbidden, fmt.Errorf("没有此远程实例的操作权限"))
 			return
 		}

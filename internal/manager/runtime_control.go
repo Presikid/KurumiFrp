@@ -219,11 +219,15 @@ func (a *App) runtimeAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
-	if !p.canOperate(req.ID) {
+	validate := r.URL.Path == "/api/validate"
+	action := req.Action
+	if validate {
+		action = "validate"
+	}
+	if !p.canOperate(req.ID) || !p.canPerformAction(action) {
 		fail(w, http.StatusForbidden, fmt.Errorf("没有此实例的操作权限"))
 		return
 	}
-	validate := r.URL.Path == "/api/validate"
 	snapshot, op, status, err := a.beginRuntimeOperation(r.Context(), req, validate)
 	if err != nil {
 		if !validate && (req.Action == "start" || req.Action == "restart") && a.webhooks != nil {
