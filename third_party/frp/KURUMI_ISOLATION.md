@@ -95,7 +95,9 @@ lock file; it must be checked after the old process has exited before restart.
 The owner-managed client/server control loops, client reconnect loop, server
 port-reservation cleanup, selected
 SUDP bridge workers, XTCP stream-open worker and watchdog, and server shutdown
-worker also report panics to their owning instance. A failed control or shutdown
+worker also report panics to their owning instance. NAT traversal's concurrent
+probe workers and cancellation callback use the same reporting path, and a
+cancelled traversal does not deliberately hand off its closed socket. A failed control or shutdown
 worker or embedded cleanup wrapper may leave its completion signal open; this intentionally retains ownership
 when cleanup cannot be proved. Other bare goroutines, callbacks, and dependency
 goroutines remain outside this coverage. A recovered panic does not prove that
