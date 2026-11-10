@@ -17,13 +17,14 @@ import (
 // Firewall settings are local machine authority and are not portable backups.
 // The kernel table is changed only when an administrator explicitly applies.
 type firewallConfig struct {
-	Version  int    `json:"version"`
-	Revision uint64 `json:"revision"`
-	TableID  string `json:"tableId"`
-	Enabled  bool   `json:"enabled"`
-	Mode     string `json:"mode"`
-	Ports    string `json:"ports"`
-	Sources  string `json:"sources"`
+	Version       int    `json:"version"`
+	Revision      uint64 `json:"revision"`
+	TableID       string `json:"tableId"`
+	Enabled       bool   `json:"enabled"`
+	RecordBlocked bool   `json:"recordBlocked,omitempty"`
+	Mode          string `json:"mode"`
+	Ports         string `json:"ports"`
+	Sources       string `json:"sources"`
 }
 
 type firewallManager struct {
@@ -51,7 +52,7 @@ func validateFirewallConfig(c firewallConfig) error {
 		return fmt.Errorf("防火墙配置格式无效")
 	}
 	if !c.Enabled {
-		if c.Mode != "" || c.Ports != "" || c.Sources != "" {
+		if c.Mode != "" || c.Ports != "" || c.Sources != "" || c.RecordBlocked {
 			return fmt.Errorf("关闭防火墙时配置应为空")
 		}
 		return nil
@@ -113,17 +114,29 @@ func renderFirewall(c firewallConfig) (string, error) {
 	}
 	writeSet("sources4", "ipv4_addr", ipv4)
 	writeSet("sources6", "ipv6_addr", ipv6)
+	if c.RecordBlocked {
+		b.WriteString("  set seen4 { type ipv4_addr . inet_proto . inet_service; flags dynamic, timeout; timeout 1h; size 1024; }\n")
+		b.WriteString("  set seen6 { type ipv6_addr . inet_proto . inet_service; flags dynamic, timeout; timeout 1h; size 1024; }\n")
+	}
 	b.WriteString("  chain filter {\n    type filter hook prerouting priority -150; policy accept;\n")
 	b.WriteString("    iifname \"lo\" return\n    ct state != new return\n    fib daddr type != local return\n    meta l4proto != { tcp, udp } return\n")
 	op := ""
 	if policy.allowOnly {
 		op = "!= "
 	}
+	writeRule := func(family, source, suffix string) {
+		match := fmt.Sprintf("meta nfproto %s th dport @ports %s saddr %s@sources%s", family, source, op, suffix)
+		if c.RecordBlocked {
+			fmt.Fprintf(&b, "    %s update @seen%s { %s saddr . meta l4proto . th dport }\n", match, suffix, source)
+		}
+		// A full record set must not prevent the following rule from dropping.
+		fmt.Fprintf(&b, "    %s counter drop\n", match)
+	}
 	if policy.allowOnly || len(ipv4) != 0 {
-		fmt.Fprintf(&b, "    meta nfproto ipv4 th dport @ports ip saddr %s@sources4 counter drop\n", op)
+		writeRule("ipv4", "ip", "4")
 	}
 	if policy.allowOnly || len(ipv6) != 0 {
-		fmt.Fprintf(&b, "    meta nfproto ipv6 th dport @ports ip6 saddr %s@sources6 counter drop\n", op)
+		writeRule("ipv6", "ip6", "6")
 	}
 	b.WriteString("  }\n}\n")
 	return b.String(), nil
@@ -161,11 +174,12 @@ func (a *App) firewallAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Revision uint64 `json:"revision"`
-		Enabled  *bool  `json:"enabled"`
-		Mode     string `json:"mode"`
-		Ports    string `json:"ports"`
-		Sources  string `json:"sources"`
+		Revision      uint64 `json:"revision"`
+		Enabled       *bool  `json:"enabled"`
+		RecordBlocked *bool `json:"recordBlocked"`
+		Mode          string `json:"mode"`
+		Ports         string `json:"ports"`
+		Sources       string `json:"sources"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, 400, err)
@@ -186,6 +200,11 @@ func (a *App) firewallAPI(w http.ResponseWriter, r *http.Request) {
 	next := firewallConfig{Version: 1, Revision: f.config.Revision + 1, TableID: tableID, Enabled: *req.Enabled}
 	if *req.Enabled {
 		next.Mode, next.Ports, next.Sources = req.Mode, strings.TrimSpace(req.Ports), strings.TrimSpace(req.Sources)
+		if req.RecordBlocked != nil {
+			next.RecordBlocked = *req.RecordBlocked
+		} else {
+			next.RecordBlocked = f.config.RecordBlocked
+		}
 	}
 	text, err := renderFirewall(next)
 	if err != nil {
@@ -211,4 +230,44 @@ func (a *App) firewallAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	f.last = "applied"
 	reply(w, 200, map[string]any{"config": f.config, "lastResult": f.last})
+}
+
+// A read is an observation of the named table, not proof that the desired
+// configuration is currently active. The same lock serializes it with applies.
+func (a *App) firewallSeenAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet || r.URL.RawQuery != "" {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	f := a.firewall
+	if f == nil {
+		fail(w, 503, fmt.Errorf("防火墙管理不可用"))
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.loadError || !firewallSupported() {
+		fail(w, 503, fmt.Errorf("防火墙配置或记录不可读取"))
+		return
+	}
+	if !f.config.Enabled || !f.config.RecordBlocked {
+		reply(w, 200, map[string]any{"enabled": false, "records": []firewallSeen{}})
+		return
+	}
+	if err := validateFirewallConfig(f.config); err != nil {
+		fail(w, 503, fmt.Errorf("防火墙配置无效"))
+		return
+	}
+	records, partial, err := readFirewallSeen(r.Context(), "kurumi_"+f.config.TableID)
+	if err != nil {
+		fail(w, 502, fmt.Errorf("无法读取内核记录，实际规则状态未知"))
+		return
+	}
+	reply(w, 200, map[string]any{"enabled": true, "records": records, "partial": partial})
+}
+
+type firewallSeen struct {
+	Source   string `json:"source"`
+	Protocol string `json:"protocol"`
+	Port     int    `json:"port"`
 }

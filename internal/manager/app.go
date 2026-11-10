@@ -297,6 +297,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.firewallAPI(w, r)
 			return
 		}
+		if r.URL.Path == "/api/firewall/seen" {
+			a.firewallSeenAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/accounts" {
 			a.accountsAPI(w, r)
 			return
