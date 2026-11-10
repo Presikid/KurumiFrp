@@ -506,10 +506,28 @@ func (ks *KCPTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 	}
 	result := make(chan openResult)
 	accepted := make(chan bool, 1)
-	watchdog := time.AfterFunc(tunnelOpenTimeout, func() { ks.retire(session) })
+	// A timeout cannot retire the session after a successful handoff.
+	var completionMu sync.Mutex
+	completed := false
+	finish := func() bool {
+		completionMu.Lock()
+		defer completionMu.Unlock()
+		if completed {
+			return false
+		}
+		completed = true
+		return true
+	}
+	watchdog := time.AfterFunc(tunnelOpenTimeout, func() {
+		if finish() {
+			ks.retire(session)
+		}
+	})
 	go func() {
 		defer func() {
-			watchdog.Stop()
+			if finish() {
+				watchdog.Stop()
+			}
 			<-openSlots
 		}()
 		conn, err := session.Open()
@@ -538,6 +556,11 @@ func (ks *KCPTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 			accepted <- false
 			return nil, ctx.Err()
 		}
+		if !finish() {
+			accepted <- false
+			return nil, context.DeadlineExceeded
+		}
+		watchdog.Stop()
 		accepted <- true
 	case <-ctx.Done():
 		return nil, ctx.Err()
