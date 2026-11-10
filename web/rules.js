@@ -49,8 +49,9 @@ const RulesPage = (() => {
   const disabled = blocked(ctx) ? 'disabled' : '';
   const checked = rows.length > 0 && rows.every(t => selected.has(t.id));
   const message = all ? '没有符合筛选条件的规则。' : '先添加 frpc 实例，再创建连接规则。';
+  const exportButton = ctx.data.identity?.role === 'admin' ? `<button data-action="batch-export" ${!selected.size || disabled ? 'disabled' : ''}>导出选中配置</button>` : '';
   return `<div class="rules-list-head"><div class="rules-list-title"><div><h2>规则列表</h2><p>显示 ${rows.length} / ${all} 条</p></div><span class="rules-revision">草稿 r${ctx.data.revision}</span></div>
-   <div class="rules-batch"><label class="rules-select-all"><input class="rule-checkbox" type="checkbox" data-rule-select-all ${checked ? 'checked' : ''} ${!rows.length || disabled ? 'disabled' : ''}>选择当前筛选</label><span class="rules-selection-count" role="status">已选 ${selected.size} 条</span><div class="rules-batch-actions"><button data-action="batch-enable" ${!selected.size || disabled ? 'disabled' : ''}>批量草稿启用</button><button data-action="batch-disable" ${!selected.size || disabled ? 'disabled' : ''}>批量草稿停用</button><button class="danger" data-action="batch-delete" ${!selected.size || disabled ? 'disabled' : ''}>批量删除草稿</button><button class="quiet" data-action="clear-rule-selection" ${!selected.size || disabled ? 'disabled' : ''}>清空选择</button></div></div>
+   <div class="rules-batch"><label class="rules-select-all"><input class="rule-checkbox" type="checkbox" data-rule-select-all ${checked ? 'checked' : ''} ${!rows.length || disabled ? 'disabled' : ''}>选择当前筛选</label><span class="rules-selection-count" role="status">已选 ${selected.size} 条</span><div class="rules-batch-actions"><button data-action="batch-enable" ${!selected.size || disabled ? 'disabled' : ''}>批量草稿启用</button><button data-action="batch-disable" ${!selected.size || disabled ? 'disabled' : ''}>批量草稿停用</button><button class="danger" data-action="batch-delete" ${!selected.size || disabled ? 'disabled' : ''}>批量删除草稿</button>${exportButton}<button class="quiet" data-action="clear-rule-selection" ${!selected.size || disabled ? 'disabled' : ''}>清空选择</button></div></div>
    <p class="rules-selection-note">只选择当前筛选中的规则；筛选或草稿版本变化时会清空选择。</p></div>
    ${rows.length ? `<div class="rules-cards">${rows.map(t => card(t, ctx)).join('')}</div>` : ctx.empty(all ? '没有匹配的规则' : '还没有连接规则', message, '', all ? 'search' : '')}`;
  }
@@ -96,7 +97,7 @@ const RulesPage = (() => {
   if (all) { all.checked = !!rows.length && count === rows.length; all.indeterminate = count > 0 && count < rows.length; }
   const label = root.querySelector('.rules-selection-count');
   if (label) label.textContent = `已选 ${selected.size} 条`;
-  root.querySelectorAll('[data-action="batch-enable"], [data-action="batch-disable"], [data-action="batch-delete"], [data-action="clear-rule-selection"]').forEach(button => { button.disabled = !selected.size || blocked(ctx); });
+  root.querySelectorAll('[data-action="batch-enable"], [data-action="batch-disable"], [data-action="batch-delete"], [data-action="batch-export"], [data-action="clear-rule-selection"]').forEach(button => { button.disabled = !selected.size || blocked(ctx); });
  }
  function change(target, ctx) {
   if (blocked(ctx)) return false;

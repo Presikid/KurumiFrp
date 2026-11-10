@@ -941,6 +941,41 @@ async function synchronizeRules() {
  if(refreshed){RulesPage.setNeedsSync(false);if(data&&page==='tunnels')render();toast('规则草稿已刷新。');}
  else toast('无法刷新规则草稿，请稍后重试。');
 }
+async function exportSelectedRules() {
+ if(data?.identity?.role!=='admin')return;
+ const plan=RulesPage.plan(rulesContext(),null);
+ if(!plan){RulesPage.clear();paintRulesList();toast('规则选择已失效，请重新选择。');return;}
+ if(!confirm(`导出选中的 ${plan.ids.length} 条规则？\nZIP 内每个客户端一份 TOML，包含明文客户端认证令牌、配对密钥和 HTTP 密码，文件不加密。请妥善保管。`))return;
+ if(!data || data.revision!==plan.revision){toast('草稿已变化，请刷新后重新选择。');return;}
+ const generation=authGeneration,navigation=navigationGeneration,controller=new AbortController();
+ const timeout=setTimeout(()=>controller.abort(),60000);
+ RulesPage.setBusy(true);render();
+ try {
+  const response=await fetch('/api/tunnels/export',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:plan.revision,ids:plan.ids,confirmed:true}),signal:controller.signal});
+  if(!response.ok){
+   if(response.status===401&&generation===authGeneration){if(!window.KurumiDeferNodeLogout?.())showLogin();}
+   let message='无法导出所选规则。';
+   try{const result=await response.json();if(typeof result.error==='string')message=result.error;}catch(_){}
+   const error=new Error(message);error.status=response.status;throw error;
+  }
+  if((response.headers.get('Content-Type')||'').split(';')[0].trim().toLowerCase()!=='application/zip')throw new Error('导出响应格式无效。');
+  const declared=Number(response.headers.get('Content-Length')||0);
+  if(declared>20*1024*1024)throw new Error('导出文件超过大小限制。');
+  const blob=await response.blob();
+  if(!blob.size||blob.size>20*1024*1024)throw new Error('导出文件无效或超过大小限制。');
+  if(generation!==authGeneration||navigation!==navigationGeneration||page!=='tunnels'||!data||data.identity?.role!=='admin')return;
+  if(data.revision!==plan.revision)throw new Error('草稿已变化，请刷新后重新导出。');
+  download('kurumi-selected-rules.zip',blob,'application/zip');
+  toast('所选配置已导出，文件包含明文认证信息，请妥善保管。');
+ } catch(err) {
+  if(generation!==authGeneration||navigation!==navigationGeneration||page!=='tunnels')return;
+  if(err.status===409){RulesPage.clear();RulesPage.setNeedsSync(true);}
+  toast(err.name==='AbortError'?'导出超时，请稍后重试。':err.message);
+ } finally {
+  clearTimeout(timeout);
+  if(generation===authGeneration){RulesPage.setBusy(false);if(data&&page==='tunnels')render();}
+ }
+}
 async function batchRuleOperation(operation) {
  const deleting=operation==='delete',enabled=operation==='enable';
  const plan=RulesPage.plan(rulesContext(),deleting?null:enabled);
@@ -984,6 +1019,7 @@ $('#content').addEventListener('click',async e=>{
  if(action==='refresh-rules'){await synchronizeRules();return;}
  if(['new-tunnel','new-tunnel-batch','edit-tunnel','duplicate-tunnel','delete-tunnel','toggle','probe'].includes(action)&&RulesPage.isUnavailable()){toast('批量操作正在处理或草稿需要刷新，请稍后再操作。');return;}
  if(action==='clear-rule-selection'){RulesPage.clear();RulesPage.paint(rulesContext());return;}
+ if(action==='batch-export'){await exportSelectedRules();return;}
  if(action==='batch-enable'||action==='batch-disable'||action==='batch-delete'){await batchRuleOperation(action.slice(6));return;}
  if(action==='new-instance'||action==='edit-instance'){openEditor('instance',id);return;}
  if(action==='new-tunnel-batch'){openTunnelBatchEditor();return;}

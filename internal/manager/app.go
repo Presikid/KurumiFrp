@@ -336,6 +336,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.runtimeAPI(w, r)
 			return
 		}
+		if r.URL.Path == "/api/tunnels/export" {
+			a.batchTunnelExportAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/nodes" || r.URL.Path == "/api/nodes/check" || r.URL.Path == "/api/nodes/control" || r.URL.Path == "/api/nodes/resolve" || r.URL.Path == "/api/nodes/confirm" {
 			a.nodesAPI(w, r)
 			return
