@@ -157,7 +157,8 @@ func (r *embeddedRun) serve(ctx context.Context, target string, cfg RuntimeConfi
 
 	config, err := parseEmbeddedConfig(ctx, target, cfg)
 	if err != nil {
-		if ctx.Err() == nil {
+		// A concurrent cancellation must not hide a real configuration error.
+		if !errors.Is(err, context.Canceled) {
 			r.err = err
 		}
 		return
@@ -296,6 +297,11 @@ func (r *embeddedRun) runClient(ctx context.Context, instanceID string, config *
 	if err != nil {
 		return errors.New("无法创建内嵌客户端")
 	}
+	// Publish the handle before Run can exit, so a concurrent stop can inspect
+	// the engine directly even if observeEngine has not yet run.
+	r.mu.Lock()
+	r.client = client
+	r.mu.Unlock()
 	defer func() {
 		if value := recover(); value != nil {
 			embeddedCleanupUnknown.Store(true)
@@ -360,6 +366,36 @@ func (r *embeddedRun) Wait() error {
 
 func (r *embeddedRun) Ready() <-chan struct{} { return r.ready }
 func (r *embeddedRun) Done() <-chan struct{}  { return r.exiting }
+
+// ExitedNow observes the upstream signal directly as well as the forwarded
+// signal, so callers do not depend on the relay goroutine being scheduled.
+func (r *embeddedRun) ExitedNow() bool {
+	r.mu.RLock()
+	exiting, client, server := r.engineExit, r.client, r.server
+	r.mu.RUnlock()
+	var completed <-chan struct{}
+	if client != nil {
+		if exiting == nil {
+			exiting = client.Exiting()
+		}
+		completed = client.Done()
+	} else if server != nil {
+		if exiting == nil {
+			exiting = server.Exiting()
+		}
+		completed = server.Done()
+	}
+	select {
+	case <-exiting:
+		return true
+	case <-completed:
+		return true
+	case <-r.exiting:
+		return true
+	default:
+		return false
+	}
+}
 
 // Recheck the engine's own signal directly; the forwarding goroutine can be
 // scheduled after Run has already exited. Wait still owns final cleanup.
