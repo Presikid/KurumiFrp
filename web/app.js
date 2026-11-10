@@ -748,20 +748,50 @@ function openEditor(kind,id) {
  const clients=data.state.instances.filter(i=>i.kind==='frpc');
  if(kind==='tunnel'&&!clients.length){toast('请先添加一个 frpc 客户端实例');return;}
  editing={kind,id:old?.id||'',old};editRev=data.revision;
+ $('#editor button[type="submit"]').textContent='保存草稿';
  $('#form-error').textContent='';
  $('#dialog-body').innerHTML=kind==='instance'?ProtocolEditor.instance(old):ProtocolEditor.tunnel(old,clients);
  stopRefreshPolling();updateFields();dialog.showModal();
+}
+function openScheduleEditor(id) {
+ const instance=data.state.instances.find(i=>i.id===id);
+ if(!instance || data.identity?.role!=='admin'){toast('实例不存在或没有管理权限');return;}
+ const plan=data.schedules?.[id];
+ editing={kind:'schedule',id,version:plan?.version||'',old:plan,submitting:false};editRev=data.revision;
+ $('#form-error').textContent='';
+ $('#editor button[type="submit"]').textContent='保存计划';
+ $('#dialog-body').innerHTML=window.KurumiSchedules.editor(instance,plan,esc);
+ stopRefreshPolling();dialog.showModal();
 }
 function openTunnelBatchEditor() {
  const clients=data.state.instances.filter(i=>i.kind==='frpc');
  if(!clients.length){toast('请先添加一个 frpc 客户端实例');return;}
  editing={kind:'tunnel-batch',submitting:false};editRev=data.revision;
+ $('#editor button[type="submit"]').textContent='保存草稿';
  $('#form-error').textContent='';
  $('#dialog-body').innerHTML=ProtocolEditor.batch(clients);
  stopRefreshPolling();dialog.showModal();
 }
 function updateFields(){
- if(editing) ProtocolEditor.update($('#editor'),editing,data.state.tunnels);
+ if(editing && editing.kind!=='schedule') ProtocolEditor.update($('#editor'),editing,data.state.tunnels);
+}
+async function saveSchedule(remove) {
+ const current=editing;
+ if(!current || current.kind!=='schedule' || current.submitting)return;
+ let value;
+ try { value=remove?{remove:true}:window.KurumiSchedules.value($('#editor')); }
+ catch(err) { $('#form-error').textContent=err.message; return; }
+ if(remove && !confirm('删除此定时计划？原有的自动恢复设置将在下次启动工作台时生效。'))return;
+ if(!remove && !value.enabled && current.old?.enabled && !confirm('关闭计划后，原有的自动恢复设置将在下次启动工作台时生效。继续？'))return;
+ const generation=authGeneration, button=$('#editor button[type="submit"]');
+ current.submitting=true;button.disabled=true;$('#cancel').disabled=true;$('#dialog-body').inert=true;
+ const release=()=>{if(editing===current){current.submitting=false;button.disabled=false;$('#cancel').disabled=false;$('#dialog-body').inert=false;}};
+ try {
+  await api('schedules',{revision:editRev,id:current.id,version:current.version,...value});
+  if(generation!==authGeneration)return;
+  release();dialog.close();toast(remove?'计划已删除':'计划已保存');await refresh();
+ } catch(err) { if(generation===authGeneration)$('#form-error').textContent=err.message; }
+ finally { release(); }
 }
 function navigate(to){if(!titles[to] || (to!=='nodes' && window.KurumiNodeNavigationBlocked?.()))return;cancelPageRequests();++navigationGeneration;page=to;location.hash=to;render();refreshRegistration();}
 async function openWebhookDialog() { await window.KurumiWebhooks.open(); }
@@ -844,7 +874,7 @@ function openBackupDialog(mode, scope='all', snapshot=0) {
  backupDialogEl.dataset.revision=String(data.revision);
  backupDialogEl.innerHTML=mode==='export'
   ? '<form id="backup-form"><h2>导出加密备份</h2><p class="muted">密码不会保存在工作台；遗失密码后无法恢复，请将密码和文件分开保管。</p><div class="form-grid"><label>备份密码<input name="password" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></label><label>确认密码<input name="confirm" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></label></div><div class="dialog-actions"><button type="button" data-backup-cancel>取消</button><button type="submit" class="primary">导出加密文件</button></div><p class="error" role="alert"></p></form>'
-  : '<form id="backup-form"><h2>恢复加密备份</h2><p class="muted">恢复前须停止全部托管实例并等待操作结束。恢复将替换当前配置与历史快照，不会自动启动实例；不会恢复 frp 核心程序、本机管理令牌、Webhook 和节点设置。</p><div class="form-grid"><label class="span-2">备份文件<input name="file" type="file" accept=".json,application/json" required></label><label class="span-2">备份密码<input name="password" type="password" minlength="12" maxlength="1024" autocomplete="current-password" required></label><label class="form-check span-2"><input name="confirmRestore" type="checkbox" required>确认替换当前配置和历史快照</label></div><p id="backup-status" class="small-note" role="status"></p><div class="dialog-actions"><button type="button" data-backup-cancel>取消</button><button type="submit" class="primary">验证并恢复</button></div><p class="error" role="alert"></p></form>';
+  : '<form id="backup-form"><h2>恢复加密备份</h2><p class="muted">恢复前须停止全部托管实例并等待操作结束。恢复将替换当前配置、定时计划与历史快照，导入的定时计划暂停并须重新启用，不会立即启动实例；不会恢复 frp 核心程序、本机管理令牌、Webhook 和节点设置。</p><div class="form-grid"><label class="span-2">备份文件<input name="file" type="file" accept=".json,application/json" required></label><label class="span-2">备份密码<input name="password" type="password" minlength="12" maxlength="1024" autocomplete="current-password" required></label><label class="form-check span-2"><input name="confirmRestore" type="checkbox" required>确认替换当前配置、定时计划和历史快照</label></div><p id="backup-status" class="small-note" role="status"></p><div class="dialog-actions"><button type="button" data-backup-cancel>取消</button><button type="submit" class="primary">验证并恢复</button></div><p class="error" role="alert"></p></form>';
  stopRefreshPolling();
  backupDialogEl.showModal();
 }
@@ -864,10 +894,21 @@ $('#diff-close').addEventListener('click',()=>diffDialog.close());
 diffDialog.addEventListener('close',()=>scheduleRefresh(0));
 $('#editor').addEventListener('click',e=>{if(editing?.kind==='tunnel'){ProtocolEditor.headerClick(e.currentTarget,e.target);}});
 $('#editor').addEventListener('change',updateFields);
+$('#editor').addEventListener('click',e=>{
+ if(editing?.kind!=='schedule'||editing.submitting)return;
+ if(e.target.closest('[data-schedule-add]')){
+  const rows=$('#editor [data-schedule-rows]');
+  if(rows.querySelectorAll('[data-schedule-row]').length>=64){$('#form-error').textContent='最多添加 64 个事件';return;}
+  rows.insertAdjacentHTML('beforeend',window.KurumiSchedules.row());
+ }
+ const remove=e.target.closest('[data-schedule-remove]');if(remove)remove.closest('[data-schedule-row]').remove();
+ if(e.target.closest('[data-schedule-delete]'))saveSchedule(true);
+});
 $('#editor').addEventListener('input',e=>{if(editing?.kind==='tunnel'&&e.target.name==='localPort')updateFields();});
 $('#editor').addEventListener('submit',async e=>{
  e.preventDefault();if(editing?.submitting)return;const f=e.target,b=f.querySelector('button[type="submit"]');b.disabled=true;
  $('#form-error').textContent='';
+ if(editing?.kind==='schedule'){b.disabled=false;await saveSchedule(false);return;}
  if(editing?.kind==='tunnel-batch'){
   const current=editing, generation=authGeneration, controller=new AbortController();
   const value=ProtocolEditor.batchValue(f), revision=editRev;
@@ -988,6 +1029,7 @@ $('#content').addEventListener('click',async e=>{
  if(action==='batch-export'){await exportSelectedRules();return;}
  if(action==='batch-enable'||action==='batch-disable'||action==='batch-delete'){await batchRuleOperation(action.slice(6));return;}
  if(action==='new-instance'||action==='edit-instance'){openEditor('instance',id);return;}
+ if(action==='edit-schedule'){openScheduleEditor(id);return;}
  if(action==='new-tunnel-batch'){openTunnelBatchEditor();return;}
  if(action==='new-tunnel'||action==='edit-tunnel'){openEditor('tunnel',id);return;}
  if(action==='import-toml'){
@@ -1077,7 +1119,7 @@ $('#content').addEventListener('click',async e=>{
     if(transferBlocked())throw new Error(transferBlocked());
     if(renderedPage!=='config'||renderedRevision!==revision)throw new Error('配置已变化，请刷新后重新导入');
     if(!file)throw new Error('请选择配置文件');if(file.size>128*1024*1024)throw new Error('配置文件超过 128 MiB');
-    if(!confirm('导入前须停止全部托管实例并等待操作结束。导入将替换当前配置和快照，完成后不会自动启动实例。继续？'))return;
+    if(!confirm('导入前须停止全部托管实例并等待操作结束。导入将替换当前配置、定时计划和快照；导入的计划会暂停，须检查后重新启用。继续？'))return;
     let parsed;try{parsed=JSON.parse(await file.text());}catch(_){if(!current())return;throw new Error('配置文件不是有效 JSON');}
     if(!current())return;
     if(revision!==data.revision||renderedRevision!==revision)throw new Error('配置已变化，请刷新后重新导入');
@@ -1163,13 +1205,15 @@ $('#content').addEventListener('click',async e=>{
    await api('validate',{revision:data.revision,id});toast('配置校验通过；尚未执行网络探测');return;
   }
   if(['start','restart','stop'].includes(action)){
-   if(action==='restart'&&!confirm('重启应用将中断该实例的现有连接。配置检查失败时不会停止当前实例；重新启动失败时不会自动回退。继续？'))return;
-   if(action==='stop'&&!confirm('停止该实例及其正在转发的连接？'))return;
+   const plan=data.schedules?.[id], pause=plan?.enabled&&!plan?.paused?'\n此操作通过初步检查后会暂停定时计划，即使操作失败也需管理员重新启用。':'';
+   if(action==='restart'&&!confirm('重启应用将中断该实例的现有连接。配置检查失败时不会停止当前实例；重新启动失败时不会自动回退。'+pause+'\n继续？'))return;
+   if(action==='stop'&&!confirm('停止该实例及其正在转发的连接？'+pause))return;
+   if(action==='start'&&pause&&!confirm('启动该实例？'+pause))return;
    if(originPage==='instances'){instanceOperation=window.KurumiInstances.begin(id,action);if(!instanceOperation)return;}
    await api('control',{revision:data.revision,id,action});toast(action==='stop'?'实例已停止':'启动请求完成，正在刷新实例状态');
   }else if(action.startsWith('delete-')){if(!confirm('删除这项草稿配置？历史版本仍保留。'))return;await api('delete',{revision:data.revision,id,kind:action.slice(7)});toast('草稿配置已删除');}
   else if(action==='toggle'){const t=data.state.tunnels.find(t=>t.id===id);await api('save',{revision:data.revision,kind:'tunnel',value:{...t,enabled:!t.enabled}});toast('启停意图已保存，请在实例页应用');}
-  else if(action==='restore'){if(!confirm('恢复历史草稿？全部托管实例必须已停止，当前草稿也会保留为历史版本。'))return;await api('restore',{revision:data.revision,target:+b.dataset.target});toast('历史草稿已恢复，实例不会自动启动');}
+  else if(action==='restore'){if(!confirm('恢复历史草稿？全部托管实例必须已停止，当前草稿也会保留为历史版本。当前定时计划将暂停，不存在的实例对应的计划将删除。'))return;await api('restore',{revision:data.revision,target:+b.dataset.target});toast('历史草稿已恢复，定时计划已暂停');}
   await refresh();
  }catch(err){
   toast(err.message);

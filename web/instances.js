@@ -84,6 +84,8 @@ window.KurumiInstances = (() => {
   const ruleCount = data.state.tunnels.filter(tunnel => tunnel.instanceId === instance.id).length;
   const operation = operations.get(instance.id);
   const error = errors.get(instance.id);
+  const plan = data.schedules?.[instance.id];
+  const planStatus = !plan ? '未设置' : !plan.enabled ? '已关闭' : plan.paused ? '已暂停' : plan.lastStatus === 'pending' ? '执行中' : '已启用';
   let configText;
   if (starting) configText = '实例正在启动，配置是否生效仍待确认。';
   else if (stopping) configText = '实例正在停止，资源清理完成后可再次启动。';
@@ -103,13 +105,14 @@ window.KurumiInstances = (() => {
   return `<article class="instance-card instance-card--${role}" data-instance-id="${id}" aria-busy="${operation?'true':'false'}">
    <div class="instance-card__head"><div class="instance-card__identity"><span class="instance-card__symbol" aria-hidden="true">${role === 'client'?'↗':role === 'server'?'▣':'◇'}</span><div><p class="instance-card__kind">${roleName} <span>${roleCode}</span></p><h3>${name}</h3><p class="instance-card__description">${roleDescription}</p></div></div><div class="instance-card__badges"><span class="instance-state instance-state--${statusClass}"><i aria-hidden="true"></i>${stateText}</span>${runtime.pending?'<span class="pill warn">配置待应用</span>':''}</div></div>
    <div class="instance-card__endpoint"><span>${role === 'client'?'上游服务器地址':role === 'server'?'本机监听地址':'实例地址'} · 草稿</span><code>${esc(endpoint)}</code></div>
-   <dl class="instance-card__facts"><div class="instance-card__fact"><dt>关联规则</dt><dd>${ruleCount} 条</dd></div><div class="instance-card__fact"><dt>认证令牌</dt><dd>${instance.hasToken?'已保存':'缺失'}</dd></div><div class="instance-card__fact"><dt>启动方式</dt><dd>${instance.autoStart?'工作台启动时自动恢复':'手动启动'}</dd></div>${process}${vhosts}${started}</dl>
+   <dl class="instance-card__facts"><div class="instance-card__fact"><dt>关联规则</dt><dd>${ruleCount} 条</dd></div><div class="instance-card__fact"><dt>认证令牌</dt><dd>${instance.hasToken?'已保存':'缺失'}</dd></div><div class="instance-card__fact"><dt>启动方式</dt><dd>${instance.autoStart?'工作台启动时自动恢复':'手动启动'}</dd></div><div class="instance-card__fact"><dt>定时计划</dt><dd>${esc(planStatus)}</dd></div>${process}${vhosts}${started}</dl>
+   ${plan?.reason?`<div class="instance-card__runtime-message"><strong>计划状态</strong><p>${esc(plan.reason)}</p></div>`:''}
    ${registration}
    <div class="instance-card__config ${runtime.pending?'instance-card__config--pending':''}"><div><strong>${runtime.pending?'配置待应用':'配置状态'}</strong><p>${configText}</p></div>${runtime.applied?button('diff','查看差异'):''}</div>
    ${runtime.exit?`<div class="instance-card__runtime-message"><strong>运行信息</strong><p>${esc(runtime.exit)}</p></div>`:''}
    <p class="instance-card__error" data-instance-error role="alert" ${error?'':'hidden'}>${error?'操作失败：'+esc(error):''}</p>
    <div class="instance-card__controls">${!restricted || operator ? (starting||stopping?button('stop','停止',false,true):running?button('stop','停止',false,true)+button('restart','重启应用',Boolean(runtime.pending),true):button('start','启动',true,true)) : ''}${restricted?`<button type="button" data-instance-read="config" data-id="${id}">配置预览</button>${role === 'server' ? `<button type="button" data-instance-read="server-traffic" data-id="${id}">服务端流量</button>` : ''}${data.identity?.allowLogs ? button('logs','日志') : ''}`:button('logs','日志')+button('health','链路检测')}</div>
-   <div class="instance-card__actions">${!restricted || operator ? button('validate','校验配置',false,true) : ''}${restricted ? '' : button('edit-instance','编辑')+button('duplicate-instance','复制实例')+button('delete-instance','删除')}</div>
+   <div class="instance-card__actions">${!restricted || operator ? button('validate','校验配置',false,true) : ''}${restricted ? '' : button('edit-schedule','定时计划')+button('edit-instance','编辑')+button('duplicate-instance','复制实例')+button('delete-instance','删除')}</div>
   </article>`;
  }
 
