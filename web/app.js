@@ -114,7 +114,7 @@ function stopRefreshPolling() {
 function scheduleRefresh(delay) {
  stopRefreshPolling();
  if (!data || document.hidden || dialog.open || diffDialog.open || backupDialogEl?.open || webhookDialogEl?.open || healthDialog?.open || window.KurumiTOMLImport.isOpen() || window.KurumiNodeDialog?.open) return;
- const wait = delay ?? (Object.values(data.runtime || {}).some(v => v.state === 'running') ? 5000 : 10000);
+ const wait = delay ?? (Object.values(data.runtime || {}).some(v => v.state === 'running' || v.state === 'starting' || v.state === 'stopping') ? 5000 : 10000);
  refreshTimer = setTimeout(() => {
   refreshTimer = null;
   refresh(true);
@@ -318,7 +318,7 @@ function stopLogStream() {
 function syncLogStream() {
  const instance = data?.state?.instances?.find(i=>i.id===selected);
  const runtime = data?.runtime?.[selected];
- if (page !== 'logs' || document.hidden || !instance || runtime?.state !== 'running' || !runtime.runId || (logAccessDenied?.id === selected && logAccessDenied.runId === runtime.runId) || typeof EventSource !== 'function') {
+ if (page !== 'logs' || document.hidden || !instance || !['starting','running','stopping'].includes(runtime?.state) || !runtime.runId || (logAccessDenied?.id === selected && logAccessDenied.runId === runtime.runId) || typeof EventSource !== 'function') {
   stopLogStream();
   return;
  }
@@ -456,7 +456,7 @@ function loadConfigPreview(renderSerial) {
  }).finally(()=>{clearTimeout(timeout);if(configRequest === request)configRequest = null;});
 }
 const stateOf = (id) => data.runtime[id] || {state:'stopped'};
-function badge(id) {const v=stateOf(id);return `<span class="pill ${v.state==='running'?'good':(v.state==='exited'||v.state==='autostart-failed')?'warn':''}">${({running:'实例运行',stopped:'未启动',exited:'实例已退出','autostart-failed':'自动启动失败'})[v.state] || esc(v.state)}</span>${v.pending?'<span class="pill warn">待应用</span>':''}`;}
+function badge(id) {const v=stateOf(id);return `<span class="pill ${v.state==='running'?'good':(v.state==='exited'||v.state==='autostart-failed')?'warn':''}">${({starting:'实例启动中',stopping:'实例停止中',running:'实例运行',stopped:'未启动',exited:'实例已退出','autostart-failed':'自动启动失败'})[v.state] || esc(v.state)}</span>${v.pending?'<span class="pill warn">待应用</span>':''}`;}
 function header(title,subtitle,action='') {return `<div class="page-head"><div><p class="eyebrow">KURUMI / ${esc(page.toUpperCase())}</p><h1>${title}</h1><p>${subtitle}</p></div>${action}</div>`;}
 function empty(title,text,action='',art='') {
  const src=art==='welcome'?'/assets/empty-welcome.webp':art==='search'?'/assets/empty-search.webp':'';
@@ -661,6 +661,8 @@ function registrationFor(tunnel) {
  return registrations[tunnel.id];
 }
 function instanceRegistrationText(instance) {
+ if (stateOf(instance.id).state === 'starting') return '实例启动中';
+ if (stateOf(instance.id).state === 'stopping') return '实例停止中';
  if (stateOf(instance.id).state !== 'running') return '代理未运行';
  const eligible=data.state.tunnels.filter(t=>t.instanceId===instance.id && t.enabled && !Protocols.isVisitor(t.type));
  const items=eligible.map(registrationFor);
