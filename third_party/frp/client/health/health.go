@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -240,14 +239,17 @@ func (monitor *Monitor) doHTTPCheck(ctx context.Context) error {
 			},
 		}
 		defer transport.CloseIdleConnections()
-		client = &http.Client{Transport: transport}
+		client = &http.Client{
+			Transport: transport,
+			// A redirect is not a successful check of the configured target.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("do http health check, StatusCode is [%d] not 2xx", resp.StatusCode)
