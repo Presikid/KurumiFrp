@@ -3,6 +3,9 @@ package manager
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,16 +18,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
-// URL is encrypted with the store key. It may itself contain a credential.
-// Older databases omit this field and therefore start with notifications off.
+// URL and SigningSecret are encrypted with the store key. Older databases
+// omit SigningSecret and therefore send unsigned notifications.
 type webhookConfig struct {
-	Enabled  bool   `json:"enabled"`
-	URL      string `json:"url,omitempty"`
-	Format   string `json:"format,omitempty"`
-	OnStatus bool   `json:"onStatus"`
-	OnConfig bool   `json:"onConfig"`
+	Enabled       bool   `json:"enabled"`
+	URL           string `json:"url,omitempty"`
+	Format        string `json:"format,omitempty"`
+	OnStatus      bool   `json:"onStatus"`
+	OnConfig      bool   `json:"onConfig"`
+	SigningSecret string `json:"signingSecret,omitempty"`
 }
 
 // An empty format preserves the original structured JSON payload.
@@ -44,6 +49,19 @@ func (db Database) webhookConfig() webhookConfig {
 	return webhookConfig{}
 }
 
+// Match the store's existing secret constraints without modifying the key.
+func validWebhookSigningSecret(secret string) bool {
+	if len(secret) < 8 || len(secret) > 1024 || !utf8.ValidString(secret) {
+		return false
+	}
+	for _, c := range secret {
+		if c < 32 || c == 127 {
+			return false
+		}
+	}
+	return true
+}
+
 // Reject damaged local settings without rewriting or silently discarding them.
 // Imported webhook settings are ignored, so only the local copy is validated.
 func validateStoredWebhook(s *Store, cfg *webhookConfig) error {
@@ -57,6 +75,12 @@ func validateStoredWebhook(s *Store, cfg *webhookConfig) error {
 		plain, err := s.decrypt(cfg.URL)
 		if err != nil || !validWebhookDestination(cfg.Format, plain) {
 			return fmt.Errorf("invalid webhook destination")
+		}
+	}
+	if cfg.SigningSecret != "" {
+		plain, err := s.decrypt(cfg.SigningSecret)
+		if err != nil || !validWebhookSigningSecret(plain) {
+			return fmt.Errorf("invalid webhook signing secret")
 		}
 	}
 	if cfg.Enabled && (cfg.URL == "" || (!cfg.OnStatus && !cfg.OnConfig)) {
@@ -86,22 +110,23 @@ type queuedWebhook struct {
 
 // There is one bounded worker per app, never a goroutine per event. Queued
 // events are tied to the settings in force when emitted, so changing the URL
-// cannot redirect old events to a new recipient.
+// or signing key cannot redirect old events to a new configuration.
 type webhookDispatcher struct {
-	mu           sync.Mutex
-	ctx          context.Context
-	cancel       context.CancelFunc
-	configCtx    context.Context
-	configCancel context.CancelFunc
-	queue        chan queuedWebhook
-	config       webhookConfig
-	target       string
-	generation   uint64
-	sent         uint64
-	failed       uint64
-	dropped      uint64
-	lastResult   string
-	lastAt       string
+	mu            sync.Mutex
+	ctx           context.Context
+	cancel        context.CancelFunc
+	configCtx     context.Context
+	configCancel  context.CancelFunc
+	queue         chan queuedWebhook
+	config        webhookConfig
+	target        string
+	signingSecret string
+	generation    uint64
+	sent          uint64
+	failed        uint64
+	dropped       uint64
+	lastResult    string
+	lastAt        string
 }
 
 func newWebhookDispatcher() *webhookDispatcher {
@@ -111,12 +136,14 @@ func newWebhookDispatcher() *webhookDispatcher {
 	return d
 }
 
-func (d *webhookDispatcher) configure(cfg webhookConfig, target string) {
+func (d *webhookDispatcher) configure(cfg webhookConfig, target, signingSecret string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	// The encrypted URL may change when the store key changes, even though the
-	// destination and event options remain the same.
-	if d.configCancel != nil && d.target == target && d.config.Enabled == cfg.Enabled && d.config.Format == cfg.Format &&
+	// Ciphertext may change during key migration while its plaintext remains
+	// the same. Only effective destination, signing key or options change the
+	// generation and cancel deliveries using the previous configuration.
+	if d.configCancel != nil && d.target == target && d.signingSecret == signingSecret &&
+		d.config.Enabled == cfg.Enabled && d.config.Format == cfg.Format &&
 		d.config.OnStatus == cfg.OnStatus && d.config.OnConfig == cfg.OnConfig {
 		d.config = cfg
 		return
@@ -126,7 +153,7 @@ func (d *webhookDispatcher) configure(cfg webhookConfig, target string) {
 	}
 	d.generation++
 	d.config = cfg
-	d.target = target
+	d.target, d.signingSecret = target, signingSecret
 	d.configCtx, d.configCancel = context.WithCancel(d.ctx)
 }
 
@@ -175,9 +202,9 @@ func (d *webhookDispatcher) run() {
 				d.mu.Unlock()
 				continue
 			}
-			target, format, ctx := d.target, d.config.Format, d.configCtx
+			target, format, signingSecret, ctx := d.target, d.config.Format, d.signingSecret, d.configCtx
 			d.mu.Unlock()
-			result, ok := sendWebhook(ctx, target, format, item.event)
+			result, ok := sendWebhook(ctx, target, format, signingSecret, item.event)
 			d.mu.Lock()
 			if ctx.Err() != nil {
 				d.dropped++
@@ -405,7 +432,7 @@ func formatWebhookEventWithChat(format string, event webhookEvent, chatID string
 	}
 }
 
-func sendWebhook(ctx context.Context, target, format string, event webhookEvent) (string, bool) {
+func sendWebhook(ctx context.Context, target, format, signingSecret string, event webhookEvent) (string, bool) {
 	destination, chatID := target, ""
 	if format == "telegram" {
 		var ok bool
@@ -434,6 +461,11 @@ func sendWebhook(ctx context.Context, target, format string, event webhookEvent)
 		return "通知请求无效", false
 	}
 	req.Header.Set("Content-Type", contentType)
+	if signingSecret != "" {
+		mac := hmac.New(sha256.New, []byte(signingSecret))
+		_, _ = mac.Write(body)
+		req.Header.Set("X-Kurumi-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "发送失败（连接、地址或超时）", false
@@ -465,19 +497,31 @@ func (a *App) configureWebhook(cfg webhookConfig) {
 			target = plain
 		}
 	}
-	a.webhooks.configure(cfg, target)
+	signingSecret := ""
+	if cfg.SigningSecret != "" {
+		plain, err := a.store.decrypt(cfg.SigningSecret)
+		if err != nil || !validWebhookSigningSecret(plain) {
+			// Never silently send an unsigned notification when a key was set.
+			target = ""
+		} else {
+			signingSecret = plain
+		}
+	}
+	a.webhooks.configure(cfg, target, signingSecret)
 }
 
 // Called after authentication and same-origin checks. Decode the request before
 // acquiring a.mu so a slow request body cannot delay instance controls.
 type webhookRequest struct {
-	Revision uint64  `json:"revision"`
-	Enabled  bool    `json:"enabled"`
-	URL      string  `json:"url"`
-	Format   *string `json:"format"`
-	ClearURL bool    `json:"clearURL"`
-	OnStatus bool    `json:"onStatus"`
-	OnConfig bool    `json:"onConfig"`
+	Revision           uint64  `json:"revision"`
+	Enabled            bool    `json:"enabled"`
+	URL                string  `json:"url"`
+	Format             *string `json:"format"`
+	ClearURL           bool    `json:"clearURL"`
+	OnStatus           bool    `json:"onStatus"`
+	OnConfig           bool    `json:"onConfig"`
+	SigningSecret      string  `json:"signingSecret"`
+	ClearSigningSecret bool    `json:"clearSigningSecret"`
 }
 
 func (a *App) webhookAPI(w http.ResponseWriter, r *http.Request) {
@@ -488,7 +532,7 @@ func (a *App) webhookAPI(w http.ResponseWriter, r *http.Request) {
 		status := a.webhooks.status()
 		a.mu.Unlock()
 		reply(w, http.StatusOK, map[string]any{
-			"revision": revision, "enabled": cfg.Enabled, "hasURL": cfg.URL != "",
+			"revision": revision, "enabled": cfg.Enabled, "hasURL": cfg.URL != "", "hasSigningSecret": cfg.SigningSecret != "",
 			"format": cfg.Format, "onStatus": cfg.OnStatus, "onConfig": cfg.OnConfig, "status": status,
 		})
 		return
@@ -522,8 +566,14 @@ func (a *App) saveWebhook(req webhookRequest) (uint64, int, error) {
 	if req.ClearURL && req.URL != "" {
 		return 0, http.StatusBadRequest, fmt.Errorf("不能同时清除和设置通知地址")
 	}
+	if req.ClearSigningSecret && req.SigningSecret != "" {
+		return 0, http.StatusBadRequest, fmt.Errorf("不能同时清除和设置签名密钥")
+	}
 	previous := a.store.DB.webhookConfig()
-	cfg := webhookConfig{Enabled: req.Enabled, URL: previous.URL, Format: previous.Format, OnStatus: req.OnStatus, OnConfig: req.OnConfig}
+	cfg := webhookConfig{
+		Enabled: req.Enabled, URL: previous.URL, Format: previous.Format,
+		OnStatus: req.OnStatus, OnConfig: req.OnConfig, SigningSecret: previous.SigningSecret,
+	}
 	// A client predating channel formats may omit the field while editing
 	// other settings; omission must not reset an existing selection.
 	if req.Format != nil {
@@ -546,6 +596,29 @@ func (a *App) saveWebhook(req webhookRequest) (uint64, int, error) {
 				return 0, http.StatusBadRequest, fmt.Errorf("通知地址无法保存")
 			}
 		}
+	}
+	if req.ClearSigningSecret {
+		cfg.SigningSecret = ""
+	} else if req.SigningSecret != "" {
+		if !validWebhookSigningSecret(req.SigningSecret) {
+			return 0, http.StatusBadRequest, fmt.Errorf("签名密钥须为 8–1024 字节的有效 UTF-8 文本，且不能包含 ASCII 控制字符")
+		}
+		existing, _ := a.store.decrypt(cfg.SigningSecret)
+		if req.SigningSecret != existing {
+			var err error
+			cfg.SigningSecret, err = a.store.encrypt(req.SigningSecret)
+			if err != nil {
+				return 0, http.StatusBadRequest, fmt.Errorf("签名密钥无法保存")
+			}
+		}
+	}
+	signingSecret := ""
+	if cfg.SigningSecret != "" {
+		plain, err := a.store.decrypt(cfg.SigningSecret)
+		if err != nil || !validWebhookSigningSecret(plain) {
+			return 0, http.StatusBadRequest, fmt.Errorf("签名密钥无效，请重新设置或清除")
+		}
+		signingSecret = plain
 	}
 	target := ""
 	if cfg.URL != "" {
@@ -577,6 +650,6 @@ func (a *App) saveWebhook(req webhookRequest) (uint64, int, error) {
 		return 0, http.StatusInternalServerError, fmt.Errorf("无法保存通知配置")
 	}
 	a.store.DB = db
-	a.webhooks.configure(cfg, target)
+	a.webhooks.configure(cfg, target, signingSecret)
 	return db.Revision, http.StatusOK, nil
 }
