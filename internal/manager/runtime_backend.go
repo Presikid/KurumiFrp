@@ -50,6 +50,9 @@ type RuntimeBackend interface {
 // the manager still waits for Wait before allowing a replacement. An instance
 // that cannot be stopped remains running from the manager's point of view. A
 // client instance may also implement ProxyRegistrationReader for its own run.
+// A backend with RuntimeReadiness should return nil or context.Canceled for an
+// ordinary stop, and must preserve independent startup or cleanup failures in
+// a Wait error which is not classified as context.Canceled.
 type RuntimeInstance interface {
 	Wait() error
 	Stop(ctx context.Context) error
@@ -65,6 +68,13 @@ type RuntimeReadiness interface {
 	Ready() <-chan struct{}
 	Done() <-chan struct{}
 	ReadyNow() bool
+}
+
+// runtimeExitObserver can inspect the engine's own exit signal before its
+// Done notification has been forwarded. Like ReadyNow, it must be concurrent-
+// safe, return promptly, and never call back into App.
+type runtimeExitObserver interface {
+	ExitedNow() bool
 }
 
 // RuntimePID is optional and is intended for the legacy process adapter.

@@ -216,7 +216,8 @@ func trafficView(p *process, samples *trafficSamples, now time.Time) instanceTra
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	view.RunID = p.status.RunID
+	status := p.viewLocked()
+	view.RunID = status.RunID
 	if samples != nil && samples.runID != view.RunID {
 		samples = nil
 	}
@@ -232,7 +233,7 @@ func trafficView(p *process, samples *trafficSamples, now time.Time) instanceTra
 			}
 		}
 	}
-	if p.status.State != "running" {
+	if status.State != "running" {
 		return view
 	}
 	if samples == nil || !samples.hasLast {

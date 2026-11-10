@@ -246,9 +246,20 @@ func (l *logBuffer) updates(cursor uint64, initial bool) ([]string, uint64, bool
 func (p *process) view() RuntimeStatus {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.viewLocked()
+}
+
+// viewLocked uses the same readiness observation for every state consumer.
+// The caller must hold p.mu.
+func (p *process) viewLocked() RuntimeStatus {
 	status := p.status
 	// The observer goroutine may not have run yet after the engine has exited.
 	if status.State == "running" && p.readiness != nil && !p.readiness.ReadyNow() {
+		status.State = "stopping"
+	}
+	// An exited generation is still owned until Wait's final bookkeeping ends.
+	// In particular, do not issue a remote start preview before p.done closes.
+	if status.State == "exited" && p.active() {
 		status.State = "stopping"
 	}
 	return status
@@ -407,7 +418,9 @@ func (a *App) startPreparedWithSource(i Instance, r Rendered, target, configPath
 		p.logs.Write([]byte("\n"))
 		p.mu.Lock()
 		wasRunning := p.upEmitted
-		startupFailed := hasReadiness && !p.upEmitted && (p.failedBeforeReady || !p.stopRequested)
+		// An independent startup or cleanup error remains a failure even if a
+		// stop was requested while the engine was exiting or rolling back.
+		startupFailed := hasReadiness && !p.upEmitted && (p.failedBeforeReady || !p.stopRequested || (err != nil && !errors.Is(err, context.Canceled)))
 		p.status.State = "exited"
 		p.status.PID = 0
 		if err != nil {
@@ -517,6 +530,19 @@ func stopProcess(p *process) error {
 		return nil
 	}
 	p.mu.Lock()
+	if !p.stopRequested && !p.upEmitted && p.readiness != nil {
+		// Observe failure before recording the first stop request. A second
+		// stop must not reinterpret the first stop's exit as startup failure.
+		if observer, ok := p.readiness.(runtimeExitObserver); ok {
+			p.failedBeforeReady = p.failedBeforeReady || observer.ExitedNow()
+		} else {
+			select {
+			case <-p.readiness.Done():
+				p.failedBeforeReady = true
+			default:
+			}
+		}
+	}
 	p.stopRequested = true
 	instance := p.instance
 	exited := p.status.State == "exited"
