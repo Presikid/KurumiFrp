@@ -6,12 +6,13 @@ const firewallBaseRender = render;
 render = function () {
  firewallBaseRender();
  if (!data || data.identity?.role !== 'admin' || page !== 'firewall' || $('#firewall-screen')) return;
- $('#content').innerHTML = header('端口访问控制', '为明确指定的 Linux TCP/UDP 端口手动应用来源地址过滤。') + `
+ $('#content').innerHTML = header('端口访问控制', '为明确指定的 Linux TCP/UDP 端口应用来源地址过滤。') + `
   <section id="firewall-screen" class="panel"><div class="panel-content">
    <p class="small-note">规则作用于本机指定端口的新入站连接，也可能影响使用相同端口的其他服务。回环和已有连接不受此规则处理。重叠端口必须通过所有相关规则；允许列表没有列出的 IP 地址族也会被阻止。</p>
-   <p class="small-note">此操作需要 Linux、nftables 和网络管理权限。工作台或系统重启后不会自动重新应用；其他防火墙工具也可能更改规则。请预留独立的服务器管理通道。</p>
+   <p class="small-note">此操作需要 Linux、nftables 和网络管理权限。工作台或系统重启后需要手动重新应用，才能恢复已启用的自动刷新；其他防火墙工具也可能更改规则。请预留独立的服务器管理通道。</p>
    <p id="firewall-status" role="status">正在读取配置…</p>
    <p id="firewall-table" class="small-note"></p>
+   <p id="firewall-refresh-status" class="small-note" role="status"></p>
    <button type="button" id="firewall-reload">刷新配置</button>
    <form id="firewall-form"><fieldset id="firewall-controls" disabled>
     <label><input type="checkbox" name="enabled"> 启用端口来源过滤</label>
@@ -48,22 +49,32 @@ function mountFirewall() {
    <label>来源 IP 或 CIDR 网段<textarea data-rule-sources maxlength="262144" rows="5" placeholder="192.0.2.1&#10;2001:db8::/32"></textarea></label>
    <label>导入方式<select data-list-mode><option value="append">加入现有来源</option><option value="replace">替换此规则全部来源</option></select></label><p class="small-note">替换可移除清单中不再包含的旧地址；两种方式都只修改草稿。</p>
    <label>按 AS 号查询网段<input data-rule-asn maxlength="256" placeholder="例如 AS3333, AS6447"></label><button type="button" data-firewall-asn>查询网段</button>
-   <p data-asn-status class="small-note" role="status">一次最多 16 个 AS 号，用逗号或空格分隔。向 RIPEstat 查询近两周观察到的网段；结果可能不完整或过时，不会自动更新或应用。</p>
+   <p data-asn-status class="small-note" role="status">一次最多 16 个 AS 号，用逗号或空格分隔。此按钮仅查询 RIPEstat 近两周观察到的网段并修改草稿；结果可能不完整或过时。</p>
    <label>导入地址清单文件<input type="file" data-list-file accept=".txt,.list,text/plain"></label><p data-file-status class="small-note" role="status">文本每行一个 IP 或 CIDR，可用 # 写注释；导入后请核对草稿。</p>
    <label>公网 HTTPS 地址清单<input type="text" inputmode="url" data-list-url maxlength="1024" autocomplete="off" spellcheck="false" placeholder="https://example.org/addresses.txt"></label><button type="button" data-firewall-list>获取清单</button>
-   <p data-list-status class="small-note" role="status">仅手动获取 UTF-8 文本，不保存地址、自动更新或应用。请核对清单来源和范围。</p>
+   <p data-list-status class="small-note" role="status">此按钮仅手动获取 UTF-8 文本并修改草稿。请核对清单来源和范围。</p>
+   <label>自动刷新来源<select data-refresh-kind><option value="">不自动刷新</option><option value="asn">AS 号（RIPEstat）</option><option value="https">公网 HTTPS 清单</option></select></label>
+   <label>自动刷新的 AS 号或 HTTPS 地址<input data-refresh-value maxlength="1024" autocomplete="off" spellcheck="false"></label>
+   <label>刷新间隔（分钟，60–10080）<input type="number" data-refresh-interval min="60" max="10080" step="1" value="1440"></label>
+   <p class="small-note">开启后，工作台运行期间会按间隔用新结果替换此规则的全部来源并应用；请先手动查询或导入、核对并应用初始列表。刷新失败保留旧列表；应用结果不确定时暂停。刷新会清空近期拦截记录。</p>
    <button type="button" data-firewall-remove>删除此规则</button>`;
   row.querySelector('[data-rule-name]').value = rule.name || '';
   row.querySelector('[data-rule-enabled]').checked = rule.enabled !== false;
   row.querySelector('[data-rule-mode]').value = rule.mode || 'allow';
   row.querySelector('[data-rule-ports]').value = rule.ports || '';
   row.querySelector('[data-rule-sources]').value = rule.sources || '';
+  row.querySelector('[data-refresh-kind]').value = rule.refresh?.kind || '';
+  row.querySelector('[data-refresh-value]').value = rule.refresh?.value || '';
+  row.querySelector('[data-refresh-interval]').value = rule.refresh?.intervalMinutes || 1440;
   rulesHost.appendChild(row);
  };
- const readRules = () => [...rulesHost.querySelectorAll('.firewall-rule')].map(row=>({
-  name:row.querySelector('[data-rule-name]').value, enabled:row.querySelector('[data-rule-enabled]').checked, mode:row.querySelector('[data-rule-mode]').value,
-  ports:row.querySelector('[data-rule-ports]').value, sources:row.querySelector('[data-rule-sources]').value
- }));
+ const readRules = () => [...rulesHost.querySelectorAll('.firewall-rule')].map(row=>{
+  const rule = {name:row.querySelector('[data-rule-name]').value, enabled:row.querySelector('[data-rule-enabled]').checked, mode:row.querySelector('[data-rule-mode]').value,
+   ports:row.querySelector('[data-rule-ports]').value, sources:row.querySelector('[data-rule-sources]').value};
+  const kind = row.querySelector('[data-refresh-kind]').value;
+  if (kind) rule.refresh = {kind, value:row.querySelector('[data-refresh-value]').value.trim(), intervalMinutes:Number(row.querySelector('[data-refresh-interval]').value)};
+  return rule;
+ });
  const mergeSources = (row, prefixes) => {
   if (!Array.isArray(prefixes) || !prefixes.length) throw new Error('未获得地址');
   const sources = row.querySelector('[data-rule-sources]');
@@ -147,6 +158,7 @@ function mountFirewall() {
    const rules = Array.isArray(model.rules) && model.rules.length ? model.rules : model.enabled ? [{mode:model.mode, ports:model.ports, sources:model.sources}] : [{}];
    rules.forEach(addRule);
    table.textContent = model.tableId ? '本工作台管理的表：kurumi_' + model.tableId : '尚未创建本工作台的规则表。';
+   $('#firewall-refresh-status').textContent = result.refreshStatus || (model.rules?.some(rule=>rule.refresh) ? '自动刷新尚未启动；请核对并手动应用。' : '未启用自动刷新。');
    status.textContent = !result.supported ? '当前系统不支持此功能；已有内核规则状态未知。'
     : result.lastResult === 'applied' ? '本进程最近一次应用命令返回成功；当前规则仍可能被系统或其他工具更改。'
     : '内核规则状态未知；保存的配置不代表当前已经生效。';
@@ -184,7 +196,7 @@ function mountFirewall() {
     const result = await api('firewall/list', {url:row.querySelector('[data-list-url]').value}, {signal:controller.signal});
     if (!current() || !row.isConnected) return;
     const action = mergeSources(row, result.prefixes);
-    notice.textContent = `已用 ${result.prefixes.length} 个地址${action}草稿来源；请核对后再决定是否应用。地址和清单不会自动更新。`;
+    notice.textContent = `已用 ${result.prefixes.length} 个地址${action}草稿来源；请核对后再决定是否应用。`;
    } catch (err) {
     if (current() && row.isConnected) notice.textContent = '获取失败，来源列表未更改：' + (err.name === 'AbortError' ? '请求超时' : err.message);
    } finally {
@@ -202,7 +214,7 @@ function mountFirewall() {
    const result = await api('firewall/asn', {asn:row.querySelector('[data-rule-asn]').value}, {signal:controller.signal});
    if (!current()) return;
    const action = mergeSources(row, result.prefixes);
-   notice.textContent = `${result.asn} 返回 ${result.prefixes.length} 个网段，已${action}草稿来源；请核对列表，再决定是否保存并应用。数据未自动更新。`;
+   notice.textContent = `${result.asn} 返回 ${result.prefixes.length} 个网段，已${action}草稿来源；请核对列表，再决定是否保存并应用。`;
   } catch (err) {
    if (current()) notice.textContent = '查询失败，来源列表未更改：' + (err.name === 'AbortError' ? '请求超时' : err.message);
   } finally {
@@ -236,8 +248,10 @@ function mountFirewall() {
   event.preventDefault();
   if (busy || !model) return;
   const enabled = form.elements.enabled.checked;
-  if (!confirm(enabled ? '将修改本机指定端口的新入站连接过滤，可能影响其他服务。确定保存并应用？' : '将移除本工作台管理的规则表。确定保存并应用？')) return;
-  const payload = {revision:model.revision, enabled, recordBlocked:form.elements.recordBlocked.checked, rules:enabled ? readRules() : []};
+  const rules = enabled ? readRules() : [];
+  const autoNotice = rules.some(rule=>rule.enabled && rule.refresh) ? '已选自动刷新的规则以后会替换来源列表并重新应用。' : '';
+  if (!confirm(enabled ? '将修改本机指定端口的新入站连接过滤，可能影响其他服务。' + autoNotice + '确定保存并应用？' : '将移除本工作台管理的规则表。确定保存并应用？')) return;
+  const payload = {revision:model.revision, enabled, recordBlocked:form.elements.recordBlocked.checked, rules};
   clearTimeout(seenTimer); seenRequest?.abort(); seenRequest = null;
   $('#firewall-seen').textContent = '应用期间暂停读取记录。';
   busy = true; controls.disabled = true; reload.disabled = true;
@@ -247,6 +261,7 @@ function mountFirewall() {
    const result = await api('firewall', payload, {signal:controller.signal});
    if (!current()) return;
    model = result.config;
+   $('#firewall-refresh-status').textContent = result.refreshStatus || '未启用自动刷新。';
    table.textContent = '本工作台管理的表：kurumi_' + model.tableId;
    if (!enabled) {
     rulesHost.replaceChildren();

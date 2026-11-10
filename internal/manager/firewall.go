@@ -1,7 +1,7 @@
 // The nftables rule layout is adapted from FRP Manager's panel/firewall.go
 // (https://github.com/Gogowwww/frp-manager), licensed under Apache-2.0.
 // KurumiFRP changes it to use an explicit port set, a per-profile table and
-// manual application. The license text is in internal/embedded/LICENSE-frp.
+// opt-in source updates. The license text is in internal/embedded/LICENSE-frp.
 package manager
 
 import (
@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 const firewallMaxSources = 4096
@@ -19,7 +20,7 @@ const firewallMaxSourceBytes = 256 << 10
 const firewallMaxRules = 16
 
 // Firewall settings are local machine authority and are not portable backups.
-// The kernel table is changed only when an administrator explicitly applies.
+// Changes are applied manually or by a refresh explicitly enabled on a rule.
 type firewallConfig struct {
 	Version       int            `json:"version"`
 	Revision      uint64         `json:"revision"`
@@ -33,11 +34,12 @@ type firewallConfig struct {
 }
 
 type firewallRule struct {
-	Name    string `json:"name"`
-	Enabled *bool  `json:"enabled,omitempty"`
-	Mode    string `json:"mode"`
-	Ports   string `json:"ports"`
-	Sources string `json:"sources"`
+	Name    string           `json:"name"`
+	Enabled *bool            `json:"enabled,omitempty"`
+	Mode    string           `json:"mode"`
+	Ports   string           `json:"ports"`
+	Sources string           `json:"sources"`
+	Refresh *firewallRefresh `json:"refresh,omitempty"`
 }
 
 // Version 1 initially stored one rule directly on the config. Keep reading it
@@ -50,12 +52,14 @@ func firewallRules(c firewallConfig) []firewallRule {
 }
 
 type firewallManager struct {
-	mu        sync.Mutex
-	lookupMu  sync.Mutex
-	path      string
-	config    firewallConfig
-	loadError bool
-	last      string // outcome of the last attempt in this process only
+	mu            sync.Mutex
+	lookupMu      sync.Mutex
+	path          string
+	config        firewallConfig
+	loadError     bool
+	last          string // outcome of the last attempt in this process only
+	refreshStatus string
+	nextRefresh   map[int]time.Time
 }
 
 func loadFirewall(dir string) *firewallManager {
@@ -93,6 +97,9 @@ func validateFirewallConfig(c firewallConfig) error {
 		}
 		if rule.Mode != "allow" && rule.Mode != "block" {
 			return fmt.Errorf("第 %d 条规则请选择允许或阻止", index+1)
+		}
+		if err := validateFirewallRefresh(rule.Refresh); err != nil {
+			return fmt.Errorf("第 %d 条规则：%w", index+1, err)
 		}
 		policy, err := parseSourceAccess(rule.Mode, rule.Sources, firewallMaxSourceBytes, firewallMaxSources)
 		if err != nil {
@@ -215,7 +222,7 @@ func (a *App) firewallAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		reply(w, 200, map[string]any{"supported": firewallSupported(), "config": f.config, "lastResult": f.last})
+		reply(w, 200, map[string]any{"supported": firewallSupported(), "config": f.config, "lastResult": f.last, "refreshStatus": f.refreshStatus})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -303,6 +310,7 @@ func (a *App) firewallAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.config, f.last = next, "unknown"
+	f.refreshStatus = "内核规则状态未确认，自动刷新已暂停"
 	if err = syncMigrationDir(filepath.Dir(f.path)); err != nil {
 		fail(w, 500, fmt.Errorf("防火墙配置已写入，但目录持久化失败；未提交内核规则，请刷新核对"))
 		return
@@ -312,7 +320,8 @@ func (a *App) firewallAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.last = "applied"
-	reply(w, 200, map[string]any{"config": f.config, "lastResult": f.last})
+	f.resetRefreshLocked(time.Now())
+	reply(w, 200, map[string]any{"config": f.config, "lastResult": f.last, "refreshStatus": f.refreshStatus})
 }
 
 // A read is an observation of the named table, not proof that the desired

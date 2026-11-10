@@ -60,6 +60,7 @@ type App struct {
 	autoStartSuppressed map[string]bool
 	scheduleCancel      context.CancelFunc
 	scheduleDone        chan struct{}
+	firewallDone        chan struct{}
 	scheduleBlocks      map[string]string
 	generations         map[string]uint64
 	logStreams          int
@@ -139,6 +140,8 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 	app.scheduleCancel = scheduleCancel
 	app.scheduleDone = make(chan struct{})
 	go app.scheduleLoop(scheduleCtx)
+	app.firewallDone = make(chan struct{})
+	go app.firewallRefreshLoop(scheduleCtx)
 	go app.runTrafficDaily()
 	return app, nil
 }
