@@ -305,6 +305,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.firewallASNAPI(w, r)
 			return
 		}
+		if r.URL.Path == "/api/firewall/ip-asn" {
+			a.firewallIPASNAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/firewall/import" {
 			a.firewallImportAPI(w, r)
 			return
