@@ -404,6 +404,27 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 		i.TCPMuxPassthrough = m.boolean(root, "tcpmuxPassthrough", "", false)
 		i.SubDomainHost = m.str(root, "subDomainHost", "", "")
 		i.MaxPortsPerClient = m.integer(root, "maxPortsPerClient", "", 0)
+		var allowedPorts []string
+		for n, entry := range m.ruleTables(root, "allowPorts") {
+			if n >= 128 {
+				m.issue("allowPorts", "最多支持 128 项")
+				break
+			}
+			prefix := fmt.Sprintf("allowPorts[%d].", n)
+			single := m.integer(entry, "single", prefix, 0)
+			start := m.integer(entry, "start", prefix, 0)
+			end := m.integer(entry, "end", prefix, 0)
+			switch {
+			case portOK(single) && start == 0 && end == 0:
+				allowedPorts = append(allowedPorts, strconv.Itoa(single))
+			case single == 0 && portOK(start) && portOK(end) && end >= start:
+				allowedPorts = append(allowedPorts, fmt.Sprintf("%d-%d", start, end))
+			default:
+				m.issue(prefix, "需要一个有效端口，或有效的起始和结束端口")
+			}
+			m.unknown(entry, prefix)
+		}
+		i.ServerAllowedPorts = strings.Join(allowedPorts, ",")
 		bind := m.str(root, "proxyBindAddr", "", "")
 		if bind != "" && bind != i.Host {
 			m.issue("proxyBindAddr", "当前产品不能独立保存代理监听地址；运行时使用 bindAddr")

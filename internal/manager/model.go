@@ -33,6 +33,7 @@ type Instance struct {
 	TCPMuxPassthrough     bool   `json:"tcpmuxPassthrough,omitempty"`
 	SubDomainHost         string `json:"subDomainHost,omitempty"`
 	MaxPortsPerClient     int    `json:"maxPortsPerClient,omitempty"`
+	ServerAllowedPorts    string `json:"serverAllowedPorts,omitempty"`
 }
 type Tunnel struct {
 	ID                   string   `json:"id"`

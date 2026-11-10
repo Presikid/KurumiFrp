@@ -43,6 +43,21 @@ func renderProtocolInstance(b *strings.Builder, i Instance) error {
 	if i.MaxPortsPerClient > 0 {
 		fmt.Fprintf(b, "maxPortsPerClient = %d\n", i.MaxPortsPerClient)
 	}
+	if i.ServerAllowedPorts != "" {
+		ranges, err := parseServerAllowedPorts(i.ServerAllowedPorts)
+		if err != nil {
+			return err
+		}
+		values := make([]string, 0, len(ranges))
+		for _, r := range ranges {
+			if r.start == r.end {
+				values = append(values, fmt.Sprintf("{ single = %d }", r.start))
+			} else {
+				values = append(values, fmt.Sprintf("{ start = %d, end = %d }", r.start, r.end))
+			}
+		}
+		fmt.Fprintf(b, "allowPorts = [%s]\n", strings.Join(values, ", "))
+	}
 	return nil
 }
 

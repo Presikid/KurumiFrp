@@ -155,9 +155,55 @@ func dnsServerAddress(value string) (string, bool) {
 	return net.JoinHostPort(ip.String(), strconv.Itoa(n)), true
 }
 
+type allowedPortRange struct {
+	start int
+	end   int
+}
+
+// Empty means no restriction, as in frps. Keep ranges compact instead of
+// expanding them while validating a draft.
+func parseServerAllowedPorts(value string) ([]allowedPortRange, error) {
+	if value == "" {
+		return nil, nil
+	}
+	if len(value) > 1024 {
+		return nil, fmt.Errorf("允许端口范围过长")
+	}
+	parts := strings.Split(value, ",")
+	if len(parts) > 128 {
+		return nil, fmt.Errorf("允许端口范围最多 128 项")
+	}
+	result := make([]allowedPortRange, 0, len(parts))
+	for _, part := range parts {
+		bounds := strings.Split(strings.TrimSpace(part), "-")
+		if len(bounds) < 1 || len(bounds) > 2 {
+			return nil, fmt.Errorf("允许端口范围格式无效")
+		}
+		start, err := strconv.Atoi(strings.TrimSpace(bounds[0]))
+		if err != nil || !portOK(start) {
+			return nil, fmt.Errorf("允许端口须为 1–65535")
+		}
+		end := start
+		if len(bounds) == 2 {
+			end, err = strconv.Atoi(strings.TrimSpace(bounds[1]))
+			if err != nil || !portOK(end) || end < start {
+				return nil, fmt.Errorf("允许端口范围的结束值无效")
+			}
+		}
+		result = append(result, allowedPortRange{start: start, end: end})
+	}
+	return result, nil
+}
+
 func validateProtocolInstance(i Instance) error {
 	if i.MaxPortsPerClient < 0 || i.MaxPortsPerClient > 131070 || (i.Kind != "frps" && i.MaxPortsPerClient != 0) {
 		return fmt.Errorf("每客户端端口上限仅适用于服务端，须为 0–131070")
+	}
+	if i.Kind != "frps" && i.ServerAllowedPorts != "" {
+		return fmt.Errorf("允许端口范围仅适用于服务端")
+	}
+	if _, err := parseServerAllowedPorts(i.ServerAllowedPorts); err != nil {
+		return err
 	}
 	if i.Kind == "frpc" {
 		switch i.ClientTransport {
