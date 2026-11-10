@@ -104,6 +104,7 @@ func (a *App) recordNodeMonitor(id, stamp string, code int, checkErr error) {
 	if observation.stamp != stamp {
 		observation = nodeMonitorObservation{stamp: stamp}
 	}
+	previousState := observation.state
 	observation.checkedAt = now()
 	if checkErr == nil {
 		observation.state, observation.reason, observation.failures = "available", "", 0
@@ -120,4 +121,9 @@ func (a *App) recordNodeMonitor(id, stamp string, code int, checkErr error) {
 		}
 	}
 	a.nodeMonitors[id] = observation
+	if observation.state == "unavailable" && previousState != "unavailable" {
+		a.webhooks.emitNode("node.unavailable", id)
+	} else if observation.state == "available" && previousState == "unavailable" {
+		a.webhooks.emitNode("node.available", id)
+	}
 }

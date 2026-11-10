@@ -347,7 +347,7 @@ function showIssuedNodeCredential(value, control=false) {
 async function mutateNodes(action, node) {
  if (!nodesModel || nodeBusy || nodeLoading) return;
  const issuing = action === 'issue' || action === 'issue-control';
- const prompt = action === 'issue' ? '生成新的只读授权？旧授权会立即失效。新授权只显示一次。' : action === 'issue-control' ? '生成新的控制授权？持有者可远程启动、停止和重启本机全部实例。旧控制授权会立即失效。' : action === 'revoke' ? '撤销本机只读授权？所有使用它的控制端将无法再查看状态。' : action === 'revoke-control' ? '撤销本机控制授权？已经受理的操作可能仍会完成。' : action === 'share-traffic' ? (nodesModel.shareTraffic ? '关闭本机的远程流量共享？已经发出的数据无法撤回。' : '开启本机的远程流量共享？所有持有当前只读授权的控制端都可读取本机运行中实例的当前计数。') : action === 'monitor' ? (node.monitorEnabled ? `关闭节点「${node.name}」的后台检查？` : `开启节点「${node.name}」的后台检查？工作台运行时会定期连接已确认地址。`) : `从本机删除节点「${node.name}」？这不会撤销目标节点上的授权。`;
+ const prompt = action === 'issue' ? '生成新的只读授权？旧授权会立即失效。新授权只显示一次。' : action === 'issue-control' ? '生成新的控制授权？持有者可远程启动、停止和重启本机全部实例。旧控制授权会立即失效。' : action === 'revoke' ? '撤销本机只读授权？所有使用它的控制端将无法再查看状态。' : action === 'revoke-control' ? '撤销本机控制授权？已经受理的操作可能仍会完成。' : action === 'share-traffic' ? (nodesModel.shareTraffic ? '关闭本机的远程流量共享？已经发出的数据无法撤回。' : '开启本机的远程流量共享？所有持有当前只读授权的控制端都可读取本机运行中实例的当前计数。') : action === 'monitor' ? (node.monitorEnabled ? `关闭节点「${node.name}」的后台检查？` : `开启节点「${node.name}」的后台检查？工作台运行时会定期连接已确认地址；状态变化会发送给已开启状态通知的目标。`) : `从本机删除节点「${node.name}」？这不会撤销目标节点上的授权。`;
  if (!confirm(prompt)) return;
  const generation = nodePageGeneration, session = authGeneration;
  let issuedVisible = false;

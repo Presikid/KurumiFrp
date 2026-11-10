@@ -112,6 +112,7 @@ type webhookEvent struct {
 	Event      string `json:"event"`
 	At         string `json:"at"`
 	InstanceID string `json:"instanceId,omitempty"`
+	NodeID     string `json:"nodeId,omitempty"`
 	Kind       string `json:"kind,omitempty"`
 	Revision   uint64 `json:"revision,omitempty"`
 	SourceIP   string `json:"sourceIp,omitempty"`
@@ -225,6 +226,13 @@ func (d *webhookDispatcher) emitInstance(event, id, kind string) {
 	d.enqueue(webhookEvent{Event: event, At: now(), InstanceID: id, Kind: kind})
 }
 
+func (d *webhookDispatcher) emitNode(event, id string) {
+	if d == nil || !idPattern.MatchString(id) || (event != "node.available" && event != "node.unavailable") {
+		return
+	}
+	d.enqueue(webhookEvent{Event: event, At: now(), NodeID: id})
+}
+
 func (d *webhookDispatcher) emitLoginLimit(peer string) {
 	if d == nil {
 		return
@@ -248,7 +256,7 @@ func (d *webhookDispatcher) emitUpdateAvailable(version string) bool {
 
 func (cfg webhookConfig) receives(event string) bool {
 	switch event {
-	case "instance.up", "instance.down", "instance.start_failed":
+	case "instance.up", "instance.down", "instance.start_failed", "node.available", "node.unavailable":
 		return cfg.OnStatus
 	case "config.saved":
 		return cfg.OnConfig
@@ -490,6 +498,10 @@ func formatWebhookEventWithChat(format string, event webhookEvent, chatID string
 		description = "实例进程已退出"
 	case "instance.start_failed":
 		description = "实例进程启动失败"
+	case "node.available":
+		description = "远程节点检查已恢复"
+	case "node.unavailable":
+		description = "远程节点连续检查未成功"
 	case "config.saved":
 		description = fmt.Sprintf("配置草稿已更新（r%d）", event.Revision)
 	case "auth.login_limited":
@@ -502,6 +514,9 @@ func formatWebhookEventWithChat(format string, event webhookEvent, chatID string
 	message := fmt.Sprintf("KurumiFRP · %s\n时间：%s", description, event.At)
 	if event.InstanceID != "" {
 		message += fmt.Sprintf("\n实例：%s (%s)", event.InstanceID, event.Kind)
+	}
+	if event.NodeID != "" {
+		message += fmt.Sprintf("\n节点：%s", event.NodeID)
 	}
 	if event.SourceIP != "" {
 		message += fmt.Sprintf("\n连接对端 IP：%s", event.SourceIP)
