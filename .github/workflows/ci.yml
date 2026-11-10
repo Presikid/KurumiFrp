@@ -48,6 +48,7 @@ jobs:
             internal
             packaging
             scripts
+            third_party
             web
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
@@ -90,6 +91,7 @@ jobs:
             internal
             packaging
             scripts
+            third_party
             web
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
@@ -164,5 +166,4 @@ jobs:
             exit 1
           fi
           gh release create "$tag" dist-native/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "KurumiFrp $version" --notes-file "docs/RELEASE_$version.md" --prerelease
-
 
