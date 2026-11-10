@@ -54,13 +54,14 @@ type authSession struct {
 }
 
 type principal struct {
-	Name      string   `json:"name"`
-	Role      string   `json:"role"`
-	Account   bool     `json:"account"`
-	AllowLogs bool     `json:"allowLogs,omitempty"`
-	Instances []string `json:"-"`
-	AccountID string   `json:"-"`
-	gate      *sync.RWMutex
+	Name              string   `json:"name"`
+	Role              string   `json:"role"`
+	Account           bool     `json:"account"`
+	AllowLogs         bool     `json:"allowLogs,omitempty"`
+	OperableInstances []string `json:"operableInstances,omitempty"`
+	Instances         []string `json:"-"`
+	AccountID         string   `json:"-"`
+	gate              *sync.RWMutex
 }
 
 func (p principal) admin() bool { return p.Role == "admin" }
@@ -71,7 +72,15 @@ func (p principal) canOperate(id string) bool {
 	if p.Role != "operator" {
 		return false
 	}
-	return p.canView(id)
+	if !p.canView(id) {
+		return false
+	}
+	for _, allowed := range p.OperableInstances {
+		if allowed == id {
+			return true
+		}
+	}
+	return false
 }
 func (p principal) canReadLogs(id string) bool {
 	return p.admin() || (p.AllowLogs && p.canView(id))
@@ -128,7 +137,7 @@ func (a *auth) identityLocked(r *http.Request) (principal, bool) {
 	}
 	for _, account := range a.accounts {
 		if account.ID == session.accountID && account.Enabled {
-			return principal{Name: account.Username, Role: account.Role, Account: true, AllowLogs: account.AllowLogs, Instances: append([]string(nil), account.Instances...), AccountID: account.ID, gate: account.gate}, true
+			return principal{Name: account.Username, Role: account.Role, Account: true, AllowLogs: account.AllowLogs, Instances: append([]string(nil), account.Instances...), OperableInstances: effectiveControlInstances(account), AccountID: account.ID, gate: account.gate}, true
 		}
 	}
 	delete(a.sessions, c.Value)
