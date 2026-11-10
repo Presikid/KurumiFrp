@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/Presikid/KurumiFrp/internal/core"
-	"github.com/Presikid/KurumiFrp/internal/update"
 	"io"
 	"io/fs"
 	"net"
@@ -15,12 +13,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Presikid/KurumiFrp/internal/update"
 )
 
 type App struct {
 	quit     chan struct{}
 	quitOnce sync.Once
-	core     *core.Manager
 	runtime  RuntimeBackend
 	updater  *update.Manager
 	mu       sync.Mutex
@@ -32,7 +31,6 @@ type App struct {
 	nodeOperationVersions map[string]string
 
 	store            *Store
-	bin              string
 	addr             string
 	auth             auth
 	procs            map[string]*process
@@ -115,54 +113,7 @@ func NewWithRuntime(dir, bin, addr string, assets fs.FS, backend RuntimeBackend)
 	if len(token) != 64 {
 		return nil, fmt.Errorf("invalid access token file")
 	}
-	bin, e = filepath.Abs(bin)
-	if e != nil {
-		return nil, e
-	}
-	var cores *core.Manager
-	mode, _ := backend.(interface{ runtimeMode() string })
-	embedded := mode != nil && mode.runtimeMode() == "embedded"
-	if !embedded {
-		cores, e = core.New(bin)
-		if e != nil {
-			return nil, e
-		}
-		if s.DB.ActiveCore == nil {
-			status, err := cores.Status()
-			if err != nil {
-				return nil, err
-			}
-			id := status.Active
-			db := s.DB
-			db.ActiveCore = &id
-			if err = s.write(db); err != nil {
-				return nil, err
-			}
-			s.DB = db
-			if err = cores.RemoveLegacyActive(); err != nil {
-				return nil, err
-			}
-		}
-		if e = cores.UseConfigActive(*s.DB.ActiveCore, func(id string) error {
-			db := s.DB
-			if db.ActiveCore != nil && *db.ActiveCore != id {
-				db.Schedules = pauseAllSchedules(db.Schedules, "核心已变更，请检查后重新启用计划")
-			}
-			db.ActiveCore = &id
-			if err := incrementRevision(&db); err != nil {
-				return err
-			}
-			if err := s.write(db); err != nil {
-				return err
-			}
-			s.DB = db
-			return nil
-		}); e != nil {
-			return nil, e
-		}
-	}
-	// Preserve an unmigrated legacy core selection in embedded builds.
-	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), core: cores, runtime: backend, updater: update.New(s.dir, "source"), store: s, bin: bin, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2)}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2)}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	if e = app.recoverSchedules(); e != nil {
 		return nil, e
 	}
@@ -381,10 +332,6 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			a.healthAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/core" || strings.HasPrefix(r.URL.Path, "/api/core/") {
-			a.coreAPI(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/update/") {

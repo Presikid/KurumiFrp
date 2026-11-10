@@ -32,7 +32,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.canReadTraffic() && p.canReadConfig() && (p.admin() || p.Role == "operator" || p.Role == "viewer")
 		case "/api/logs", "/api/logs/stream":
 			return p.canReadLogs(r.URL.Query().Get("id"))
-		case "/api/registration", "/api/core", "/api/core/releases", "/api/core/release", "/api/update/status", "/api/update/releases", "/api/export", "/api/webhook", "/api/accounts":
+		case "/api/registration", "/api/update/status", "/api/update/releases", "/api/export", "/api/webhook", "/api/accounts":
 			return p.admin()
 		}
 	}
@@ -48,7 +48,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.admin() || p.Role == "operator" || p.Role == "viewer"
 		case "/api/control", "/api/validate", "/api/nodes/control":
 			return p.admin() || p.Role == "operator"
-		case "/api/accounts", "/api/quit", "/api/browser-ticket", "/api/probe", "/api/health", "/api/webhook", "/api/backup/export", "/api/backup/import", "/api/core/install", "/api/core/cancel", "/api/core/activate", "/api/update/install", "/api/import", "/api/import/toml", "/api/import/toml/preview", "/api/nodes", "/api/nodes/resolve", "/api/nodes/confirm", "/api/duplicate", "/api/tunnels/batch-enabled", "/api/tunnels/batch-delete", "/api/tunnels/batch", "/api/save", "/api/delete", "/api/restore", "/api/history-settings":
+		case "/api/accounts", "/api/quit", "/api/browser-ticket", "/api/probe", "/api/health", "/api/webhook", "/api/backup/export", "/api/backup/import", "/api/update/install", "/api/import", "/api/import/toml", "/api/import/toml/preview", "/api/nodes", "/api/nodes/resolve", "/api/nodes/confirm", "/api/duplicate", "/api/tunnels/batch-enabled", "/api/tunnels/batch-delete", "/api/tunnels/batch", "/api/save", "/api/delete", "/api/restore", "/api/history-settings":
 			return p.admin()
 		}
 	}

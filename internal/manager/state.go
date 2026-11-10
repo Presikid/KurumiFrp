@@ -75,30 +75,17 @@ func (a *App) observedRuntimeStatusLocked(i Instance, observed stateProcessSnaps
 // stateResponseLocked requires a.mu. Cached bytes and their key are immutable
 // after publication, so response writes can safely happen outside the lock.
 func (a *App) stateResponseLocked() (*stateResponseCache, error) {
-	frpc, frps := false, false
-	if a.core != nil {
-		_, ec := a.core.Binary("frpc")
-		_, es := a.core.Binary("frps")
-		frpc, frps = ec == nil, es == nil
-	}
+	_, ec := a.resolveRuntime("frpc")
+	_, es := a.resolveRuntime("frps")
 	next := &stateResponseCache{
 		revision:    a.store.DB.Revision,
-		frpc:        frpc,
-		frps:        frps,
-		runtimeFRPC: frpc,
-		runtimeFRPS: frps,
-		runtimeMode: "external",
+		runtimeFRPC: ec == nil,
+		runtimeFRPS: es == nil,
+		runtimeMode: "custom",
 		procs:       make(map[string]stateProcessSnapshot),
 	}
-	if _, external := a.runtime.(*externalRuntime); !external {
-		_, ec := a.resolveRuntime("frpc")
-		_, es := a.resolveRuntime("frps")
-		next.runtimeFRPC = ec == nil
-		next.runtimeFRPS = es == nil
-		next.runtimeMode = "custom"
-		if backend, ok := a.runtime.(interface{ runtimeMode() string }); ok {
-			next.runtimeMode = backend.runtimeMode()
-		}
+	if backend, ok := a.runtime.(interface{ runtimeMode() string }); ok {
+		next.runtimeMode = backend.runtimeMode()
 	}
 	next.coreID = a.activeCoreID()
 	for _, i := range a.store.DB.State.Instances {

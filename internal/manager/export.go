@@ -7,8 +7,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-
-	"github.com/Presikid/KurumiFrp/internal/core"
 )
 
 // Bound and consume slow uploads before waiting on other accounts' gates.
@@ -166,15 +164,8 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, fmt.Errorf("配置文件格式无效"))
 		return
 	}
-	if db.ActiveCore == nil || !core.ValidID(*db.ActiveCore) {
-		fail(w, 400, fmt.Errorf("核心配置无效"))
-		return
-	}
-	if a.core == nil {
-		// The embedded runtime does not manage external cores. Keep this
-		// device's selection (including an unmigrated nil) across imports.
-		db.ActiveCore = a.store.DB.ActiveCore
-	}
+	// The in-process runtime does not use the old external core selection.
+	db.ActiveCore = a.store.DB.ActiveCore
 	check := &Store{key: key}
 	revisions := map[uint64]bool{}
 	highestHistoryRevision := uint64(0)
@@ -286,23 +277,6 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 	if a.webhooks != nil {
 		a.configureWebhooks()
 		a.webhooks.emitConfig(db.Revision)
-	}
-	if a.core != nil {
-		if err = a.core.UseConfigActive(*db.ActiveCore, func(id string) error {
-			next := a.store.DB
-			next.ActiveCore = &id
-			if err := incrementRevision(&next); err != nil {
-				return err
-			}
-			if err := a.store.write(next); err != nil {
-				return err
-			}
-			a.store.DB = next
-			return nil
-		}); err != nil {
-			fail(w, 500, err)
-			return
-		}
 	}
 	reply(w, 200, map[string]any{"ok": true, "revision": db.Revision})
 }

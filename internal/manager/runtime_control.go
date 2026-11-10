@@ -169,9 +169,6 @@ func (a *App) finishRuntimeOperation(id string, op *runtimeOperation) {
 
 // activeCoreID and checkRuntimeSnapshot are called with a.mu held.
 func (a *App) activeCoreID() string {
-	if a.core != nil && a.store.DB.ActiveCore != nil {
-		return *a.store.DB.ActiveCore
-	}
 	return ""
 }
 

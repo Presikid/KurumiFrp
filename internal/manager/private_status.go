@@ -123,29 +123,11 @@ func (s *privateStatus) cleanup() {
 
 // Monitoring is optional: an unsupported core or unavailable status setup
 // must not prevent a valid user configuration from starting.
-func (a *App) preparePrivateStatus(ctx context.Context, target string, instance Instance, base Rendered) (Rendered, *privateStatus, error) {
-	if instance.Kind != "frpc" {
-		return base, nil, nil
-	}
-	if _, ok := a.runtime.(*externalRuntime); !ok {
+func (a *App) preparePrivateStatus(_ context.Context, _ string, instance Instance, base Rendered) (Rendered, *privateStatus, error) {
+	if instance.Kind == "frpc" {
 		base.MonitorReason = "当前运行后端尚未提供代理注册状态"
-		return base, nil, nil
 	}
-	s, err := newPrivateStatus(a.store.dir)
-	if err != nil {
-		base.MonitorReason = "无法建立本机安全状态接口"
-		return base, nil, nil
-	}
-	runtime := s.runtimeConfig(base)
-	if _, err := a.verifyRuntime(ctx, target, instance, runtime); err != nil {
-		s.cleanup()
-		if ctx.Err() != nil {
-			return base, nil, ctx.Err()
-		}
-		base.MonitorReason = "当前核心未通过安全状态接口配置验证"
-		return base, nil, nil
-	}
-	return runtime, s, nil
+	return base, nil, nil
 }
 
 // runtimeConfig retains the original digest/preview so the ephemeral

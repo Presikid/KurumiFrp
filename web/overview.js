@@ -233,13 +233,10 @@ const Overview = (() => {
   const instances = snapshot.state.instances;
   const tunnels = snapshot.state.tunnels;
   const events = snapshot.events || [];
-  const binaries = snapshot.binaries || {};
   const embedded = snapshot.runtimeBackend === 'embedded';
-  const embeddedReady = snapshot.runtimeAvailable?.frpc && snapshot.runtimeAvailable?.frps;
-  const coreRows = embedded
-   ? `<div class="check-row"><span>内置核心</span><span class="pill ${embeddedReady?'good':'warn'}">${embeddedReady?'可用':'暂不可用'}</span></div>`
-   : `<div class="check-row"><span>frpc 二进制</span><span class="pill ${binaries.frpc?'good':'warn'}">${binaries.frpc?'已找到':'未安装'}</span></div><div class="check-row"><span>frps 二进制</span><span class="pill ${binaries.frps?'good':'warn'}">${binaries.frps?'已找到':'未安装'}</span></div>`;
-  const coreNote = embedded ? '内置核心仍在开发，部分协议和功能暂不可用。' : '指定 frp-dir 中的二进制属于受信任程序；请仅放入官方或自行审计的版本。';
+  const runtimeReady = snapshot.runtimeAvailable?.frpc && snapshot.runtimeAvailable?.frps;
+  const coreRows = `<div class="check-row"><span>${embedded?'内置核心':'运行后端'}</span><span class="pill ${runtimeReady?'good':'warn'}">${runtimeReady?'可用':'暂不可用'}</span></div>`;
+  const coreNote = embedded ? '内置核心仍在开发，部分协议和功能暂不可用。' : '运行后端的可用状态不代表网络链路可达。';
   const {escape, header, badge, instanceRegistrationText, tunnelTable} = helpers;
   if (!instances.some(instance => instance.id === trafficInstance)) trafficInstance = instances[0]?.id || '';
   trafficContext = {escape, instances, revision:snapshot.revision, runtime:snapshot.runtime || {}, loadServerTraffic:helpers.loadServerTraffic, loadTraffic:helpers.loadTraffic, loadClientRuleTraffic:helpers.loadClientRuleTraffic, loadHistory:helpers.loadHistory};

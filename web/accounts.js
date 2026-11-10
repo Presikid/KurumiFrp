@@ -20,7 +20,6 @@ render = function () {
  updateAccountNavigation();
  if (data.identity?.role !== 'admin') {
   if (page === 'logs' && data.identity?.allowLogs) { accountRenderBase(); return; }
-  stopCorePolling();
   page = 'instances';
   ++serial;
   $('#page-title').textContent = '授权实例';
@@ -34,7 +33,6 @@ render = function () {
   return;
  }
  if (page !== 'accounts') { accountRenderBase(); return; }
- stopCorePolling();
  ++serial;
  $('#page-title').textContent = titles.accounts;
  document.title = titles.accounts + ' · KurumiFRP';
