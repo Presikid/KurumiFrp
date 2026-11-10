@@ -9,15 +9,18 @@ render = function () {
  $('#content').innerHTML = header('端口访问控制', '为明确指定的 Linux TCP/UDP 端口应用来源地址过滤。') + `
   <section id="firewall-screen" class="panel"><div class="panel-content">
    <p class="small-note">规则作用于本机指定端口的新入站连接，也可能影响使用相同端口的其他服务。回环和已有连接不受此规则处理。重叠端口必须通过所有相关规则；允许列表没有列出的 IP 地址族也会被阻止。</p>
-   <p class="small-note">此操作需要 Linux、nftables 和网络管理权限。工作台或系统重启后需要手动重新应用，才能恢复已启用的自动刷新；其他防火墙工具也可能更改规则。请预留独立的服务器管理通道。</p>
+   <p class="small-note">此操作需要 Linux、nftables 和网络管理权限。可选择在工作台启动时恢复已确认应用的规则；其他防火墙工具也可能更改规则。请预留独立的服务器管理通道。</p>
    <p id="firewall-status" role="status">正在读取配置…</p>
    <p id="firewall-table" class="small-note"></p>
    <p id="firewall-refresh-status" class="small-note" role="status"></p>
+   <p id="firewall-restore-status" class="small-note" role="status"></p>
    <button type="button" id="firewall-reload">刷新配置</button>
    <form id="firewall-form"><fieldset id="firewall-controls" disabled>
     <label><input type="checkbox" name="enabled"> 启用端口来源过滤</label>
     <fieldset id="firewall-settings"><legend>规则</legend>
      <div id="firewall-rules"></div><button type="button" data-firewall-add>添加规则</button>
+     <label class="form-check"><input type="checkbox" name="autoRestore">工作台启动时恢复已确认应用的规则</label>
+     <p class="small-note">仅恢复上次确认应用成功且与保存配置一致的规则；恢复失败或结果不确定时暂停，需核对并手动应用。成功恢复后会继续已启用的自动刷新。</p>
      <label class="form-check"><input type="checkbox" name="recordBlocked">记录近期被这些规则阻止的来源</label>
      <p class="small-note">记录包含来源地址、协议和目标端口，约一小时无新尝试后过期且数量有限；关闭或重新应用规则会清空记录。</p>
     </fieldset>
@@ -153,12 +156,14 @@ function mountFirewall() {
    model = result.config;
    supported = !!result.supported;
    form.elements.enabled.checked = !!model.enabled;
+   form.elements.autoRestore.checked = !!model.autoRestore;
    form.elements.recordBlocked.checked = !!model.recordBlocked;
    rulesHost.replaceChildren();
    const rules = Array.isArray(model.rules) && model.rules.length ? model.rules : model.enabled ? [{mode:model.mode, ports:model.ports, sources:model.sources}] : [{}];
    rules.forEach(addRule);
    table.textContent = model.tableId ? '本工作台管理的表：kurumi_' + model.tableId : '尚未创建本工作台的规则表。';
    $('#firewall-refresh-status').textContent = result.refreshStatus || (model.rules?.some(rule=>rule.refresh) ? '自动刷新尚未启动；请核对并手动应用。' : '未启用自动刷新。');
+   $('#firewall-restore-status').textContent = result.restoreStatus || (model.autoRestore ? '启动恢复状态未知；请核对规则。' : '未启用启动时恢复。');
    status.textContent = !result.supported ? '当前系统不支持此功能；已有内核规则状态未知。'
     : result.lastResult === 'applied' ? '本进程最近一次应用命令返回成功；当前规则仍可能被系统或其他工具更改。'
     : '内核规则状态未知；保存的配置不代表当前已经生效。';
@@ -249,9 +254,9 @@ function mountFirewall() {
   if (busy || !model) return;
   const enabled = form.elements.enabled.checked;
   const rules = enabled ? readRules() : [];
-  const autoNotice = rules.some(rule=>rule.enabled && rule.refresh) ? '已选自动刷新的规则以后会替换来源列表并重新应用。' : '';
+  const autoNotice = (rules.some(rule=>rule.enabled && rule.refresh) ? '已选自动刷新的规则以后会替换来源列表并重新应用。' : '') + (enabled && form.elements.autoRestore.checked ? '工作台启动时将恢复已确认的规则。' : '');
   if (!confirm(enabled ? '将修改本机指定端口的新入站连接过滤，可能影响其他服务。' + autoNotice + '确定保存并应用？' : '将移除本工作台管理的规则表。确定保存并应用？')) return;
-  const payload = {revision:model.revision, enabled, recordBlocked:form.elements.recordBlocked.checked, rules};
+  const payload = {revision:model.revision, enabled, autoRestore:enabled && form.elements.autoRestore.checked, recordBlocked:form.elements.recordBlocked.checked, rules};
   clearTimeout(seenTimer); seenRequest?.abort(); seenRequest = null;
   $('#firewall-seen').textContent = '应用期间暂停读取记录。';
   busy = true; controls.disabled = true; reload.disabled = true;
@@ -262,11 +267,13 @@ function mountFirewall() {
    if (!current()) return;
    model = result.config;
    $('#firewall-refresh-status').textContent = result.refreshStatus || '未启用自动刷新。';
+   $('#firewall-restore-status').textContent = result.restoreStatus || '未启用启动时恢复。';
    table.textContent = '本工作台管理的表：kurumi_' + model.tableId;
    if (!enabled) {
     rulesHost.replaceChildren();
     (model.rules?.length ? model.rules : [{}]).forEach(addRule);
     form.elements.recordBlocked.checked = !!model.recordBlocked;
+    form.elements.autoRestore.checked = !!model.autoRestore;
    }
    status.textContent = enabled ? '应用命令返回成功；当前规则仍可能被系统或其他工具更改。' : '移除命令返回成功；上次保存的规则已保留，未应用的编辑未保存。';
    controls.disabled = false;
