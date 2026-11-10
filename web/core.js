@@ -18,7 +18,7 @@ function mountCore() {
  if (data?.runtimeBackend === 'embedded') {
   stopCorePolling();
   $('#content').innerHTML = header('内置核心', '当前版本直接运行内置核心，无需下载外部程序。') +
-   '<section class="panel"><div class="panel-content"><p>内置核心仍在开发，部分协议和功能暂不可用。</p></div></section>';
+   '<section class="panel"><div class="panel-content"><p>内置 frp 随工作台更新；当前为开发候选，部分协议、并发运行及异常恢复仍待验收。</p></div></section>';
   return;
  }
  if ($('#core-screen')) {paintCoreStatus();scheduleCorePoll(0);return;}
@@ -64,7 +64,7 @@ function stopCorePolling() {
 }
 function scheduleCorePoll(delay) {
  stopCorePolling();
- if (!data || page !== 'core' || document.hidden) return;
+ if (!data || data.runtimeBackend === 'embedded' || page !== 'core' || document.hidden) return;
  const wait = delay ?? (coreBusy() ? 1500 : 10000);
  corePollTimer = setTimeout(() => {
   corePollTimer = null;
@@ -72,7 +72,7 @@ function scheduleCorePoll(delay) {
  }, wait);
 }
 async function pollCore() {
- if (!data || page !== 'core' || document.hidden) return;
+ if (!data || data.runtimeBackend === 'embedded' || page !== 'core' || document.hidden) return;
  if (coreStatusRequest) return coreStatusRequest;
  const request = (async () => {
   try {

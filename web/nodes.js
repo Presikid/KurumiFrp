@@ -113,12 +113,12 @@ function leaveNodes() {
 }
 function mountNodes() {
  if ($('#nodes-screen')) return;
- $('#content').innerHTML = header('节点管理','按需查看已授权远程工作台的实例进程状态。') + `
+ $('#content').innerHTML = header('节点管理','按需查看或控制已授权远程工作台的实例。') + `
  <div id="nodes-screen">
   <div id="node-control-notice" class="notice" role="alert" hidden></div>
-  <section class="panel"><div class="panel-title"><div><h3>远程节点</h3><p>仅展示进程状态；不代表代理已注册或服务可访问。</p></div><div class="actions"><button data-node-action="reload">刷新列表</button><button class="primary" data-node-action="new">＋ 添加节点</button></div></div>
+  <section class="panel"><div class="panel-title"><div><h3>远程节点</h3><p>实例状态不代表代理已注册或服务可访问。</p></div><div class="actions"><button data-node-action="reload">刷新列表</button><button class="primary" data-node-action="new">＋ 添加节点</button></div></div>
    <div class="panel-content"><p class="small-note">先在目标工作台生成只读授权，添加后核对解析地址。检查只连接已确认地址，并验证 HTTPS 证书。</p><div id="nodes-list" role="status">正在读取…</div></div></section>
-  <section class="panel"><div class="panel-title"><div><h3>允许其他工作台查看本机</h3><p>独立只读授权仅用于查看本机所有实例的名称、类型和进程状态。</p></div><span id="node-sharing" class="pill">读取中</span></div>
+  <section class="panel"><div class="panel-title"><div><h3>允许其他工作台查看本机</h3><p>独立只读授权仅用于查看本机所有实例的名称、类型和运行状态。</p></div><span id="node-sharing" class="pill">读取中</span></div>
    <div class="panel-content"><p class="small-note">工作台仍只监听本机。需由管理员配置受信任的 HTTPS 反向代理；只读与控制使用不同授权。</p><div class="actions"><button data-node-action="issue">生成 / 更换只读授权</button><button class="danger" data-node-action="revoke">撤销只读授权</button></div><p id="node-page-error" class="error" role="alert"></p></div></section>
   <section class="panel"><div class="panel-title"><div><h3>允许远程启动和停止</h3><p>单独授权，默认关闭。持有者可操作本机全部实例。</p></div><span id="node-control-sharing" class="pill">读取中</span></div>
    <div class="panel-content"><p class="small-note">仅向可信工作台提供此授权；生成新授权会撤销旧授权。已受理的操作可能在撤销后完成，不支持远程重启。</p><div class="actions"><button data-node-action="issue-control">生成 / 更换控制授权</button><button class="danger" data-node-action="revoke-control">撤销控制授权</button></div></div></section>
