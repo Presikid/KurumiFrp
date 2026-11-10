@@ -1,5 +1,34 @@
 # Architecture and security boundary
 
+> The historical process and external-core sections below describe the earlier backend.
+> The 0.8 embedded-runtime packaging candidate and its outstanding acceptance
+> gates are described in [EMBEDDED_RUNTIME_CANDIDATE.md](EMBEDDED_RUNTIME_CANDIDATE.md).
+
+## Current runtime boundary
+
+Normal builds select the in-process `RuntimeBackend`; the explicit
+`kurumi_external_runtime` build tag retains the earlier external backend. The
+embedded adapter parses a per-instance configuration with its own template
+values, creates a separate client or server and log sink, and reports liveness
+and client registration through the manager's runtime interfaces. No external
+frp binary or child environment is needed for this backend. Runtime liveness
+does not establish registration or end-to-end reachability.
+
+The manager retains per-instance generations and waits for the runtime's
+cleanup before replacing that generation. External-core files and selections
+are left for compatibility builds. Importing in embedded mode preserves the
+destination's external-core selection and node settings; instance grants are
+revoked before replacement. Known credentials are redacted
+from instance logs and status messages, but arbitrary dependency output cannot
+be guaranteed secret-free. Some dependencies use process-level logging.
+
+This is a development candidate, not proof of isolation or complete cleanup.
+Actual protocol interoperability, concurrent services, recovery and package
+lifecycle across target systems remain to be verified. The release workflow
+is gated while those checks are outstanding.
+
+## Earlier design notes
+
 The Go executable embeds `web/` using go:embed. No npm, Docker or remote service
 is needed. All manager API operations use a single serialized application mutex;
 process exits/log capture use independent locks. Per-object revision writes reject

@@ -7,12 +7,6 @@
 #ifndef OutputPath
  #error OutputPath is required
 #endif
-#ifndef BundledAMD64SHA
- #error BundledAMD64SHA is required
-#endif
-#ifndef BundledARM64SHA
- #error BundledARM64SHA is required
-#endif
 
 [Setup]
 AppId=io.github.Presikid.KurumiFRP
@@ -87,8 +81,8 @@ english.InitFailed=Installation receipt could not be initialized. Setup.exe was 
 chinesesimplified.InitFailed=无法初始化安装记录，安装程序已保留。
 english.ManualStart=Installation completed. Sign in to your usual Windows account and open KurumiFRP without administrator privileges.
 chinesesimplified.ManualStart=安装完成。请登录平时使用的 Windows 账户，以普通权限手动打开 KurumiFRP。
-english.BundledMismatch=This same-version installer contains a different bundled core. Install a newer application version instead; the current installation was not changed.
-chinesesimplified.BundledMismatch=此安装包与已安装的同版本程序所含预置核心不同。请安装更新的软件版本；现有安装未被修改。
+english.BundledMismatch=A legacy bundled core already exists for this application version. Install a newer version instead; the current installation was not changed.
+chinesesimplified.BundledMismatch=此软件版本已存在旧版预置核心。请安装更新的软件版本；现有安装未被修改。
 english.UninstallConfirm=Close the workbench and its connections for every account before uninstalling. Application files will be removed; account data will be retained. Continue?
 chinesesimplified.UninstallConfirm=卸载前请关闭所有账户的工作台及连接。卸载会移除程序文件，保留各账户的数据。是否继续？
 
@@ -101,8 +95,6 @@ Source: "{#PayloadDir}\amd64\kurumi.exe"; DestName: "maintenance-amd64.exe"; Fla
 Source: "{#PayloadDir}\arm64\kurumi.exe"; DestName: "maintenance-arm64.exe"; Flags: dontcopy noencryption
 Source: "{#PayloadDir}\amd64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: not IsArm64
 Source: "{#PayloadDir}\arm64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: IsArm64
-Source: "{#PayloadDir}\amd64\bundled\{#AppVersion}\*"; DestDir: "{app}\bundled\{#AppVersion}"; Flags: onlyifdoesntexist; Check: not IsArm64
-Source: "{#PayloadDir}\arm64\bundled\{#AppVersion}\*"; DestDir: "{app}\bundled\{#AppVersion}"; Flags: onlyifdoesntexist; Check: IsArm64
 Source: "{#PayloadDir}\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "kurumi.ico"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -193,7 +185,7 @@ begin
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
-var App, Exe, RegisteredDir, PreviousVersion, ExpectedManifest, HelperName: String; Registered, Reinstall: Boolean;
+var App, Exe, RegisteredDir, HelperName: String; Registered, Reinstall: Boolean;
 begin
   Result := '';
   App := ExpandConstant('{app}');
@@ -240,18 +232,9 @@ begin
   end;
   if Registered or Reinstall then begin
     if DirExists(App + '\bundled\{#AppVersion}') then begin
-      if Registered then begin
-        if not RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.Presikid.KurumiFRP_is1', 'DisplayVersion', PreviousVersion) or (PreviousVersion <> '{#AppVersion}') then begin Result := ExpandConstant('{cm:UnmanagedDir}'); Exit; end;
-      end;
-      if IsArm64 then ExpectedManifest := '{#BundledARM64SHA}' else ExpectedManifest := '{#BundledAMD64SHA}';
-      try
-        if Lowercase(GetSHA256OfFile(App + '\bundled\{#AppVersion}\manifest.json')) <> ExpectedManifest then begin
-          Result := ExpandConstant('{cm:BundledMismatch}'); Exit;
-        end;
-      except
-        Result := ExpandConstant('{cm:UnmanagedDir}'); Exit;
-      end;
-      if not RunHelper('--verify-bundled') then begin Result := ExpandConstant('{cm:UnmanagedDir}'); Exit; end;
+      // This version used an external bundle. Keep it untouched and require
+      // a new application version instead of adopting an ambiguous payload.
+      Result := ExpandConstant('{cm:BundledMismatch}'); Exit;
     end;
     if not RunHelper('--native-maintenance stop') then Result := ExpandConstant('{cm:StopFailed}');
   end;
@@ -260,7 +243,6 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then begin
-    if not RunHelper('--verify-bundled') then RaiseException('Bundled core verification failed; account data was retained.');
     if not RunHelper('--native-maintenance init') then RaiseException(ExpandConstant('{cm:InitFailed}'));
   end;
   if (CurStep = ssDone) and WizardSilent then Log(ExpandConstant('{cm:ManualStart}'));

@@ -14,7 +14,7 @@
 
 ## 当前日志源和后续接入
 
-当前可运行后端仍是 `externalRuntime`：它将该实例的 frp 子进程标准输出和标准错误写入 `RuntimeBackend.Start` 收到的 `io.Writer`。这不是进程内 frp。`RuntimeBackend` 已提供后续日志源接入点：每次 `Start` 得到只属于该 `RuntimeConfig.RunID` 的 writer，后端应将该代次的输出写入它，并在 `RuntimeInstance.Wait` 返回前结束所有写入。不要把不同实例或代次的日志混入全局 logger，也不要绕过 manager 的逐行缓冲和脱敏。进程内 frp 适配、实际日志来源及其生命周期仍需另行实现。
+默认构建使用进程内 frp：每次 `Start` 给该 `RuntimeConfig.RunID` 单独的日志接收器，再经过 manager 的逐行缓冲和脱敏。部分上游依赖仍可能使用进程级日志，隔离与关闭时序尚需真实并发和异常恢复验收。显式使用 `kurumi_external_runtime` 标签构建时仍可使用原来的外部进程后端。
 
 ## 账户权限接入和限制
 

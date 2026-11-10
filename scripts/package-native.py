@@ -8,7 +8,6 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-from bundled_frp import prepare as prepare_bundled_frp
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = (ROOT / 'VERSION').read_text().strip()
@@ -29,15 +28,8 @@ def build(system, arch, dest):
     flags = '-s -w -X main.distribution=' + mode
     if system == 'windows':
         flags += ' -H=windowsgui'
-    if system == 'linux' and arch == 'armhf':
-        flags += ' -X github.com/Presikid/KurumiFrp/internal/core.armVariant=arm_hf'
-    platform = system + '_' + ('arm_hf' if arch == 'armhf' else arch)
-    digest = prepare_bundled_frp(platform, dest.parent / 'bundled' / VERSION)
-    flags += ' -X github.com/Presikid/KurumiFrp/internal/core.bundledManifestSHA=' + digest
-    flags += ' -X github.com/Presikid/KurumiFrp/internal/core.bundledVersion=' + VERSION
     run(['go', 'build', '-trimpath', '-ldflags=' + flags, '-o', dest, './cmd/kurumi'],
-        env=dict(os.environ, GOOS=system, GOARCH=goarch, GOARM='7', CGO_ENABLED='0'))
-    return digest
+        env=dict(os.environ, GOOS=system, GOARCH=goarch, GOARM='7', CGO_ENABLED='0', GOFLAGS=''))
 
 
 def windows():
@@ -50,15 +42,15 @@ def windows():
         raise SystemExit('Install Inno Setup 6.3+ on the build host, not end-user devices.')
     with tempfile.TemporaryDirectory(prefix='kurumi-setup-') as temp:
         stage = Path(temp)
-        digests = {arch: build('windows', arch, stage / arch / 'kurumi.exe')
-                   for arch in ('amd64', 'arm64')}
+        for arch in ('amd64', 'arm64'):
+            build('windows', arch, stage / arch / 'kurumi.exe')
         # The bundled language translation has its own attribution; include it
         # in the existing installation guide rather than creating a license folder.
         guide = (ROOT / 'docs/INSTALL.md').read_text(encoding='utf-8')
         notice = (ROOT / 'packaging/windows/ChineseSimplified-LICENSE.txt').read_text(encoding='utf-8')
-        (stage / 'INSTALL.md').write_text(guide + '\n## 第三方组件声明\n\n简体中文安装界面翻译使用以下第三方许可；这不是 KurumiFRP 的项目许可。\n\n' + notice, encoding='utf-8')
+        frp_license = (ROOT / 'internal/embedded/LICENSE-frp').read_text(encoding='utf-8')
+        (stage / 'INSTALL.md').write_text(guide + '\n## 第三方组件声明\n\n简体中文安装界面翻译使用以下第三方许可；这不是 KurumiFRP 的项目许可。\n\n' + notice + '\n\n## frp 许可\n\n' + frp_license, encoding='utf-8')
         run([iscc, '/DAppVersion=' + VERSION, '/DPayloadDir=' + str(stage),
-             '/DBundledAMD64SHA=' + digests['amd64'], '/DBundledARM64SHA=' + digests['arm64'],
              '/DOutputPath=' + str(OUT), ROOT / 'packaging/windows/kurumifrp.iss'])
 
 
@@ -72,7 +64,6 @@ def linux_tree(stage, binary):
     target = stage / 'opt/kurumifrp/kurumifrp'
     target.parent.mkdir(parents=True)
     shutil.copyfile(binary, target)
-    shutil.copytree(binary.parent / 'bundled', target.parent / 'bundled')
     target.chmod(0o755)
     link = stage / 'usr/bin/kurumifrp'
     link.parent.mkdir(parents=True, exist_ok=True)
@@ -84,7 +75,8 @@ def linux_tree(stage, binary):
     docs = stage / 'usr/share/doc/kurumifrp'
     write(docs / 'README.md', (ROOT / 'docs/INSTALL.md').read_text())
     write(docs / 'copyright', 'Upstream: https://github.com/Presikid/KurumiFrp\n'
-          'No project license grant has been specified. Packaging does not grant additional rights.\n')
+          'No project license grant has been specified. Packaging does not grant additional rights.\n\n'
+          'Embedded frp license:\n' + (ROOT / 'internal/embedded/LICENSE-frp').read_text(encoding='utf-8'))
     write(docs / 'changelog', 'KurumiFRP ' + VERSION + ': native installers and package-managed lifecycle.\n')
     for src, dest in [(ROOT / 'packaging/linux/kurumifrp.1', stage / 'usr/share/man/man1/kurumifrp.1.gz'),
                       (docs / 'changelog', docs / 'changelog.gz')]:
@@ -123,8 +115,8 @@ Depends: ca-certificates, passwd, procps, util-linux, findutils, mawk | gawk, in
 Recommends: systemd
 Homepage: https://github.com/Presikid/KurumiFrp
 Description: Local frpc and frps management workbench
- Embedded WebUI with official core downloads, configuration history and
- managed child processes. Runs as a dedicated unprivileged systemd service.
+ Embedded WebUI and frp runtime, with configuration history. Runs as a
+ dedicated unprivileged systemd service.
  Management listens only on loopback; no firewall rules are changed.
 ''')
         scripts = {
@@ -162,7 +154,7 @@ Requires(postun): shadow-utils, procps-ng, coreutils, util-linux, gawk
 %global debug_package %{{nil}}
 %global __os_install_post %{{nil}}
 %description
-Native system package with embedded WebUI, verified frp downloads and a
+Native system package with embedded WebUI and frp runtime and a
 least-privilege systemd service. Management is loopback-only.
 %install
 mkdir -p %{{buildroot}}
@@ -185,7 +177,6 @@ if [ "$1" = 0 ]; then remove_unit_state; purge_state; elif systemd_active; then 
 /usr/bin/kurumifrp
 %dir /opt/kurumifrp
 /opt/kurumifrp/kurumifrp
-/opt/kurumifrp/bundled
 /usr/lib/systemd/system/kurumifrp.service
 /usr/lib/systemd/system/kurumifrp-updater.service
 /usr/lib/systemd/system/kurumifrp-updater.path
