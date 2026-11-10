@@ -68,7 +68,7 @@ window.KurumiInstances = (() => {
   const name = esc(instance.name);
   const runtime = data.runtime?.[instance.id] || {state:'stopped'};
   const restricted = data.identity?.role !== 'admin';
-  const operator = data.identity?.role === 'operator';
+  const operator = data.identity?.role === 'operator' && (data.identity?.operableInstances || []).includes(instance.id);
   const state = runtime.state || 'stopped';
   const running = state === 'running';
   const starting = state === 'starting';
