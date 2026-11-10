@@ -21,6 +21,8 @@ const ProtocolEditor = (() => {
     <div class="client-field">${field('natHoleStunServer', 'NAT 穿透 STUN 地址（可选）', v.natHoleStunServer || '', 'text', 'placeholder="host:port"')}</div>
     <div class="client-field">${field('dnsServer', 'DNS 服务器 IP（可选）', v.dnsServer || '', 'text', 'placeholder="例如 1.1.1.1 或 [::1]:53"')}</div>
     <div class="client-field"><label>连接协议<select name="clientTransport">${['tcp','websocket','wss','kcp','quic'].map(protocol => `<option value="${protocol}" ${(v.clientTransport || 'tcp') === protocol ? 'selected' : ''}>${protocol.toUpperCase()}</option>`).join('')}</select></label></div>
+    <div class="client-field">${field('clientPoolCount', '客户端预建工作连接数（0 默认 1）', v.clientPoolCount ?? 0, 'number', 'min="0" max="10000" step="1"')}</div>
+    <div class="span-2">${check('transportMuxDisabled', '关闭客户端与服务端之间的 TCP 多路复用', v.transportMuxDisabled)}<small>两端设置必须一致；这不是规则中的 TCPMUX 协议。</small></div>
     <div class="client-field span-2">${check('loginFailExit', '首次登录失败时退出（关闭时持续重连）', v.loginFailExit)}</div>
     <div class="client-field span-2">${check('clientTLSDisabled', '关闭客户端 TLS（WSS 和 QUIC 始终使用 TLS）', v.clientTLSDisabled)}</div>
     <div class="server-field">${field('kcpBindPort', 'KCP 监听端口（0 关闭）', v.kcpBindPort ?? 0, 'number', 'min="0" max="65535" step="1"')}</div>
@@ -34,6 +36,7 @@ const ProtocolEditor = (() => {
     <div class="server-field span-2">${field('serverAllowedPorts', '允许分配的代理端口（留空不限）', v.serverAllowedPorts || '', 'text', 'maxlength="1024" placeholder="例如 6000-6010,7000"')}<small>限制 TCP/UDP 代理端口及动态分配范围；不影响 HTTP(S) 虚拟主机监听端口。</small></div>
     <div class="server-field">${field('vhostHTTPTimeout', 'HTTP 响应头超时（秒，0 默认 60）', v.vhostHTTPTimeout ?? 0, 'number', 'min="0" max="86400" step="1"')}</div>
     <div class="server-field">${field('userConnTimeout', '等待代理工作连接超时（秒，0 默认 10）', v.userConnTimeout ?? 0, 'number', 'min="0" max="86400" step="1"')}</div>
+    <div class="server-field">${field('serverMaxPoolCount', '每客户端最大预建连接数（0 默认 5）', v.serverMaxPoolCount ?? 0, 'number', 'min="0" max="10000" step="1"')}<small>服务端会限制客户端请求的预建连接数量。</small></div>
     <div class="server-field span-2">${check('tcpmuxPassthrough', '启用 TCPMUX 透传（需要设置 HTTP CONNECT 端口）', v.tcpmuxPassthrough)}</div>
     <div class="server-field span-2">${check('serverAllowPlaintext', '允许不使用 TLS 的客户端连接', v.serverAllowPlaintext)}</div>
     <div class="span-2">${check('autoStart', '工作台启动时自动启动此实例', v.autoStart)}</div>
@@ -199,7 +202,7 @@ const ProtocolEditor = (() => {
     httpPort:kind === 'frps' ? +val('httpPort') : 0, httpsPort:kind === 'frps' ? +val('httpsPort') : 0,
     user:kind === 'frpc' ? val('user').trim() : '', natHoleStunServer:kind === 'frpc' ? val('natHoleStunServer').trim() : '', dnsServer:kind === 'frpc' ? val('dnsServer').trim() : '', clientTransport:kind === 'frpc' ? val('clientTransport') : '', loginFailExit:kind === 'frpc' && f.loginFailExit.checked, clientTLSDisabled:kind === 'frpc' && f.clientTLSDisabled.checked, serverAllowPlaintext:kind === 'frps' && f.serverAllowPlaintext.checked, kcpBindPort:kind === 'frps' ? +val('kcpBindPort') : 0, quicBindPort:kind === 'frps' ? +val('quicBindPort') : 0,
     tcpmuxHTTPConnectPort:kind === 'frps' ? +val('tcpmuxHTTPConnectPort') : 0,
-    tcpmuxPassthrough:kind === 'frps' && f.tcpmuxPassthrough.checked, subDomainHost:kind === 'frps' ? val('subDomainHost').trim() : '', maxPortsPerClient:kind === 'frps' ? +val('maxPortsPerClient') : 0, serverAllowedPorts:kind === 'frps' ? val('serverAllowedPorts').trim() : '', proxyBindAddr:kind === 'frps' ? val('proxyBindAddr').trim() : '', vhostHTTPTimeout:kind === 'frps' ? +val('vhostHTTPTimeout') : 0, userConnTimeout:kind === 'frps' ? +val('userConnTimeout') : 0});
+    tcpmuxPassthrough:kind === 'frps' && f.tcpmuxPassthrough.checked, subDomainHost:kind === 'frps' ? val('subDomainHost').trim() : '', maxPortsPerClient:kind === 'frps' ? +val('maxPortsPerClient') : 0, serverAllowedPorts:kind === 'frps' ? val('serverAllowedPorts').trim() : '', proxyBindAddr:kind === 'frps' ? val('proxyBindAddr').trim() : '', vhostHTTPTimeout:kind === 'frps' ? +val('vhostHTTPTimeout') : 0, userConnTimeout:kind === 'frps' ? +val('userConnTimeout') : 0, clientPoolCount:kind === 'frpc' ? +val('clientPoolCount') : 0, serverMaxPoolCount:kind === 'frps' ? +val('serverMaxPoolCount') : 0, transportMuxDisabled:f.transportMuxDisabled.checked});
    return result;
   }
   const type = val('type'), visitor = Protocols.isVisitor(type), paired = Protocols.hasPairingSecret(type);
