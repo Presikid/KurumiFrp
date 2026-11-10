@@ -56,6 +56,9 @@ type Server struct {
 type ServerOptions struct {
 	LogSink         *xlog.Sink
 	TrafficRecorder server.TrafficRecorder
+	// OnPanic notifies the owner of a scoped worker or server Run panic. It
+	// must be concurrent-safe, return promptly, and not panic.
+	OnPanic func()
 }
 
 // NewServer copies, completes, and validates cfg without opening listeners or
@@ -154,6 +157,7 @@ func (s *Server) Start(ctx context.Context) error {
 	svc, err := server.NewServiceWithOptions(s.config, server.ServiceOptions{
 		LogSink:         s.options.LogSink,
 		TrafficRecorder: s.options.TrafficRecorder,
+		OnWorkerPanic:   s.options.OnPanic,
 	})
 	if err != nil {
 		cancel()
@@ -201,6 +205,9 @@ func (s *Server) run(ctx context.Context, svc *server.Service, cancel context.Ca
 	defer func() {
 		if recover() != nil {
 			runErr = ErrServerPanicked
+			if s.options.OnPanic != nil {
+				s.options.OnPanic()
+			}
 		}
 		cancel()
 		s.finishAfterClose(svc, runErr)
@@ -219,10 +226,16 @@ func (s *Server) run(ctx context.Context, svc *server.Service, cancel context.Ca
 // the service has finished cleaning up, even if Stop's caller has timed out.
 func (s *Server) finishAfterClose(svc *server.Service, runErr error) {
 	closeErr := svc.CloseContext(context.Background())
+	if svc.WorkerPanicked() {
+		runErr = errors.Join(runErr, ErrServerPanicked)
+	}
 	s.finish(errors.Join(runErr, closeErr))
 }
 
 func (s *Server) finish(err error) {
+	if errors.Is(err, server.ErrWorkerPanicked) {
+		err = errors.Join(err, ErrServerPanicked)
+	}
 	s.mu.Lock()
 	s.err = err
 	s.state = serverStopped
@@ -254,8 +267,9 @@ func (s *Server) Stop(ctx context.Context) error {
 	}
 }
 
-// Done closes after service cleanup, including rollback after a failed
-// construction. Previously accepted connection handlers may still be exiting.
+// Done closes after tracked service cleanup, including rollback after a failed
+// construction. ErrServerPanicked means cleanup may still be uncertain.
+// Previously accepted connection handlers may still be exiting.
 func (s *Server) Done() <-chan struct{} { return s.done }
 
 // Ready returns the upstream run-loop signal after a successful Start.

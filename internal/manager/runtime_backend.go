@@ -77,6 +77,12 @@ type runtimeExitObserver interface {
 	ExitedNow() bool
 }
 
+// runtimeCleanupObserver exposes a non-sensitive uncertainty signal while
+// Wait continues to hold the run. It must return promptly and never call App.
+type runtimeCleanupObserver interface {
+	CleanupUncertain() bool
+}
+
 // RuntimePID is optional and is intended for the legacy process adapter.
 // In-process instances should omit it; their reported PID is zero.
 type RuntimePID interface {

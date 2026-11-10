@@ -10,9 +10,11 @@ import (
 )
 
 var (
-	ErrInvalidService = errors.New("embedded client service is nil")
-	ErrClientStarted  = errors.New("embedded client has already been started or closed")
-	ErrCleanupFailed  = errors.New("embedded client cleanup failed")
+	ErrInvalidService       = errors.New("embedded client service is nil")
+	ErrClientStarted        = errors.New("embedded client has already been started or closed")
+	ErrCleanupFailed        = errors.New("embedded client cleanup failed")
+	// ErrClientWorkerPanicked does not include the worker's panic value.
+	ErrClientWorkerPanicked = errors.New("embedded client worker panicked")
 )
 
 // ClientService is the small part of an embedded client engine used by Client.
@@ -84,6 +86,7 @@ type Client struct {
 	done        chan struct{}
 	closeFailed bool
 	panicked    bool
+	onPanic     func() // set before Start and never changed
 }
 
 // NewClient takes ownership of service, including any resources it already
@@ -134,6 +137,10 @@ func (c *Client) run(ctx context.Context) {
 	defer func() {
 		// Never expose panic values or upstream errors: either can contain secrets.
 		panicked := recover() != nil
+		if panicked && c.onPanic != nil {
+			c.onPanic()
+		}
+		panicked = panicked || errors.Is(runErr, ErrClientWorkerPanicked)
 		c.mu.Lock()
 		c.panicked = panicked
 		reason := ExitStopped
@@ -164,6 +171,9 @@ func (c *Client) closeService() {
 					c.mu.Lock()
 					c.closeFailed = true
 					c.mu.Unlock()
+					if c.onPanic != nil {
+						c.onPanic()
+					}
 				}
 				close(c.closeDone)
 			}()
@@ -208,7 +218,8 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	return err
 }
 
-// Done closes after the service has exited and cleanup has completed.
+// Done closes after the service has exited and its tracked cleanup has returned.
+// Panicked or ExitCleanupFailed means resource cleanup may still be uncertain.
 func (c *Client) Done() <-chan struct{} { return c.done }
 
 // Ready signals that the service entered its run loop. A service that does
@@ -229,8 +240,10 @@ func (c *Client) Exiting() <-chan struct{} {
 	return nil
 }
 
-// Wait waits for completion without initiating shutdown. It never returns raw
-// upstream errors or configuration values, which may contain credentials.
+// Wait waits for completion without initiating shutdown. Panicked or
+// ExitCleanupFailed means cleanup may still be uncertain even after Done. It
+// never returns raw upstream errors or configuration values, which may contain
+// credentials.
 func (c *Client) Wait(ctx context.Context) (ClientStatus, error) {
 	if ctx == nil {
 		return c.Status(), errors.New("embedded client wait context is nil")

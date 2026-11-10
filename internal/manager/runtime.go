@@ -292,6 +292,10 @@ func (p *process) viewLocked() RuntimeStatus {
 	if status.State == "exited" && p.active() {
 		status.State = "stopping"
 	}
+	if observer, ok := p.readiness.(runtimeCleanupObserver); ok && p.active() && observer.CleanupUncertain() {
+		status.State = "stopping"
+		status.Exit = "内嵌核心异常，资源清理状态未知；需退出工作台并核对残留锁文件"
+	}
 	return status
 }
 
