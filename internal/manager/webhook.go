@@ -29,7 +29,13 @@ type webhookConfig struct {
 	Format        string `json:"format,omitempty"`
 	OnStatus      bool   `json:"onStatus"`
 	OnConfig      bool   `json:"onConfig"`
+	OnLoginLimit  bool   `json:"onLoginLimit,omitempty"`
+	OnUpdate      bool   `json:"onUpdate,omitempty"`
 	SigningSecret string `json:"signingSecret,omitempty"`
+}
+
+func (cfg webhookConfig) hasEvents() bool {
+	return cfg.OnStatus || cfg.OnConfig || cfg.OnLoginLimit || cfg.OnUpdate
 }
 
 // An empty format preserves the original structured JSON payload.
@@ -83,7 +89,7 @@ func validateStoredWebhook(s *Store, cfg *webhookConfig) error {
 			return fmt.Errorf("invalid webhook signing secret")
 		}
 	}
-	if cfg.Enabled && (cfg.URL == "" || (!cfg.OnStatus && !cfg.OnConfig)) {
+	if cfg.Enabled && (cfg.URL == "" || !cfg.hasEvents()) {
 		return fmt.Errorf("incomplete webhook settings")
 	}
 	return nil
@@ -95,6 +101,8 @@ type webhookEvent struct {
 	InstanceID string `json:"instanceId,omitempty"`
 	Kind       string `json:"kind,omitempty"`
 	Revision   uint64 `json:"revision,omitempty"`
+	SourceIP   string `json:"sourceIp,omitempty"`
+	Version    string `json:"version,omitempty"`
 }
 
 // To connect a new lifecycle implementation, emitInstance is called only
@@ -161,7 +169,8 @@ func (d *webhookDispatcher) configure(configs []webhookRuntimeConfig) {
 		old := d.targets[next.id]
 		if old != nil && old.target == next.target && old.signingSecret == next.signingSecret &&
 			old.config.Enabled == next.config.Enabled && old.config.Format == next.config.Format &&
-			old.config.OnStatus == next.config.OnStatus && old.config.OnConfig == next.config.OnConfig {
+			old.config.OnStatus == next.config.OnStatus && old.config.OnConfig == next.config.OnConfig &&
+			old.config.OnLoginLimit == next.config.OnLoginLimit && old.config.OnUpdate == next.config.OnUpdate {
 			old.config = next.config // ciphertext may change during key migration
 			continue
 		}
@@ -184,7 +193,7 @@ func (d *webhookDispatcher) close() { d.cancel() }
 
 func (d *webhookDispatcher) emitConfig(revision uint64) {
 	if d != nil && revision != 0 {
-		d.enqueue(webhookEvent{Event: "config.saved", At: now(), Revision: revision}, false)
+		d.enqueue(webhookEvent{Event: "config.saved", At: now(), Revision: revision})
 	}
 }
 
@@ -197,24 +206,62 @@ func (d *webhookDispatcher) emitInstance(event, id, kind string) {
 	default:
 		return
 	}
-	d.enqueue(webhookEvent{Event: event, At: now(), InstanceID: id, Kind: kind}, true)
+	d.enqueue(webhookEvent{Event: event, At: now(), InstanceID: id, Kind: kind})
 }
 
-func (d *webhookDispatcher) enqueue(event webhookEvent, status bool) {
+func (d *webhookDispatcher) emitLoginLimit(peer string) {
+	if d == nil {
+		return
+	}
+	if ip, err := netip.ParseAddr(peer); err == nil {
+		peer = ip.WithZone("").Unmap().String()
+	} else {
+		peer = ""
+	}
+	d.enqueue(webhookEvent{Event: "auth.login_limited", At: now(), SourceIP: peer})
+}
+
+var webhookVersionPattern = regexp.MustCompile(`^v[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}(\.[0-9]{1,5})?$`)
+
+func (d *webhookDispatcher) emitUpdateAvailable(version string) bool {
+	if d == nil || !webhookVersionPattern.MatchString(version) {
+		return false
+	}
+	return d.enqueue(webhookEvent{Event: "update.available", At: now(), Version: version})
+}
+
+func (cfg webhookConfig) receives(event string) bool {
+	switch event {
+	case "instance.up", "instance.down", "instance.start_failed":
+		return cfg.OnStatus
+	case "config.saved":
+		return cfg.OnConfig
+	case "auth.login_limited":
+		return cfg.OnLoginLimit
+	case "update.available":
+		return cfg.OnUpdate
+	default:
+		return false
+	}
+}
+
+// The return value reports that at least one enabled target was considered,
+// including a bounded-queue drop. It does not imply delivery.
+func (d *webhookDispatcher) enqueue(event webhookEvent) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.ctx.Err() != nil {
-		return
+		return false
 	}
 	recipients := make([]webhookRecipient, 0, len(d.order))
 	for _, id := range d.order {
 		target := d.targets[id]
-		if target != nil && target.config.Enabled && target.target != "" && ((status && target.config.OnStatus) || (!status && target.config.OnConfig)) {
+		if target != nil && target.config.Enabled && target.target != "" && target.config.receives(event.Event) {
 			recipients = append(recipients, webhookRecipient{id: id, generation: target.generation})
 		}
 	}
 	if len(recipients) == 0 {
-		return
+		return false
 	}
 	select {
 	case d.queue <- queuedWebhook{event: event, recipients: recipients}:
@@ -223,6 +270,7 @@ func (d *webhookDispatcher) enqueue(event webhookEvent, status bool) {
 			d.targets[recipient.id].dropped++
 		}
 	}
+	return true
 }
 
 func (d *webhookDispatcher) run() {
@@ -428,12 +476,22 @@ func formatWebhookEventWithChat(format string, event webhookEvent, chatID string
 		description = "实例进程启动失败"
 	case "config.saved":
 		description = fmt.Sprintf("配置草稿已更新（r%d）", event.Revision)
+	case "auth.login_limited":
+		description = "登录尝试已限流"
+	case "update.available":
+		description = "发现可用的软件更新"
 	default:
 		return nil, "", fmt.Errorf("unsupported event")
 	}
 	message := fmt.Sprintf("KurumiFRP · %s\n时间：%s", description, event.At)
 	if event.InstanceID != "" {
 		message += fmt.Sprintf("\n实例：%s (%s)", event.InstanceID, event.Kind)
+	}
+	if event.SourceIP != "" {
+		message += fmt.Sprintf("\n连接对端 IP：%s", event.SourceIP)
+	}
+	if event.Version != "" {
+		message += fmt.Sprintf("\n版本：%s", event.Version)
 	}
 	switch format {
 	case "discord":
@@ -572,6 +630,8 @@ type webhookRequest struct {
 	ClearURL           bool    `json:"clearURL"`
 	OnStatus           bool    `json:"onStatus"`
 	OnConfig           bool    `json:"onConfig"`
+	OnLoginLimit       *bool   `json:"onLoginLimit"`
+	OnUpdate           *bool   `json:"onUpdate"`
 	SigningSecret      string  `json:"signingSecret"`
 	ClearSigningSecret bool    `json:"clearSigningSecret"`
 }
@@ -585,7 +645,8 @@ func (a *App) webhookAPI(w http.ResponseWriter, r *http.Request) {
 		a.mu.Unlock()
 		reply(w, http.StatusOK, map[string]any{
 			"revision": revision, "enabled": cfg.Enabled, "hasURL": cfg.URL != "", "hasSigningSecret": cfg.SigningSecret != "",
-			"format": cfg.Format, "onStatus": cfg.OnStatus, "onConfig": cfg.OnConfig, "status": status,
+			"format": cfg.Format, "onStatus": cfg.OnStatus, "onConfig": cfg.OnConfig,
+			"onLoginLimit": cfg.OnLoginLimit, "onUpdate": cfg.OnUpdate, "status": status,
 		})
 		return
 	}
