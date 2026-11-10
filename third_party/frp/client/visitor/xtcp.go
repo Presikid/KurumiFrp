@@ -519,6 +519,7 @@ func (ks *KCPTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 		return true
 	}
 	watchdog := time.AfterFunc(tunnelOpenTimeout, func() {
+		defer lifetime.Recover(ctx)
 		if finish() {
 			ks.retire(session)
 		}
@@ -530,6 +531,7 @@ func (ks *KCPTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 			}
 			<-openSlots
 		}()
+		defer lifetime.Recover(ctx)
 		conn, err := session.Open()
 		if err != nil {
 			ks.retire(session)

@@ -176,7 +176,6 @@ func (sv *SUDPVisitor) worker(workConn net.Conn, firstPacket *msg.UDPPacket) {
 		defer func() {
 			payloadConn.Close()
 			close(closeCh)
-			wg.Done()
 		}()
 
 		for {
@@ -214,7 +213,6 @@ func (sv *SUDPVisitor) worker(workConn net.Conn, firstPacket *msg.UDPPacket) {
 	workConnSenderFn := func(payloadConn *msg.Conn) {
 		defer func() {
 			payloadConn.Close()
-			wg.Done()
 		}()
 
 		var errRet error
@@ -249,8 +247,16 @@ func (sv *SUDPVisitor) worker(workConn net.Conn, firstPacket *msg.UDPPacket) {
 		}
 	}
 
-	go workConnReaderFn(payloadConn)
-	go workConnSenderFn(payloadConn)
+	go func() {
+		defer wg.Done()
+		defer lifetime.Recover(sv.ctx)
+		workConnReaderFn(payloadConn)
+	}()
+	go func() {
+		defer wg.Done()
+		defer lifetime.Recover(sv.ctx)
+		workConnSenderFn(payloadConn)
+	}()
 
 	wg.Wait()
 	xl.Infof("sudp worker is closed")

@@ -351,7 +351,7 @@ func (pxy *BaseProxy) joinUserConnection(local io.ReadWriteCloser, userConn net.
 			xl.Infof("bridge mixed SUDP payload codecs, proxy [%s/%s], visitor [%s/%s]",
 				normalizeWireProtocol(pxy.wireProtocol), pxy.udpPacketCodec,
 				normalizeWireProtocol(visitorWireProtocol), visitorUDPPacketCodec)
-			return joinSUDPMessageBridge(local, userConn, pxy.wireProtocol, pxy.udpPacketCodec, visitorWireProtocol, visitorUDPPacketCodec, xl)
+			return joinSUDPMessageBridge(pxy.ctx, local, userConn, pxy.wireProtocol, pxy.udpPacketCodec, visitorWireProtocol, visitorUDPPacketCodec, xl)
 		}
 	}
 	return libio.Join(local, userConn)
@@ -420,6 +420,7 @@ func normalizeWireProtocol(wireProtocol string) string {
 }
 
 func joinSUDPMessageBridge(
+	ctx context.Context,
 	proxyConn io.ReadWriteCloser,
 	visitorConn io.ReadWriteCloser,
 	proxyWireProtocol string,
@@ -452,11 +453,13 @@ func joinSUDPMessageBridge(
 	wait.Add(2)
 	go func() {
 		defer wait.Done()
+		defer lifetime.Recover(ctx)
 		defer once.Do(closeBoth)
 		recordErrs[0] = bridgeSUDPProxyToVisitor(proxyRW, visitorRW, &outCount, xl)
 	}()
 	go func() {
 		defer wait.Done()
+		defer lifetime.Recover(ctx)
 		defer once.Do(closeBoth)
 		recordErrs[1] = bridgeSUDPVisitorToProxy(visitorRW, proxyRW, &inCount, xl)
 	}()
