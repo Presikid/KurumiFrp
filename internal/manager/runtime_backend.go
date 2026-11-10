@@ -77,6 +77,12 @@ type runtimeExitObserver interface {
 	ExitedNow() bool
 }
 
+// runtimeWorkerPanicObserver provides an immediate, non-sensitive failure
+// signal while a run is still cleaning up. It must return promptly.
+type runtimeWorkerPanicObserver interface {
+	WorkerPanicked() bool
+}
+
 // RuntimePID is optional and is intended for the legacy process adapter.
 // In-process instances should omit it; their reported PID is zero.
 type RuntimePID interface {

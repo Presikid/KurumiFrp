@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	fmux "github.com/fatedier/yamux"
@@ -79,6 +80,8 @@ var (
 	ErrServiceClosed = errors.New("server service is closed")
 	// ErrServiceRunning is returned when Run is called more than once concurrently.
 	ErrServiceRunning = errors.New("server service is already running")
+	// ErrWorkerPanicked omits the panic value, which could contain secrets.
+	ErrWorkerPanicked = errors.New("server service worker panicked")
 )
 
 // ConstructionCleanupError retains a cleanup handle when constructor rollback
@@ -93,7 +96,11 @@ func (e *ConstructionCleanupError) Unwrap() error { return e.err }
 
 // WaitCleanup waits for the failed construction's background cleanup.
 func (e *ConstructionCleanupError) WaitCleanup(ctx context.Context) error {
-	return e.service.CloseContext(ctx)
+	err := e.service.CloseContext(ctx)
+	if e.service.workerPanicked.Load() {
+		err = errors.Join(err, ErrWorkerPanicked)
+	}
+	return err
 }
 
 type serveResult struct {
@@ -165,18 +172,19 @@ type Service struct {
 	// service context
 	ctx context.Context
 	// call cancel to stop service
-	cancel      context.CancelFunc
-	lifecycleMu sync.Mutex
-	closed      bool
-	running     bool
-	closeOnce   sync.Once
-	closeDone   chan struct{}
-	ready       chan struct{}
-	exiting     chan struct{}
-	serveErrors chan serveResult
-	workScope   *lifetime.Scope
-	workCtx     context.Context
-	workCancel  context.CancelFunc
+	cancel         context.CancelFunc
+	lifecycleMu    sync.Mutex
+	closed         bool
+	running        bool
+	closeOnce      sync.Once
+	closeDone      chan struct{}
+	ready          chan struct{}
+	exiting        chan struct{}
+	serveErrors    chan serveResult
+	workScope      *lifetime.Scope
+	workCtx        context.Context
+	workCancel     context.CancelFunc
+	workerPanicked atomic.Bool
 }
 
 // ServiceOptions controls additional features for an embedded server.
@@ -188,6 +196,10 @@ type ServiceOptions struct {
 	// TrafficRecorder receives the same forwarding deltas as the service counter.
 	// Supply a distinct recorder per service unless aggregate totals are intended.
 	TrafficRecorder TrafficRecorder
+	// OnWorkerPanic enables instance-scoped worker recovery and notification.
+	// It must be concurrent-safe, return promptly, and not panic. It receives no
+	// panic value and must cause the owning instance to stop.
+	OnWorkerPanic func()
 }
 
 // TrafficRecorder receives forwarding deltas from a service. Calls may be
@@ -231,10 +243,21 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 
 	clientRegistry := registry.NewClientRegistry()
 	trafficCounter := &traffic.ServerCounter{}
+	var svr *Service
 	workScope := lifetime.New()
+	if options.OnWorkerPanic != nil {
+		workScope = lifetime.NewWithPanicHandler(func() {
+			svr.workerPanicked.Store(true)
+			select {
+			case svr.serveErrors <- serveResult{name: "worker", err: ErrWorkerPanicked}:
+			default:
+			}
+			options.OnWorkerPanic()
+		})
+	}
 	baseWorkCtx, workCancel := context.WithCancel(context.Background())
 	workCtx := xlog.NewContext(lifetime.WithScope(baseWorkCtx, workScope), xl)
-	svr := &Service{
+	svr = &Service{
 		xl:             xl,
 		ctlManager:     NewControlManager(clientRegistry),
 		clientRegistry: clientRegistry,
@@ -269,6 +292,9 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 					err:     errors.Join(resultErr, fmt.Errorf("constructor rollback: %w", err)),
 					service: svr,
 				}
+			}
+			if svr.workerPanicked.Load() {
+				resultErr = errors.Join(resultErr, ErrWorkerPanicked)
 			}
 		}
 	}()
@@ -542,6 +568,9 @@ func (svr *Service) Run(ctx context.Context) (runErr error) {
 		if err := svr.Close(); err != nil {
 			runErr = errors.Join(runErr, err)
 		}
+		if svr.workerPanicked.Load() {
+			runErr = errors.Join(runErr, ErrWorkerPanicked)
+		}
 	}()
 	// Publish that the run loop has ended before waiting for resource cleanup.
 	defer close(svr.exiting)
@@ -634,6 +663,10 @@ func (svr *Service) Ready() <-chan struct{} { return svr.ready }
 // Exiting closes when Run leaves its loop, before cleanup has completed. It
 // may stay open if Run was rejected before it began; observe completion too.
 func (svr *Service) Exiting() <-chan struct{} { return svr.exiting }
+
+// WorkerPanicked reports a recovered instance-scoped worker panic. It says
+// nothing about whether that worker's resources have finished cleaning up.
+func (svr *Service) WorkerPanicked() bool { return svr.workerPanicked.Load() }
 
 func (svr *Service) serve(name string, run func() error) {
 	result := serveResult{name: name, err: run()}
