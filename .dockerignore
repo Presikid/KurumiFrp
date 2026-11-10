@@ -1,0 +1,11 @@
+*
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!third_party/
+!third_party/**
+!web/
+!web/**
