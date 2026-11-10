@@ -95,6 +95,9 @@ func renderProtocolTunnel(b *strings.Builder, t Tunnel, secret func(string, stri
 		if t.Type == "http" && len(t.Locations) > 0 {
 			renderStringArray(b, "locations", t.Locations)
 		}
+		if t.Type == "http" && t.HTTPRouteByUser != "" {
+			fmt.Fprintf(b, "routeByHTTPUser = %s\n", quote(t.HTTPRouteByUser))
+		}
 		if (t.Type == "http" && t.HTTPAuthEnabled) || t.Type == "tcpmux" {
 			if t.HTTPUser != "" {
 				fmt.Fprintf(b, "httpUser = %s\n", quote(t.HTTPUser))
