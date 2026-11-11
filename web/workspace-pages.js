@@ -261,7 +261,7 @@
   const schedule = data.schedules?.[id];
   const pause = schedule?.enabled && !schedule.paused ? '此操作可能暂停实例的定时计划。' : '';
   if (action === 'restart' && !options.confirmed && !confirm(`重启「${instance.name}」会中断现有连接，重新启动失败时可能保持停止。${pause}继续？`)) return;
-  if (action === 'stop' && !confirm(`停止「${instance.name}」并中断连接？${pause}`)) return;
+  if (action === 'stop' && !options.confirmed && !confirm(`停止「${instance.name}」并中断连接？${pause}`)) return;
   if (action === 'start' && pause && !confirm(`启动「${instance.name}」？${pause}`)) return;
   if (action === 'validate') {
    try { await K.api('validate',{revision:data.revision,id}); K.toast('配置校验通过；这不代表网络连通。'); }
@@ -275,8 +275,10 @@
    const result = await K.api('control',{revision:data.revision,id,action,...(options.expectedRunId ? {expectedRunId:options.expectedRunId} : {})},{signal:controller.signal});
    if (result?.ok !== true) throw new Error('服务端响应无法确认操作结果。');
    const needsReview = !clearLocalControl(id,record);
-   if (needsReview) K.toast('实例操作已受理，但核对记录未能清除；请刷新并核对后解除提示。');
-   else K.toast('实例操作已受理，请核对运行状态。');
+   if (!options.quiet) {
+    if (needsReview) K.toast('实例操作已受理，但核对记录未能清除；请刷新并核对后解除提示。');
+    else K.toast('实例操作已受理，请核对运行状态。');
+   }
    return {needsReview};
   } catch (error) {
    if ([401,403,404,405].includes(error.status)) {
@@ -288,7 +290,7 @@
    throw new Error(`${error.status ? `服务端返回：${error.message}。` : ''}实例操作结果尚未确认，请刷新并独立核对实际状态及请求是否仍在处理，再解除提示。${volatile}`);
   } finally {
    clearTimeout(deadline); localControlInFlight.delete(id); notifyLocalControl();
-   await K.refresh().catch(() => {});
+   if (!options.deferRefresh) await K.refresh().catch(() => {});
   }
  }
 
@@ -487,7 +489,7 @@
      ${admin(data) ? `<div class="actions">${button('edit-instance','编辑',item.id)}${button('schedule','定时计划',item.id)}${runtime.applied ? button('diff','配置差异',item.id) : ''}${button('duplicate-instance','复制',item.id)}${button('delete-instance','删除',item.id,'danger')}</div>` : ''}</article>`;
    }).join('');
    const warnings = (data.portWarnings || []).map(message => `<p>${e(message)}</p>`).join('');
-   const filters = `<div class="toolbar"><label>搜索实例<input type="search" data-instance-search placeholder="名称或 ID" value="${e(instanceFilters.query)}"></label><label>类型<select data-instance-kind><option value="">全部类型</option><option value="frpc" ${instanceFilters.kind === 'frpc' ? 'selected' : ''}>客户端</option><option value="frps" ${instanceFilters.kind === 'frps' ? 'selected' : ''}>服务端</option></select></label><label>运行状态<select data-instance-state><option value="">全部状态</option>${Object.entries(states).map(([value,label]) => `<option value="${e(value)}" ${instanceFilters.state === value ? 'selected' : ''}>${e(label)}</option>`).join('')}<option value="other" ${instanceFilters.state === 'other' ? 'selected' : ''}>其他状态</option></select></label><span class="small-note" data-instance-count role="status"></span></div>`;
+   const filters = `<div class="toolbar"><label>搜索实例<input type="search" data-instance-search placeholder="名称或 ID" value="${e(instanceFilters.query)}"></label><label>类型<select data-instance-kind><option value="">全部类型</option><option value="frpc" ${instanceFilters.kind === 'frpc' ? 'selected' : ''}>客户端</option><option value="frps" ${instanceFilters.kind === 'frps' ? 'selected' : ''}>服务端</option></select></label><label>运行状态<select data-instance-state><option value="">全部状态</option>${Object.entries(states).map(([value,label]) => `<option value="${e(value)}" ${instanceFilters.state === value ? 'selected' : ''}>${e(label)}</option>`).join('')}<option value="other" ${instanceFilters.state === 'other' ? 'selected' : ''}>其他状态</option></select></label><span class="small-note" data-instance-count role="status"></span>${admin(data) ? button('batch-stop-visible','停止筛选中的运行实例','','danger') : ''}</div>`;
    return head(restricted ? '授权实例' : '运行实例', restricted ? '仅显示当前账户有权查看的实例。' : '创建、校验和运行本机客户端或服务端。', admin(data) ? button('new-instance','新建实例','','primary') : '') + (warnings ? `<div class="notice">${warnings}</div>` : '') + (cards ? `${filters}<div class="cards">${cards}</div><p class="small-note" data-instance-empty hidden>没有匹配的实例。</p>` : empty('暂无实例',restricted ? '请联系管理员分配实例。' : '创建实例后可在此管理运行状态。','empty-welcome'));
   },
   mount(root,data) {
@@ -519,6 +521,54 @@
    bindButtons(root, async (action,id) => {
    if (action === 'ack-local-control') return acknowledgeLocalControl(id);
    if (['start','stop','restart','validate'].includes(action)) return control(action,id,data);
+   if (action === 'batch-stop-visible') {
+    requireRevision(data);
+    if (!admin(data)) throw new Error('只有管理员可以批量停止实例。');
+    const visible = cards.filter(card => !card.hidden).map(card => items.get(card.dataset.localInstance)).filter(Boolean);
+    const targets = visible.map(item => ({item, runtime:runtimeFor(data,item.id)})).filter(value => value.runtime.state === 'running' && value.runtime.runId).map(value => ({id:value.item.id, name:value.item.name, runId:value.runtime.runId}));
+    if (!targets.length) throw new Error(visible.length ? '当前筛选中没有运行状态和运行代次均可确认的实例。' : '当前筛选没有实例。');
+    const epoch = K.epoch(), revision = data.revision;
+    let submitted = false;
+    K.openDialog({
+     html:`<h2>停止当前筛选中的运行实例</h2><p>当前筛选共 ${visible.length} 个实例，本次停止以下 ${targets.length} 个运行中的实例；其余 ${visible.length - targets.length} 个不会操作，筛选外实例不会操作。</p><p class="small-note">停止会中断连接，并可能暂停定时计划；即使停止未完成，定时计划也可能已暂停。每项在服务端复核运行代次；发生变化、失败或结果未确认时，后续项目不会执行。已发出的当前项即使关闭页面或断开会话也可能完成，离开页面后不会开始后续项。</p><ol>${targets.map(item => `<li data-batch-stop-id="${e(item.id)}">${e(item.name)} · <code>${e(item.id)}</code>：<span data-batch-stop-result>等待执行</span></li>`).join('')}</ol><p data-batch-stop-progress role="status">请核对目标后确认。</p>`,
+     submitLabel:'确认逐个停止',
+     async onSubmit(form) {
+      if (submitted) return true;
+      submitted = true;
+      const rows = new Map([...form.querySelectorAll('[data-batch-stop-id]')].map(row => [row.dataset.batchStopId,row.querySelector('[data-batch-stop-result]')]));
+      const progress = form.querySelector('[data-batch-stop-progress]');
+      let stopped = false, processed = 0;
+      for (const target of targets) {
+       const output = rows.get(target.id);
+       if (stopped) { if (output) output.textContent = '未执行：前一项需要核对'; continue; }
+       const current = K.state(), item = current?.state?.instances?.find(value => value.id === target.id), runtime = item ? runtimeFor(current,target.id) : null;
+       if (K.epoch() !== epoch || !K.isCurrent('instances',root) || !current || !admin(current) || current.revision !== revision || !item || runtime.state !== 'running' || runtime.runId !== target.runId) {
+        if (output) output.textContent = '未执行：账户、草稿或运行代次已变化';
+        stopped = true;
+        continue;
+       }
+       if (output) output.textContent = '正在停止…';
+       if (progress) progress.textContent = `正在处理 ${processed + 1} / ${targets.length}。`;
+       try {
+        const outcome = await control('stop',target.id,current,{confirmed:true,expectedRunId:target.runId,deferRefresh:true,quiet:true});
+        if (output) output.textContent = outcome.needsReview ? '已受理，但核对提示未能清除' : '停止已受理，请刷新核对状态';
+        if (outcome.needsReview) stopped = true;
+       } catch (error) {
+        if (output) output.textContent = `未完成：${error.message}`;
+        stopped = true;
+       }
+       processed++;
+      }
+      if (progress) progress.textContent = stopped ? '已中断后续操作；请核对每项结果。' : '操作已逐项受理；请核对实例状态。';
+      form.querySelector('[type="submit"]').textContent = '关闭';
+      if (K.epoch() === epoch && K.isCurrent('instances',root)) {
+       try { await K.refresh(); } catch (_) { if (progress) progress.textContent += ' 状态刷新失败，请手动刷新。'; }
+      }
+      return false;
+     }
+    });
+    return;
+   }
    if (action === 'new-instance' || action === 'edit-instance') return editObject('instance',id,data);
    if (action === 'schedule') return editSchedule(id,data);
    if (action === 'traffic') { pickInstance(id); K.navigate('overview'); return; }

@@ -105,15 +105,15 @@ func (a *App) beginRuntimeOperationSourceLocked(parent context.Context, req runt
 	if !validate && req.Action != "start" && req.Action != "restart" && req.Action != "stop" {
 		return snapshot, nil, http.StatusBadRequest, fmt.Errorf("未知操作")
 	}
-	if req.ExpectedRunID != "" && (validate || req.Action != "restart") {
-		return snapshot, nil, http.StatusBadRequest, fmt.Errorf("运行代次条件仅适用于重启")
+	if req.ExpectedRunID != "" && (validate || (req.Action != "restart" && req.Action != "stop")) {
+		return snapshot, nil, http.StatusBadRequest, fmt.Errorf("运行代次条件仅适用于停止或重启")
 	}
 	if a.operations[req.ID] != nil {
 		return snapshot, nil, http.StatusConflict, fmt.Errorf("此实例正在执行其他操作，请稍后重试")
 	}
 	p := a.procs[req.ID]
 	if req.ExpectedRunID != "" && !p.runningAs(req.ExpectedRunID) {
-		return snapshot, nil, http.StatusConflict, fmt.Errorf("实例运行状态或代次已变化，未重启")
+		return snapshot, nil, http.StatusConflict, fmt.Errorf("实例运行状态或代次已变化，未停止目标运行代次")
 	}
 	if !validate && req.Action == "start" && p.active() {
 		return snapshot, nil, http.StatusBadRequest, fmt.Errorf("实例正在运行，请明确选择重启应用")
@@ -266,7 +266,7 @@ func (a *App) runRuntimeOperation(w http.ResponseWriter, req runtimeRequest, val
 		return
 	}
 	if !validate && req.Action == "stop" {
-		if err = stopProcess(snapshot.process); err != nil {
+		if err = stopProcessGuarded(snapshot.process, req.ExpectedRunID); err != nil {
 			failure(http.StatusBadRequest, err)
 			return
 		}
