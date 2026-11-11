@@ -29,13 +29,15 @@
   const scope = mode === 'export' ? selectedScope(root) : null;
   K.openDialog({
    html: mode === 'export'
-    ? '<h2>导出加密备份</h2><p class="muted">备份密码不会保存；请将密码和文件分开保管。</p><div class="form-grid"><label>备份密码<input name="password" type="password" minlength="12" maxlength="1024" required autocomplete="new-password"></label><label>确认密码<input name="confirm" type="password" minlength="12" maxlength="1024" required autocomplete="new-password"></label></div>'
+    ? '<h2>导出加密备份</h2><p class="muted">备份密码须为 12–1024 个 UTF-8 字节，不含控制字符；密码不会保存，请将密码和文件分开保管。</p><div class="form-grid"><label>备份密码<input name="password" type="password" maxlength="1024" required autocomplete="new-password"></label><label>确认密码<input name="confirm" type="password" maxlength="1024" required autocomplete="new-password"></label></div>'
     : '<h2>恢复加密备份</h2><p class="muted">请先停止全部托管实例。恢复会替换配置、定时计划和快照；导入的计划将暂停。节点授权和通知设置保留在本机。</p><div class="form-grid"><label class="span-2">备份文件<input type="file" name="file" accept=".json,application/json" required></label><label class="span-2">备份密码<input name="password" type="password" required maxlength="1024" autocomplete="current-password"></label><label class="form-check span-2"><input type="checkbox" name="confirmRestore" required>确认替换当前配置、计划和历史快照</label></div>',
    submitLabel:mode === 'export' ? '导出加密备份' : '验证并恢复',
    async onSubmit(form) {
     validRevision(data);
     const password = form.elements.password.value;
     if (mode === 'export') {
+     const length = new TextEncoder().encode(password).length;
+     if (length < 12 || length > 1024 || /[\x00-\x1f\x7f]/.test(password)) throw new Error('备份密码须为 12–1024 个 UTF-8 字节，且不能含控制字符。');
      if (password !== form.elements.confirm.value) throw new Error('两次输入的密码不一致。');
      const result = await K.api('backup/export',{revision:data.revision,password,scope:scope.scope,snapshot:scope.snapshot});
      if (!K.isCurrent('config',root) || K.state()?.revision !== data.revision) throw new Error('页面或草稿已变化，请重新导出。');
