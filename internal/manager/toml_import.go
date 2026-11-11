@@ -473,6 +473,9 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 		return p, State{}
 	}
 	i := Instance{ID: randomHex(8), Name: req.Name, Kind: req.Kind}
+	i.TLSCertFile = m.str(root, "transport.tls.certFile", "", "")
+	i.TLSKeyFile = m.str(root, "transport.tls.keyFile", "", "")
+	i.TLSTrustedCAFile = m.str(root, "transport.tls.trustedCaFile", "", "")
 	if req.Kind == "frps" {
 		i.Host = m.str(root, "bindAddr", "", "0.0.0.0")
 		if i.Host == "" {
@@ -516,7 +519,10 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 		i.UserConnTimeout = m.integer(root, "userConnTimeout", "", 0)
 		i.ServerMaxPoolCount = m.integer(root, "transport.maxPoolCount", "", 0)
 		i.TCPKeepalive = m.integer(root, "transport.tcpKeepalive", "", 0)
-		i.ServerAllowPlaintext = !m.boolean(root, "transport.tls.force", "", false)
+		// frps forces TLS whenever a client CA is configured, even if the
+		// source explicitly sets force = false.
+		forceTLS := m.boolean(root, "transport.tls.force", "", false)
+		i.ServerAllowPlaintext = !forceTLS && i.TLSTrustedCAFile == ""
 	} else {
 		i.Host = m.str(root, "serverAddr", "", "0.0.0.0")
 		if i.Host == "" {
@@ -529,6 +535,7 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 		i.LoginFailExit = m.boolean(root, "loginFailExit", "", true)
 		i.ClientTLSDisabled = !m.boolean(root, "transport.tls.enable", "", true)
 		i.ClientTLSUseSystemCA = m.boolean(root, "transport.tls.useSystemCa", "", false)
+		i.ClientTLSServerName = m.str(root, "transport.tls.serverName", "", "")
 		i.User = m.str(root, "user", "", "")
 		i.NatHoleSTUNServer = m.str(root, "natHoleStunServer", "", "")
 		i.DNSServer = m.str(root, "dnsServer", "", "")

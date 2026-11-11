@@ -186,6 +186,7 @@ func duplicatedInstance(src Instance, id, name string) Instance {
 		ClientBindIP: src.ClientBindIP, ClientDialTimeout: src.ClientDialTimeout,
 		TCPKeepalive: src.TCPKeepalive, MuxKeepalive: src.MuxKeepalive,
 		LoginFailExit: src.LoginFailExit, ClientTLSDisabled: src.ClientTLSDisabled, ClientTLSUseSystemCA: src.ClientTLSUseSystemCA, ServerAllowPlaintext: src.ServerAllowPlaintext,
+		TLSCertFile: src.TLSCertFile, TLSKeyFile: src.TLSKeyFile, TLSTrustedCAFile: src.TLSTrustedCAFile, ClientTLSServerName: src.ClientTLSServerName,
 		TCPMuxHTTPConnectPort: src.TCPMuxHTTPConnectPort, TCPMuxPassthrough: src.TCPMuxPassthrough,
 		SubDomainHost: src.SubDomainHost, MaxPortsPerClient: src.MaxPortsPerClient, ServerAllowedPorts: src.ServerAllowedPorts, ProxyBindAddr: src.ProxyBindAddr,
 		ServerAccessMode: src.ServerAccessMode, ServerAccessList: src.ServerAccessList,

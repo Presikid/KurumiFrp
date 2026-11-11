@@ -58,6 +58,26 @@ type SystemCATLSCapable interface {
 	SupportsSystemCATLS() bool
 }
 
+// TLSFileCapable opts a backend into honoring frp's transport TLS certificate,
+// key, trusted CA and server name settings without silently ignoring them.
+// Every accepted transport must honor these fields. Client CAs must verify the
+// server using the configured name; a server CA must require and verify client
+// certificates and must not permit a plaintext bypass.
+type TLSFileCapable interface {
+	SupportsTLSFiles() bool
+}
+
+func (a *App) checkTLSFileBackend(i Instance) error {
+	if i.TLSCertFile == "" && i.TLSKeyFile == "" && i.TLSTrustedCAFile == "" && i.ClientTLSServerName == "" {
+		return nil
+	}
+	backend, ok := a.runtime.(TLSFileCapable)
+	if !ok || !backend.SupportsTLSFiles() {
+		return fmt.Errorf("当前运行核心不支持指定 frp TLS 证书、私钥、CA 或服务端名称")
+	}
+	return nil
+}
+
 func (a *App) checkSystemCATLSBackend(i Instance) error {
 	if !i.ClientTLSUseSystemCA {
 		return nil
