@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+// Modified by KurumiFRP: report incomplete writes instead of dropping data.
 
 package limit
 
@@ -60,6 +61,9 @@ func (w *Writer) Write(p []byte) (n int, err error) {
 		n += nn
 		if err != nil {
 			return
+		}
+		if nn != end {
+			return n, io.ErrShortWrite
 		}
 		p = p[end:]
 	}
