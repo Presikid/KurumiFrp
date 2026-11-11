@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -51,9 +52,19 @@ func (a *App) releaseHealthProbe() { a.mu.Lock(); a.activeProbes--; a.mu.Unlock(
 func checkInstanceEndpoint(ctx context.Context, i Instance) healthEndpoint {
 	host := i.Host
 	if i.Kind == "frps" {
-		if host == "" || host == "0.0.0.0" || host == "::" {
+		if host == "" {
 			host = "127.0.0.1"
-		} else if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		} else if ip := net.ParseIP(host); ip != nil {
+			if ip.IsUnspecified() {
+				if ip.To4() != nil {
+					host = "127.0.0.1"
+				} else {
+					host = "::1"
+				}
+			} else if !ip.IsLoopback() {
+				return healthEndpoint{State: "unsupported", Message: "服务端绑定地址不是本机回环或通配地址，未检测"}
+			}
+		} else if !strings.EqualFold(host, "localhost") {
 			return healthEndpoint{State: "unsupported", Message: "服务端绑定地址不是本机回环或通配地址，未检测"}
 		}
 	}
@@ -61,15 +72,25 @@ func checkInstanceEndpoint(ctx context.Context, i Instance) healthEndpoint {
 		return healthEndpoint{State: "invalid", Message: "地址或端口无效"}
 	}
 	addr := net.JoinHostPort(host, strconv.Itoa(i.Port))
+	if i.Kind == "frpc" {
+		switch i.ClientTransport {
+		case "", "tcp", "websocket", "wss":
+			// These transports use TCP for the connection to frps.
+		case "kcp", "quic":
+			return healthEndpoint{State: "unsupported", Address: addr, Message: "KCP 和 QUIC 使用 UDP，无法通过通用端口探测判断控制连接；未进行网络检测"}
+		default:
+			return healthEndpoint{State: "unsupported", Address: addr, Message: "客户端连接协议不支持此端口探测；未进行网络检测"}
+		}
+	}
 	start := time.Now()
 	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	c, err := (&net.Dialer{}).DialContext(probeCtx, "tcp", addr)
 	if err != nil {
-		return healthEndpoint{State: "unreachable", Address: addr, Message: "TCP 端口无法连接"}
+		return healthEndpoint{State: "unreachable", Address: addr, Message: "使用系统 DNS 和默认源地址时，TCP 端口无法连接"}
 	}
 	_ = c.Close()
-	return healthEndpoint{State: "reachable", Address: addr, LatencyMS: time.Since(start).Milliseconds(), Message: "TCP 端口可连接；不代表 FRP 认证、代理注册或公网可用"}
+	return healthEndpoint{State: "reachable", Address: addr, LatencyMS: time.Since(start).Milliseconds(), Message: "使用系统 DNS 和默认源地址时，TCP 端口可连接；不代表 FRP 认证、代理注册或公网可用"}
 }
 
 func (a *App) healthAPI(w http.ResponseWriter, r *http.Request) {
