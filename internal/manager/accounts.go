@@ -41,6 +41,7 @@ type localAccount struct {
 	AllowLogs       bool          `json:"allowLogs,omitempty"`
 	LogInstances    *[]string     `json:"logInstances,omitempty"`
 	RemoteInstances []remoteGrant `json:"remoteInstances,omitempty"`
+	FRPTokens       []accountFRPToken `json:"frpTokens,omitempty"`
 	Salt            string        `json:"salt"`
 	Hash            string        `json:"hash"`
 }
@@ -79,6 +80,7 @@ type accountView struct {
 	AllowLogs        bool     `json:"allowLogs"`
 	LogInstances     []string `json:"logInstances"`
 	RemoteInstances  []remoteGrant `json:"remoteInstances"`
+	FRPTokens        []accountFRPTokenView `json:"frpTokens,omitempty"`
 }
 
 type principalContextKey struct{}
@@ -472,9 +474,11 @@ func (a *auth) loginAccount(r *http.Request, username, password string) (string,
 
 func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
+		a.mu.Lock()
 		a.auth.mu.Lock()
 		if a.auth.accountLoadErr != nil {
 			a.auth.mu.Unlock()
+			a.mu.Unlock()
 			fail(w, 503, fmt.Errorf("账户文件无法读取，原文件已保留；请停止程序、备份并移走该文件后重启"))
 			return
 		}
@@ -482,12 +486,15 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
 		for _, u := range a.auth.accounts {
 			expired := u.Enabled && u.ExpiresAt != "" && !u.activeAt(now)
-			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, ExpiresAt: u.ExpiresAt, Expired: expired, GroupID: u.GroupID, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowedActions: effectiveOperatorActions(u), ReadPermissions: effectiveReadPermissions(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...)})
+			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, ExpiresAt: u.ExpiresAt, Expired: expired, GroupID: u.GroupID, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowedActions: effectiveOperatorActions(u), ReadPermissions: effectiveReadPermissions(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...), FRPTokens: a.accountFRPTokenViewsLocked(u)})
 		}
 		revision := a.auth.accountsRevision
+		configRevision := a.store.DB.Revision
+		frpInstances := a.accountFRPInstancesLocked()
 		groups := cloneAccountGroups(a.auth.accountGroups)
 		a.auth.mu.Unlock()
-		reply(w, 200, map[string]any{"revision": revision, "accounts": views, "groups": groups, "sampledAt": now.UTC().Format(time.RFC3339)})
+		a.mu.Unlock()
+		reply(w, 200, map[string]any{"revision": revision, "configRevision": configRevision, "frpInstances": frpInstances, "accounts": views, "groups": groups, "sampledAt": now.UTC().Format(time.RFC3339)})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -513,6 +520,9 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		GroupID          *string   `json:"groupId"`
 		GroupName        string    `json:"groupName"`
 		TemplateFrom     *string   `json:"templateFrom"`
+		InstanceID       string    `json:"instanceId"`
+		InstanceBinding  string    `json:"instanceBinding"`
+		ConfigRevision   *uint64   `json:"configRevision"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, 400, err)
@@ -520,6 +530,10 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Action == "group-save" || req.Action == "group-delete" || req.Action == "group-assign" {
 		a.accountGroupAction(w, r, req.Action, req.Revision, req.ID, req.GroupID, req.GroupName, req.TemplateFrom)
+		return
+	}
+	if req.Action == "frp-issue" || req.Action == "frp-rotate" || req.Action == "frp-disable" {
+		a.accountFRPTokenAPI(w, r, req.Action, req.Revision, req.ConfigRevision, req.ID, req.InstanceID, req.InstanceBinding)
 		return
 	}
 	if req.Action != "save" && req.Action != "delete" && req.Action != "revoke-sessions" {
@@ -682,6 +696,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		if index >= 0 {
 			// Older account editors omit group membership; preserve it when absent.
 			u.GroupID = users[index].GroupID
+			u.FRPTokens = append([]accountFRPToken(nil), users[index].FRPTokens...)
 		}
 		if req.GroupID != nil {
 			found := *req.GroupID == ""
