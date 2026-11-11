@@ -17,6 +17,7 @@
 package metrics
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -38,10 +39,16 @@ type Server struct {
 
 // NewServer creates only the collectors required by the server's configuration.
 func NewServer(enableMem, enablePrometheus bool) *Server {
+	return NewServerWithContext(context.Background(), enableMem, enablePrometheus)
+}
+
+// NewServerWithContext associates collector workers with the owning service.
+// Close remains responsible for stopping and joining those workers.
+func NewServerWithContext(ctx context.Context, enableMem, enablePrometheus bool) *Server {
 	s := &Server{}
 	var backends []servermetrics.ServerMetrics
 	if enableMem {
-		s.stats = mem.NewServerMetrics()
+		s.stats = mem.NewServerMetricsWithContext(ctx)
 		backends = append(backends, s.stats)
 	}
 	if enablePrometheus {

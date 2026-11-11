@@ -498,7 +498,7 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 
 	// The service owns its collectors; constructor rollback closes them too.
 	enableMem, enablePrometheus := metricsCollectors(cfg)
-	svr.metrics = modelmetrics.NewServer(enableMem || options.EnableMemoryMetrics, enablePrometheus)
+	svr.metrics = modelmetrics.NewServerWithContext(svr.workCtx, enableMem || options.EnableMemoryMetrics, enablePrometheus)
 
 	// Create HTTP servers after all other fallible steps.
 	if cfg.WebServer.Port > 0 {

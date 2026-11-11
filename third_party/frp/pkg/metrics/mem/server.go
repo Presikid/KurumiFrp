@@ -19,11 +19,13 @@
 package mem
 
 import (
+	"context"
 	"sync"
 	"time"
 
 	"k8s.io/utils/clock"
 
+	"github.com/fatedier/frp/pkg/util/lifetime"
 	"github.com/fatedier/frp/pkg/util/log"
 	"github.com/fatedier/frp/pkg/util/metric"
 )
@@ -40,9 +42,17 @@ type ServerMetrics struct {
 
 // NewServerMetrics starts a collector and its background pruning worker.
 func NewServerMetrics() *ServerMetrics {
+	return NewServerMetricsWithContext(context.Background())
+}
+
+// NewServerMetricsWithContext reports a pruning-worker panic to the owning
+// service scope when one is present. Close still owns stopping and joining the
+// worker; without an instance panic handler, panics retain their normal behavior.
+func NewServerMetricsWithContext(ctx context.Context) *ServerMetrics {
 	m := newServerMetricsWithClock(clock.RealClock{})
 	go func() {
 		defer close(m.doneCh)
+		defer lifetime.Recover(ctx)
 		m.runUntil(m.stopCh)
 	}()
 	return m
