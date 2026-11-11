@@ -15,6 +15,83 @@
  const button = (action, label, id = '', classes = '') => `<button type="button" ${classes ? `class="${classes}"` : ''} data-action="${action}" ${id ? `data-id="${e(id)}"` : ''}>${e(label)}</button>`;
  const runtimeFor = (data, id) => data.runtime?.[id] || {state:'stopped'};
  const pickInstance = id => { K.selectedInstance = id; };
+ const localControlPrefix = 'kurumi-local-control-v1:';
+ const localControlInFlight = new Set(), localControlReviewing = new Set();
+ const localControlMemory = new Map(), localControlDismissed = new Map();
+ const controlLabels = {start:'启动', stop:'停止', restart:'重启'};
+ const notifyLocalControl = () => window.dispatchEvent(new Event('kurumi-local-control-change'));
+ function localControlNotice(id) {
+  const memory = localControlMemory.get(id);
+  let stored;
+  try { stored = localStorage.getItem(localControlPrefix + id); } catch (_) {}
+  const raw = memory?.raw || (stored !== localControlDismissed.get(id) ? stored : null);
+  if (raw == null) return null;
+  let record;
+  try { record = JSON.parse(raw); } catch (_) { record = null; }
+  return {raw, phase:record?.phase === 'pending' ? 'pending' : 'uncertain', action:Object.hasOwn(controlLabels,record?.action) ? controlLabels[record.action] : '启停',
+   volatile:!!memory && stored !== memory.raw, error:memory?.errorEpoch === K.epoch() ? memory.error : ''};
+ }
+ function beginLocalControl(id,action) {
+  if (localControlInFlight.has(id) || localControlNotice(id)) { notifyLocalControl(); throw new Error('此实例有操作正在处理或结果未确认，请先核对并解除提示。'); }
+  const raw = JSON.stringify({phase:'pending',action,nonce:`${Date.now()}:${Math.random()}`});
+  localControlMemory.set(id,{raw});
+  try {
+   const key = localControlPrefix + id;
+   localStorage.setItem(key,raw);
+  } catch (_) { /* Keep the page-local record when storage is unavailable. */ }
+  localControlInFlight.add(id); notifyLocalControl(); return raw;
+ }
+ function clearLocalControl(id,expected) {
+  const memory = localControlMemory.get(id), key = localControlPrefix + id;
+  if (memory && memory.raw !== expected) return false;
+  let current, readable = false;
+  try { current = localStorage.getItem(key); readable = true; } catch (_) {}
+  if (!memory && readable && current !== null && current !== expected) return false;
+  if (readable && current === expected) {
+   try {
+    localStorage.removeItem(key);
+    if (localStorage.getItem(key) === expected) localControlDismissed.set(id,expected);
+    else if (localControlDismissed.get(id) === expected) localControlDismissed.delete(id);
+   } catch (_) { localControlDismissed.set(id,expected); }
+  } else if (!readable) localControlDismissed.set(id,expected);
+  if (memory) localControlMemory.delete(id);
+  return true;
+ }
+ function markLocalControlUncertain(id,expected,error) {
+  const memory = localControlMemory.get(id);
+  if (memory?.raw === expected && error.status) { memory.error = error.message; memory.errorEpoch = K.epoch(); }
+  // A pending record without an active request is shown as uncertain, including after reload.
+ }
+ function paintLocalControls(root) {
+  for (const card of root.querySelectorAll('[data-local-instance]')) {
+   const id = card.dataset.localInstance, notice = localControlNotice(id), inFlight = localControlInFlight.has(id);
+   const box = card.querySelector('[data-local-control-notice]'), text = card.querySelector('[data-local-control-text]'), acknowledge = card.querySelector('[data-action="ack-local-control"]');
+   box.hidden = !notice && !inFlight;
+   const volatile = notice?.volatile ? '提示仅保存在本页面，其他标签页不共享；关闭或重新加载页面后会丢失。' : '';
+   if (inFlight) text.textContent = `实例操作正在等待结果；请勿重复提交。${volatile}`;
+   else if (notice) text.textContent = `${notice.error ? `服务端返回：${notice.error}。` : ''}上次${notice.action}结果尚未确认。请刷新并独立核对实际状态及先前请求是否仍在处理。${volatile}${acknowledge ? '' : '请联系有操作权限的账户核对并解除。'}`;
+   if (acknowledge) { acknowledge.hidden = !notice || inFlight; acknowledge.disabled = localControlReviewing.has(id); }
+   card.querySelectorAll('[data-action="start"], [data-action="stop"], [data-action="restart"]').forEach(element => { element.disabled = !!notice || inFlight; });
+  }
+ }
+ async function acknowledgeLocalControl(id) {
+  if (localControlReviewing.has(id) || localControlInFlight.has(id)) throw new Error('操作仍在处理，请等待结果后再核对。');
+  const before = localControlNotice(id);
+  if (!before) return;
+  const generation = K.epoch(); localControlReviewing.add(id); notifyLocalControl();
+  try {
+   const refreshed = await K.refresh();
+   const state = K.state(), instance = state?.state?.instances?.find(item => item.id === id);
+   if (!refreshed || generation !== K.epoch() || !instance) throw new Error('无法确认实例当前状态，请重新登录或刷新后核对。');
+   if (!['start','stop','restart'].some(action => can(state,id,action))) throw new Error('当前账户没有此实例的操作权限。');
+   const after = localControlNotice(id);
+   if (!after || after.raw !== before.raw || localControlInFlight.has(id)) throw new Error('操作记录已变化，请重新核对。');
+   const runtime = runtimeFor(state,id);
+   if (!confirm(`「${instance.name}」当前状态：${stateLabel(runtime)}。\n刷新只能显示当前状态，不能保证先前请求已经结束。${after.volatile ? '\n提示仅保存在本页面，其他标签页不共享；关闭或重新加载页面后会丢失。' : ''}\n请先独立核对目标和请求状态；确认已核对并解除提示？`)) return;
+   if (!clearLocalControl(id,before.raw)) throw new Error('操作记录已变化或无法清除，请重新核对。');
+   notifyLocalControl(); K.toast('已解除核对提示。');
+  } finally { localControlReviewing.delete(id); notifyLocalControl(); }
+ }
  const requireRevision = data => {
   if (!K.state() || K.state().revision !== data.revision) throw new Error('草稿已变化，请刷新后重试。');
  };
@@ -38,7 +115,9 @@
    target.disabled = true;
    try { await handler(target.dataset.action, target.dataset.id || '', target); }
    catch (error) { K.toast(error.message); }
-   finally { if (target.isConnected) target.disabled = false; }
+   finally {
+    if (target.isConnected) target.disabled = ['start','stop','restart'].includes(target.dataset.action) && (localControlInFlight.has(target.dataset.id) || !!localControlNotice(target.dataset.id));
+   }
   });
  }
  function editObject(kind, id, data) {
@@ -108,15 +187,43 @@
   requireRevision(data);
   const instance = data.state.instances.find(item => item.id === id);
   if (!instance || !can(data, id, action)) throw new Error('实例不存在或没有操作权限。');
+  if (action !== 'validate') {
+   const notice = localControlNotice(id);
+   if (localControlInFlight.has(id) || notice) {
+    notifyLocalControl();
+    throw new Error('此实例有操作正在处理或结果未确认，请先核对并解除提示。');
+   }
+  }
   const schedule = data.schedules?.[id];
   const pause = schedule?.enabled && !schedule.paused ? '此操作可能暂停实例的定时计划。' : '';
   if (action === 'restart' && !confirm(`重启「${instance.name}」会中断现有连接，重新启动失败时可能保持停止。${pause}继续？`)) return;
   if (action === 'stop' && !confirm(`停止「${instance.name}」并中断连接？${pause}`)) return;
   if (action === 'start' && pause && !confirm(`启动「${instance.name}」？${pause}`)) return;
+  if (action === 'validate') {
+   try { await K.api('validate',{revision:data.revision,id}); K.toast('配置校验通过；这不代表网络连通。'); }
+   finally { await K.refresh().catch(() => {}); }
+   return;
+  }
+  requireRevision(data);
+  const controller = new AbortController(), record = beginLocalControl(id,action);
+  const deadline = setTimeout(() => controller.abort(),60000);
   try {
-   await K.api(action === 'validate' ? 'validate' : 'control', {revision:data.revision, id, ...(action === 'validate' ? {} : {action})});
-   K.toast(action === 'validate' ? '配置校验通过；这不代表网络连通。' : '实例操作已受理，请核对运行状态。');
-  } finally { await K.refresh().catch(() => {}); }
+   const result = await K.api('control',{revision:data.revision,id,action},{signal:controller.signal});
+   if (result?.ok !== true) throw new Error('服务端响应无法确认操作结果。');
+   if (!clearLocalControl(id,record)) K.toast('实例操作已受理，但核对记录未能清除；请刷新并核对后解除提示。');
+   else K.toast('实例操作已受理，请核对运行状态。');
+  } catch (error) {
+   if ([401,403,404,405].includes(error.status)) {
+    if (!clearLocalControl(id,record)) throw new Error(`${error.message}；操作记录已变化或无法清除，请先核对。`);
+    throw error;
+   }
+   markLocalControlUncertain(id,record,error);
+   const volatile = localControlNotice(id)?.volatile ? '提示仅保存在本页面，其他标签页不共享；关闭或重新加载页面后会丢失。' : '';
+   throw new Error(`${error.status ? `服务端返回：${error.message}。` : ''}实例操作结果尚未确认，请刷新并独立核对实际状态及请求是否仍在处理，再解除提示。${volatile}`);
+  } finally {
+   clearTimeout(deadline); localControlInFlight.delete(id); notifyLocalControl();
+   await K.refresh().catch(() => {});
+  }
  }
 
  let overviewCleanup = null;
@@ -217,6 +324,7 @@
   dispose() { overviewCleanup?.(); overviewCleanup = null; }
  });
 
+ let instancesCleanup = null;
  K.register('instances', {
   render(data) {
    const items = data.state.instances || [], restricted = !admin(data);
@@ -227,16 +335,25 @@
     const details = admin(data) || data.identity?.viewConfig;
     const logs = admin(data) || (data.identity?.logInstances || []).includes(item.id);
     const plan = data.schedules?.[item.id];
-    return `<article class="card"><div class="section-heading"><div><span class="eyebrow">${e(item.kind)}</span><h2>${e(item.name)}</h2></div><div>${status(runtime)}</div></div>
+    const mayAcknowledge = ['start','stop','restart'].some(action => can(data,item.id,action));
+    return `<article class="card" data-local-instance="${e(item.id)}"><div class="section-heading"><div><span class="eyebrow">${e(item.kind)}</span><h2>${e(item.name)}</h2></div><div>${status(runtime)}</div></div>
      ${details ? `<p><span class="muted">地址</span> <code>${e(item.host)}:${e(item.port)}</code></p><p><span class="muted">规则</span> ${data.state.tunnels.filter(rule => rule.instanceId === item.id).length} 条 · <span class="muted">定时计划</span> ${!plan ? '未设置' : !plan.enabled ? '已关闭' : plan.paused ? '已暂停' : '已启用'}</p>` : ''}
      ${runtime.exit ? `<p class="notice">${e(runtime.exit)}</p>` : ''}${plan?.reason ? `<p class="small-note">${e(plan.reason)}</p>` : ''}
+     <div class="notice" role="status" data-local-control-notice hidden><span data-local-control-text></span>${mayAcknowledge ? button('ack-local-control','刷新核对并解除',item.id) : ''}</div>
      <div class="actions">${controls}${logs ? button('logs','日志',item.id) : ''}${details ? button('config','配置',item.id) : ''}${admin(data) || data.identity?.viewTraffic ? button('traffic','流量',item.id) : ''}${admin(data) ? button('health','诊断',item.id) : ''}</div>
      ${admin(data) ? `<div class="actions">${button('edit-instance','编辑',item.id)}${button('schedule','定时计划',item.id)}${runtime.applied ? button('diff','配置差异',item.id) : ''}${button('duplicate-instance','复制',item.id)}${button('delete-instance','删除',item.id,'danger')}</div>` : ''}</article>`;
    }).join('');
    const warnings = (data.portWarnings || []).map(message => `<p>${e(message)}</p>`).join('');
    return head(restricted ? '授权实例' : '运行实例', restricted ? '仅显示当前账户有权查看的实例。' : '创建、校验和运行本机客户端或服务端。', admin(data) ? button('new-instance','新建实例','','primary') : '') + (warnings ? `<div class="notice">${warnings}</div>` : '') + (cards ? `<div class="cards">${cards}</div>` : empty('暂无实例',restricted ? '请联系管理员分配实例。' : '创建实例后可在此管理运行状态。','empty-welcome'));
   },
-  mount(root,data) { bindButtons(root, async (action,id) => {
+  mount(root,data) {
+   const paint = () => { if (K.isCurrent('instances',root)) paintLocalControls(root); };
+   const storage = event => { if (event.key === null || event.key.startsWith(localControlPrefix)) paint(); };
+   window.addEventListener('storage',storage); window.addEventListener('kurumi-local-control-change',paint);
+   instancesCleanup = () => { window.removeEventListener('storage',storage); window.removeEventListener('kurumi-local-control-change',paint); };
+   paint();
+   bindButtons(root, async (action,id) => {
+   if (action === 'ack-local-control') return acknowledgeLocalControl(id);
    if (['start','stop','restart','validate'].includes(action)) return control(action,id,data);
    if (action === 'new-instance' || action === 'edit-instance') return editObject('instance',id,data);
    if (action === 'schedule') return editSchedule(id,data);
@@ -260,7 +377,9 @@
     try { await K.refresh(); K.toast(`实例已复制，附带 ${result.rulesCopied || 0} 条停用规则。`); }
     catch (_) { if (K.state()) K.toast('实例已复制，但刷新失败；请手动刷新核对。'); }
    }
-  }); }
+   });
+  },
+  dispose() { instancesCleanup?.(); instancesCleanup = null; }
  });
 
  let rulesCleanup = null;
@@ -278,7 +397,7 @@
    }).join('');
    return head('连接规则','筛选规则并查看草稿状态；修改不会自动应用到运行中的实例。',actions) +
     `<p class="notice" data-rules-stale hidden>草稿已变化，请刷新后重新选择并操作。</p><div class="toolbar"><label>搜索<input type="search" data-filter placeholder="规则、实例或地址"></label><label>协议<select data-protocol><option value="">全部协议</option>${Protocols.types.map(type => `<option value="${e(type)}">${e(type)}</option>`).join('')}</select></label>${admin(data) && rows.length ? button('probe-visible','检测当前筛选') : ''}</div>
-    ${admin(data) && rows.length ? `<div class="toolbar"><label class="form-check"><input type="checkbox" data-select-visible>选择当前筛选</label><span data-selection-count>已选 0 条</span><div class="actions">${button('batch-enable','批量启用')}${button('batch-disable','批量停用')}${button('batch-delete','批量删除','','danger')}${button('batch-export','导出选中配置')}</div></div>` : ''}
+    ${admin(data) && rows.length ? `<div class="toolbar"><label class="form-check"><input type="checkbox" data-select-visible>选择当前筛选</label><span data-selection-count>已选 0 条</span><div class="actions">${button('batch-copy','批量复制')}${button('batch-enable','批量启用')}${button('batch-disable','批量停用')}${button('batch-delete','批量删除','','danger')}${button('batch-export','导出 ZIP')}${button('batch-export-toml','导出 TOML')}</div></div>` : ''}
     <div class="cards" data-rule-list>${cards || empty('暂无规则',admin(data) ? '先创建 frpc 客户端，再添加规则。' : '当前授权实例没有可显示的规则。','empty-search')}</div><p class="small-note" data-filter-empty hidden>没有匹配的规则。</p>`;
   },
   mount(root,data) {
@@ -331,6 +450,7 @@
    bindButtons(root, async (action,id,target) => {
     if (action === 'new-tunnel' || action === 'edit-tunnel') return editObject('tunnel',id,data);
     if (action === 'batch-create') return editBatch(data);
+    if (action === 'batch-copy') return window.KurumiBatchCopy.open(root,target);
     requireRevision(data);
     if (action === 'probe-visible') {
      const visible = cards.filter(card => !card.hidden).map(card => data.state.tunnels.find(rule => rule.id === card.dataset.rule)).filter(Boolean);
@@ -355,16 +475,27 @@
      }
      return;
     }
-    if (['batch-enable','batch-disable','batch-delete','batch-export'].includes(action)) {
+    if (['batch-enable','batch-disable','batch-delete','batch-export','batch-export-toml'].includes(action)) {
      const ids = [...selected]; if (!ids.length) throw new Error('请先选择规则。');
-     if (action === 'batch-export') {
-      if (!confirm(`导出 ${ids.length} 条规则？ZIP 包含明文认证令牌、密钥及 HTTP 头值，请妥善保管。`)) return;
-      const response = await fetch('/api/tunnels/export',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({revision:data.revision,ids,confirmed:true})});
+     if (action === 'batch-export' || action === 'batch-export-toml') {
+      const toml = action === 'batch-export-toml', rules = ids.map(id => data.state.tunnels.find(rule => rule.id === id));
+      if (rules.some(rule => !rule)) throw new Error('部分规则已不存在，请刷新后重新选择。');
+      let clientId = '';
+      if (toml) {
+       const clients = new Set(rules.map(rule => rule.instanceId));
+       if (clients.size !== 1) throw new Error('TOML 导出只能选择同一个 frpc 客户端的规则；跨客户端请使用 ZIP。');
+       clientId = rules[0].instanceId;
+       if (!/^[a-f0-9]{16}$/.test(clientId) || !data.state.instances.some(instance => instance.id === clientId && instance.kind === 'frpc')) throw new Error('所选规则的 frpc 客户端不可用，请刷新后重试。');
+      }
+      if (!confirm(`导出 ${ids.length} 条规则为 ${toml ? 'TOML' : 'ZIP'}？文件不加密，包含明文认证令牌、配对密钥、HTTP 密码及自定义 HTTP 头值，请妥善保管。`)) return;
+      const payload = {revision:data.revision,ids,confirmed:true,...(toml ? {format:'toml'} : {})};
+      const response = await fetch('/api/tunnels/export',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       if (!response.ok) { let message = '导出失败。'; try { message = (await response.json()).error || message; } catch (_) {} if (response.status === 401) void K.refresh().catch(() => {}); throw new Error(message); }
-      if (!(response.headers.get('Content-Type') || '').toLowerCase().startsWith('application/zip')) throw new Error('导出响应格式无效。');
+      const type = (response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
+      if (type !== (toml ? 'application/toml' : 'application/zip')) throw new Error('导出响应格式无效。');
       const blob = await response.blob(); if (!blob.size || blob.size > 20*1024*1024) throw new Error('导出文件无效或超过大小限制。');
       if (!K.isCurrent('tunnels',root) || K.state()?.revision !== data.revision) throw new Error('草稿已变化，请刷新后重新导出。');
-      K.download('kurumi-selected-rules.zip',blob,'application/zip'); K.toast('导出完成，请妥善保管明文凭据。'); return;
+      K.download(toml ? `frpc-${clientId}.toml` : 'kurumi-selected-rules.zip',blob,type); K.toast('导出完成，请妥善保管明文凭据。'); return;
      }
      const deleting = action === 'batch-delete', enabled = action === 'batch-enable';
      if (!confirm(`${deleting ? '删除' : enabled ? '启用' : '停用'}选中的 ${ids.length} 条规则草稿？运行中的实例不会立即改变。`)) return;
