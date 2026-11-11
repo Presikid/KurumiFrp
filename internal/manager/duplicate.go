@@ -11,6 +11,7 @@ type duplicateRequest struct {
 	Revision         uint64 `json:"revision"`
 	Kind             string `json:"kind"`
 	ID               string `json:"id"`
+	IDs              []string `json:"ids,omitempty"`
 	TargetInstanceID string `json:"targetInstanceId,omitempty"`
 	IncludeTunnels   bool   `json:"includeTunnels,omitempty"`
 }
@@ -31,10 +32,15 @@ func (a *App) duplicateAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, fmt.Errorf("配置已在其他窗口更新，请刷新后重试"))
 		return
 	}
+	if req.Kind != "tunnels" && len(req.IDs) != 0 {
+		fail(w, http.StatusBadRequest, fmt.Errorf("仅批量复制支持多个规则 ID"))
+		return
+	}
 	var (
 		id    string
 		count int
 		err   error
+		ids   []string
 	)
 	switch req.Kind {
 	case "instance":
@@ -49,6 +55,13 @@ func (a *App) duplicateAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id, err = a.duplicateTunnel(req.ID, req.TargetInstanceID)
+	case "tunnels":
+		if req.ID != "" || req.IncludeTunnels {
+			fail(w, http.StatusBadRequest, fmt.Errorf("批量复制请使用规则 ID 列表"))
+			return
+		}
+		ids, err = a.duplicateTunnels(req.IDs, req.TargetInstanceID)
+		count = len(ids)
 	default:
 		fail(w, http.StatusBadRequest, fmt.Errorf("只能复制实例或连接规则"))
 		return
@@ -57,10 +70,14 @@ func (a *App) duplicateAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err)
 		return
 	}
-	reply(w, http.StatusOK, map[string]any{
+	result := map[string]any{
 		"ok": true, "id": id, "rulesCopied": count,
 		"revision": a.store.DB.Revision,
-	})
+	}
+	if req.Kind == "tunnels" {
+		result["ids"] = ids
+	}
+	reply(w, http.StatusOK, result)
 }
 
 func duplicateInstanceName(st State, name string) (string, error) {
@@ -165,9 +182,12 @@ func duplicatedInstance(src Instance, id, name string) Instance {
 		ID: id, Name: name, Kind: src.Kind, Host: src.Host, Port: src.Port,
 		HTTPPort: src.HTTPPort, HTTPSPort: src.HTTPSPort, Token: src.Token,
 		User: src.User, NatHoleSTUNServer: src.NatHoleSTUNServer, DNSServer: src.DNSServer, ClientTransport: src.ClientTransport,
+		ClientBindIP: src.ClientBindIP, ClientDialTimeout: src.ClientDialTimeout,
+		TCPKeepalive: src.TCPKeepalive, MuxKeepalive: src.MuxKeepalive,
 		LoginFailExit: src.LoginFailExit, ClientTLSDisabled: src.ClientTLSDisabled, ServerAllowPlaintext: src.ServerAllowPlaintext,
 		TCPMuxHTTPConnectPort: src.TCPMuxHTTPConnectPort, TCPMuxPassthrough: src.TCPMuxPassthrough,
 		SubDomainHost: src.SubDomainHost, MaxPortsPerClient: src.MaxPortsPerClient, ServerAllowedPorts: src.ServerAllowedPorts, ProxyBindAddr: src.ProxyBindAddr,
+		ServerAccessMode: src.ServerAccessMode, ServerAccessList: src.ServerAccessList,
 		VhostHTTPTimeout: src.VhostHTTPTimeout, UserConnTimeout: src.UserConnTimeout,
 		ClientPoolCount: src.ClientPoolCount, ServerMaxPoolCount: src.ServerMaxPoolCount, TransportMuxDisabled: src.TransportMuxDisabled,
 	}
@@ -178,7 +198,7 @@ func duplicatedInstance(src Instance, id, name string) Instance {
 func duplicatedTunnel(src Tunnel, id, instanceID, name string) Tunnel {
 	return Tunnel{
 		ID: id, InstanceID: instanceID, Name: name, Type: src.Type,
-		LocalHost: src.LocalHost, LocalPort: src.LocalPort,
+		LocalHost: src.LocalHost, LocalPort: src.LocalPort, UnixSocketPath: src.UnixSocketPath,
 		RemotePort: src.RemotePort, Domains: append([]string(nil), src.Domains...), Locations: append([]string(nil), src.Locations...),
 		ProbePath: src.ProbePath, ProbeMethod: src.ProbeMethod,
 		HealthCheckType: src.HealthCheckType, HealthCheckPath: src.HealthCheckPath,
@@ -222,6 +242,8 @@ func (a *App) duplicateInstance(sourceID string, includeTunnels bool) (string, i
 		copied.HTTPSPort = 0
 		copied.TCPMuxHTTPConnectPort = 0
 		copied.TCPMuxPassthrough = false
+		copied.KCPBindPort = 0
+		copied.QUICBindPort = 0
 	}
 	st.Instances = append(st.Instances, copied)
 	count := 0
@@ -267,4 +289,76 @@ func (a *App) duplicateTunnel(sourceID, targetInstanceID string) (string, error)
 		return "", err
 	}
 	return id, nil
+}
+
+// The caller holds App.mu. Resolve the complete selection before adding any
+// copies, then publish all disabled rules in one validated state commit.
+func (a *App) duplicateTunnels(sourceIDs []string, targetInstanceID string) ([]string, error) {
+	if len(sourceIDs) == 0 || len(sourceIDs) > maxTunnelCount {
+		return nil, fmt.Errorf("请选择 1–512 条规则")
+	}
+	st := a.store.DB.State.clone()
+	target, ok := st.Instance(targetInstanceID)
+	if !ok || target.Kind != "frpc" {
+		return nil, fmt.Errorf("目标必须是已保存的 frpc 客户端实例")
+	}
+	if len(st.Tunnels)+len(sourceIDs) > maxTunnelCount {
+		return nil, fmt.Errorf("复制后规则总数不能超过 %d 条", maxTunnelCount)
+	}
+	wanted := make(map[string]bool, len(sourceIDs))
+	sources := make([]Tunnel, 0, len(sourceIDs))
+	for _, id := range sourceIDs {
+		if !idPattern.MatchString(id) || wanted[id] {
+			return nil, fmt.Errorf("规则 ID 无效或重复")
+		}
+		wanted[id] = true
+		source, exists := st.Tunnel(id)
+		if !exists {
+			return nil, fmt.Errorf("部分规则已不存在，请刷新后重新选择")
+		}
+		sources = append(sources, source)
+	}
+	// Both export and this operation require the full fallback chain, even for
+	// disabled drafts. Reject missing, invalid or cyclic links before copying.
+	if err := validateExportFallbacks(sources); err != nil {
+		return nil, fmt.Errorf("批量复制的回退依赖不完整或无效：%w", err)
+	}
+	start := len(st.Tunnels)
+	ids := make([]string, 0, len(sources))
+	names := make(map[string]string, len(sources))
+	for _, source := range sources {
+		name, err := duplicateTunnelName(st, targetInstanceID, source.Name)
+		if err != nil {
+			return nil, err
+		}
+		id := randomHex(8)
+		clone := duplicatedTunnel(source, id, targetInstanceID, name)
+		// The ordinary single-rule transfer forbids an unresolved fallback.
+		// This batch has verified its full chain and remaps it after all names
+		// exist; still apply the normal visitor namespace checks here.
+		transfer := source
+		if transfer.Type == "xtcp-visitor" && transfer.FallbackTo != "" {
+			transfer.FallbackTo = ""
+			clone.FallbackTo = ""
+		}
+		if err := prepareVisitorTransfer(st, transfer, &clone); err != nil {
+			return nil, err
+		}
+		st.Tunnels = append(st.Tunnels, clone)
+		ids = append(ids, id)
+		names[source.InstanceID+"\x00"+source.Name] = name
+	}
+	for index, source := range sources {
+		if source.Type == "xtcp-visitor" && source.FallbackTo != "" {
+			name, exists := names[source.InstanceID+"\x00"+source.FallbackTo]
+			if !exists {
+				return nil, fmt.Errorf("规则 %q 的回退目标未选中", source.Name)
+			}
+			st.Tunnels[start+index].FallbackTo = name
+		}
+	}
+	if err := a.store.commit(st, fmt.Sprintf("批量复制 %d 条连接规则到 %s", len(ids), target.Name)); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }
