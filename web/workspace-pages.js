@@ -240,11 +240,11 @@
     <div class="stat-grid"><div class="stat"><span>${admin(data) ? '实例' : '授权实例'}</span><strong>${instances.length}</strong></div><div class="stat"><span>运行中</span><strong>${running}</strong></div><div class="stat"><span>${admin(data) ? '规则草稿' : '授权规则草稿'}</span><strong>${configAllowed ? tunnels.length : '—'}</strong></div><div class="stat"><span>配置待应用</span><strong>${configAllowed ? pending : '—'}</strong></div></div>
     <div class="two-column"><section class="panel"><div class="panel-content"><div class="section-heading"><h2>实例状态</h2>${button('go-instances','查看全部')}</div>${instances.length ? `<div class="table-wrap"><table><thead><tr><th>名称</th><th>类型</th><th>状态</th></tr></thead><tbody>${instances.map(item => `<tr><td>${e(item.name)}</td><td>${e(item.kind)}</td><td>${status(runtimeFor(data,item.id))}</td></tr>`).join('')}</tbody></table></div>` : empty('尚无实例','创建客户端或服务端实例后在这里查看。','empty-welcome')}</div></section>
     <section class="panel"><div class="panel-content"><div class="section-heading"><h2>最近变更</h2><span class="pill">草稿 r${data.revision}</span></div>${!admin(data) ? empty('无查看权限','变更记录仅供管理员查看。') : recent.length ? `<div>${recent.map(item => `<p>${e(item.message)}<br><small>${e(item.at ? new Date(item.at).toLocaleString('zh-CN') : '')}</small></p>`).join('')}</div>` : empty('暂无记录','配置变更后将显示在这里。')}</div></section></div><p class="small-note">实例运行不等于代理已注册或公网可达。草稿变更需重新应用到实例。</p>
-    ${trafficAllowed && instances.length ? `<section class="panel"><div class="panel-content"><div class="section-heading"><div><h2>实例流量</h2><p class="small-note">当前运行代次与近 90 天的已记录采样。</p></div><div class="actions">${button('traffic-refresh','刷新流量')}${button('traffic-export','导出历史 CSV')}</div></div><label>实例<select data-traffic-instance>${instances.map(item => `<option value="${e(item.id)}" ${item.id === selected ? 'selected' : ''}>${e(item.name)} · ${e(item.kind)}</option>`).join('')}</select></label><div data-traffic-output>正在读取…</div><div data-traffic-history></div></div></section>` : ''}`;
+    ${trafficAllowed && instances.length ? `<section class="panel"><div class="panel-content"><div class="section-heading"><div><h2>实例流量</h2><p class="small-note">当前运行代次与近 90 天的已记录采样。</p></div><div class="actions">${button('traffic-refresh','刷新流量')}${button('traffic-export','导出历史 CSV')}</div></div><label>实例<select data-traffic-instance>${instances.map(item => `<option value="${e(item.id)}" ${item.id === selected ? 'selected' : ''}>${e(item.name)} · ${e(item.kind)}</option>`).join('')}</select></label><div data-traffic-output>正在读取…</div><div data-traffic-budget role="status">正在读取月度提醒…</div><div data-traffic-history></div></div></section>` : ''}`;
   },
   mount(root,data) {
    const picker = root.querySelector('[data-traffic-instance]');
-   let serial = 0, history = null;
+   let serial = 0, history = null, budget = null;
    const bytes = value => typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value) ? value.replace(/\B(?=(\d{3})+(?!\d))/g, ',').replace(/,/g,',<wbr>') + ' B' : '—';
    const rate = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value.toLocaleString('zh-CN',{maximumFractionDigits:2}) + ' B/s' : '—';
    const table = (items, server) => items.length ? `<div class="table-wrap"><table><thead><tr><th>${server ? '代理' : '规则'}</th><th>类型</th><th>接收</th><th>发送</th></tr></thead><tbody>${items.map(item => `<tr><td>${e(item.name)}</td><td>${e(item.type || item.kind)}</td><td>${bytes(item.receivedBytes)}</td><td>${bytes(item.sentBytes)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="small-note">暂无可显示的明细。</p>';
@@ -267,17 +267,18 @@
    async function loadTraffic() {
     if (!picker) return;
     const id = picker.value, item = data.state.instances.find(value => value.id === id), sequence = ++serial;
-    if (!item) return; K.selectedInstance = id; history = null;
-    const output = root.querySelector('[data-traffic-output]'), historyOutput = root.querySelector('[data-traffic-history]');
-    output.textContent = '正在读取…'; historyOutput.textContent = '';
+    if (!item) return; K.selectedInstance = id; history = null; budget = null;
+    const output = root.querySelector('[data-traffic-output]'), historyOutput = root.querySelector('[data-traffic-history]'), budgetOutput = root.querySelector('[data-traffic-budget]');
+    output.textContent = '正在读取…'; historyOutput.textContent = ''; budgetOutput.textContent = '正在读取月度提醒…';
     const query = '?id=' + encodeURIComponent(id), runId = runtimeFor(data,id).runId || '';
-    const [current, detail, daily] = await Promise.allSettled([
+    const [current, detail, daily, reminder] = await Promise.allSettled([
      K.api((item.kind === 'frps' ? 'server-traffic' : 'traffic')+query),
      item.kind === 'frpc' && (admin(data) || data.identity?.viewConfig) ? K.api('client-traffic'+query) : Promise.resolve(null),
-     K.api('traffic-history'+query)
+     K.api('traffic-history'+query),
+     K.api('traffic-budget'+query)
     ]);
     if (!K.isCurrent('overview',root) || sequence !== serial || picker.value !== id) return;
-    if ((runtimeFor(K.state(),id).runId || '') !== runId) { output.textContent = '实例运行代次已变化，请刷新流量。'; return; }
+    if ((runtimeFor(K.state(),id).runId || '') !== runId) { output.textContent = '实例运行代次已变化，请刷新流量。'; budgetOutput.textContent = '实例状态已变化，请刷新月度提醒。'; return; }
     if (current.status !== 'fulfilled') output.textContent = '读取当前流量失败：'+current.reason.message;
     else {
      const value = item.kind === 'frps' ? current.value : current.value.instances?.[id];
@@ -286,6 +287,22 @@
      else {
       const details = item.kind === 'frps' ? (value.detailsAllowed === false ? '<p class="small-note">当前账户无代理明细权限。</p>' : table(value.proxies || [],true)) : detail.status === 'fulfilled' && detail.value?.available && detail.value.runId === runId ? table(detail.value.rules || [],false) : '<p class="small-note">本次运行的规则流量明细不可用。</p>';
       output.innerHTML = `<div class="stat-grid"><div class="stat"><span>接收</span><strong>${bytes(value.receivedBytes)}</strong></div><div class="stat"><span>发送</span><strong>${bytes(value.sentBytes)}</strong></div>${item.kind === 'frpc' ? `<div class="stat"><span>接收速率</span><strong>${rate(value.receivedBytesPerSecond)}</strong></div><div class="stat"><span>发送速率</span><strong>${rate(value.sentBytesPerSecond)}</strong></div>` : ''}</div><p class="small-note">采样时间：${e(value.sampledAt ? new Date(value.sampledAt).toLocaleString('zh-CN') : '未知')}。${item.kind === 'frps' ? '服务端统计转发边界，可能包含协议开销，不包含绕过服务端的 P2P 流量。' : '客户端统计转发载荷，不包含协议开销。'}重启后重新计数；不适用于计费。</p>${item.kind === 'frpc' ? chart(value.curve) : ''}${value.proxiesTruncated ? '<p class="small-note">代理明细已截断，总量仍包含未列出的代理。</p>' : ''}${details}`;
+     }
+    }
+    if (reminder.status !== 'fulfilled') budgetOutput.textContent = '读取月度提醒失败：'+reminder.reason.message;
+    else {
+     const value = reminder.value;
+     const decimal = value => typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
+     const valid = value && value.instanceId === id && value.kind === item.kind && Number.isSafeInteger(value.revision) &&
+      typeof value.version === 'string' && /^\d{4}-\d{2}$/.test(value.month) && decimal(value.limitBytes) &&
+      (value.recordedBytes === null || decimal(value.recordedBytes)) && ['disabled','unknown','not_reached','reached'].includes(value.status) &&
+      typeof value.historySaved === 'boolean' && typeof value.historyStorageError === 'boolean';
+     if (!valid) budgetOutput.textContent = '月度提醒数据无效，请刷新后重试。';
+     else {
+      budget = value;
+      const labels = {disabled:'未设置提醒值',unknown:'本月没有可用的已记录采样，提醒状态未知',not_reached:'已记录采样尚未达到提醒值',reached:'已记录采样已达到提醒值'};
+      const storage = value.historyStorageError ? '历史文件读取或写入失败。' : value.historySaved ? '' : '部分采样尚未写入磁盘。';
+      budgetOutput.innerHTML = `<div class="${value.status === 'reached' ? 'notice' : ''}"><p><strong>${e(value.month)} UTC 月度提醒 · ${e(labels[value.status])}</strong></p><p>已记录接收与发送合计：${value.recordedBytes === null ? '未知' : bytes(value.recordedBytes)}${value.limitBytes === '0' ? '' : ` / 提醒值 ${bytes(value.limitBytes)}`}</p><p class="small-note">只比较本实例已记录的采样，可能遗漏流量；未达到提醒值不代表实际用量低于该值。提醒仅在此页面显示，不发送通知，也不会限制流量或停止实例，不用于计费。${e(storage)}</p>${admin(data) ? button('traffic-budget-edit','设置月度提醒') : ''}</div>`;
      }
     }
     if (daily.status !== 'fulfilled') historyOutput.textContent = '读取流量历史失败：'+daily.reason.message;
@@ -313,6 +330,33 @@
     if (action === 'go-instances') K.navigate('instances');
     if (action === 'go-rules') K.navigate('tunnels');
     if (action === 'traffic-refresh') return loadTraffic();
+    if (action === 'traffic-budget-edit') {
+     const current = budget, id = picker?.value, instance = data.state.instances.find(item => item.id === id);
+     if (!admin(data) || !current || !instance || current.instanceId !== id) throw new Error('提醒数据已变化，请刷新后重试。');
+     const factors = {B:1n, MiB:1048576n, GiB:1073741824n}, stored = BigInt(current.limitBytes);
+     const unit = stored > 0n && stored % factors.GiB === 0n ? 'GiB' : stored > 0n && stored % factors.MiB === 0n ? 'MiB' : 'B';
+     const amount = (stored / factors[unit]).toString();
+     K.openDialog({
+      html:`<h2>设置月度流量提醒</h2><p class="muted">${e(instance.name)} · 仅比较 UTC 月度已记录的接收与发送采样。采样可能不完整；不会限制流量或停止实例。</p><div class="form-grid"><label>提醒值（0 为关闭）<input name="amount" inputmode="numeric" pattern="[0-9]+" maxlength="20" required value="${e(amount)}"></label><label>单位<select name="unit"><option value="B" ${unit === 'B' ? 'selected' : ''}>字节</option><option value="MiB" ${unit === 'MiB' ? 'selected' : ''}>MiB</option><option value="GiB" ${unit === 'GiB' ? 'selected' : ''}>GiB</option></select><small>切换单位后请重新输入数值。</small></label></div>`,
+      submitLabel:'保存提醒',
+      async onSubmit(form) {
+       const amount = form.elements.amount.value, unit = form.elements.unit.value;
+       if (!/^[0-9]+$/.test(amount)) throw new Error('请输入非负整数。');
+       if (!Object.hasOwn(factors,unit)) throw new Error('请选择有效的单位。');
+       const limit = BigInt(amount) * factors[unit];
+       if (limit > 18446744073709551615n) throw new Error('提醒值不能超过 18446744073709551615 字节。');
+       const limitBytes = limit.toString();
+       if (!K.isCurrent('overview',root) || picker.value !== id || K.state()?.revision !== current.revision) throw new Error('实例或配置已变化，请关闭窗口并刷新。');
+       try { await K.api('traffic-budget',{id,revision:current.revision,version:current.version,limitBytes}); }
+       catch (error) {
+        if (!error.status || error.status >= 500) throw new Error('保存结果尚未确认，请关闭窗口并刷新核对。');
+        throw error;
+       }
+       K.toast('月度提醒已保存。');
+       if (K.isCurrent('overview',root) && picker.value === id) void loadTraffic();
+      }
+     });
+    }
     if (action === 'traffic-export') {
      if (!history?.days?.length) throw new Error('当前没有可导出的历史数据。');
      const rows = history.days.filter(day => /^\d{4}-\d{2}-\d{2}$/.test(day.date) && /^\d+$/.test(day.receivedBytes) && /^\d+$/.test(day.sentBytes)).map(day => `${day.date},${day.receivedBytes},${day.sentBytes},${day.partial ? 'true' : 'false'}`);

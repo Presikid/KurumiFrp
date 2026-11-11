@@ -36,6 +36,7 @@ type App struct {
 	procs            map[string]*process
 	traffic          map[string]*trafficSamples // protected by mu, keyed by instance and run ID
 	trafficDaily     *trafficDailyHistory
+	trafficBudget    *trafficBudgetStore
 	assets           http.Handler
 	webhooks         *webhookDispatcher
 	loginHistory     *loginHistory
@@ -134,6 +135,7 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 		return nil, e
 	}
 	app.trafficDaily = loadTrafficDaily(s.dir, s.DB.State, s.DB.LocalTrafficIDs)
+	app.trafficBudget = loadTrafficBudgets(s.dir)
 	app.firewall = loadFirewall(s.dir)
 	s.beforeCommit = func(before, after State) error {
 		for id, op := range app.operations {
@@ -422,6 +424,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			a.trafficDailyAPI(w, r)
+			return
+		}
+		if r.URL.Path == "/api/traffic-budget" {
+			a.trafficBudgetAPI(a.trafficBudget, w, r)
 			return
 		}
 		if r.URL.Path == "/api/server-traffic" {
