@@ -43,6 +43,7 @@ type auth struct {
 	accountPath       string
 	accounts          []localAccount
 	accountsRevision  uint64
+	accountGroups     []accountGroup
 	accountLoadErr    error
 	oidcSettings      oidcSettings
 	oidcLoadErr       error

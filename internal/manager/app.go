@@ -102,13 +102,13 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 	}
 	// A damaged account file disables accounts and account mutations, but the
 	// existing local administrator must still be able to start the workbench.
-	accounts, accountsRevision, accountLoadErr := loadAccounts(s.dir)
+	accounts, accountGroups, accountsRevision, accountLoadErr := loadAccounts(s.dir)
 	if accountLoadErr == nil {
 		for _, account := range accounts {
 			for _, id := range account.Instances {
 				if _, exists := s.DB.State.Instance(id); !exists {
 					accountLoadErr = fmt.Errorf("账户授权引用了不存在的实例")
-					accounts, accountsRevision = nil, 0
+					accounts, accountGroups, accountsRevision = nil, nil, 0
 					break
 				}
 			}
@@ -129,7 +129,7 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 	if len(token) != 64 {
 		return nil, fmt.Errorf("invalid access token file")
 	}
-	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordLegacy: adminPasswordLegacy, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountGroups: accountGroups, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordLegacy: adminPasswordLegacy, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	app.auth.oidcSettings, app.auth.oidcLoadErr = loadOIDCSettings(s.dir)
 	app.auth.oidcStartSlots = make(chan struct{}, 4)
 	if e = app.recoverSchedules(); e != nil {
