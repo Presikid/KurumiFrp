@@ -466,10 +466,11 @@
   dispose() { overviewCleanup?.(); overviewCleanup = null; }
  });
 
- let instancesCleanup = null;
+ let instancesCleanup = null, instanceFilters = {epoch:-1, query:'', kind:'', state:''};
  K.register('instances', {
   render(data) {
    const items = data.state.instances || [], restricted = !admin(data);
+   if (instanceFilters.epoch !== K.epoch()) instanceFilters = {epoch:K.epoch(), query:'', kind:'', state:''};
    const cards = items.map(item => {
     const runtime = runtimeFor(data,item.id), running = runtime.state === 'running', transitional = ['starting','stopping'].includes(runtime.state);
     const allowed = action => can(data,item.id,action) ? button(action,({start:'启动',stop:'停止',restart:'重启并应用',validate:'校验配置'})[action],item.id,action === 'start' ? 'primary' : '') : '';
@@ -486,9 +487,30 @@
      ${admin(data) ? `<div class="actions">${button('edit-instance','编辑',item.id)}${button('schedule','定时计划',item.id)}${runtime.applied ? button('diff','配置差异',item.id) : ''}${button('duplicate-instance','复制',item.id)}${button('delete-instance','删除',item.id,'danger')}</div>` : ''}</article>`;
    }).join('');
    const warnings = (data.portWarnings || []).map(message => `<p>${e(message)}</p>`).join('');
-   return head(restricted ? '授权实例' : '运行实例', restricted ? '仅显示当前账户有权查看的实例。' : '创建、校验和运行本机客户端或服务端。', admin(data) ? button('new-instance','新建实例','','primary') : '') + (warnings ? `<div class="notice">${warnings}</div>` : '') + (cards ? `<div class="cards">${cards}</div>` : empty('暂无实例',restricted ? '请联系管理员分配实例。' : '创建实例后可在此管理运行状态。','empty-welcome'));
+   const filters = `<div class="toolbar"><label>搜索实例<input type="search" data-instance-search placeholder="名称或 ID" value="${e(instanceFilters.query)}"></label><label>类型<select data-instance-kind><option value="">全部类型</option><option value="frpc" ${instanceFilters.kind === 'frpc' ? 'selected' : ''}>客户端</option><option value="frps" ${instanceFilters.kind === 'frps' ? 'selected' : ''}>服务端</option></select></label><label>运行状态<select data-instance-state><option value="">全部状态</option>${Object.entries(states).map(([value,label]) => `<option value="${e(value)}" ${instanceFilters.state === value ? 'selected' : ''}>${e(label)}</option>`).join('')}<option value="other" ${instanceFilters.state === 'other' ? 'selected' : ''}>其他状态</option></select></label><span class="small-note" data-instance-count role="status"></span></div>`;
+   return head(restricted ? '授权实例' : '运行实例', restricted ? '仅显示当前账户有权查看的实例。' : '创建、校验和运行本机客户端或服务端。', admin(data) ? button('new-instance','新建实例','','primary') : '') + (warnings ? `<div class="notice">${warnings}</div>` : '') + (cards ? `${filters}<div class="cards">${cards}</div><p class="small-note" data-instance-empty hidden>没有匹配的实例。</p>` : empty('暂无实例',restricted ? '请联系管理员分配实例。' : '创建实例后可在此管理运行状态。','empty-welcome'));
   },
   mount(root,data) {
+   const cards = [...root.querySelectorAll('[data-local-instance]')], items = new Map((data.state.instances || []).map(item => [item.id,item]));
+   const search = root.querySelector('[data-instance-search]'), kind = root.querySelector('[data-instance-kind]'), state = root.querySelector('[data-instance-state]');
+   const filterInstances = () => {
+    const query = instanceFilters.query.trim().toLocaleLowerCase();
+    let visible = 0;
+    for (const card of cards) {
+     const item = items.get(card.dataset.localInstance), actualState = item ? runtimeFor(data,item.id).state || 'stopped' : '';
+     const matchesState = !instanceFilters.state || (instanceFilters.state === 'other' ? !Object.hasOwn(states,actualState) : instanceFilters.state === actualState);
+     const matchesQuery = item && `${item.name} ${item.id}`.toLocaleLowerCase().includes(query);
+     card.hidden = !matchesQuery || (!!instanceFilters.kind && item.kind !== instanceFilters.kind) || !matchesState;
+     if (!card.hidden) visible++;
+    }
+    const count = root.querySelector('[data-instance-count]'), empty = root.querySelector('[data-instance-empty]');
+    if (count) count.textContent = `显示 ${visible} / ${cards.length} 个实例`;
+    if (empty) empty.hidden = visible > 0;
+   };
+   search?.addEventListener('input',() => { instanceFilters.query = search.value; filterInstances(); });
+   kind?.addEventListener('change',() => { instanceFilters.kind = kind.value; filterInstances(); });
+   state?.addEventListener('change',() => { instanceFilters.state = state.value; filterInstances(); });
+   if (cards.length) filterInstances();
    const paint = () => { if (K.isCurrent('instances',root)) paintLocalControls(root); };
    const storage = event => { if (event.key === null || event.key.startsWith(localControlPrefix)) paint(); };
    window.addEventListener('storage',storage); window.addEventListener('kurumi-local-control-change',paint);
