@@ -637,6 +637,9 @@ func (a *App) statuses() map[string]RuntimeStatus {
 }
 func (a *App) Close() error {
 	a.closeOnce.Do(func() {
+		a.requestMu.Lock()
+		a.requestClosing = true
+		a.requestMu.Unlock()
 		a.RequestShutdown()
 		a.mu.Lock()
 		a.closing = true
@@ -695,12 +698,42 @@ func (a *App) Close() error {
 			}(p)
 		}
 		wg.Wait()
+		for _, p := range processes {
+			if observer, ok := p.instance.(runtimeCleanupObserver); ok && observer.CleanupUncertain() {
+				failures = append(failures, fmt.Errorf("实例清理状态未知，数据目录锁将保留到进程退出"))
+			}
+		}
 		if a.trafficDaily != nil {
 			close(a.trafficDaily.stop)
 			<-a.trafficDaily.done
 		}
+		// RequestShutdown wakes streams before waiting. A timed-out request can
+		// still touch the store, so retain the directory lock on timeout.
+		requestsDone := make(chan struct{})
+		go func() {
+			a.requests.Wait()
+			close(requestsDone)
+		}()
+		timer := time.NewTimer(8 * time.Second)
+		select {
+		case <-requestsDone:
+		case <-timer.C:
+			failures = append(failures, fmt.Errorf("仍有工作台请求未结束，数据目录锁将保留到进程退出"))
+		}
+		timer.Stop()
+		if observer, ok := a.runtime.(runtimeCleanupObserver); ok && observer.CleanupUncertain() {
+			failures = append(failures, fmt.Errorf("内嵌核心清理状态未知，数据目录锁将保留到进程退出"))
+		}
+		if a.updater != nil && a.updater.Busy() {
+			failures = append(failures, fmt.Errorf("更新任务仍在运行，数据目录锁将保留到进程退出"))
+		}
 		if len(failures) == 0 {
 			if err := a.finishSchedulesAfterShutdown(); err != nil {
+				failures = append(failures, err)
+			}
+		}
+		if len(failures) == 0 {
+			if err := a.dataLock.release(); err != nil {
 				failures = append(failures, err)
 			}
 		}

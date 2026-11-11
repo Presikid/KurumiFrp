@@ -3,6 +3,7 @@ package manager
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -31,6 +32,7 @@ type App struct {
 	nodeOperationVersions map[string]string
 
 	store            *Store
+	dataLock         *dataDirectoryLock
 	addr             string
 	auth             auth
 	procs            map[string]*process
@@ -50,6 +52,10 @@ type App struct {
 	closing             bool
 	closeOnce           sync.Once
 	closeErr            error
+	requestMu           sync.Mutex
+	requestClosing      bool
+	requestStarted      bool
+	requests            sync.WaitGroup
 	stateCache          *stateResponseCache
 	activeProbes        int
 	activeNodeChecks    int
@@ -79,12 +85,27 @@ func New(dir, addr string, assets fs.FS) (*App, error) {
 
 // NewWithRuntime installs the backend before restoring AutoStart instances.
 // A nil backend selects the in-process runtime used by normal builds.
-func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*App, error) {
-	if backend == nil {
-		backend = NewEmbeddedRuntime()
-	}
+func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (result *App, resultErr error) {
 	if e := loopbackListen(addr); e != nil {
 		return nil, e
+	}
+	absDir, e := canonicalDataDirectory(dir)
+	if e != nil {
+		return nil, e
+	}
+	dir = absDir
+	dataLock, e := acquireDataDirectoryLock(dir)
+	if e != nil {
+		return nil, e
+	}
+	resourcesStarted := false
+	defer func() {
+		if resultErr != nil && !resourcesStarted {
+			resultErr = errors.Join(resultErr, dataLock.release())
+		}
+	}()
+	if backend == nil {
+		backend = NewEmbeddedRuntime()
 	}
 	adminPassword, adminPasswordData, adminPasswordLegacy, e := prepareAdminPassword(dir)
 	var adminPasswordErr error
@@ -153,12 +174,15 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 	if len(token) != 64 {
 		return nil, fmt.Errorf("invalid access token file")
 	}
-	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountGroups: accountGroups, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordLegacy: adminPasswordLegacy, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, dataLock: dataLock, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountGroups: accountGroups, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordLegacy: adminPasswordLegacy, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	app.auth.oidcSettings, app.auth.oidcLoadErr = loadOIDCSettings(s.dir)
 	app.auth.oidcStartSlots = make(chan struct{}, 4)
 	if e = app.recoverSchedules(); e != nil {
 		return nil, e
 	}
+	// No initialization below this point may release the lock on failure:
+	// background resources can already have been created or started.
+	resourcesStarted = true
 	app.trafficDaily = loadTrafficDaily(s.dir, s.DB.State, s.DB.LocalTrafficIDs)
 	// An unreadable registration file disables only inbound reporting and is
 	// retained for repair; it must never be silently replaced.
@@ -198,7 +222,14 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 	app.agentReporter.gate.Unlock()
 	return app, nil
 }
+// SetDistribution configures the updater before the first HTTP request.
+// Later calls, including calls during shutdown, leave the existing updater intact.
 func (a *App) SetDistribution(distribution string) {
+	a.requestMu.Lock()
+	defer a.requestMu.Unlock()
+	if a.requestStarted || a.requestClosing {
+		return
+	}
 	a.updater = update.New(a.store.dir, update.DetectDistribution(distribution))
 }
 func (a *App) AccessToken() string { return a.auth.token }
@@ -228,6 +259,16 @@ func decode(w http.ResponseWriter, r *http.Request, v any) error {
 	return nil
 }
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.requestMu.Lock()
+	if a.requestClosing {
+		a.requestMu.Unlock()
+		http.Error(w, "工作台正在关闭", http.StatusServiceUnavailable)
+		return
+	}
+	a.requestStarted = true
+	a.requests.Add(1)
+	a.requestMu.Unlock()
+	defer a.requests.Done()
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")

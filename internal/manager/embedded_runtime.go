@@ -37,6 +37,8 @@ func (*embeddedRuntime) SupportsSystemCATLS() bool { return true }
 
 func (*embeddedRuntime) SupportsTLSFiles() bool { return true }
 
+func (*embeddedRuntime) CleanupUncertain() bool { return embeddedCleanupUnknown.Load() }
+
 func (*embeddedRuntime) Resolve(kind string) (string, error) {
 	if embeddedCleanupUnknown.Load() {
 		return "", errors.New("内嵌核心清理状态未知，请重启工作台")
