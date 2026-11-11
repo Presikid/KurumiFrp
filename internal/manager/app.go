@@ -41,6 +41,7 @@ type App struct {
 	webhooks         *webhookDispatcher
 	loginHistory     *loginHistory
 	firewall         *firewallManager
+	maintenance      *maintenanceMode
 	updateNotices    updateNoticeState
 
 	// Lifecycle reservations are protected by mu. Slow operations run without it.
@@ -137,6 +138,7 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 	app.trafficDaily = loadTrafficDaily(s.dir, s.DB.State, s.DB.LocalTrafficIDs)
 	app.trafficBudget = loadTrafficBudgets(s.dir)
 	app.firewall = loadFirewall(s.dir)
+	app.maintenance = loadMaintenanceMode(s.dir)
 	s.beforeCommit = func(before, after State) error {
 		for id, op := range app.operations {
 			if op.scheduled && scheduleDraftChanged(before, after, id) {
@@ -283,7 +285,17 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, 403, fmt.Errorf("没有此操作的权限"))
 			return
 		}
+		if !p.admin() && r.Method == http.MethodPost &&
+			(r.URL.Path == "/api/control" || r.URL.Path == "/api/nodes/control") &&
+			(a.maintenance == nil || a.maintenance.restrictsControls()) {
+			fail(w, http.StatusForbidden, fmt.Errorf("维护模式开启或状态未知，受限账户暂不能操作实例"))
+			return
+		}
 		r = withPrincipal(r, p)
+		if r.URL.Path == "/api/maintenance" {
+			a.maintenanceAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/oidc/config" {
 			a.oidcSettingsAPI(w, r)
 			return
