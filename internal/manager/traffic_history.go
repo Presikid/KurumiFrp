@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -24,6 +25,50 @@ type trafficDay struct {
 	ReceivedBytes uint64 `json:"receivedBytes,string"`
 	SentBytes     uint64 `json:"sentBytes,string"`
 	Partial       bool   `json:"partial"`
+}
+
+// A month summarizes only the retained daily sampling deltas for one instance.
+// Decimal strings avoid overflow when multiple uint64 daily values are added.
+// Partial is always true: even a row for every date cannot prove full coverage.
+type trafficMonth struct {
+	Month         string `json:"month"`
+	FirstDate     string `json:"firstDate"`
+	LastDate      string `json:"lastDate"`
+	RecordedDays  int    `json:"recordedDays"`
+	ReceivedBytes string `json:"receivedBytes"`
+	SentBytes     string `json:"sentBytes"`
+	Partial       bool   `json:"partial"`
+}
+
+func trafficMonths(days []trafficDay) []trafficMonth {
+	months := []trafficMonth{}
+	var received, sent, value big.Int
+	finish := func() {
+		if len(months) == 0 {
+			return
+		}
+		last := &months[len(months)-1]
+		last.ReceivedBytes, last.SentBytes = received.String(), sent.String()
+	}
+	// Daily dates are validated on load and generated internally in date order.
+	for _, day := range days {
+		month := day.Date[:7]
+		if len(months) == 0 || months[len(months)-1].Month != month {
+			finish()
+			months = append(months, trafficMonth{Month: month, FirstDate: day.Date, Partial: true})
+			received.SetUint64(0)
+			sent.SetUint64(0)
+		}
+		row := &months[len(months)-1]
+		row.LastDate = day.Date
+		row.RecordedDays++
+		value.SetUint64(day.ReceivedBytes)
+		received.Add(&received, &value)
+		value.SetUint64(day.SentBytes)
+		sent.Add(&sent, &value)
+	}
+	finish()
+	return months
 }
 
 type trafficDailySeries struct {
@@ -339,7 +384,7 @@ func (a *App) trafficDailyAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mu.Unlock()
 	reply(w, http.StatusOK, map[string]any{
-		"instanceId": id, "kind": instance.Kind, "days": days,
+		"instanceId": id, "kind": instance.Kind, "days": days, "months": trafficMonths(days),
 		"retentionDays": trafficDailyDays, "saved": saved, "savedAt": savedAt,
 		"storageError": storageError, "timeZone": "UTC", "flushSeconds": int(trafficDailyFlushEvery.Seconds()),
 	})
