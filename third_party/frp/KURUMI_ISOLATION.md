@@ -45,10 +45,10 @@ explicitly supply an instance sink or logger.
 
 The allowed Unix-domain-socket plugin dials with the control context and tracks
 the local socket in that generation. It requires an absolute socket path. The
-restricted client supports a `tcp` health check by connecting to that socket;
-HTTP health checks remain unsupported. The workbench does not yet expose this
-socket health check. As with other proxy streams, dependency goroutines and all
-shutdown or interoperability cases are not yet verified.
+restricted client and workbench support a `tcp` health check by connecting to
+that socket; HTTP health checks remain unsupported. As with other proxy
+streams, dependency goroutines and all shutdown or interoperability cases are
+not yet verified.
 
 The isolated SOCKS5 plugin is limited to TCP CONNECT with a nonempty username
 and password. Its resolver and sockets belong to the client instance; it does
