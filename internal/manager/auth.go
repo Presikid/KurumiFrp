@@ -32,13 +32,13 @@ const (
 type auth struct {
 	token             string
 	mu                sync.Mutex
+	rootGate          sync.RWMutex
 	attempts          map[string]attempt
 	globalAttempts    attempt
 	keysLimitNotified bool
 	nextLimitNotice   time.Time
 	onLoginLimit      func(string)
 	sessions          map[string]authSession
-	tickets           map[string]time.Time
 	nextCleanup       time.Time
 	accountPath       string
 	accounts          []localAccount
@@ -49,12 +49,18 @@ type auth struct {
 	oidcFlows         map[string]oidcFlow
 	oidcStartSlots    chan struct{}
 	hashSlots         chan struct{}
+	adminPasswordPath       string
+	adminPassword           adminPasswordFile
+	adminPasswordData       []byte
+	adminPasswordLegacy     bool
+	adminPasswordGeneration uint64
+	adminPasswordErr        error
 }
 
 type authSession struct {
 	expires   time.Time
-	accountID string        // empty for the local access token or launch ticket
-	gate      *sync.RWMutex // root browser session; account sessions use the account gate
+	accountID string        // empty for a root browser session
+	gate      *sync.RWMutex // root sessions share rootGate; account sessions use the account gate
 	oidcRevision uint64     // zero for non-OIDC sessions
 	oidcRoleCap  string     // empty unless a provider-group policy restricted this session
 }
@@ -219,7 +225,7 @@ func (a *auth) identityLocked(r *http.Request) (principal, bool) {
 		return principal{}, false
 	}
 	if session.accountID == "" {
-		return principal{Name: "本机管理令牌", Role: "admin", gate: session.gate}, true
+		return principal{Name: "本机管理员", Role: "admin", gate: session.gate}, true
 	}
 	for _, account := range a.accounts {
 		if account.ID == session.accountID && account.activeAt(time.Now()) {
@@ -394,13 +400,15 @@ func (a *auth) finishAttemptWithPeer(key string, failed, login bool, peer string
 	}
 }
 
-func (a *auth) login(r *http.Request, token, username, password string) (string, error) {
-	if username != "" && token != "" {
+func (a *auth) login(r *http.Request, token *string, username string, password *string) (string, error) {
+	if (token != nil && (username != "" || password != nil)) || (token == nil && password == nil) {
 		return "", fmt.Errorf("登录信息无效")
 	}
 	key := "token"
 	if username != "" {
 		key = accountAttemptKey(username)
+	} else if token == nil {
+		key = "admin-password"
 	}
 	if err := a.beginAttemptWithPeer(key, true, r.RemoteAddr); err != nil {
 		return "", err
@@ -410,12 +418,18 @@ func (a *auth) login(r *http.Request, token, username, password string) (string,
 	if username != "" {
 		var sid string
 		var err error
-		sid, failed, err = a.loginAccount(r, username, password)
+		sid, failed, err = a.loginAccount(r, username, *password)
+		return sid, err
+	}
+	if token == nil {
+		var sid string
+		var err error
+		sid, failed, err = a.loginAdminPassword(r, *password)
 		return sid, err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if subtle.ConstantTimeCompare([]byte(token), []byte(a.token)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(*token), []byte(a.token)) != 1 {
 		failed = true
 		return "", fmt.Errorf("访问令牌不正确")
 	}
@@ -521,7 +535,7 @@ func (a *auth) newSessionLocked(r *http.Request, accountID string, now time.Time
 	sid := randomHex(32)
 	session := authSession{expires: now.Add(12 * time.Hour), accountID: accountID}
 	if accountID == "" {
-		session.gate = &sync.RWMutex{}
+		session.gate = &a.rootGate
 	}
 	a.sessions[sid] = session
 	return sid, nil

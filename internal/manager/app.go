@@ -82,6 +82,18 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 	if e := loopbackListen(addr); e != nil {
 		return nil, e
 	}
+	adminPassword, adminPasswordData, adminPasswordLegacy, e := prepareAdminPassword(dir)
+	var adminPasswordErr error
+	if e != nil {
+		// Keep the workbench and existing account/token recovery available if a
+		// password file exists but is damaged. Never replace it automatically.
+		path := filepath.Join(dir, "admin-password.json")
+		if _, statErr := os.Lstat(path); statErr != nil {
+			return nil, e
+		}
+		adminPassword, adminPasswordData, adminPasswordErr = readAdminPassword(path)
+		adminPasswordLegacy = false
+	}
 	s, e := newStore(dir)
 	if e != nil {
 		return nil, e
@@ -115,7 +127,7 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 	if len(token) != 64 {
 		return nil, fmt.Errorf("invalid access token file")
 	}
-	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2)}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordLegacy: adminPasswordLegacy, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	app.auth.oidcSettings, app.auth.oidcLoadErr = loadOIDCSettings(s.dir)
 	app.auth.oidcStartSlots = make(chan struct{}, 4)
 	if e = app.recoverSchedules(); e != nil {
@@ -215,16 +227,20 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/login" && r.Method == "POST" {
 		var input struct {
-			Token    string `json:"token"`
+			Token    *string `json:"token"`
 			Username string `json:"username"`
-			Password string `json:"password"`
+			Password *string `json:"password"`
 		}
 		if e := decode(w, r, &input); e != nil {
 			fail(w, 400, e)
 			return
 		}
 		sid, e := a.auth.login(r, input.Token, input.Username, input.Password)
-		a.loginHistory.record(r, a.loginAccountLabel(input.Username), e == nil)
+		label := a.loginAccountLabel(input.Username)
+		if input.Username == "" && input.Token == nil {
+			label = "本机密码"
+		}
+		a.loginHistory.record(r, label, e == nil)
 		if e != nil {
 			fail(w, 401, e)
 			return

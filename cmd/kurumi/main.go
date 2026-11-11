@@ -34,7 +34,7 @@ func run() error {
 	dir := flag.String("data", defaultData, "private persistent data directory")
 	addr := flag.String("listen", defaultListen, "loopback management listener, or auto for ports 9000..9010")
 	paths := flag.Bool("paths", false, "show resolved native program, data and temporary paths")
-	open := flag.Bool("open", false, "open local WebUI with a one-time login ticket")
+	open := flag.Bool("open", false, "open local WebUI")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	installDir := flag.String("install-dir", "", "installer maintenance target")
 	stop := flag.Bool("stop", false, "stop this data directory's manager and wait for managed instances")

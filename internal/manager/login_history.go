@@ -55,7 +55,7 @@ func loadLoginHistory(dir string) *loginHistory {
 	}
 	for _, entry := range file.Entries {
 		_, err := time.Parse(time.RFC3339, entry.At)
-		if err != nil || (entry.Account != "本机令牌" && entry.Account != "启动凭据" && entry.Account != "未知账户" && !accountNamePattern.MatchString(entry.Account)) {
+		if err != nil || (entry.Account != "本机令牌" && entry.Account != "本机密码" && entry.Account != "启动凭据" && entry.Account != "未知账户" && !accountNamePattern.MatchString(entry.Account)) {
 			h.loadFailed = true
 			return h
 		}
@@ -104,7 +104,7 @@ func (h *loginHistory) record(r *http.Request, account string, success bool) {
 	}
 	if account == "" {
 		account = "本机令牌"
-	} else if account != "启动凭据" && account != "本机令牌" && account != "未知账户" && !accountNamePattern.MatchString(account) {
+	} else if account != "启动凭据" && account != "本机令牌" && account != "本机密码" && account != "未知账户" && !accountNamePattern.MatchString(account) {
 		account = "未知账户"
 	}
 	h.mu.Lock()
