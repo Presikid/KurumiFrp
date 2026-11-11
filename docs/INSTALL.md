@@ -4,6 +4,18 @@
 
 0.8 默认构建将 frp 代码编入工作台，不下载或附带独立 frpc/frps 程序。已有用户核心目录不用于内置运行时；包管理器可能按其自身记录移除旧包拥有的预置文件。frp 许可证包含在 Windows 安装说明、Linux 包版权文件和便携包的 `LICENSE-frp` 中。
 
+## 登录工作台
+
+本分支的 0.8 开发版新安装时，管理员登录不填用户名，密码默认为空；登录后可在界面修改密码。快捷方式打开工作台；未登录时显示登录页面。
+
+已有数据目录升级到本版本且尚未设置主密码时，初始主密码为该目录原有的本机管理令牌；已有本地账户及其密码保留。登录后可将主密码改为自己选择的值。管理令牌仍用于本机维护，应妥善保管。可用以下命令查看原令牌；源码或便携版如使用了自定义数据目录，须传入相同的 `--data` 路径：
+
+```powershell
+& "$env:ProgramFiles\KurumiFRP\kurumi.exe" --show-token
+```
+
+Linux 原生包使用 `sudo kurumifrp --show-token`，源码版使用 `./kurumi --data <数据目录> --show-token`，便携版将 `./kurumi` 改为 `./kurumifrp`。这些命令会在终端显示敏感令牌，不要将输出发送给他人或写入共享日志。
+
 ## Windows：Program Files 正式安装
 
 以下文件名以 0.7.1.23 安装包为例；请以 Releases 中实际已发布的版本和下载的文件名为准。
@@ -87,7 +99,7 @@ sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 
 除 amd64 和 arm64 外，发布页提供 armhf、riscv64 的 DEB；按系统架构选择对应文件。系统安装包按上面的方式安装和更新。
 
-计划构建 KurumiFRP-版本-linux-架构.tar.gz 便携包，覆盖 ARM 基线版、ARM 硬浮点版、RISC-V 64、LoongArch 64，以及 MIPS 大小端 32/64 位。解压后在可写目录运行 ./kurumifrp，用 ./kurumifrp --show-token 查看本机访问令牌。可通过 --data 指定数据目录。管理页面默认只监听本机，通过 SSH 端口转发从其他设备访问。
+计划构建 KurumiFRP-版本-linux-架构.tar.gz 便携包，覆盖 ARM 基线版、ARM 硬浮点版、RISC-V 64、LoongArch 64，以及 MIPS 大小端 32/64 位。解压后在可写目录运行 ./kurumifrp，可通过 --data 指定数据目录。管理页面默认只监听本机，通过 SSH 端口转发从其他设备访问。新数据目录的管理员密码默认为空；已有数据的初始密码和令牌查看方式见上方「登录工作台」。
 
 便携包不会注册系统服务。更新时先停止旧工作台并备份数据，将对应架构的新压缩包完整解压到新的空目录；启动新程序时通过 `--data` 指向原来的数据目录，建议使用绝对路径。若此前使用默认路径，它是旧进程工作目录下的 `data`。不要覆盖已有目录。ARM 基线包适合较老的 ARM 设备，arm_hf 包要求 ARMv7 硬浮点支持。MIPS 包按设备位数和大小端选择。
 
