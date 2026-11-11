@@ -22,7 +22,7 @@
   render(data) {
    if (data.identity?.role !== 'admin') return '<section class="panel"><div class="panel-content">此页面仅供管理员使用。</div></section>';
    return `<header class="page-head"><div><p class="eyebrow">ACCESS / ACCOUNTS</p><h1>账户管理</h1><p>为本地账户分配角色和实例权限。</p></div><div class="actions"><button type="button" data-account="reload">刷新账户</button><button class="primary" type="button" data-account="new" disabled>＋ 新建账户</button></div></header>
-    <section class="panel"><div class="panel-content"><p class="small-note">管理员拥有全部权限。删除实例或替换配置会撤销相关授权，请在操作后核对账户。账户配置独立保存，不包含在配置导出或加密备份中。</p><div class="toolbar"><label>搜索用户名<input type="search" data-account-search placeholder="输入用户名" maxlength="32" disabled></label><label>账户状态<select data-account-filter disabled><option value="all">全部状态</option><option value="active">启用（含即将到期）</option><option value="expiring">7 天内到期</option><option value="expired">已到期</option><option value="disabled">已停用</option></select></label></div><p class="small-note" data-account-summary role="status"></p><div data-account-list>正在读取账户…</div></div></section>
+    <section class="panel"><div class="panel-content"><p class="small-note">管理员拥有全部权限。删除实例或替换配置会撤销相关授权，请在操作后核对账户。账户配置独立保存，不包含在配置导出或加密备份中。</p><div class="section-heading"><h2>账户分组</h2><button type="button" data-account="group-new" disabled>新建分组</button></div><p class="small-note">分组仅用于组织和筛选账户，不影响角色、权限、到期时间或流量。</p><div data-account-groups>正在读取分组…</div><div class="toolbar"><label>搜索用户名<input type="search" data-account-search placeholder="输入用户名" maxlength="32" disabled></label><label>账户状态<select data-account-filter disabled><option value="all">全部状态</option><option value="active">启用（含即将到期）</option><option value="expiring">7 天内到期</option><option value="expired">已到期</option><option value="disabled">已停用</option></select></label><label>所属分组<select data-account-group-filter disabled><option value="*">全部分组</option><option value="">未分组</option></select></label></div><p class="small-note" data-account-summary role="status"></p><div data-account-list>正在读取账户…</div></div></section>
     <section class="panel"><div class="panel-content"><div class="actions"><h2>登录记录</h2><button type="button" data-account="history">刷新记录</button><button type="button" class="danger" data-account="clear-history" disabled>清空记录</button></div><p class="small-note">来源为工作台收到连接的对端地址；通过 SSH 转发时可能显示本机地址。重复失败会限频记录。</p><div data-login-history>正在读取记录…</div></div></section>`;
   },
   mount(root, data) {
@@ -30,9 +30,10 @@
    const epoch = K.epoch(), list = root.querySelector('[data-account-list]'), history = root.querySelector('[data-login-history]');
    const createButton = root.querySelector('[data-account="new"]'), clearButton = root.querySelector('[data-account="clear-history"]');
    const search = root.querySelector('[data-account-search]'), filter = root.querySelector('[data-account-filter]'), summary = root.querySelector('[data-account-summary]');
+   const groupNew = root.querySelector('[data-account="group-new"]'), groupList = root.querySelector('[data-account-groups]'), groupFilter = root.querySelector('[data-account-group-filter]');
    const instances = Array.isArray(data.state?.instances) ? data.state.instances : [];
    const names = new Map(instances.map(item => [item.id, item.name]));
-   let model = null, accountSerial = 0, historySerial = 0, historySaved = false, historyUncertain = false, deleting = false, clearing = false;
+   let model = null, accountSerial = 0, historySerial = 0, historySaved = false, historyUncertain = false, deleting = false, clearing = false, groupBusy = false;
    const current = () => K.epoch() === epoch && K.isCurrent('accounts', root) && K.state()?.identity?.role === 'admin';
    const ownAccount = user => !!data.identity?.account && String(data.identity.name || '').toLowerCase() === String(user.username || '').toLowerCase();
    const requireCurrent = () => {
@@ -50,30 +51,45 @@
     };
     const visible = model.accounts.filter(user => {
      const accountState = state(user), selected = filter.value;
-     return String(user.username || '').toLowerCase().includes(query) && (selected === 'all' || selected === accountState || (selected === 'active' && accountState === 'expiring'));
+     return String(user.username || '').toLowerCase().includes(query) && (selected === 'all' || selected === accountState || (selected === 'active' && accountState === 'expiring')) && (groupFilter.value === '*' || (user.groupId || '') === groupFilter.value);
     });
     const expiring = model.accounts.filter(user => state(user) === 'expiring').length;
     summary.textContent = `显示 ${visible.length} / ${model.accounts.length} 个账户。` + (hasTime ? ` 全部账户中有 ${expiring} 个已启用账户在 7 天内到期；状态截至 ${model.sampledAt}，请刷新查看最新结果。` : ' 服务端时间不可用，无法判断是否临近到期；请刷新账户。');
     if (!model.accounts.length) { list.innerHTML = '<p>尚未创建本地账户。管理员仍可使用主密码登录。</p>'; return; }
     if (!visible.length) { list.innerHTML = '<p>没有符合筛选条件的账户。</p>'; return; }
-    list.innerHTML = `<div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>授权</th><th>操作</th></tr></thead><tbody>${visible.map(user => {
+    list.innerHTML = `<div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>分组</th><th>授权</th><th>操作</th></tr></thead><tbody>${visible.map(user => {
      const self = ownAccount(user), local = Array.isArray(user.instances) ? user.instances : [], remote = Array.isArray(user.remoteInstances) ? user.remoteInstances : [];
      const accountState = state(user), status = {disabled:'已停用',expired:'已到期',expiring:'7 天内到期',active:'启用'}[accountState];
      const grants = user.role === 'admin' ? '全部实例' : `${local.length ? local.map(id => esc(names.get(id) || `实例 ${id}`)).join('、') : '无本机实例'} · 远程 ${remote.length} 项`;
-     return `<tr><td>${esc(user.username)}${self ? ' <span class="pill">当前账户</span>' : ''}</td><td>${esc(roles[user.role] || user.role)}</td><td><span class="pill ${accountState === 'expiring' || accountState === 'expired' ? 'warn' : ''}">${status}</span>${user.expiresAt ? `<br><small>到期 ${esc(user.expiresAt)} (UTC)</small>` : ''}</td><td>${grants}</td><td>${self ? '<span class="small-note">请使用“修改登录密码”</span>' : `<div class="actions"><button type="button" data-account="edit" data-id="${esc(user.id)}">编辑</button><button type="button" class="danger" data-account="delete" data-id="${esc(user.id)}">删除</button></div>`}</td></tr>`;
+     const groupOptions = `<option value="">未分组</option>` + model.groups.map(group => `<option value="${esc(group.id)}" ${group.id === user.groupId ? 'selected' : ''}>${esc(group.name)}</option>`).join('');
+     return `<tr><td>${esc(user.username)}${self ? ' <span class="pill">当前账户</span>' : ''}</td><td>${esc(roles[user.role] || user.role)}</td><td><span class="pill ${accountState === 'expiring' || accountState === 'expired' ? 'warn' : ''}">${status}</span>${user.expiresAt ? `<br><small>到期 ${esc(user.expiresAt)} (UTC)</small>` : ''}</td><td><select data-account-group="${esc(user.id)}" aria-label="${esc(user.username)} 的分组" ${groupBusy ? 'disabled' : ''}>${groupOptions}</select></td><td>${grants}</td><td>${self ? '<span class="small-note">请使用“修改登录密码”</span>' : `<div class="actions"><button type="button" data-account="edit" data-id="${esc(user.id)}">编辑</button><button type="button" class="danger" data-account="delete" data-id="${esc(user.id)}">删除</button></div>`}</td></tr>`;
     }).join('')}</tbody></table></div>`;
+   };
+   const renderGroups = () => {
+    if (!current() || !model) return;
+    const previous = groupFilter.value;
+    groupFilter.innerHTML = '<option value="*">全部分组</option><option value="">未分组</option>' + model.groups.map(group => `<option value="${esc(group.id)}">${esc(group.name)}</option>`).join('');
+    groupFilter.value = previous === '*' || previous === '' || model.groups.some(group => group.id === previous) ? previous : '*';
+    groupNew.disabled = groupBusy;
+    groupList.innerHTML = model.groups.length ? `<div class="table-wrap"><table><thead><tr><th>分组</th><th>账户数</th><th>操作</th></tr></thead><tbody>${model.groups.map(group => `<tr><td>${esc(group.name)}</td><td>${model.accounts.filter(user => user.groupId === group.id).length}</td><td><div class="actions"><button type="button" data-account="group-edit" data-id="${esc(group.id)}" ${groupBusy ? 'disabled' : ''}>重命名</button><button type="button" class="danger" data-account="group-delete" data-id="${esc(group.id)}" ${groupBusy ? 'disabled' : ''}>删除</button></div></td></tr>`).join('')}</tbody></table></div>` : '<p class="small-note">尚未创建分组；账户暂为未分组。</p>';
    };
    const loadAccounts = async () => {
     const serial = ++accountSerial;
-    model = null; createButton.disabled = true; search.disabled = true; filter.disabled = true; summary.textContent = '';
-    list.textContent = '正在读取账户…';
+    model = null; createButton.disabled = true; groupNew.disabled = true; search.disabled = true; filter.disabled = true; groupFilter.disabled = true; summary.textContent = '';
+    list.textContent = '正在读取账户…'; groupList.textContent = '正在读取分组…';
     try {
      const value = await request('accounts');
      if (!current() || serial !== accountSerial) return;
-     if (!Array.isArray(value.accounts) || !Number.isSafeInteger(value.revision) || value.revision < 1) throw new Error('账户列表格式无效。');
-     model = value; createButton.disabled = false; search.disabled = false; filter.disabled = false; renderList();
+     if (!Array.isArray(value.accounts) || !Array.isArray(value.groups) || !Number.isSafeInteger(value.revision) || value.revision < 1) throw new Error('账户列表格式无效。');
+     const ids = new Set();
+     for (const group of value.groups) {
+      if (!group || !/^[a-f0-9]{32}$/.test(group.id || '') || typeof group.name !== 'string' || ids.has(group.id)) throw new Error('账户分组格式无效。');
+      ids.add(group.id);
+     }
+     if (value.accounts.some(user => !user || typeof user.groupId !== 'string' || (user.groupId && !ids.has(user.groupId)))) throw new Error('账户分组信息无效。');
+     model = value; createButton.disabled = false; search.disabled = false; filter.disabled = false; groupFilter.disabled = false; renderGroups(); renderList();
     } catch (error) {
-     if (current() && serial === accountSerial) list.textContent = '读取账户失败：' + (error.name === 'AbortError' ? '请求超时，请重试。' : error.message);
+     if (current() && serial === accountSerial) { list.textContent = '读取账户失败：' + (error.name === 'AbortError' ? '请求超时，请重试。' : error.message); groupList.textContent = '账户分组不可用，请刷新重试。'; }
     }
    };
    const loadHistory = async () => {
@@ -92,6 +108,35 @@
     } catch (error) {
      if (current() && serial === historySerial) history.textContent = '读取登录记录失败：' + (error.name === 'AbortError' ? '请求超时，请重试。' : error.message);
     }
+   };
+
+   const editGroup = group => {
+    requireCurrent();
+    if (!model || groupBusy || deleting) throw new Error('请等待账户操作完成并刷新列表。');
+    const source = model, revision = source.revision;
+    let saveUncertain = false;
+    K.openDialog({
+     html:`<h2>${group ? '重命名分组' : '新建账户分组'}</h2><p class="small-note">分组只用于组织和筛选，不影响账户权限或到期时间。</p><div class="form-grid"><label>分组名称<input name="groupName" maxlength="128" required value="${esc(group?.name || '')}"></label></div>`,
+     submitLabel:'保存分组',
+     async onSubmit(form) {
+      requireCurrent();
+      if (saveUncertain) throw new Error('上次保存结果未确认，请关闭窗口并刷新账户后核对。');
+      if (model !== source || model.revision !== revision) throw new Error('账户或分组已变化，请刷新后重试。');
+      const groupName = form.elements.groupName.value.trim();
+      if (!groupName || [...groupName].length > 40 || new TextEncoder().encode(groupName).length > 128) throw new Error('分组名称须为 1 至 40 个字符，且不超过 128 字节。');
+      groupBusy = true; renderGroups(); renderList();
+      try {
+       await request('accounts',{action:'group-save',revision,id:group?.id || '',groupName},30000);
+       if (current()) { K.toast('分组已保存。'); await loadAccounts(); }
+      } catch (error) {
+       if (uncertain(error)) { saveUncertain = true; throw new Error('保存结果未确认，请关闭窗口并刷新账户后核对，勿重复提交。'); }
+       throw error;
+      } finally {
+       groupBusy = false;
+       if (current() && model) { renderGroups(); renderList(); }
+      }
+     }
+    });
    };
 
    const editAccount = user => {
@@ -220,13 +265,62 @@
 
    search.addEventListener('input',renderList);
    filter.addEventListener('change',renderList);
+   groupFilter.addEventListener('change',renderList);
+   root.addEventListener('change', async event => {
+    const select = event.target.closest('[data-account-group]');
+    if (!select || !root.contains(select)) return;
+    try {
+     requireCurrent();
+     const source = model, user = source?.accounts.find(item => item.id === select.dataset.accountGroup), groupId = select.value;
+     if (!user || !source || groupBusy || deleting) throw new Error('账户列表已变化或操作尚未结束，请刷新后重试。');
+     if (groupId && !source.groups.some(group => group.id === groupId)) throw new Error('分组已变化，请刷新后重试。');
+     if (groupId === (user.groupId || '')) return;
+     groupBusy = true; renderGroups(); renderList();
+     try {
+      await request('accounts',{action:'group-assign',revision:source.revision,id:user.id,groupId},30000);
+      if (current()) K.toast('账户分组已更新。');
+     } catch (error) {
+      if (current()) K.toast(uncertain(error) ? '分组变更结果未确认，请刷新后核对。' : error.message);
+     } finally {
+      groupBusy = false;
+      if (current()) await loadAccounts();
+     }
+    } catch (error) {
+     if (current()) { K.toast(error.message); renderList(); }
+    }
+   });
    root.addEventListener('click', async event => {
     const button = event.target.closest('[data-account]');
     if (!button || !root.contains(button) || button.disabled) return;
     const action = button.dataset.account;
     try {
+     if (groupBusy && ['reload','new','edit','delete','group-new','group-edit','group-delete'].includes(action)) throw new Error('账户分组操作尚未结束，请稍后再试。');
      if (action === 'reload') { await loadAccounts(); return; }
      if (action === 'history') { await loadHistory(); return; }
+     if (action === 'group-new') { editGroup(null); return; }
+     if (action === 'group-edit') {
+      const group = model?.groups.find(item => item.id === button.dataset.id);
+      if (!group) throw new Error('分组已变化，请刷新。');
+      editGroup(group); return;
+     }
+     if (action === 'group-delete') {
+      requireCurrent();
+      const source = model, group = source?.groups.find(item => item.id === button.dataset.id);
+      if (!group || deleting) throw new Error('分组已变化或账户操作尚未结束，请刷新。');
+      const count = source.accounts.filter(user => user.groupId === group.id).length;
+      if (!confirm(`删除分组「${group.name}」？${count} 个账户将变为未分组，角色和权限不变。`)) return;
+      groupBusy = true; renderGroups(); renderList();
+      try {
+       await request('accounts',{action:'group-delete',revision:source.revision,id:group.id},30000);
+       if (current()) K.toast('分组已删除。');
+      } catch (error) {
+       if (current()) K.toast(uncertain(error) ? '删除结果未确认，请刷新后核对。' : error.message);
+      } finally {
+       groupBusy = false;
+       if (current()) await loadAccounts();
+      }
+      return;
+     }
      if (action === 'new') { editAccount(null); return; }
      if (action === 'edit') {
       const user = model?.accounts.find(item => item.id === button.dataset.id);

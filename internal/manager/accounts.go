@@ -33,6 +33,7 @@ type localAccount struct {
 	Role            string        `json:"role"`
 	Enabled         bool          `json:"enabled"`
 	ExpiresAt       string        `json:"expiresAt,omitempty"`
+	GroupID         string        `json:"groupId,omitempty"`
 	Instances       []string      `json:"instances"`
 	ControlInstances *[]string     `json:"controlInstances,omitempty"`
 	AllowedActions  *[]string     `json:"allowedActions,omitempty"`
@@ -60,6 +61,7 @@ type accountFile struct {
 	Version  int            `json:"version"`
 	Revision uint64         `json:"revision"`
 	Accounts []localAccount `json:"accounts"`
+	Groups   []accountGroup `json:"groups,omitempty"`
 }
 
 type accountView struct {
@@ -69,6 +71,7 @@ type accountView struct {
 	Enabled          bool     `json:"enabled"`
 	ExpiresAt        string   `json:"expiresAt"`
 	Expired          bool     `json:"expired"`
+	GroupID          string   `json:"groupId"`
 	Instances        []string `json:"instances"`
 	ControlInstances []string `json:"controlInstances"`
 	AllowedActions   []string `json:"allowedActions"`
@@ -89,50 +92,53 @@ func withPrincipal(r *http.Request, p principal) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), principalContextKey{}, p))
 }
 
-func loadAccounts(dir string) ([]localAccount, uint64, error) {
+func loadAccounts(dir string) ([]localAccount, []accountGroup, uint64, error) {
 	data, err := privateFileLimit(filepath.Join(dir, "accounts.json"), 1<<20)
 	if os.IsNotExist(err) {
-		return []localAccount{}, 1, nil
+		return []localAccount{}, []accountGroup{}, 1, nil
 	}
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	var file accountFile
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&file); err != nil {
-		return nil, 0, fmt.Errorf("本地账户文件无效")
+		return nil, nil, 0, fmt.Errorf("本地账户文件无效")
 	}
 	if err := d.Decode(&struct{}{}); err != io.EOF || file.Version != 1 || file.Revision == 0 || file.Revision > maxJSONRevision || len(file.Accounts) > maxAccounts {
-		return nil, 0, fmt.Errorf("本地账户文件无效")
+		return nil, nil, 0, fmt.Errorf("本地账户文件无效")
+	}
+	if err := validateAccountGroups(file.Groups, file.Accounts); err != nil {
+		return nil, nil, 0, fmt.Errorf("账户分组无效；原文件已保留")
 	}
 	names, ids := map[string]bool{}, map[string]bool{}
 	for i, u := range file.Accounts {
 		if normalized, err := normalizeAccountExpiry(u.ExpiresAt); err != nil || normalized != u.ExpiresAt {
-			return nil, 0, fmt.Errorf("本地账户文件中的到期时间无效；原文件已保留")
+			return nil, nil, 0, fmt.Errorf("本地账户文件中的到期时间无效；原文件已保留")
 		}
 		if !validRemoteGrants(u.RemoteInstances) || !validRemoteGrantRole(u.Role, u.RemoteInstances) {
-			return nil, 0, fmt.Errorf("本地账户文件中的远程实例授权无效；原文件已保留")
+			return nil, nil, 0, fmt.Errorf("本地账户文件中的远程实例授权无效；原文件已保留")
 		}
 		salt, saltErr := base64.RawStdEncoding.DecodeString(u.Salt)
 		hash, hashErr := base64.RawStdEncoding.DecodeString(u.Hash)
 		name := strings.ToLower(u.Username)
 		if !accountIDPattern.MatchString(u.ID) || !accountNamePattern.MatchString(u.Username) || !validRole(u.Role) || names[name] || ids[u.ID] || saltErr != nil || len(salt) != 16 || hashErr != nil || len(hash) != 32 || !validGrants(u.Instances) || (u.Role == "admin" && len(u.Instances) != 0) || (u.ControlInstances != nil && (!validGrants(*u.ControlInstances) || !subsetGrants(*u.ControlInstances, u.Instances) || (u.Role != "operator" && len(*u.ControlInstances) != 0))) {
-			return nil, 0, fmt.Errorf("本地账户文件无效")
+			return nil, nil, 0, fmt.Errorf("本地账户文件无效")
 		}
 		if u.LogInstances != nil && (!validGrants(*u.LogInstances) || !subsetGrants(*u.LogInstances, u.Instances) || ((u.Role == "admin" || !u.AllowLogs) && len(*u.LogInstances) != 0)) {
-			return nil, 0, fmt.Errorf("本地账户文件中的日志授权无效")
+			return nil, nil, 0, fmt.Errorf("本地账户文件中的日志授权无效")
 		}
 		if u.AllowedActions != nil && (!validOperatorActions(*u.AllowedActions) || (u.Role != "operator" && len(*u.AllowedActions) != 0)) {
-			return nil, 0, fmt.Errorf("本地账户文件中的操作授权无效；原文件已保留")
+			return nil, nil, 0, fmt.Errorf("本地账户文件中的操作授权无效；原文件已保留")
 		}
 		if u.Role == "admin" && u.ReadPermissions != nil {
-			return nil, 0, fmt.Errorf("管理员账户的查看权限配置无效；原文件已保留")
+			return nil, nil, 0, fmt.Errorf("管理员账户的查看权限配置无效；原文件已保留")
 		}
 		names[name], ids[u.ID] = true, true
 		file.Accounts[i].gate = &sync.RWMutex{}
 	}
-	return file.Accounts, file.Revision, nil
+	return file.Accounts, append([]accountGroup{}, file.Groups...), file.Revision, nil
 }
 
 func validRole(role string) bool { return role == "admin" || role == "operator" || role == "viewer" }
@@ -289,10 +295,18 @@ func effectiveLogInstances(user localAccount) []string {
 
 // Caller holds auth.mu. Publishing in-memory state only follows a successful write.
 func (a *auth) writeAccounts(accounts []localAccount) error {
+	return a.writeAccountsAndGroups(accounts, a.accountGroups)
+}
+
+// Caller holds auth.mu. Accounts and groups are one atomic file and revision.
+func (a *auth) writeAccountsAndGroups(accounts []localAccount, groups []accountGroup) error {
 	if a.accountsRevision >= maxJSONRevision {
 		return fmt.Errorf("账户版本已达到上限")
 	}
-	data, err := json.MarshalIndent(accountFile{Version: 1, Revision: a.accountsRevision + 1, Accounts: accounts}, "", "  ")
+	if err := validateAccountGroups(groups, accounts); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(accountFile{Version: 1, Revision: a.accountsRevision + 1, Accounts: accounts, Groups: groups}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -303,6 +317,7 @@ func (a *auth) writeAccounts(accounts []localAccount) error {
 		return err
 	}
 	a.accounts = accounts
+	a.accountGroups = append([]accountGroup{}, groups...)
 	a.accountsRevision++
 	return nil
 }
@@ -449,11 +464,12 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		now := time.Now()
 		for _, u := range a.auth.accounts {
 			expired := u.Enabled && u.ExpiresAt != "" && !u.activeAt(now)
-			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, ExpiresAt: u.ExpiresAt, Expired: expired, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowedActions: effectiveOperatorActions(u), ReadPermissions: effectiveReadPermissions(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...)})
+			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, ExpiresAt: u.ExpiresAt, Expired: expired, GroupID: u.GroupID, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowedActions: effectiveOperatorActions(u), ReadPermissions: effectiveReadPermissions(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...)})
 		}
 		revision := a.auth.accountsRevision
+		groups := append([]accountGroup{}, a.auth.accountGroups...)
 		a.auth.mu.Unlock()
-		reply(w, 200, map[string]any{"revision": revision, "accounts": views, "sampledAt": now.UTC().Format(time.RFC3339)})
+		reply(w, 200, map[string]any{"revision": revision, "accounts": views, "groups": groups, "sampledAt": now.UTC().Format(time.RFC3339)})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -476,9 +492,15 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		LogInstances     *[]string `json:"logInstances"`
 		RemoteInstances  *[]remoteGrant `json:"remoteInstances"`
 		Password         string    `json:"password"`
+		GroupID          *string   `json:"groupId"`
+		GroupName        string    `json:"groupName"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, 400, err)
+		return
+	}
+	if req.Action == "group-save" || req.Action == "group-delete" || req.Action == "group-assign" {
+		a.accountGroupAction(w, r, req.Action, req.Revision, req.ID, req.GroupID, req.GroupName)
 		return
 	}
 	if req.Action != "save" && req.Action != "delete" {
@@ -619,6 +641,24 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		u := localAccount{ID: req.ID, Username: req.Username, Role: req.Role, Enabled: req.Enabled, Instances: append([]string{}, req.Instances...), Salt: salt, Hash: hash}
+		if index >= 0 {
+			// Older account editors omit group membership; preserve it when absent.
+			u.GroupID = users[index].GroupID
+		}
+		if req.GroupID != nil {
+			found := *req.GroupID == ""
+			for _, group := range a.auth.accountGroups {
+				if group.ID == *req.GroupID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				fail(w, 400, fmt.Errorf("分组不存在，请刷新后重试"))
+				return
+			}
+			u.GroupID = *req.GroupID
+		}
 		if req.ExpiresAt != nil {
 			u.ExpiresAt = expiry
 		} else if index >= 0 {
