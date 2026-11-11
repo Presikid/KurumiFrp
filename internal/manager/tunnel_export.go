@@ -113,7 +113,7 @@ func renderRuleExport(s *Store, client Instance, rules []Tunnel, revision uint64
 	return out.String(), nil
 }
 
-func exportSelectedRules(ctx context.Context, state State, key []byte, wanted map[string]bool, revision uint64) ([]byte, error) {
+func selectedRuleGroups(state State, wanted map[string]bool) (map[string][]Tunnel, []Tunnel, error) {
 	groups := make(map[string][]Tunnel)
 	selected := make([]Tunnel, 0, len(wanted))
 	for _, rule := range state.Tunnels {
@@ -123,7 +123,15 @@ func exportSelectedRules(ctx context.Context, state State, key []byte, wanted ma
 		}
 	}
 	if len(selected) != len(wanted) {
-		return nil, fmt.Errorf("部分规则已不存在，请刷新后重新选择")
+		return nil, nil, fmt.Errorf("部分规则已不存在，请刷新后重新选择")
+	}
+	return groups, selected, nil
+}
+
+func exportSelectedRules(ctx context.Context, state State, key []byte, wanted map[string]bool, revision uint64) ([]byte, error) {
+	groups, selected, err := selectedRuleGroups(state, wanted)
+	if err != nil {
+		return nil, err
 	}
 	if err := validateExportFallbacks(selected); err != nil {
 		return nil, err
@@ -166,6 +174,40 @@ func exportSelectedRules(ctx context.Context, state State, key []byte, wanted ma
 	return buffer.Bytes(), nil
 }
 
+// A plain TOML is only unambiguous when every selected rule belongs to one
+// client. It has the same credential and fallback boundaries as ZIP export.
+func exportSelectedRulesTOML(ctx context.Context, state State, key []byte, wanted map[string]bool, revision uint64) ([]byte, string, error) {
+	if ctx.Err() != nil {
+		return nil, "", fmt.Errorf("导出已取消")
+	}
+	groups, selected, err := selectedRuleGroups(state, wanted)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(groups) != 1 {
+		return nil, "", fmt.Errorf("单份 TOML 只能包含同一个客户端的规则")
+	}
+	if err := validateExportFallbacks(selected); err != nil {
+		return nil, "", err
+	}
+	for id, rules := range groups {
+		client, ok := state.Instance(id)
+		if !ok || client.Kind != "frpc" || !idPattern.MatchString(id) {
+			return nil, "", fmt.Errorf("所选规则的客户端实例不可用")
+		}
+		store := &Store{key: key}
+		content, err := renderRuleExport(store, client, rules, revision, maxRuleExportSize)
+		if err != nil {
+			return nil, "", err
+		}
+		if ctx.Err() != nil {
+			return nil, "", fmt.Errorf("导出已取消")
+		}
+		return []byte(content), id, nil
+	}
+	return nil, "", fmt.Errorf("请选择要导出的规则")
+}
+
 // The browser must confirm plaintext export; the route is administrator-only.
 func (a *App) batchTunnelExportAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -176,6 +218,7 @@ func (a *App) batchTunnelExportAPI(w http.ResponseWriter, r *http.Request) {
 		Revision  uint64   `json:"revision"`
 		IDs       []string `json:"ids"`
 		Confirmed bool     `json:"confirmed"`
+		Format    string   `json:"format,omitempty"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, http.StatusBadRequest, err)
@@ -183,6 +226,10 @@ func (a *App) batchTunnelExportAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if !req.Confirmed || len(req.IDs) == 0 || len(req.IDs) > maxTunnelCount {
 		fail(w, http.StatusBadRequest, fmt.Errorf("请确认明文导出并选择 1–512 条规则"))
+		return
+	}
+	if req.Format != "" && req.Format != "zip" && req.Format != "toml" {
+		fail(w, http.StatusBadRequest, fmt.Errorf("导出格式仅支持 zip 或 toml"))
 		return
 	}
 	wanted := make(map[string]bool, len(req.IDs))
@@ -208,7 +255,14 @@ func (a *App) batchTunnelExportAPI(w http.ResponseWriter, r *http.Request) {
 	key := append([]byte(nil), a.store.key...)
 	a.mu.Unlock()
 	defer func() { clear(key) }()
-	output, err := exportSelectedRules(r.Context(), state, key, wanted, req.Revision)
+	var output []byte
+	var clientID string
+	var err error
+	if req.Format == "toml" {
+		output, clientID, err = exportSelectedRulesTOML(r.Context(), state, key, wanted, req.Revision)
+	} else {
+		output, err = exportSelectedRules(r.Context(), state, key, wanted, req.Revision)
+	}
 	if err != nil {
 		fail(w, http.StatusBadRequest, err)
 		return
@@ -224,8 +278,13 @@ func (a *App) batchTunnelExportAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, fmt.Errorf("草稿版本已变化，请刷新后重新选择"))
 		return
 	}
-	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="kurumi-selected-rules.zip"`)
+	if req.Format == "toml" {
+		w.Header().Set("Content-Type", "application/toml; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="frpc-`+clientID+`.toml"`)
+	} else {
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", `attachment; filename="kurumi-selected-rules.zip"`)
+	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(output)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(output)
