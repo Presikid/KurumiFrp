@@ -25,7 +25,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.admin() || p.Role == "operator" || p.Role == "viewer"
 		case "/api/config", "/api/diff":
 			return p.canReadConfig() && (p.admin() || p.Role == "operator" || p.Role == "viewer")
-		case "/api/traffic", "/api/traffic-history", "/api/server-traffic":
+		case "/api/traffic", "/api/traffic-history", "/api/traffic-budget", "/api/server-traffic":
 			return p.canReadTraffic() && (p.admin() || p.Role == "operator" || p.Role == "viewer")
 		case "/api/client-traffic":
 			// Applied rule names are configuration details as well as traffic data.
@@ -48,7 +48,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.admin() || p.Role == "operator" || p.Role == "viewer"
 		case "/api/control", "/api/validate", "/api/nodes/control":
 			return p.admin() || p.Role == "operator"
-		case "/api/accounts", "/api/quit", "/api/browser-ticket", "/api/probe", "/api/health", "/api/webhook", "/api/backup/export", "/api/backup/import", "/api/update/install", "/api/import", "/api/import/toml", "/api/import/toml/preview", "/api/nodes", "/api/nodes/resolve", "/api/nodes/confirm", "/api/duplicate", "/api/tunnels/batch-enabled", "/api/tunnels/batch-delete", "/api/tunnels/batch", "/api/save", "/api/delete", "/api/restore", "/api/history-settings":
+		case "/api/accounts", "/api/quit", "/api/browser-ticket", "/api/probe", "/api/health", "/api/webhook", "/api/backup/export", "/api/backup/import", "/api/update/install", "/api/import", "/api/import/toml", "/api/import/toml/preview", "/api/nodes", "/api/nodes/resolve", "/api/nodes/confirm", "/api/duplicate", "/api/tunnels/batch-enabled", "/api/tunnels/batch-delete", "/api/tunnels/batch", "/api/save", "/api/delete", "/api/restore", "/api/history-settings", "/api/traffic-budget":
 			return p.admin()
 		}
 	}
