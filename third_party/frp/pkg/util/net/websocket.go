@@ -38,6 +38,37 @@ func NewWebsocketListener(ln net.Listener) (wl *WebsocketListener) {
 
 // NewWebsocketListenerWithContext associates its serving worker with one service.
 func NewWebsocketListenerWithContext(ctx context.Context, ln net.Listener) (wl *WebsocketListener, err error) {
+	return newWebsocketListenerWithContext(ctx, ln, false)
+}
+
+// NewWebsocketListenerWithPeer retains the addresses of the accepted transport
+// connection after Upgrade. The addresses are captured by http.Server from its
+// listener, never from Origin or another request header.
+func NewWebsocketListenerWithPeer(ctx context.Context, ln net.Listener) (wl *WebsocketListener, err error) {
+	return newWebsocketListenerWithContext(ctx, ln, true)
+}
+
+type websocketPeerKey struct{}
+
+type websocketPeer struct {
+	local  net.Addr
+	remote net.Addr
+	transport net.Conn
+}
+
+type websocketUpgradeCompleter interface {
+	CompleteWebsocketUpgrade() bool
+}
+
+type websocketPeerConn struct {
+	net.Conn
+	peer websocketPeer
+}
+
+func (c *websocketPeerConn) LocalAddr() net.Addr  { return c.peer.local }
+func (c *websocketPeerConn) RemoteAddr() net.Addr { return c.peer.remote }
+
+func newWebsocketListenerWithContext(ctx context.Context, ln net.Listener, preservePeer bool) (wl *WebsocketListener, err error) {
 	wl = &WebsocketListener{
 		ln:       ln,
 		acceptCh: make(chan net.Conn),
@@ -60,9 +91,29 @@ func NewWebsocketListenerWithContext(ctx context.Context, ln net.Listener) (wl *
 		// frames and close the connection on invalid bytes.
 		c.PayloadType = websocket.BinaryFrame
 		notifyCh := make(chan struct{})
-		conn := WrapCloseNotifyConn(c, func(_ error) {
+		var conn net.Conn = WrapCloseNotifyConn(c, func(_ error) {
 			close(notifyCh)
 		})
+		if preservePeer {
+			request := c.Request()
+			if request == nil {
+				_ = conn.SetDeadline(time.Now())
+				_ = conn.Close()
+				return
+			}
+			peer, ok := request.Context().Value(websocketPeerKey{}).(websocketPeer)
+			completer, canComplete := peer.transport.(websocketUpgradeCompleter)
+			if !ok || peer.local == nil || peer.remote == nil || !canComplete || !completer.CompleteWebsocketUpgrade() {
+				if peer.transport != nil {
+					_ = peer.transport.SetDeadline(time.Now())
+					_ = peer.transport.Close()
+				}
+				_ = conn.SetDeadline(time.Now())
+				_ = conn.Close()
+				return
+			}
+			conn = &websocketPeerConn{Conn: conn, peer: peer}
+		}
 		select {
 		case <-wl.done:
 			conn.Close()
@@ -78,6 +129,11 @@ func NewWebsocketListenerWithContext(ctx context.Context, ln net.Listener) (wl *
 		Addr:              ln.Addr().String(),
 		Handler:           muxer,
 		ReadHeaderTimeout: 60 * time.Second,
+	}
+	if preservePeer {
+		wl.server.ConnContext = func(ctx context.Context, conn net.Conn) context.Context {
+			return context.WithValue(ctx, websocketPeerKey{}, websocketPeer{local: conn.LocalAddr(), remote: conn.RemoteAddr(), transport: conn})
+		}
 	}
 
 	if !lifetime.Go(ctx, func() {

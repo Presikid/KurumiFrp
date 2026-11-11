@@ -126,6 +126,9 @@ type Service struct {
 	// Accept connections using websocket
 	websocketListener net.Listener
 
+	// Accept WebSockets after the external TLS handshake.
+	wssListener *wssBridge
+
 	// Accept frp tls connections
 	tlsListener net.Listener
 
@@ -414,6 +417,10 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 	if err != nil {
 		return nil, fmt.Errorf("create websocket listener: %w", err)
 	}
+	svr.wssListener, err = newWSSBridge(svr.workCtx)
+	if err != nil {
+		return nil, fmt.Errorf("create secure websocket listener: %w", err)
+	}
 
 	// Create http vhost muxer.
 	if cfg.VhostHTTPPort > 0 {
@@ -622,7 +629,8 @@ func (svr *Service) Run(ctx context.Context) (runErr error) {
 		svr.startWorker("quic listener", func() error { return svr.HandleQUICListener(svr.quicListener) })
 	}
 	svr.startWorker("websocket listener", func() error { return svr.HandleListener(svr.websocketListener, false) })
-	svr.startWorker("tls listener", func() error { return svr.HandleListener(svr.tlsListener, false) })
+	svr.startWorker("wss listener", func() error { return svr.handleListener(svr.wssListener, false, true, false) })
+	svr.startWorker("tls listener", func() error { return svr.handleListener(svr.tlsListener, false, false, true) })
 
 	if svr.rc.NatHoleController != nil {
 		lifetime.Go(svr.workCtx, func() { svr.rc.NatHoleController.CleanWorker(svr.ctx) })
@@ -733,6 +741,11 @@ func (svr *Service) CloseContext(ctx context.Context) error {
 
 func (svr *Service) closeResources() {
 	svr.workCancel()
+	// Interrupt WSS sockets before stopping the shared scope. Closing an active
+	// WebSocket can otherwise block while it writes a close frame to a peer.
+	if svr.wssListener != nil {
+		_ = svr.wssListener.Close()
+	}
 	svr.workScope.Stop()
 	if svr.kcpListener != nil {
 		svr.kcpListener.Close()
@@ -1099,6 +1112,12 @@ func (ac *acceptedConnection) handleClientHello(conn net.Conn, wireConn *wire.Co
 // If internal is true, it means that this listener is used for internal communication like ssh tunnel gateway.
 // TODO(fatedier): Pass some parameters of listener/connection through context to avoid passing too many parameters.
 func (svr *Service) HandleListener(l net.Listener, internal bool) error {
+	return svr.handleListener(l, internal, false, false)
+}
+
+// alreadyTLS is reserved for the WSS bridge after its completed outer TLS
+// handshake and HTTP Upgrade. inspectWSS applies only to the TCP/TLS listener.
+func (svr *Service) handleListener(l net.Listener, internal, alreadyTLS, inspectWSS bool) error {
 	// Listen for incoming connections from client.
 	for {
 		c, err := l.Accept()
@@ -1115,7 +1134,8 @@ func (svr *Service) HandleListener(l net.Listener, internal bool) error {
 
 		c = netpkg.NewContextConn(ctx, c)
 
-		if !internal {
+		inspectTLS := false
+		if !internal && !alreadyTLS {
 			xl.Tracef("start check TLS connection...")
 			originConn := c
 			forceTLS := svr.cfg.Transport.TLS.Force
@@ -1127,21 +1147,45 @@ func (svr *Service) HandleListener(l net.Listener, internal bool) error {
 				continue
 			}
 			xl.Tracef("check TLS connection success, isTLS: %v custom: %v internal: %v", isTLS, custom, internal)
+			inspectTLS = inspectWSS && isTLS
 		}
 
 		// Start a new goroutine to handle connection.
 		frpConn := c
 		if !lifetime.Go(ctx, func() {
+			conn := frpConn
+			if inspectTLS {
+				// Reject disallowed physical peers before TLS handshake and
+				// protocol detection. handleConnection rechecks the policy.
+				if svr.allowControlConnection != nil && !svr.allowControlConnection(conn.RemoteAddr()) {
+					svr.logDeniedControl(ctx, conn.RemoteAddr())
+					_ = conn.SetDeadline(time.Now())
+					_ = conn.Close()
+					return
+				}
+				inspected, isWSS, err := sniffWSS(conn, connReadTimeout)
+				if err != nil {
+					xl.Debugf("failed to inspect TLS transport")
+					_ = conn.SetDeadline(time.Now())
+					_ = conn.Close()
+					return
+				}
+				conn = inspected
+				if isWSS {
+					_ = svr.wssListener.offer(inspected)
+					return
+				}
+			}
 			if lo.FromPtr(svr.cfg.Transport.TCPMux) && !internal {
 				fmuxCfg := fmux.DefaultConfig()
 				fmuxCfg.KeepAliveInterval = time.Duration(svr.cfg.Transport.TCPMuxKeepaliveInterval) * time.Second
 				// Use trace level for yamux logs
 				fmuxCfg.LogOutput = xlog.NewTraceWriter(xlog.FromContextSafe(ctx))
 				fmuxCfg.MaxStreamWindowSize = 6 * 1024 * 1024
-				session, err := fmux.Server(frpConn, fmuxCfg)
+				session, err := fmux.Server(conn, fmuxCfg)
 				if err != nil {
 					xl.Warnf("failed to create mux connection: %v", err)
-					frpConn.Close()
+					conn.Close()
 					return
 				}
 
@@ -1159,7 +1203,7 @@ func (svr *Service) HandleListener(l net.Listener, internal bool) error {
 					}
 				}
 			} else {
-				svr.handleConnection(ctx, frpConn, internal, nil)
+				svr.handleConnection(ctx, conn, internal, nil)
 			}
 		}) {
 			_ = frpConn.Close()
