@@ -59,7 +59,7 @@
    }
    function renderList() {
     if (!model.nodes.length) { list.innerHTML = '<p>尚未登记主动上报节点。</p>'; controls(); return; }
-    list.innerHTML = `<div class="cards">${model.nodes.map(node => `<article class="card"><h3>${esc(node.name)}</h3><p class="small-note">节点 ID：${esc(node.id)}</p><p><span class="pill">${esc(states[node.state] || '状态未知')}</span> <span class="small-note">最近接收时间：${time(node.lastSeen)}</span></p>${summary(node)}<div class="actions"><button type="button" data-action="rotate" data-id="${esc(node.id)}">轮换凭据</button>${node.state === 'revoked' ? '' : `<button type="button" data-action="revoke" data-id="${esc(node.id)}">撤销凭据</button>`}<button class="danger" type="button" data-action="delete" data-id="${esc(node.id)}">删除节点</button></div></article>`).join('')}</div>`;
+    list.innerHTML = `<div class="cards">${model.nodes.map(node => `<article class="card"><h3>${esc(node.name)}</h3><p class="small-note">节点 ID：${esc(node.id)}</p><p><span class="pill">${esc(states[node.state] || '状态未知')}</span> <span class="small-note">最近接收时间：${time(node.lastSeen)}</span></p>${summary(node)}<div class="actions"><button type="button" data-action="rename" data-id="${esc(node.id)}">重命名</button><button type="button" data-action="rotate" data-id="${esc(node.id)}">轮换凭据</button>${node.state === 'revoked' ? '' : `<button type="button" data-action="revoke" data-id="${esc(node.id)}">撤销凭据</button>`}<button class="danger" type="button" data-action="delete" data-id="${esc(node.id)}">删除节点</button></div></article>`).join('')}</div>`;
     controls();
    }
    async function load() {
@@ -95,19 +95,21 @@
       if (!idOK(value.node?.id) || typeof value.node?.name !== 'string' || !credentialOK(value.credential) || (node && value.node.id !== node.id)) throw new Error('凭据响应无效。');
       showCredential(value);
      }
+     if (action === 'rename' && (value.node?.id !== node.id || value.node?.name !== name)) throw new Error('重命名响应无效。');
      if (action === 'issue') form.elements.name.value = '';
-     message.textContent = {issue:'节点已登记。', rotate:'凭据已轮换，旧凭据和会话已失效。', revoke:'凭据已撤销。', delete:'节点已删除，原 ID 不再使用。'}[action];
+     message.textContent = {issue:'节点已登记。', rename:'节点名称已更新。', rotate:'凭据已轮换，旧凭据和会话已失效。', revoke:'凭据已撤销。', delete:'节点已删除，原 ID 不再使用。'}[action];
     } catch (error) {
-     if (current()) message.textContent = uncertain(error) ? '操作结果未确认。请刷新列表并核对；签发或轮换可能已经生效，若凭据丢失请对正确的节点重新轮换。' : `${error.message} 请刷新列表后核对。`;
+     if (current()) message.textContent = uncertain(error) ? (action === 'issue' || action === 'rotate' ? '操作结果未确认。请刷新列表并核对；签发或轮换可能已经生效，若凭据丢失请对正确的节点重新轮换。' : '操作结果未确认，请刷新列表并核对。') : `${error.message} 请刷新列表后核对。`;
     } finally {
      pending = false;
      if (current()) { controls(); void load(); }
     }
    }
+   const validName = name => !!name && name === name.trim() && [...name].length <= 64 && new TextEncoder().encode(name).length <= 256 && !/[\x00-\x1f\x7f-\x9f]/.test(name);
    form.addEventListener('submit', event => {
     event.preventDefault();
     const name = form.elements.name.value;
-    if (!name || name !== name.trim() || [...name].length > 64 || new TextEncoder().encode(name).length > 256 || /[\x00-\x1f\x7f-\x9f]/.test(name)) {
+    if (!validName(name)) {
      message.textContent = '名称须为 1–64 个字符，首尾不能有空格或包含控制字符。'; return;
     }
     void change('issue', null, name);
@@ -119,7 +121,14 @@
     if (action === 'clear-credential') { secret.value = ''; issued = false; secretPanel.hidden = true; controls(); return; }
     if (action === 'reload') { void load(); return; }
     const node = model?.nodes.find(item => item.id === button.dataset.id);
-    if (!node || !['rotate','revoke','delete'].includes(action)) return;
+    if (!node || !['rename','rotate','revoke','delete'].includes(action)) return;
+    if (action === 'rename') {
+     const name = prompt('输入新的节点名称：', node.name);
+     if (name === null) return;
+     if (!validName(name)) { message.textContent = '名称须为 1–64 个字符，首尾不能有空格或包含控制字符。'; return; }
+     if (name === node.name) { message.textContent = '节点名称未变化。'; return; }
+     void change(action, node, name); return;
+    }
     const question = {rotate:`轮换「${node.name}」的凭据？旧凭据和会话立即失效，设备需要配置新凭据。`, revoke:`撤销「${node.name}」的凭据？该设备将不能继续上报。`, delete:`删除「${node.name}」？其凭据和会话将失效，节点 ID 不再使用。`}[action];
     if (confirm(question)) void change(action, node);
    });
