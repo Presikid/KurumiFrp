@@ -548,6 +548,16 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 	}
 	m.sameString(root, "auth.method", "", "token")
 	i.Token = m.secret(a.store, m.str(root, "auth.token", "", ""), "auth.token")
+	for _, scope := range m.strings(root, "auth.additionalScopes", "") {
+		switch scope {
+		case "HeartBeats":
+			i.AuthHeartbeats = true
+		case "NewWorkConns":
+			i.AuthNewWorkConns = true
+		default:
+			m.issue("auth.additionalScopes", "只支持 HeartBeats 和 NewWorkConns")
+		}
+	}
 	m.sameString(root, "log.to", "", "console")
 	m.sameString(root, "log.level", "", "info")
 	// The application disables console colors. Absence of this cosmetic

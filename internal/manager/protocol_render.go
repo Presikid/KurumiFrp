@@ -6,6 +6,16 @@ import (
 )
 
 func renderProtocolInstance(b *strings.Builder, i Instance) error {
+	scopes := make([]string, 0, 2)
+	if i.AuthHeartbeats {
+		scopes = append(scopes, "HeartBeats")
+	}
+	if i.AuthNewWorkConns {
+		scopes = append(scopes, "NewWorkConns")
+	}
+	if len(scopes) != 0 {
+		renderStringArray(b, "auth.additionalScopes", scopes)
+	}
 	if i.TransportMuxDisabled {
 		fmt.Fprintln(b, "transport.tcpMux = false")
 	}

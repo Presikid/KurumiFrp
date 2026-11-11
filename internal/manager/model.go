@@ -19,6 +19,8 @@ type Instance struct {
 	HTTPSPort             int    `json:"httpsPort"`
 	Token                 string `json:"token,omitempty"`
 	HasToken              bool   `json:"hasToken,omitempty"`
+	AuthHeartbeats        bool   `json:"authHeartbeats,omitempty"`
+	AuthNewWorkConns      bool   `json:"authNewWorkConns,omitempty"`
 	AutoStart             bool   `json:"autoStart,omitempty"`
 	User                  string `json:"user,omitempty"`
 	NatHoleSTUNServer     string `json:"natHoleStunServer,omitempty"`

@@ -17,6 +17,7 @@ const ProtocolEditor = (() => {
     ${field('host', '服务器地址 / 本机监听地址', v.host, 'text', 'required')}
     ${field('port', '连接 / 监听端口', v.port, 'number', 'required min="1" max="65535" step="1"')}
     <div class="span-2">${field('token', old?.hasToken ? '认证令牌（已保存，留空保留）' : '认证令牌（8–1024 字节）', '', 'password', `${old?.hasToken ? '' : 'required'} autocomplete="new-password"`)}</div>
+    <fieldset class="span-2"><legend>frp 附加认证范围</legend>${check('authHeartbeats', '对心跳附加认证（HeartBeats）', v.authHeartbeats)}${check('authNewWorkConns', '对新工作连接附加认证（NewWorkConns）', v.authNewWorkConns)}<p class="small-note">默认关闭。服务端启用某项时，连接它的客户端也须启用该项，否则心跳或代理连接可能失败。仍使用现有共享令牌，不能据此识别账户或限制流量；更改后需重启实例。</p></fieldset>
     <div class="client-field">${field('user', '客户端用户名称（可选）', v.user || '', 'text', 'pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]{0,63}"')}</div>
     <div class="client-field">${field('natHoleStunServer', 'NAT 穿透 STUN 地址（可选）', v.natHoleStunServer || '', 'text', 'placeholder="host:port"')}</div>
     <div class="client-field">${field('dnsServer', 'DNS 服务器 IP（可选）', v.dnsServer || '', 'text', 'placeholder="例如 1.1.1.1 或 [::1]:53"')}</div>
@@ -295,7 +296,7 @@ const ProtocolEditor = (() => {
   if (editing.kind === 'instance') {
    const kind = val('kind');
    delete result.hasToken;
-   Object.assign(result, {name:val('name').trim(), kind, host:val('host').trim(), port:+val('port'), token:val('token'), autoStart:f.autoStart.checked,
+   Object.assign(result, {name:val('name').trim(), kind, host:val('host').trim(), port:+val('port'), token:val('token'), autoStart:f.autoStart.checked, authHeartbeats:f.authHeartbeats.checked, authNewWorkConns:f.authNewWorkConns.checked,
     httpPort:kind === 'frps' ? +val('httpPort') : 0, httpsPort:kind === 'frps' ? +val('httpsPort') : 0,
     user:kind === 'frpc' ? val('user').trim() : '', natHoleStunServer:kind === 'frpc' ? val('natHoleStunServer').trim() : '', dnsServer:kind === 'frpc' ? val('dnsServer').trim() : '', clientTransport:kind === 'frpc' ? val('clientTransport') : '', clientBindIP:kind === 'frpc' ? val('clientBindIP').trim() : '', loginFailExit:kind === 'frpc' && f.loginFailExit.checked, clientTLSDisabled:kind === 'frpc' && f.clientTLSDisabled.checked, serverAllowPlaintext:kind === 'frps' && f.serverAllowPlaintext.checked, kcpBindPort:kind === 'frps' ? +val('kcpBindPort') : 0, quicBindPort:kind === 'frps' ? +val('quicBindPort') : 0,
     tcpmuxHTTPConnectPort:kind === 'frps' ? +val('tcpmuxHTTPConnectPort') : 0, serverAccessMode:kind === 'frps' ? val('serverAccessMode') : '', serverAccessList:kind === 'frps' && val('serverAccessMode') ? val('serverAccessList').trim() : '', clientDialTimeout:kind === 'frpc' ? +val('clientDialTimeout') : 0, tcpKeepalive:+val('tcpKeepalive'), muxKeepalive:+val('muxKeepalive'),
