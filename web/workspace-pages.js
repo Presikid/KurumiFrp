@@ -10,7 +10,7 @@
  const stateLabel = runtime => states[runtime?.state] || runtime?.state || '已停止';
  const status = runtime => `<span class="pill ${runtime?.state === 'running' ? 'good' : runtime?.state === 'exited' || runtime?.state === 'autostart-failed' ? 'warn' : ''}">${e(stateLabel(runtime))}</span>${runtime?.pending ? ' <span class="pill warn">草稿待应用</span>' : ''}`;
  const head = (title, text, actions = '') => `<header class="page-head"><div><h1>${e(title)}</h1><p>${e(text)}</p></div>${actions ? `<div class="actions">${actions}</div>` : ''}</header>`;
- const empty = (title, text) => `<div class="empty"><strong>${e(title)}</strong><p>${e(text)}</p></div>`;
+ const empty = (title, text, artwork = '') => `<div class="empty">${artwork ? `<img src="/assets/${artwork}.webp" alt="" aria-hidden="true">` : ''}<strong>${e(title)}</strong><p>${e(text)}</p></div>`;
  const can = (data, id, action) => admin(data) || (data.identity?.role === 'operator' && (data.identity.operableInstances || []).includes(id) && (data.identity.allowedActions || []).includes(action));
  const button = (action, label, id = '', classes = '') => `<button type="button" ${classes ? `class="${classes}"` : ''} data-action="${action}" ${id ? `data-id="${e(id)}"` : ''}>${e(label)}</button>`;
  const runtimeFor = (data, id) => data.runtime?.[id] || {state:'stopped'};
@@ -131,7 +131,7 @@
    const selected = instances.some(item => item.id === K.selectedInstance) ? K.selectedInstance : instances[0]?.id || '';
    return `<section class="dashboard-hero"><div><p class="eyebrow">KURUMI FRP / WORKSPACE</p><h1>连接，一目了然。</h1><p>在同一处查看实例与规则的当前草稿和运行状态。</p><div class="actions">${button('go-instances','管理实例','','primary')}${button('go-rules','查看规则')}</div></div></section>
     <div class="stat-grid"><div class="stat"><span>${admin(data) ? '实例' : '授权实例'}</span><strong>${instances.length}</strong></div><div class="stat"><span>运行中</span><strong>${running}</strong></div><div class="stat"><span>${admin(data) ? '规则草稿' : '授权规则草稿'}</span><strong>${configAllowed ? tunnels.length : '—'}</strong></div><div class="stat"><span>配置待应用</span><strong>${configAllowed ? pending : '—'}</strong></div></div>
-    <div class="two-column"><section class="panel"><div class="panel-content"><div class="section-heading"><h2>实例状态</h2>${button('go-instances','查看全部')}</div>${instances.length ? `<div class="table-wrap"><table><thead><tr><th>名称</th><th>类型</th><th>状态</th></tr></thead><tbody>${instances.map(item => `<tr><td>${e(item.name)}</td><td>${e(item.kind)}</td><td>${status(runtimeFor(data,item.id))}</td></tr>`).join('')}</tbody></table></div>` : empty('尚无实例','创建客户端或服务端实例后在这里查看。')}</div></section>
+    <div class="two-column"><section class="panel"><div class="panel-content"><div class="section-heading"><h2>实例状态</h2>${button('go-instances','查看全部')}</div>${instances.length ? `<div class="table-wrap"><table><thead><tr><th>名称</th><th>类型</th><th>状态</th></tr></thead><tbody>${instances.map(item => `<tr><td>${e(item.name)}</td><td>${e(item.kind)}</td><td>${status(runtimeFor(data,item.id))}</td></tr>`).join('')}</tbody></table></div>` : empty('尚无实例','创建客户端或服务端实例后在这里查看。','empty-welcome')}</div></section>
     <section class="panel"><div class="panel-content"><div class="section-heading"><h2>最近变更</h2><span class="pill">草稿 r${data.revision}</span></div>${!admin(data) ? empty('无查看权限','变更记录仅供管理员查看。') : recent.length ? `<div>${recent.map(item => `<p>${e(item.message)}<br><small>${e(item.at ? new Date(item.at).toLocaleString('zh-CN') : '')}</small></p>`).join('')}</div>` : empty('暂无记录','配置变更后将显示在这里。')}</div></section></div><p class="small-note">实例运行不等于代理已注册或公网可达。草稿变更需重新应用到实例。</p>
     ${trafficAllowed && instances.length ? `<section class="panel"><div class="panel-content"><div class="section-heading"><div><h2>实例流量</h2><p class="small-note">当前运行代次与近 90 天的已记录采样。</p></div><div class="actions">${button('traffic-refresh','刷新流量')}${button('traffic-export','导出历史 CSV')}</div></div><label>实例<select data-traffic-instance>${instances.map(item => `<option value="${e(item.id)}" ${item.id === selected ? 'selected' : ''}>${e(item.name)} · ${e(item.kind)}</option>`).join('')}</select></label><div data-traffic-output>正在读取…</div><div data-traffic-history></div></div></section>` : ''}`;
   },
@@ -234,7 +234,7 @@
      ${admin(data) ? `<div class="actions">${button('edit-instance','编辑',item.id)}${button('schedule','定时计划',item.id)}${runtime.applied ? button('diff','配置差异',item.id) : ''}${button('duplicate-instance','复制',item.id)}${button('delete-instance','删除',item.id,'danger')}</div>` : ''}</article>`;
    }).join('');
    const warnings = (data.portWarnings || []).map(message => `<p>${e(message)}</p>`).join('');
-   return head(restricted ? '授权实例' : '运行实例', restricted ? '仅显示当前账户有权查看的实例。' : '创建、校验和运行本机客户端或服务端。', admin(data) ? button('new-instance','新建实例','','primary') : '') + (warnings ? `<div class="notice">${warnings}</div>` : '') + (cards ? `<div class="cards">${cards}</div>` : empty('暂无实例',restricted ? '请联系管理员分配实例。' : '创建实例后可在此管理运行状态。'));
+   return head(restricted ? '授权实例' : '运行实例', restricted ? '仅显示当前账户有权查看的实例。' : '创建、校验和运行本机客户端或服务端。', admin(data) ? button('new-instance','新建实例','','primary') : '') + (warnings ? `<div class="notice">${warnings}</div>` : '') + (cards ? `<div class="cards">${cards}</div>` : empty('暂无实例',restricted ? '请联系管理员分配实例。' : '创建实例后可在此管理运行状态。','empty-welcome'));
   },
   mount(root,data) { bindButtons(root, async (action,id) => {
    if (['start','stop','restart','validate'].includes(action)) return control(action,id,data);
@@ -279,7 +279,7 @@
    return head('连接规则','筛选规则并查看草稿状态；修改不会自动应用到运行中的实例。',actions) +
     `<p class="notice" data-rules-stale hidden>草稿已变化，请刷新后重新选择并操作。</p><div class="toolbar"><label>搜索<input type="search" data-filter placeholder="规则、实例或地址"></label><label>协议<select data-protocol><option value="">全部协议</option>${Protocols.types.map(type => `<option value="${e(type)}">${e(type)}</option>`).join('')}</select></label>${admin(data) && rows.length ? button('probe-visible','检测当前筛选') : ''}</div>
     ${admin(data) && rows.length ? `<div class="toolbar"><label class="form-check"><input type="checkbox" data-select-visible>选择当前筛选</label><span data-selection-count>已选 0 条</span><div class="actions">${button('batch-enable','批量启用')}${button('batch-disable','批量停用')}${button('batch-delete','批量删除','','danger')}${button('batch-export','导出选中配置')}</div></div>` : ''}
-    <div class="cards" data-rule-list>${cards || empty('暂无规则',admin(data) ? '先创建 frpc 客户端，再添加规则。' : '当前授权实例没有可显示的规则。')}</div><p class="small-note" data-filter-empty hidden>没有匹配的规则。</p>`;
+    <div class="cards" data-rule-list>${cards || empty('暂无规则',admin(data) ? '先创建 frpc 客户端，再添加规则。' : '当前授权实例没有可显示的规则。','empty-search')}</div><p class="small-note" data-filter-empty hidden>没有匹配的规则。</p>`;
   },
   mount(root,data) {
    if (!admin(data) && !data.identity?.viewConfig) return;
