@@ -32,6 +32,7 @@ type Instance struct {
 	MuxKeepalive          int    `json:"muxKeepalive,omitempty"`
 	LoginFailExit         bool   `json:"loginFailExit,omitempty"`
 	ClientTLSDisabled     bool   `json:"clientTLSDisabled,omitempty"`
+	ClientTLSUseSystemCA  bool   `json:"clientTLSUseSystemCA,omitempty"`
 	ServerAllowPlaintext  bool   `json:"serverAllowPlaintext,omitempty"`
 	KCPBindPort           int    `json:"kcpBindPort,omitempty"`
 	QUICBindPort          int    `json:"quicBindPort,omitempty"`

@@ -33,6 +33,8 @@ func (*embeddedRuntime) runtimeMode() string { return "embedded" }
 
 func (*embeddedRuntime) SupportsControlAccess() bool { return true }
 
+func (*embeddedRuntime) SupportsSystemCATLS() bool { return true }
+
 func (*embeddedRuntime) Resolve(kind string) (string, error) {
 	if embeddedCleanupUnknown.Load() {
 		return "", errors.New("内嵌核心清理状态未知，请重启工作台")

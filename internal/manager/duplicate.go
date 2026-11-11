@@ -185,7 +185,7 @@ func duplicatedInstance(src Instance, id, name string) Instance {
 		User: src.User, NatHoleSTUNServer: src.NatHoleSTUNServer, DNSServer: src.DNSServer, ClientTransport: src.ClientTransport,
 		ClientBindIP: src.ClientBindIP, ClientDialTimeout: src.ClientDialTimeout,
 		TCPKeepalive: src.TCPKeepalive, MuxKeepalive: src.MuxKeepalive,
-		LoginFailExit: src.LoginFailExit, ClientTLSDisabled: src.ClientTLSDisabled, ServerAllowPlaintext: src.ServerAllowPlaintext,
+		LoginFailExit: src.LoginFailExit, ClientTLSDisabled: src.ClientTLSDisabled, ClientTLSUseSystemCA: src.ClientTLSUseSystemCA, ServerAllowPlaintext: src.ServerAllowPlaintext,
 		TCPMuxHTTPConnectPort: src.TCPMuxHTTPConnectPort, TCPMuxPassthrough: src.TCPMuxPassthrough,
 		SubDomainHost: src.SubDomainHost, MaxPortsPerClient: src.MaxPortsPerClient, ServerAllowedPorts: src.ServerAllowedPorts, ProxyBindAddr: src.ProxyBindAddr,
 		ServerAccessMode: src.ServerAccessMode, ServerAccessList: src.ServerAccessList,
