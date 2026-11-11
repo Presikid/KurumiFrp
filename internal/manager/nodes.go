@@ -248,7 +248,7 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 		monitors := make(map[string]nodeMonitorView)
 		for _, node := range cfg.Nodes {
 			if observation, ok := a.nodeMonitors[node.ID]; ok && observation.stamp == nodeStamp(node) && node.MonitorEnabled {
-				monitors[node.ID] = nodeMonitorView{State: observation.state, Reason: observation.reason, CheckedAt: observation.checkedAt}
+				monitors[node.ID] = nodeMonitorView{State: observation.state, Reason: observation.reason, CheckedAt: observation.checkedAt, LastSuccessAt: observation.lastSuccessAt}
 			}
 		}
 		a.mu.Unlock()
