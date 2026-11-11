@@ -109,7 +109,13 @@ func newVisitor(
 				Ctx:            ctx,
 				VnetController: helper.VNetController(),
 				SendConnToVisitor: func(conn net.Conn) {
-					_ = baseVisitor.AcceptConn(conn)
+					if err := baseVisitor.AcceptConn(conn); err != nil {
+						if closer, ok := conn.(interface{ CloseWithError(error) error }); ok {
+							_ = closer.CloseWithError(err)
+						} else {
+							_ = conn.Close()
+						}
+					}
 				},
 			},
 			cfg.GetBaseConfig().Plugin.VisitorPluginOptions,

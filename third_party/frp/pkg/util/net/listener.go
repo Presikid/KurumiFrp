@@ -18,16 +18,17 @@ import (
 	"fmt"
 	"net"
 	"sync"
-
-	"github.com/fatedier/golib/errors"
+	"time"
 )
 
 // InternalListener is a listener that can be used to accept connections from
 // other goroutines.
 type InternalListener struct {
-	acceptCh chan net.Conn
-	closed   bool
-	mu       sync.Mutex
+	acceptCh  chan net.Conn
+	closed    bool
+	mu        sync.Mutex
+	accepting sync.WaitGroup
+	closeOnce sync.Once
 }
 
 func NewInternalListener() *InternalListener {
@@ -37,35 +38,72 @@ func NewInternalListener() *InternalListener {
 }
 
 func (l *InternalListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return nil, fmt.Errorf("listener closed")
+	}
+	l.accepting.Add(1)
+	l.mu.Unlock()
+	defer l.accepting.Done()
+
 	conn, ok := <-l.acceptCh
 	if !ok {
+		return nil, fmt.Errorf("listener closed")
+	}
+	l.mu.Lock()
+	closed := l.closed
+	l.mu.Unlock()
+	if closed {
+		closePendingConn(conn)
 		return nil, fmt.Errorf("listener closed")
 	}
 	return conn, nil
 }
 
+// PutConn transfers ownership on success. When the queue is full, it closes
+// the connection and still returns nil; on error, the caller retains ownership.
 func (l *InternalListener) PutConn(conn net.Conn) error {
-	err := errors.PanicToError(func() {
-		select {
-		case l.acceptCh <- conn:
-		default:
-			conn.Close()
-		}
-	})
-	if err != nil {
+	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
 		return fmt.Errorf("put conn error: listener is closed")
 	}
-	return nil
+	select {
+	case l.acceptCh <- conn:
+		l.mu.Unlock()
+		return nil
+	default:
+		l.mu.Unlock()
+		_ = conn.Close()
+		return nil
+	}
 }
 
 func (l *InternalListener) Close() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if !l.closed {
-		close(l.acceptCh)
+	l.closeOnce.Do(func() {
+		l.mu.Lock()
 		l.closed = true
-	}
+		close(l.acceptCh)
+		pending := make([]net.Conn, 0, len(l.acceptCh))
+		for conn := range l.acceptCh {
+			pending = append(pending, conn)
+		}
+		l.mu.Unlock()
+		for _, conn := range pending {
+			closePendingConn(conn)
+		}
+		// Accept may have received a queued connection immediately before
+		// closure; wait until it either hands it off or closes it.
+		l.accepting.Wait()
+	})
 	return nil
+}
+
+func closePendingConn(conn net.Conn) {
+	// A wrapper's Close can flush buffered data; interrupt it on shutdown.
+	_ = conn.SetDeadline(time.Now())
+	_ = conn.Close()
 }
 
 func (l *InternalListener) Addr() net.Addr {
