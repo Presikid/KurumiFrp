@@ -66,10 +66,34 @@ func (pxy *XTCPProxy) Close() {
 	pxy.BaseProxy.Close()
 }
 
+// closeOnCancel keeps the control scope responsible for a cancellation
+// callback until it finishes. The owner calls the returned stop function once:
+// it releases the admission if the callback was prevented; otherwise the
+// callback releases it after reporting any panic.
+func closeOnCancel(ctx context.Context, closer io.Closer) (func(), bool) {
+	done, ok := lifetime.Enter(ctx)
+	if !ok {
+		return nil, false
+	}
+	stop := context.AfterFunc(ctx, func() {
+		defer done()
+		defer lifetime.Recover(ctx)
+		_ = closer.Close()
+	})
+	return func() {
+		if stop() {
+			done()
+		}
+	}, true
+}
+
 func (pxy *XTCPProxy) InWorkConn(conn net.Conn, startWorkConnMsg *msg.StartWorkConn) {
 	xl := pxy.xl
 	defer conn.Close()
-	stopConn := context.AfterFunc(pxy.ctx, func() { _ = conn.Close() })
+	stopConn, ok := closeOnCancel(pxy.ctx, conn)
+	if !ok {
+		return
+	}
 	defer stopConn()
 	natHoleSidMsg, err := readNatHoleSid(conn, pxy.clientCfg.Transport.WireProtocol)
 	if err != nil {
@@ -97,7 +121,10 @@ func (pxy *XTCPProxy) InWorkConn(conn net.Conn, startWorkConnMsg *msg.StartWorkC
 	xl.Infof("nathole prepare success, nat type: %s, behavior: %s, addresses: %v, assistedAddresses: %v",
 		prepareResult.NatType, prepareResult.Behavior, prepareResult.Addrs, prepareResult.AssistedAddrs)
 	defer prepareResult.ListenConn.Close()
-	stopInitial := context.AfterFunc(pxy.ctx, func() { _ = prepareResult.ListenConn.Close() })
+	stopInitial, ok := closeOnCancel(pxy.ctx, prepareResult.ListenConn)
+	if !ok {
+		return
+	}
 	defer stopInitial()
 
 	// send NatHoleClient msg to server
@@ -134,7 +161,10 @@ func (pxy *XTCPProxy) InWorkConn(conn net.Conn, startWorkConnMsg *msg.StartWorkC
 	}
 	listenConn = newListenConn
 	defer listenConn.Close()
-	stopSelected := context.AfterFunc(pxy.ctx, func() { _ = newListenConn.Close() })
+	stopSelected, ok := closeOnCancel(pxy.ctx, newListenConn)
+	if !ok {
+		return
+	}
 	defer stopSelected()
 	xl.Infof("establishing nat hole connection successful, sid [%s], remoteAddr [%s]", natHoleRespMsg.Sid, raddr)
 
@@ -188,7 +218,10 @@ func (pxy *XTCPProxy) listenByKCP(listenConn *net.UDPConn, raddr *net.UDPAddr, s
 		return
 	}
 	defer session.Close()
-	stopSession := context.AfterFunc(pxy.ctx, func() { _ = session.Close() })
+	stopSession, ok := closeOnCancel(pxy.ctx, session)
+	if !ok {
+		return
+	}
 	defer stopSession()
 
 	for {
