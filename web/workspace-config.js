@@ -128,12 +128,14 @@
     `<div class="two-column">${preview}<section class="panel"><div class="panel-content"><h2>历史快照</h2><div class="toolbar"><label>保留数量（0–100）<input data-history-limit type="number" min="0" max="100" step="1" value="${Number(data.historyLimit)}"></label>${button('history-limit','保存数量')}</div><p class="small-note">减少数量会立即删除最早的快照。恢复前须停止全部实例，保留的计划会暂停。</p>${histories}</div></section></div>
     <div class="two-column"><section class="panel"><div class="panel-content"><h2>导出与备份</h2><label>导出范围<select data-scope><option value="all">当前配置和全部快照</option><option value="config">仅当前配置</option><option value="snapshots">全部历史快照</option><option value="snapshot">指定快照</option></select></label><label data-snapshot-label hidden>选择快照<select data-snapshot>${history.map(item => `<option value="${item.revision}">r${item.revision} · ${e(item.summary)}</option>`).join('')}</select></label><p class="small-note">普通导出包含数据密钥，请妥善保管；加密备份由单独密码保护。</p><div class="actions">${button('export-config','导出配置')}${button('backup-export','导出加密备份')}</div></div></section>
     <section class="panel"><div class="panel-content"><h2>导入与恢复</h2><p class="small-note">普通配置导入和加密备份恢复会替换当前配置，操作前须停止全部实例。TOML 导入则追加新实例草稿。</p><label>配置文件<input data-import-file type="file" accept=".json,application/json"></label><div class="actions">${button('import-config','导入配置')}${button('backup-import','恢复加密备份')}${button('import-toml','导入 frp TOML')}</div></div></section></div>
+    <section class="panel"><div class="panel-content"><div class="section-heading"><div><h2>维护模式：限制受限账户启停</h2><p class="small-note">开启后，非管理员不能通过本工作台启动、停止或重启本机和远程实例，也不能预览远程控制；读取状态、配置校验和退出登录仍可使用。管理员可继续操作并关闭此模式。</p><p class="small-note">已有隧道、已受理请求、定时计划、自动启动及目标的独立远程控制授权不受影响。设置只保存在本机，不包含在导出或备份中。</p></div><div class="actions">${button('maintenance-refresh','刷新状态')}</div></div><div data-maintenance>正在读取…</div></div></section>
     <section class="panel"><div class="panel-content"><div class="section-heading"><div><h2>Webhook 通知</h2><p class="small-note">通知目标只保存在本机，事件不包含凭据或日志。发送测试使用已保存的设置，停用的目标也可发送；自定义模板应包含 {{event}} 以便接收方识别测试。</p></div><div class="actions">${button('webhook-refresh','刷新')}${button('webhook-new','新增目标')}</div></div><div data-webhooks>正在读取…</div></div></section>`;
   },
   mount(root,data) {
    const picker = root.querySelector('[data-instance]'), output = root.querySelector('[data-config-output]');
    if (!picker || !output) return;
    let previewSerial = 0, model = null, webhookSerial = 0;
+   let maintenance = null, maintenanceSerial = 0, maintenanceBusy = false;
    async function saveConfig(path,payload,message) {
     try { await K.api(path,payload); }
     catch (error) {
@@ -165,7 +167,25 @@
      box.innerHTML = result.targets?.length ? `<div class="cards">${result.targets.map(target => `<article class="card"><div class="section-heading"><h3>${e(target.name)}</h3><span class="pill">${target.enabled ? '启用' : '停用'} · ${e(target.format || 'JSON')}</span></div><p class="small-note">成功 ${Number(target.status?.sent) || 0} · 失败 ${Number(target.status?.failed) || 0} · 丢弃 ${Number(target.status?.dropped) || 0}${target.status?.lastResult ? ' · 最近：'+e(target.status.lastResult) : ''}</p><div class="actions">${button('webhook-test','发送测试',`data-id="${e(target.id)}" ${target.hasURL ? '' : 'disabled title="请先保存通知地址"'}`)}${button('webhook-edit','编辑',`data-id="${e(target.id)}"`)}${button(target.enabled ? 'webhook-disable' : 'webhook-enable',target.enabled ? '停用' : '启用',`data-id="${e(target.id)}"`)}${button('webhook-delete','删除',`class="danger" data-id="${e(target.id)}"`)}</div></article>`).join('')}</div>` : '<p class="muted">尚未设置通知目标。</p>';
     } catch (error) { if (sequence === webhookSerial && K.isCurrent('config',root)) { model = null; box.textContent = '读取失败：'+error.message; } }
    }
-   picker.addEventListener('change',loadPreview); void loadPreview(); if (admin(data)) void loadWebhooks();
+   async function loadMaintenance() {
+    const box = root.querySelector('[data-maintenance]'); if (!box) return;
+    const sequence = ++maintenanceSerial; box.textContent = '正在读取…';
+    try {
+     const result = await K.api('maintenance');
+     if (sequence !== maintenanceSerial || !K.isCurrent('config',root)) return;
+     if (typeof result?.enabled !== 'boolean' || typeof result?.available !== 'boolean') throw new Error('维护状态格式无效。');
+     maintenance = result;
+     if (!result.available) {
+      box.textContent = '维护设置无法读取，原文件已保留；受限账户的实例操作暂不可用，管理员仍可操作。请检查本机 maintenance.json 后刷新。';
+      return;
+     }
+     box.innerHTML = `<p>当前状态：<strong>${result.enabled ? '已开启' : '已关闭'}</strong></p>${button('maintenance-toggle',result.enabled ? '关闭维护模式' : '开启维护模式')}`;
+    } catch (error) {
+     if (sequence === maintenanceSerial && K.isCurrent('config',root)) { maintenance = null; box.textContent = '读取失败：'+error.message; }
+    }
+   }
+   picker.addEventListener('change',loadPreview); void loadPreview();
+   if (admin(data)) { void loadWebhooks(); void loadMaintenance(); }
    const scope = root.querySelector('[data-scope]'); if (scope) scope.addEventListener('change',() => { root.querySelector('[data-snapshot-label]').hidden = scope.value !== 'snapshot'; });
    root.addEventListener('click',async event => {
     const target = event.target.closest('[data-action]'); if (!target || target.disabled) return;
@@ -210,6 +230,28 @@
        if (error.status === 400 || error.status === 409) { K.transfer.finish(operation,'rejected'); throw error; }
        K.transfer.finish(operation,'uncertain',error.message); throw new Error('导入结果尚未确认，请先核对当前配置。');
       }
+      return;
+     }
+     if (action === 'maintenance-refresh') {
+      if (maintenanceBusy) throw new Error('维护设置正在保存，请稍候。');
+      await loadMaintenance(); return;
+     }
+     if (action === 'maintenance-toggle') {
+      if (maintenanceBusy || !maintenance?.available) throw new Error('请先读取并核对维护状态。');
+      const expected = maintenance.enabled, enabled = !expected;
+      const message = enabled
+       ? '开启维护模式？受限账户将不能通过本工作台启停或重启本机和远程实例。已有隧道、计划任务、自动启动和已受理操作不受影响，管理员仍可操作。'
+       : '关闭维护模式？受限账户可继续按已有授权操作实例。';
+      if (!confirm(message)) return;
+      maintenanceBusy = true; ++maintenanceSerial;
+      try {
+       const result = await K.api('maintenance',{expected,enabled});
+       if (typeof result?.enabled !== 'boolean' || result.available !== true || result.enabled !== enabled) throw new Error('服务端响应无法确认维护状态。');
+       if (K.isCurrent('config',root)) { await loadMaintenance(); K.toast(enabled ? '维护模式已开启。' : '维护模式已关闭。'); }
+      } catch (error) {
+       await loadMaintenance();
+       throw new Error(error.status === 409 ? '维护状态已变化，请核对后重新操作。' : '操作结果未确认，请刷新并核对维护状态。');
+      } finally { maintenanceBusy = false; }
       return;
      }
      if (action === 'webhook-refresh') { await loadWebhooks(); return; }
