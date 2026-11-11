@@ -22,13 +22,14 @@
   render(data) {
    if (data.identity?.role !== 'admin') return '<section class="panel"><div class="panel-content">此页面仅供管理员使用。</div></section>';
    return `<header class="page-head"><div><p class="eyebrow">ACCESS / ACCOUNTS</p><h1>账户管理</h1><p>为本地账户分配角色和实例权限。</p></div><div class="actions"><button type="button" data-account="reload">刷新账户</button><button class="primary" type="button" data-account="new" disabled>＋ 新建账户</button></div></header>
-    <section class="panel"><div class="panel-content"><p class="small-note">管理员拥有全部权限。删除实例或替换配置会撤销相关授权，请在操作后核对账户。账户配置独立保存，不包含在配置导出或加密备份中。</p><div data-account-list>正在读取账户…</div></div></section>
+    <section class="panel"><div class="panel-content"><p class="small-note">管理员拥有全部权限。删除实例或替换配置会撤销相关授权，请在操作后核对账户。账户配置独立保存，不包含在配置导出或加密备份中。</p><div class="toolbar"><label>搜索用户名<input type="search" data-account-search placeholder="输入用户名" maxlength="32" disabled></label><label>账户状态<select data-account-filter disabled><option value="all">全部状态</option><option value="active">启用（含即将到期）</option><option value="expiring">7 天内到期</option><option value="expired">已到期</option><option value="disabled">已停用</option></select></label></div><p class="small-note" data-account-summary role="status"></p><div data-account-list>正在读取账户…</div></div></section>
     <section class="panel"><div class="panel-content"><div class="actions"><h2>登录记录</h2><button type="button" data-account="history">刷新记录</button><button type="button" class="danger" data-account="clear-history" disabled>清空记录</button></div><p class="small-note">来源为工作台收到连接的对端地址；通过 SSH 转发时可能显示本机地址。重复失败会限频记录。</p><div data-login-history>正在读取记录…</div></div></section>`;
   },
   mount(root, data) {
    if (data.identity?.role !== 'admin') return;
    const epoch = K.epoch(), list = root.querySelector('[data-account-list]'), history = root.querySelector('[data-login-history]');
    const createButton = root.querySelector('[data-account="new"]'), clearButton = root.querySelector('[data-account="clear-history"]');
+   const search = root.querySelector('[data-account-search]'), filter = root.querySelector('[data-account-filter]'), summary = root.querySelector('[data-account-summary]');
    const instances = Array.isArray(data.state?.instances) ? data.state.instances : [];
    const names = new Map(instances.map(item => [item.id, item.name]));
    let model = null, accountSerial = 0, historySerial = 0, historySaved = false, historyUncertain = false, deleting = false, clearing = false;
@@ -40,23 +41,37 @@
    };
    const renderList = () => {
     if (!current() || !model) return;
+    const sampledAt = Date.parse(model.sampledAt), hasTime = Number.isFinite(sampledAt), query = search.value.trim().toLowerCase();
+    const state = user => {
+     if (!user.enabled) return 'disabled';
+     if (user.expired) return 'expired';
+     const expiry = user.expiresAt ? Date.parse(user.expiresAt) : NaN;
+     return hasTime && Number.isFinite(expiry) && expiry > sampledAt && expiry - sampledAt <= 7 * 24 * 60 * 60 * 1000 ? 'expiring' : 'active';
+    };
+    const visible = model.accounts.filter(user => {
+     const accountState = state(user), selected = filter.value;
+     return String(user.username || '').toLowerCase().includes(query) && (selected === 'all' || selected === accountState || (selected === 'active' && accountState === 'expiring'));
+    });
+    const expiring = model.accounts.filter(user => state(user) === 'expiring').length;
+    summary.textContent = `显示 ${visible.length} / ${model.accounts.length} 个账户。` + (hasTime ? ` 全部账户中有 ${expiring} 个已启用账户在 7 天内到期；状态截至 ${model.sampledAt}，请刷新查看最新结果。` : ' 服务端时间不可用，无法判断是否临近到期；请刷新账户。');
     if (!model.accounts.length) { list.innerHTML = '<p>尚未创建本地账户。管理员仍可使用主密码登录。</p>'; return; }
-    list.innerHTML = `<div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>授权</th><th>操作</th></tr></thead><tbody>${model.accounts.map(user => {
+    if (!visible.length) { list.innerHTML = '<p>没有符合筛选条件的账户。</p>'; return; }
+    list.innerHTML = `<div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>授权</th><th>操作</th></tr></thead><tbody>${visible.map(user => {
      const self = ownAccount(user), local = Array.isArray(user.instances) ? user.instances : [], remote = Array.isArray(user.remoteInstances) ? user.remoteInstances : [];
-     const status = !user.enabled ? '已停用' : user.expired ? '已到期' : '启用';
+     const accountState = state(user), status = {disabled:'已停用',expired:'已到期',expiring:'7 天内到期',active:'启用'}[accountState];
      const grants = user.role === 'admin' ? '全部实例' : `${local.length ? local.map(id => esc(names.get(id) || `实例 ${id}`)).join('、') : '无本机实例'} · 远程 ${remote.length} 项`;
-     return `<tr><td>${esc(user.username)}${self ? ' <span class="pill">当前账户</span>' : ''}</td><td>${esc(roles[user.role] || user.role)}</td><td>${status}${user.expiresAt ? `<br><small>到期 ${esc(user.expiresAt)} (UTC)</small>` : ''}</td><td>${grants}</td><td>${self ? '<span class="small-note">请使用“修改登录密码”</span>' : `<div class="actions"><button type="button" data-account="edit" data-id="${esc(user.id)}">编辑</button><button type="button" class="danger" data-account="delete" data-id="${esc(user.id)}">删除</button></div>`}</td></tr>`;
+     return `<tr><td>${esc(user.username)}${self ? ' <span class="pill">当前账户</span>' : ''}</td><td>${esc(roles[user.role] || user.role)}</td><td><span class="pill ${accountState === 'expiring' || accountState === 'expired' ? 'warn' : ''}">${status}</span>${user.expiresAt ? `<br><small>到期 ${esc(user.expiresAt)} (UTC)</small>` : ''}</td><td>${grants}</td><td>${self ? '<span class="small-note">请使用“修改登录密码”</span>' : `<div class="actions"><button type="button" data-account="edit" data-id="${esc(user.id)}">编辑</button><button type="button" class="danger" data-account="delete" data-id="${esc(user.id)}">删除</button></div>`}</td></tr>`;
     }).join('')}</tbody></table></div>`;
    };
    const loadAccounts = async () => {
     const serial = ++accountSerial;
-    model = null; createButton.disabled = true;
+    model = null; createButton.disabled = true; search.disabled = true; filter.disabled = true; summary.textContent = '';
     list.textContent = '正在读取账户…';
     try {
      const value = await request('accounts');
      if (!current() || serial !== accountSerial) return;
      if (!Array.isArray(value.accounts) || !Number.isSafeInteger(value.revision) || value.revision < 1) throw new Error('账户列表格式无效。');
-     model = value; createButton.disabled = false; renderList();
+     model = value; createButton.disabled = false; search.disabled = false; filter.disabled = false; renderList();
     } catch (error) {
      if (current() && serial === accountSerial) list.textContent = '读取账户失败：' + (error.name === 'AbortError' ? '请求超时，请重试。' : error.message);
     }
@@ -203,6 +218,8 @@
     });
    };
 
+   search.addEventListener('input',renderList);
+   filter.addEventListener('change',renderList);
    root.addEventListener('click', async event => {
     const button = event.target.closest('[data-account]');
     if (!button || !root.contains(button) || button.disabled) return;
