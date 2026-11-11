@@ -60,6 +60,9 @@ type ServerOptions struct {
 	// AllowControlConnection filters peers of frp's control listener only.
 	// It must be concurrent-safe, prompt, and must not panic.
 	AllowControlConnection func(net.Addr) bool
+	// ManagedLogin is an optional account-token login resolver. The owner must
+	// explicitly provide account data; existing controls are not revoked.
+	ManagedLogin server.ManagedLoginResolver
 	// OnPanic notifies the owner of a scoped worker or server Run panic. It
 	// must be concurrent-safe, return promptly, and not panic.
 	OnPanic func()
@@ -120,11 +123,27 @@ func NewServerWithOptions(cfg *v1.ServerConfig, options ServerOptions) (*Server,
 			return nil, fmt.Errorf("invalid embedded frp server config: allowPorts[%d] must specify an ascending range from 1 to 65535", i)
 		}
 	}
+	if options.ManagedLogin != nil {
+		if err := server.ValidateManagedLoginConfig(&copied); err != nil {
+			return nil, fmt.Errorf("invalid embedded account login config: %w", err)
+		}
+	}
 	s := &Server{config: &copied, options: options, done: make(chan struct{})}
 	if warning != nil {
 		s.warning = warning.Error()
 	}
 	return s, nil
+}
+
+// ValidateManagedLoginConfig completes and checks an embedded server config
+// without opening listeners, loading certificates, or invoking a resolver.
+// Successful validation does not guarantee that startup or login will succeed.
+func ValidateManagedLoginConfig(cfg *v1.ServerConfig) error {
+	s, err := NewServer(cfg)
+	if err != nil {
+		return err
+	}
+	return server.ValidateManagedLoginConfig(s.config)
 }
 
 // Warning returns any non-fatal warning from upstream configuration validation.
@@ -163,6 +182,7 @@ func (s *Server) Start(ctx context.Context) error {
 		LogSink:                s.options.LogSink,
 		TrafficRecorder:        s.options.TrafficRecorder,
 		AllowControlConnection: s.options.AllowControlConnection,
+		ManagedLogin:           s.options.ManagedLogin,
 		OnWorkerPanic:          s.options.OnPanic,
 	})
 	if err != nil {
