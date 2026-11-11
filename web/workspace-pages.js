@@ -487,7 +487,8 @@
        clientId = rules[0].instanceId;
        if (!/^[a-f0-9]{16}$/.test(clientId) || !data.state.instances.some(instance => instance.id === clientId && instance.kind === 'frpc')) throw new Error('所选规则的 frpc 客户端不可用，请刷新后重试。');
       }
-      if (!confirm(`导出 ${ids.length} 条规则为 ${toml ? 'TOML' : 'ZIP'}？文件不加密，包含明文认证令牌、配对密钥、HTTP 密码及自定义 HTTP 头值，请妥善保管。`)) return;
+      const disabledNote = rules.some(rule => !rule.enabled) ? '\n选中包含停用规则：导出文件使用 enabled = false，运行前请确认目标 frpc 支持该字段并核对规则状态。' : '';
+      if (!confirm(`导出 ${ids.length} 条规则为 ${toml ? 'TOML' : 'ZIP'}？文件不加密，包含明文认证令牌、配对密钥、HTTP 密码及自定义 HTTP 头值，请妥善保管。${disabledNote}`)) return;
       const payload = {revision:data.revision,ids,confirmed:true,...(toml ? {format:'toml'} : {})};
       const response = await fetch('/api/tunnels/export',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       if (!response.ok) { let message = '导出失败。'; try { message = (await response.json()).error || message; } catch (_) {} if (response.status === 401) void K.refresh().catch(() => {}); throw new Error(message); }
