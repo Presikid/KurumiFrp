@@ -317,7 +317,7 @@ func (a *auth) writeAccountsAndGroups(accounts []localAccount, groups []accountG
 		return err
 	}
 	a.accounts = accounts
-	a.accountGroups = append([]accountGroup{}, groups...)
+	a.accountGroups = cloneAccountGroups(groups)
 	a.accountsRevision++
 	return nil
 }
@@ -337,6 +337,7 @@ func (a *App) clearInstanceGrantsLocked(instanceID string) error {
 	a.auth.mu.Lock()
 	defer a.auth.mu.Unlock()
 	users := append([]localAccount(nil), a.auth.accounts...)
+	groups := cloneAccountGroups(a.auth.accountGroups)
 	changed := false
 	for i, user := range users {
 		if user.Role == "admin" || len(user.Instances) == 0 {
@@ -360,10 +361,27 @@ func (a *App) clearInstanceGrantsLocked(instanceID string) error {
 			users[i].LogInstances = &logs
 		}
 	}
+	for i := range groups {
+		template := groups[i].Template
+		if template == nil || len(template.Instances) == 0 {
+			continue
+		}
+		kept := make([]string, 0, len(template.Instances))
+		for _, id := range template.Instances {
+			if instanceID == "" || id == instanceID {
+				changed = true
+			} else {
+				kept = append(kept, id)
+			}
+		}
+		template.Instances = kept
+		template.ControlInstances = retainGrants(template.ControlInstances, kept)
+		template.LogInstances = retainGrants(template.LogInstances, kept)
+	}
 	if !changed {
 		return nil
 	}
-	return a.auth.writeAccounts(users)
+	return a.auth.writeAccountsAndGroups(users, groups)
 }
 
 func (a *auth) acquireHash() bool {
@@ -467,7 +485,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, ExpiresAt: u.ExpiresAt, Expired: expired, GroupID: u.GroupID, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowedActions: effectiveOperatorActions(u), ReadPermissions: effectiveReadPermissions(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...)})
 		}
 		revision := a.auth.accountsRevision
-		groups := append([]accountGroup{}, a.auth.accountGroups...)
+		groups := cloneAccountGroups(a.auth.accountGroups)
 		a.auth.mu.Unlock()
 		reply(w, 200, map[string]any{"revision": revision, "accounts": views, "groups": groups, "sampledAt": now.UTC().Format(time.RFC3339)})
 		return
@@ -494,13 +512,14 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		Password         string    `json:"password"`
 		GroupID          *string   `json:"groupId"`
 		GroupName        string    `json:"groupName"`
+		TemplateFrom     *string   `json:"templateFrom"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, 400, err)
 		return
 	}
 	if req.Action == "group-save" || req.Action == "group-delete" || req.Action == "group-assign" {
-		a.accountGroupAction(w, r, req.Action, req.Revision, req.ID, req.GroupID, req.GroupName)
+		a.accountGroupAction(w, r, req.Action, req.Revision, req.ID, req.GroupID, req.GroupName, req.TemplateFrom)
 		return
 	}
 	if req.Action != "save" && req.Action != "delete" {
