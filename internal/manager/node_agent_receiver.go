@@ -276,6 +276,15 @@ func (registry *inboundAgentRegistry) applyAdmin(req inboundAgentAdminRequest) (
 		next.Nodes = append(next.Nodes, inboundAgentGrant{ID: id, Name: req.Name, Hash: hash})
 		result.Node = &inboundAgentLabel{ID: id, Name: req.Name}
 		result.Credential = token
+	case "rename":
+		if !idPattern.MatchString(req.ID) || !nodeNameOK(req.Name) {
+			return invalid()
+		}
+		if index < 0 {
+			return inboundAgentAdminResponse{}, http.StatusNotFound, fmt.Errorf("主动节点不存在")
+		}
+		next.Nodes[index].Name = req.Name
+		result.Node = &inboundAgentLabel{ID: req.ID, Name: req.Name}
 	case "rotate", "revoke", "delete":
 		if !idPattern.MatchString(req.ID) || req.Name != "" {
 			return invalid()
@@ -305,7 +314,7 @@ func (registry *inboundAgentRegistry) applyAdmin(req inboundAgentAdminRequest) (
 	if err := registry.saveLocked(next); err != nil {
 		return inboundAgentAdminResponse{}, http.StatusInternalServerError, fmt.Errorf("无法保存主动节点授权")
 	}
-	if req.Action != "issue" {
+	if req.Action == "rotate" || req.Action == "revoke" || req.Action == "delete" {
 		delete(registry.sessions, req.ID)
 		delete(registry.limits, req.ID)
 	}
