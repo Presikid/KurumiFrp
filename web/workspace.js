@@ -45,6 +45,7 @@ window.Kurumi = (() => {
   finish(operation, phase, detail = '') {
    if (operation !== transferRequest) return;
    transferRequest = null;
+   if (phase === 'rejected') { transfer = null; persistTransfer(); return; }
    transfer = {kind:operation.kind, phase, detail:operation.session === session ? detail : ''};
    persistTransfer();
    if (snapshot) void refresh().catch(() => {});
