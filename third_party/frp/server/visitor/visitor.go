@@ -15,6 +15,7 @@
 package visitor
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -96,10 +97,12 @@ func (vm *Manager) NewConn(name string, conn net.Conn, timestamp int64, signKey 
 			rwc = libio.WithCompression(rwc)
 		}
 		visitorConn := netpkg.WrapReadWriteCloserToConn(rwc, conn)
+		response, _ := conn.(interface{ WaitVisitorResponse(context.Context) bool })
 		err = l.l.PutConn(&wireProtocolConn{
 			Conn:           visitorConn,
 			wireProtocol:   wireProtocol,
 			udpPacketCodec: udpPacketCodec,
+			response:       response,
 		})
 	} else {
 		err = fmt.Errorf("custom listener for [%s] doesn't exist", name)
@@ -112,6 +115,20 @@ type wireProtocolConn struct {
 	net.Conn
 	wireProtocol   string
 	udpPacketCodec string
+	response       interface{ WaitVisitorResponse(context.Context) bool }
+	closeOnce      sync.Once
+	closeErr       error
+}
+
+func (c *wireProtocolConn) Close() error {
+	c.closeOnce.Do(func() {
+		c.closeErr = c.Conn.Close()
+	})
+	return c.closeErr
+}
+
+func (c *wireProtocolConn) WaitVisitorResponse(ctx context.Context) bool {
+	return c.response == nil || c.response.WaitVisitorResponse(ctx)
 }
 
 func (c *wireProtocolConn) WireProtocol() string {

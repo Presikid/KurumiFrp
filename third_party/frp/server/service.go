@@ -898,22 +898,62 @@ func (svr *Service) handleConnection(ctx context.Context, conn net.Conn, interna
 			conn.Close()
 		}
 	case *msg.NewVisitorConn:
-		if err = svr.RegisterVisitorConn(conn, m, acceptedConn.wireProtocol); err != nil {
+		// The visitor must receive its protocol response before a target can
+		// send payload bytes on the same connection.
+		pending := &visitorResponseConn{Conn: conn, done: make(chan struct{})}
+		defer pending.finish(false)
+		if err = svr.RegisterVisitorConn(pending, m, acceptedConn.wireProtocol); err != nil {
+			pending.finish(false)
 			xl.Warnf("register visitor conn error: %v", err)
-			_ = acceptedConn.conn.WriteMsg(&msg.NewVisitorConnResp{
-				ProxyName: m.ProxyName,
-				Error:     util.GenerateResponseErrorString("register visitor conn error", err, lo.FromPtr(svr.cfg.DetailedErrorsToClient)),
+			_ = writeWithDeadline(conn, connWriteTimeout, func() error {
+				return acceptedConn.conn.WriteMsg(&msg.NewVisitorConnResp{
+					ProxyName: m.ProxyName,
+					Error:     util.GenerateResponseErrorString("register visitor conn error", err, lo.FromPtr(svr.cfg.DetailedErrorsToClient)),
+				})
 			})
-			conn.Close()
-		} else {
-			_ = acceptedConn.conn.WriteMsg(&msg.NewVisitorConnResp{
+			_ = conn.Close()
+			return
+		}
+		if err = writeWithDeadline(conn, connWriteTimeout, func() error {
+			return acceptedConn.conn.WriteMsg(&msg.NewVisitorConnResp{
 				ProxyName: m.ProxyName,
 				Error:     "",
 			})
+		}); err != nil {
+			pending.finish(false)
+			_ = conn.Close()
+			return
 		}
+		pending.finish(true)
 	default:
 		xl.Warnf("error message type for the new connection [%s]", conn.RemoteAddr().String())
 		conn.Close()
+	}
+}
+
+// visitorResponseConn carries the admission result through the visitor's
+// compression/encryption wrappers. The response writer alone publishes it;
+// a failed or panicked handler must never leave a worker waiting indefinitely.
+type visitorResponseConn struct {
+	net.Conn
+	done    chan struct{}
+	once    sync.Once
+	success bool
+}
+
+func (c *visitorResponseConn) finish(success bool) {
+	c.once.Do(func() {
+		c.success = success
+		close(c.done)
+	})
+}
+
+func (c *visitorResponseConn) WaitVisitorResponse(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-c.done:
+		return c.success && ctx.Err() == nil
 	}
 }
 

@@ -265,11 +265,20 @@ func (pxy *BaseProxy) startCommonTCPListenersHandler() {
 					return
 				}
 				xl.Infof("get a user connection [%s]", c.RemoteAddr().String())
+				// Visitor connections can be admitted before their response is
+				// written. Keep this wait in the worker, not the accept loop.
+				response, _ := c.(interface{ WaitVisitorResponse(context.Context) bool })
 				tracked, ok := lifetime.TrackConn(pxy.ctx, c)
 				if !ok {
 					return
 				}
-				if !lifetime.Go(pxy.ctx, func() { pxy.handleUserTCPConnection(tracked) }) {
+				if !lifetime.Go(pxy.ctx, func() {
+					if response != nil && !response.WaitVisitorResponse(pxy.ctx) {
+						_ = tracked.Close()
+						return
+					}
+					pxy.handleUserTCPConnection(tracked)
+				}) {
 					_ = tracked.Close()
 					return
 				}
