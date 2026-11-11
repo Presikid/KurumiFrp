@@ -49,13 +49,16 @@ type inboundAgentDisk struct {
 }
 
 type inboundAgentSession struct {
-	token      string
-	sequence   uint64
-	digest     [sha256.Size]byte
-	summary    nodeSummary
-	openedAt   time.Time
-	lastSeen   time.Time
-	hasReport  bool
+	token        string
+	sequence     uint64
+	digest       [sha256.Size]byte
+	// The last accepted observation can predate this session. hasReport and
+	// sequence refer only to reports accepted under the current token.
+	summary      nodeSummary
+	openedAt     time.Time
+	waitingSince time.Time
+	lastSeen     time.Time
+	hasReport    bool
 }
 
 // One registry belongs to one running manager. The surrounding application
@@ -366,7 +369,7 @@ func (registry *inboundAgentRegistry) list() inboundAgentList {
 		if node.Hash == "" {
 			view.State = "revoked"
 		} else if session := registry.sessions[node.ID]; session != nil {
-			if session.hasReport {
+			if !session.lastSeen.IsZero() {
 				view.State = "online"
 				if current.Sub(session.lastSeen) >= inboundAgentOfflineAfter {
 					view.State = "offline"
@@ -374,7 +377,7 @@ func (registry *inboundAgentRegistry) list() inboundAgentList {
 				view.LastSeen = session.lastSeen.UTC().Format(time.RFC3339)
 				summary := cloneInboundAgentSummary(session.summary)
 				view.Summary = &summary
-			} else if current.Sub(session.openedAt) >= inboundAgentOfflineAfter {
+			} else if current.Sub(session.waitingSince) >= inboundAgentOfflineAfter {
 				view.State = "offline"
 			}
 		}
@@ -567,7 +570,18 @@ func (registry *inboundAgentRegistry) serveAgent(w http.ResponseWriter, r *http.
 			fail(w, http.StatusServiceUnavailable, fmt.Errorf("节点会话请求已取消"))
 			return
 		}
-		registry.sessions[id] = &inboundAgentSession{token: session, openedAt: time.Now()}
+		openedAt := time.Now()
+		next := &inboundAgentSession{token: session, openedAt: openedAt, waitingSince: openedAt}
+		if previous := registry.sessions[id]; previous != nil {
+			if !previous.waitingSince.IsZero() {
+				next.waitingSince = previous.waitingSince
+			}
+			if !previous.lastSeen.IsZero() {
+				next.lastSeen = previous.lastSeen
+				next.summary = cloneInboundAgentSummary(previous.summary)
+			}
+		}
+		registry.sessions[id] = next
 		registry.mu.Unlock()
 		reply(w, http.StatusOK, inboundAgentSessionResponse{Protocol: 1, NodeID: id, Session: session, NextSequence: "1", IntervalSeconds: inboundAgentInterval})
 		return
