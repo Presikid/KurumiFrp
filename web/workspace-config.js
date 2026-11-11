@@ -249,7 +249,7 @@
  K.register('logs', {
   render(data) {
    const items = (data.state.instances || []).filter(item => admin(data) || (data.identity?.logInstances || []).includes(item.id)), selected = chosen(items);
-   return head('运行日志','按实例查看近期输出；日志可能包含网络地址等信息。') + `<section class="panel"><div class="panel-content"><div class="toolbar"><label>实例${instancePicker(items,selected)}</label><label>筛选<input data-log-filter type="search" placeholder="搜索日志"></label><div class="actions">${button('log-refresh','刷新')}${button('log-download','导出当前内容')}</div></div><p class="small-note" data-log-status>${selected ? '正在读取…' : '没有可查看日志的实例。'}</p><pre class="code-block" data-log-output tabindex="0"></pre></div></section>`;
+   return head('运行日志','按实例查看近期输出；日志可能包含网络地址等信息。') + `<section class="panel"><div class="panel-content"><div class="toolbar"><label>实例${instancePicker(items,selected)}</label><label>筛选<input data-log-filter type="search" placeholder="搜索日志"></label><div class="actions">${button('log-refresh','刷新')}${button('log-bottom','跳到最新')}${button('log-download','导出当前内容')}</div></div><p class="small-note" data-log-status>${selected ? '正在读取…' : '没有可查看日志的实例。'}</p><pre class="code-block" data-log-output tabindex="0"></pre></div></section>`;
   },
   mount(root,data) {
    const picker = root.querySelector('[data-instance]'), filter = root.querySelector('[data-log-filter]'), output = root.querySelector('[data-log-output]'), status = root.querySelector('[data-log-status]');
@@ -327,7 +327,7 @@
      runId = result.runId || ''; lines = result.lines; paint(); openStream(id,runId);
     } catch (error) {
      if (current() && serial === version && error.name !== 'AbortError') { clearLogs(); status.textContent = '读取失败：'+error.message; }
-    } finally { if (controller === request) controller = null; schedule(); }
+    } finally { if (controller === request) { controller = null; schedule(); } }
    }
    const visible = () => { if (document.hidden) { clearTimeout(timer); stopStream(); controller?.abort(); } else if (current()) void load(); };
    const selectionChanged = () => { if (pendingPaint && !selectingOutput()) paint(); };
@@ -337,6 +337,11 @@
    root.addEventListener('click',event => {
     const action = event.target.closest('[data-action]')?.dataset.action;
     if (action === 'log-refresh') void load();
+    if (action === 'log-bottom') {
+     if ((K.state()?.runtime?.[picker.value]?.runId || '') !== runId) { clearLogs(); status.textContent = '实例运行代次已变化，正在重新读取。'; void load(); return; }
+     if (!lines.length) { K.toast('当前没有可查看的日志。'); return; }
+     paint(true); output.scrollTop = output.scrollHeight;
+    }
     if (action === 'log-download') { if ((K.state()?.runtime?.[picker.value]?.runId || '') !== runId) K.toast('实例运行代次已变化，请先刷新日志。'); else if (!painted) K.toast('当前没有可导出的日志。'); else K.download('kurumi-logs.txt',painted,'text/plain'); }
    });
    document.addEventListener('visibilitychange',visible);
