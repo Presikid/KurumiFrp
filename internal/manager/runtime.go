@@ -357,6 +357,9 @@ func (a *App) startPreparedWithSource(i Instance, r Rendered, target string, aut
 	if a.closing {
 		return fmt.Errorf("工作台正在关闭")
 	}
+	if err := a.checkTrafficBudgetStartLocked(i); err != nil {
+		return err
+	}
 	if err := a.checkControlAccessBackend(i); err != nil {
 		return err
 	}

@@ -322,13 +322,14 @@
      const valid = value && value.instanceId === id && value.kind === item.kind && Number.isSafeInteger(value.revision) &&
       typeof value.version === 'string' && /^\d{4}-\d{2}$/.test(value.month) && decimal(value.limitBytes) &&
       (value.recordedBytes === null || decimal(value.recordedBytes)) && ['disabled','unknown','not_reached','reached'].includes(value.status) &&
-      typeof value.historySaved === 'boolean' && typeof value.historyStorageError === 'boolean';
+      typeof value.blockStart === 'boolean' && typeof value.historySaved === 'boolean' && typeof value.historyStorageError === 'boolean';
      if (!valid) budgetOutput.textContent = '月度提醒数据无效，请刷新后重试。';
      else {
       budget = value;
       const labels = {disabled:'未设置提醒值',unknown:'本月没有可用的已记录采样，提醒状态未知',not_reached:'已记录采样尚未达到提醒值',reached:'已记录采样已达到提醒值'};
-      const storage = value.historyStorageError ? '历史文件读取或写入失败。' : value.historySaved ? '' : '部分采样尚未写入磁盘。';
-      budgetOutput.innerHTML = `<div class="${value.status === 'reached' ? 'notice' : ''}"><p><strong>${e(value.month)} UTC 月度提醒 · ${e(labels[value.status])}</strong></p><p>已记录接收与发送合计：${value.recordedBytes === null ? '未知' : bytes(value.recordedBytes)}${value.limitBytes === '0' ? '' : ` / 提醒值 ${bytes(value.limitBytes)}`}</p><p class="small-note">只比较本实例已记录的采样，可能遗漏流量；未达到提醒值不代表实际用量低于该值。提醒仅在此页面显示，不发送通知，也不会限制流量或停止实例，不用于计费。${e(storage)}</p>${admin(data) ? button('traffic-budget-edit','设置月度提醒') : ''}</div>`;
+      const storage = value.historyStorageError ? (value.blockStart ? '历史文件读取或写入失败，已启用的启动检查会阻止此实例启动；请检查存储或关闭检查。' : '历史文件读取或写入失败；若启用启动检查，将阻止此实例启动。') : value.historySaved ? '' : '部分采样尚未写入磁盘，异常退出可能丢失。';
+      const guard = value.blockStart ? (value.historyStorageError ? '已启用启动检查，历史存储异常。' : value.status === 'reached' ? '已启用启动检查，当前已记录采样达到提醒值，会阻止新启动或重启。' : value.status === 'unknown' ? '已启用启动检查；本月没有样本时允许启动，但无法证明实际流量未超额。' : '已启用启动检查，已记录采样尚未达到提醒值。') : '启动检查已关闭。';
+      budgetOutput.innerHTML = `<div class="${value.status === 'reached' || value.historyStorageError ? 'notice' : ''}"><p><strong>${e(value.month)} UTC 月度提醒 · ${e(labels[value.status])}</strong></p><p>已记录接收与发送合计：${value.recordedBytes === null ? '未知' : bytes(value.recordedBytes)}${value.limitBytes === '0' ? '' : ` / 提醒值 ${bytes(value.limitBytes)}`}</p><p>${e(guard)}</p><p class="small-note">只比较本实例已记录的采样，可能遗漏流量；未达到提醒值不代表实际用量低于该值。检查不会主动停止运行中的实例或限流，不用于实时配额或计费。${e(storage)}</p>${admin(data) ? button('traffic-budget-edit','设置提醒和启动检查') : ''}</div>`;
      }
     }
     if (daily.status !== 'fulfilled') historyOutput.textContent = '读取流量历史失败：'+daily.reason.message;
@@ -366,7 +367,7 @@
      const unit = stored > 0n && stored % factors.GiB === 0n ? 'GiB' : stored > 0n && stored % factors.MiB === 0n ? 'MiB' : 'B';
      const amount = (stored / factors[unit]).toString();
      K.openDialog({
-      html:`<h2>设置月度流量提醒</h2><p class="muted">${e(instance.name)} · 仅比较 UTC 月度已记录的接收与发送采样。采样可能不完整；不会限制流量或停止实例。</p><div class="form-grid"><label>提醒值（0 为关闭）<input name="amount" inputmode="numeric" pattern="[0-9]+" maxlength="20" required value="${e(amount)}"></label><label>单位<select name="unit"><option value="B" ${unit === 'B' ? 'selected' : ''}>字节</option><option value="MiB" ${unit === 'MiB' ? 'selected' : ''}>MiB</option><option value="GiB" ${unit === 'GiB' ? 'selected' : ''}>GiB</option></select><small>切换单位后请重新输入数值。</small></label></div>`,
+      html:`<h2>设置月度流量提醒</h2><p class="muted">${e(instance.name)} · 仅比较 UTC 月度已记录的接收与发送采样。采样可能不完整，不能证明实际流量低于提醒值。</p><div class="form-grid"><label>提醒值（0 为关闭）<input name="amount" inputmode="numeric" pattern="[0-9]+" maxlength="20" required value="${e(amount)}"></label><label>单位<select name="unit"><option value="B" ${unit === 'B' ? 'selected' : ''}>字节</option><option value="MiB" ${unit === 'MiB' ? 'selected' : ''}>MiB</option><option value="GiB" ${unit === 'GiB' ? 'selected' : ''}>GiB</option></select><small>切换单位后请重新输入数值。</small></label><label class="form-check span-2"><input type="checkbox" name="blockStart" ${current.blockStart ? 'checked' : ''}>已记录采样达到提醒值后，阻止此实例新启动或重启</label></div><p class="small-note">默认关闭；不会主动停止运行中的实例。重启停旧期间若最后采样达到提醒值，替代实例可能不会启动。没有当月样本时允许启动；历史存储出错会阻止已启用检查的实例启动。提醒设置文件不可用时无法判断哪些实例启用，启动检查将跳过。</p>`,
       submitLabel:'保存提醒',
       async onSubmit(form) {
        const amount = form.elements.amount.value, unit = form.elements.unit.value;
@@ -375,10 +376,12 @@
        const limit = BigInt(amount) * factors[unit];
        if (limit > 18446744073709551615n) throw new Error('提醒值不能超过 18446744073709551615 字节。');
        const limitBytes = limit.toString();
+       const blockStart = form.elements.blockStart.checked;
+       if (limitBytes === '0' && blockStart) throw new Error('启用启动检查前，请设置大于 0 的提醒值。');
        if (!K.isCurrent('overview',root) || picker.value !== id || K.state()?.revision !== current.revision) throw new Error('实例或配置已变化，请关闭窗口并刷新。');
-       try { await K.api('traffic-budget',{id,revision:current.revision,version:current.version,limitBytes}); }
+       try { await K.api('traffic-budget',{id,revision:current.revision,version:current.version,limitBytes,blockStart}); }
        catch (error) {
-        if (!error.status || error.status >= 500) throw new Error('保存结果尚未确认，请关闭窗口并刷新核对。');
+        if (!error.status || error.status >= 500) throw new Error('保存结果尚未确认，请关闭窗口并刷新核对；提醒设置文件不可用时启动检查会跳过。');
         throw error;
        }
        K.toast('月度提醒已保存。');
