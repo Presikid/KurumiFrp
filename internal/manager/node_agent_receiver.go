@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -27,6 +29,8 @@ const (
 	inboundAgentInterval       = 30
 	inboundAgentOfflineAfter   = 90 * time.Second
 	inboundAgentMaxSequence    = ^uint64(0) - 1
+	inboundAgentRateBurst      = 12
+	inboundAgentRateInterval   = 5 * time.Second
 )
 
 // The durable file is local authority. It contains neither bearer credentials
@@ -61,6 +65,7 @@ type inboundAgentRegistry struct {
 	path     string
 	disk     inboundAgentDisk
 	sessions map[string]*inboundAgentSession
+	limits   map[string]*rate.Limiter
 	slots    chan struct{}
 	closed   bool
 }
@@ -302,6 +307,7 @@ func (registry *inboundAgentRegistry) applyAdmin(req inboundAgentAdminRequest) (
 	}
 	if req.Action != "issue" {
 		delete(registry.sessions, req.ID)
+		delete(registry.limits, req.ID)
 	}
 	result.Revision = next.Revision
 	return result, http.StatusOK, nil
@@ -313,6 +319,7 @@ func (registry *inboundAgentRegistry) close() {
 	registry.mu.Lock()
 	registry.closed = true
 	registry.sessions = make(map[string]*inboundAgentSession)
+	registry.limits = nil
 	registry.mu.Unlock()
 }
 
@@ -481,14 +488,34 @@ func (registry *inboundAgentRegistry) serveAgent(w http.ResponseWriter, r *http.
 	token := inboundAgentBearer(r)
 	registry.mu.Lock()
 	closed := registry.closed
-	authorized := !closed && registry.authenticateLocked(token) != ""
+	authorizedID := ""
+	allowed := false
+	if !closed {
+		authorizedID = registry.authenticateLocked(token)
+		if authorizedID != "" {
+			if registry.limits == nil {
+				registry.limits = make(map[string]*rate.Limiter)
+			}
+			limiter := registry.limits[authorizedID]
+			if limiter == nil {
+				limiter = rate.NewLimiter(rate.Every(inboundAgentRateInterval), inboundAgentRateBurst)
+				registry.limits[authorizedID] = limiter
+			}
+			allowed = limiter.Allow()
+		}
+	}
 	registry.mu.Unlock()
 	if closed {
 		fail(w, http.StatusServiceUnavailable, fmt.Errorf("工作台正在关闭"))
 		return
 	}
-	if !authorized {
+	if authorizedID == "" {
 		fail(w, http.StatusUnauthorized, fmt.Errorf("主动节点凭据无效或已撤销"))
+		return
+	}
+	if !allowed {
+		w.Header().Set("Retry-After", "5")
+		fail(w, http.StatusTooManyRequests, fmt.Errorf("主动节点请求过于频繁，请稍后重试"))
 		return
 	}
 	select {
