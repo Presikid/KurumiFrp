@@ -190,10 +190,10 @@ func run() error {
 	defer signal.Stop(stopped)
 	errs := make(chan error, 1)
 	go func() { errs <- server.Serve(listener) }()
-	fmt.Printf("KurumiFRP %s\nOpen http://%s\nGet local token in another terminal: kurumi --data %q --show-token\n", version.Current, *addr, abs)
+	fmt.Printf("KurumiFRP %s\nOpen http://%s\nNew data directories use an empty administrator password. For existing data, see the installation guide.\n", version.Current, *addr)
 	if *open {
 		if e := openBrowser(app.BrowserURL()); e != nil {
-			log.Print("Browser could not be opened; use the printed local URL and --show-token.")
+			log.Print("Browser could not be opened; use the printed local URL.")
 		}
 	}
 	select {
