@@ -42,6 +42,7 @@ type nodeSettings struct {
 	ControlHash  string       `json:"controlHash,omitempty"`
 	ShareTraffic bool         `json:"shareTraffic,omitempty"`
 	Nodes        []remoteNode `json:"nodes,omitempty"`
+	Reporter     *outboundAgentConfig `json:"reporter,omitempty"`
 }
 
 type nodeInstanceSummary struct {
@@ -138,6 +139,9 @@ func validateStoredNodes(s *Store, cfg *nodeSettings) error {
 	if cfg.ShareTraffic && cfg.ReaderHash == "" {
 		return fmt.Errorf("node traffic sharing requires read authorization")
 	}
+	if err := validateStoredOutboundAgent(s, cfg.Reporter); err != nil {
+		return err
+	}
 	if len(cfg.Nodes) > maxRemoteNodes {
 		return fmt.Errorf("too many remote nodes")
 	}
@@ -166,7 +170,7 @@ func cloneNodeSettings(cfg *nodeSettings) nodeSettings {
 	if cfg == nil {
 		return nodeSettings{}
 	}
-	copy := nodeSettings{ReaderHash: cfg.ReaderHash, ControlHash: cfg.ControlHash, ShareTraffic: cfg.ShareTraffic, Nodes: append([]remoteNode(nil), cfg.Nodes...)}
+	copy := nodeSettings{ReaderHash: cfg.ReaderHash, ControlHash: cfg.ControlHash, ShareTraffic: cfg.ShareTraffic, Nodes: append([]remoteNode(nil), cfg.Nodes...), Reporter: cloneOutboundAgentConfig(cfg.Reporter)}
 	for i := range copy.Nodes {
 		copy.Nodes[i].Addresses = append([]string(nil), copy.Nodes[i].Addresses...)
 	}
@@ -182,6 +186,16 @@ func rewrapNodeSettings(oldStore, newStore *Store, cfg *nodeSettings) (*nodeSett
 		return nil, err
 	}
 	next := cloneNodeSettings(cfg)
+	if next.Reporter != nil {
+		plain, err := oldStore.decrypt(next.Reporter.Credential)
+		if err != nil {
+			return nil, err
+		}
+		next.Reporter.Credential, err = newStore.encrypt(plain)
+		if err != nil {
+			return nil, err
+		}
+	}
 	for i := range next.Nodes {
 		plain, err := oldStore.decrypt(next.Nodes[i].Credential)
 		if err != nil {
@@ -287,7 +301,7 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 			}
 			items = append(items, item)
 		}
-		reply(w, http.StatusOK, map[string]any{"revision": revision, "sharing": cfg.ReaderHash != "", "shareTraffic": cfg.ShareTraffic, "controlSharing": cfg.ControlHash != "", "nodes": items})
+		reply(w, http.StatusOK, map[string]any{"revision": revision, "sharing": cfg.ReaderHash != "", "shareTraffic": cfg.ShareTraffic, "controlSharing": cfg.ControlHash != "", "nodes": items, "reporter": a.outboundAgentView(cfg.Reporter)})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -304,9 +318,18 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 		ControlCredential string `json:"controlCredential"`
 		ClearControl      bool   `json:"clearControl"`
 		Enabled           *bool  `json:"enabled"`
+		NodeID            string `json:"nodeId"`
+		Stamp             string `json:"stamp"`
+		Addresses         []string `json:"addresses"`
+		ShareTraffic      *bool `json:"shareTraffic"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, http.StatusBadRequest, err)
+		return
+	}
+	switch req.Action {
+	case "reporter-save", "reporter-resolve", "reporter-confirm", "reporter-enable", "reporter-delete":
+		a.outboundAgentAPI(w, r, outboundAgentAPIRequest{Revision: req.Revision, Action: req.Action, URL: req.URL, NodeID: req.NodeID, Credential: req.Credential, Stamp: req.Stamp, Addresses: req.Addresses, ShareTraffic: req.ShareTraffic, Enabled: req.Enabled})
 		return
 	}
 	// The gate orders changes to the inbound grant after all admitted summary
@@ -498,7 +521,7 @@ func (a *App) nodesAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	db := a.store.DB
-	if cfg.ReaderHash == "" && cfg.ControlHash == "" && len(cfg.Nodes) == 0 {
+	if cfg.ReaderHash == "" && cfg.ControlHash == "" && len(cfg.Nodes) == 0 && cfg.Reporter == nil {
 		db.Nodes = nil
 	} else {
 		db.Nodes = &cfg
