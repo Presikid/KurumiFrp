@@ -47,7 +47,10 @@
     if (!K.isCurrent('config',root)) throw new Error('页面已变化，请重新操作。'); validRevision(data);
     const operation = K.transfer.begin('backup');
     try { await withTimeout('backup/import',{revision:data.revision,password,backup}); K.transfer.finish(operation,'complete'); }
-    catch (error) { K.transfer.finish(operation,'uncertain',error.message); throw new Error('恢复结果尚未确认，请核对提示和当前配置。'); }
+    catch (error) {
+     if (error.status === 400 || error.status === 409) { K.transfer.finish(operation,'rejected'); throw error; }
+     K.transfer.finish(operation,'uncertain',error.message); throw new Error('恢复结果尚未确认，请核对提示和当前配置。');
+    }
    }
   });
  }
@@ -203,7 +206,10 @@
       if (!K.isCurrent('config',root)) throw new Error('页面已变化，请重新操作。'); validRevision(data);
       const operation = K.transfer.begin('import');
       try { await withTimeout('import?revision='+data.revision,value); K.transfer.finish(operation,'complete'); }
-      catch (error) { K.transfer.finish(operation,'uncertain',error.message); throw new Error('导入结果尚未确认，请先核对当前配置。'); }
+      catch (error) {
+       if (error.status === 400 || error.status === 409) { K.transfer.finish(operation,'rejected'); throw error; }
+       K.transfer.finish(operation,'uncertain',error.message); throw new Error('导入结果尚未确认，请先核对当前配置。');
+      }
       return;
      }
      if (action === 'webhook-refresh') { await loadWebhooks(); return; }
