@@ -1337,12 +1337,22 @@ func (svr *Service) RegisterWorkConn(
 }
 
 func (svr *Service) RegisterVisitorConn(visitorConn net.Conn, newMsg *msg.NewVisitorConn, wireProtocol string) error {
+	var rejected net.Conn
+	defer func() {
+		// The visitor/control admission locks have been released before this
+		// close, but the caller still sees the original full-queue behavior.
+		if rejected != nil {
+			_ = rejected.Close()
+		}
+	}()
 	admit := func(visitorUser, visitorWireProtocol, visitorUDPPacketCodec string) error {
 		if visitorWireProtocol == "" {
 			visitorWireProtocol = wireProtocol
 		}
-		return svr.rc.VisitorManager.NewConn(newMsg.ProxyName, visitorConn, newMsg.Timestamp, newMsg.SignKey,
+		var err error
+		rejected, err = svr.rc.VisitorManager.NewConnDeferredClose(newMsg.ProxyName, visitorConn, newMsg.Timestamp, newMsg.SignKey,
 			newMsg.UseEncryption, newMsg.UseCompression, visitorUser, visitorWireProtocol, visitorUDPPacketCodec)
+		return err
 	}
 	// TODO(deprecation): Compatible with old versions, can be without runID, user is empty. In later versions, it will be mandatory to include runID.
 	// If runID is required, it is not compatible with versions prior to v0.50.0.

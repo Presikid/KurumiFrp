@@ -64,19 +64,29 @@ func (l *InternalListener) Accept() (net.Conn, error) {
 // PutConn transfers ownership on success. When the queue is full, it closes
 // the connection and still returns nil; on error, the caller retains ownership.
 func (l *InternalListener) PutConn(conn net.Conn) error {
+	accepted, err := l.TryPutConn(conn)
+	if err != nil {
+		return err
+	}
+	if !accepted {
+		_ = conn.Close()
+	}
+	return nil
+}
+
+// TryPutConn never closes conn. It transfers ownership only when accepted is
+// true; on a full or closed listener, the caller retains ownership.
+func (l *InternalListener) TryPutConn(conn net.Conn) (accepted bool, err error) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.closed {
-		l.mu.Unlock()
-		return fmt.Errorf("put conn error: listener is closed")
+		return false, fmt.Errorf("put conn error: listener is closed")
 	}
 	select {
 	case l.acceptCh <- conn:
-		l.mu.Unlock()
-		return nil
+		return true, nil
 	default:
-		l.mu.Unlock()
-		_ = conn.Close()
-		return nil
+		return false, nil
 	}
 }
 
