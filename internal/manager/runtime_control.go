@@ -13,9 +13,10 @@ type runtimeOperation struct {
 }
 
 type runtimeRequest struct {
-	Revision uint64 `json:"revision"`
-	ID       string `json:"id"`
-	Action   string `json:"action"`
+	Revision      uint64 `json:"revision"`
+	ID            string `json:"id"`
+	Action        string `json:"action"`
+	ExpectedRunID string `json:"expectedRunId,omitempty"`
 }
 
 type runtimeSnapshot struct {
@@ -104,10 +105,16 @@ func (a *App) beginRuntimeOperationSourceLocked(parent context.Context, req runt
 	if !validate && req.Action != "start" && req.Action != "restart" && req.Action != "stop" {
 		return snapshot, nil, http.StatusBadRequest, fmt.Errorf("未知操作")
 	}
+	if req.ExpectedRunID != "" && (validate || req.Action != "restart") {
+		return snapshot, nil, http.StatusBadRequest, fmt.Errorf("运行代次条件仅适用于重启")
+	}
 	if a.operations[req.ID] != nil {
 		return snapshot, nil, http.StatusConflict, fmt.Errorf("此实例正在执行其他操作，请稍后重试")
 	}
 	p := a.procs[req.ID]
+	if req.ExpectedRunID != "" && !p.runningAs(req.ExpectedRunID) {
+		return snapshot, nil, http.StatusConflict, fmt.Errorf("实例运行状态或代次已变化，未重启")
+	}
 	if !validate && req.Action == "start" && p.active() {
 		return snapshot, nil, http.StatusBadRequest, fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
@@ -296,7 +303,7 @@ func (a *App) runRuntimeOperation(w http.ResponseWriter, req runtimeRequest, val
 		return
 	}
 	if req.Action == "restart" {
-		if err = stopProcess(snapshot.process); err != nil {
+		if err = stopProcessGuarded(snapshot.process, req.ExpectedRunID); err != nil {
 			failure(http.StatusBadRequest, err)
 			return
 		}

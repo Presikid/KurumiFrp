@@ -128,15 +128,79 @@
   const clients = data.state.instances.filter(item => item.kind === 'frpc');
   if (kind === 'tunnel' && !clients.length) throw new Error('请先创建 frpc 客户端实例。');
   const editing = {kind, id:old?.id || '', old};
-  const update = form => ProtocolEditor.update(form, editing, data.state.tunnels);
+  let saveUncertain = false;
+  const update = form => {
+   ProtocolEditor.update(form, editing, data.state.tunnels);
+   if (kind === 'tunnel') {
+    const moved = !!old && form.elements.instanceId.value !== old.instanceId;
+    const apply = form.elements.applyAfterSave;
+    apply.disabled = moved;
+    if (moved) apply.checked = false;
+    form.querySelector('[data-apply-moved]').hidden = !moved;
+   }
+  };
+  const applyOption = kind === 'tunnel' ? `<p><label class="form-check"><input type="checkbox" name="applyAfterSave">保存后重启所属客户端</label></p>
+   <p class="small-note">仅在客户端仍是原来的运行代次时重启；会应用该实例的全部草稿。重启会中断连接，可能暂停定时计划。</p>
+   <p class="small-note" data-apply-moved hidden>移动规则时只保存草稿；源客户端仍可能运行旧规则，请分别核对并重新应用源和目标客户端。</p>` : '';
   K.openDialog({
-   html:kind === 'instance' ? ProtocolEditor.instance(old) : ProtocolEditor.tunnel(old, clients), submitLabel:'保存草稿',
+   html:kind === 'instance' ? ProtocolEditor.instance(old) : ProtocolEditor.tunnel(old, clients) + applyOption, submitLabel:'保存草稿',
    onReady:update, onChange:(_, form) => update(form), onInput:(event, form) => { if (event.target.name === 'localPort') update(form); },
    onClick:(event, form) => { if (kind === 'tunnel') ProtocolEditor.actionClick(form, event.target); },
    async onSubmit(form) {
+    if (saveUncertain) throw new Error('上次保存结果尚未确认，请关闭表单并核对草稿后再操作。');
     requireRevision(data);
     const value = ProtocolEditor.value(form, editing);
-    await mutation('save', {revision:data.revision, kind, value}, '草稿已保存；运行中的实例需要重新应用。');
+    if (kind !== 'tunnel' || !form.elements.applyAfterSave.checked) {
+     await mutation('save', {revision:data.revision, kind, value}, '草稿已保存；运行中的实例需要重新应用。');
+     return;
+    }
+    if (old && old.instanceId !== value.instanceId) throw new Error('移动规则时请分别核对并重新应用源和目标客户端。');
+    const current = K.state(), instance = current.state.instances.find(item => item.id === value.instanceId);
+    const runtime = runtimeFor(current, value.instanceId), epoch = K.epoch();
+    if (!instance || !can(current, value.instanceId, 'restart') || runtime.state !== 'running' || !runtime.runId) {
+     throw new Error('客户端未运行、状态不确定或无重启权限；可取消勾选，仅保存草稿。');
+    }
+    if (localControlInFlight.has(value.instanceId) || localControlNotice(value.instanceId)) {
+     throw new Error('此客户端有操作正在处理或结果未确认，请先到实例页面核对。');
+    }
+    if (!confirm(`保存后重启「${instance.name}」并应用该实例全部草稿？\n重启会中断现有连接，失败时可能保持停止，也可能暂停定时计划。`)) return false;
+    let result;
+    const controller = new AbortController(), deadline = setTimeout(() => controller.abort(), 15000);
+    try { result = await K.api('save', {revision:data.revision, kind, value}, {signal:controller.signal}); }
+    catch (error) {
+     if (!error.status || error.status >= 500) {
+      saveUncertain = true; await K.refresh().catch(() => {});
+      throw new Error('保存结果尚未确认；没有提交重启。请关闭表单并核对草稿后再操作。');
+     }
+     throw error;
+    } finally { clearTimeout(deadline); }
+    if (result?.ok !== true) {
+     saveUncertain = true; await K.refresh().catch(() => {});
+     throw new Error('保存响应无法确认；没有提交重启。请关闭表单并核对草稿后再操作。');
+    }
+    const savedRevision = result.revision;
+    if (!Number.isSafeInteger(savedRevision) || savedRevision !== data.revision + 1) {
+     await K.refresh().catch(() => {});
+     if (K.epoch() === epoch && K.state()) K.toast('草稿已保存，但返回的修订号无法确认；未提交重启，请刷新核对。');
+     return;
+    }
+    try {
+     if (!await K.refresh() || K.epoch() !== epoch) return;
+    } catch (error) {
+     if (K.epoch() === epoch && K.state()) K.toast(`草稿已保存（r${savedRevision}）；状态刷新失败，未提交重启：${error.message}`);
+     return;
+    }
+    const fresh = K.state(), updated = runtimeFor(fresh, value.instanceId);
+    if (fresh.revision !== savedRevision || updated.state !== 'running' || updated.runId !== runtime.runId) {
+     K.toast(`草稿已保存（r${savedRevision}）；配置或实例运行状态已变化，未提交重启。`);
+     return;
+    }
+    try {
+     const outcome = await control('restart', value.instanceId, fresh, {confirmed:true, expectedRunId:runtime.runId});
+     if (K.epoch() === epoch && K.state()) K.toast(`草稿已保存（r${savedRevision}），重启已受理；${outcome?.needsReview ? '核对记录未能清除，请到实例页面核对并解除提示。' : '请核对实例运行状态。'}`);
+    } catch (error) {
+     if (K.epoch() === epoch && K.state()) K.toast(`草稿已保存（r${savedRevision}）；重启未完成或结果未确认：${error.message}`);
+    }
    }
   });
  }
@@ -183,7 +247,7 @@
    }
   });
  }
- async function control(action, id, data) {
+ async function control(action, id, data, options = {}) {
   requireRevision(data);
   const instance = data.state.instances.find(item => item.id === id);
   if (!instance || !can(data, id, action)) throw new Error('实例不存在或没有操作权限。');
@@ -196,7 +260,7 @@
   }
   const schedule = data.schedules?.[id];
   const pause = schedule?.enabled && !schedule.paused ? '此操作可能暂停实例的定时计划。' : '';
-  if (action === 'restart' && !confirm(`重启「${instance.name}」会中断现有连接，重新启动失败时可能保持停止。${pause}继续？`)) return;
+  if (action === 'restart' && !options.confirmed && !confirm(`重启「${instance.name}」会中断现有连接，重新启动失败时可能保持停止。${pause}继续？`)) return;
   if (action === 'stop' && !confirm(`停止「${instance.name}」并中断连接？${pause}`)) return;
   if (action === 'start' && pause && !confirm(`启动「${instance.name}」？${pause}`)) return;
   if (action === 'validate') {
@@ -208,10 +272,12 @@
   const controller = new AbortController(), record = beginLocalControl(id,action);
   const deadline = setTimeout(() => controller.abort(),60000);
   try {
-   const result = await K.api('control',{revision:data.revision,id,action},{signal:controller.signal});
+   const result = await K.api('control',{revision:data.revision,id,action,...(options.expectedRunId ? {expectedRunId:options.expectedRunId} : {})},{signal:controller.signal});
    if (result?.ok !== true) throw new Error('服务端响应无法确认操作结果。');
-   if (!clearLocalControl(id,record)) K.toast('实例操作已受理，但核对记录未能清除；请刷新并核对后解除提示。');
+   const needsReview = !clearLocalControl(id,record);
+   if (needsReview) K.toast('实例操作已受理，但核对记录未能清除；请刷新并核对后解除提示。');
    else K.toast('实例操作已受理，请核对运行状态。');
+   return {needsReview};
   } catch (error) {
    if ([401,403,404,405].includes(error.status)) {
     if (!clearLocalControl(id,record)) throw new Error(`${error.message}；操作记录已变化或无法清除，请先核对。`);

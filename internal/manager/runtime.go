@@ -275,6 +275,20 @@ func (p *process) view() RuntimeStatus {
 	return p.viewLocked()
 }
 
+func (p *process) runningAs(runID string) bool {
+	if p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.runningAsLocked(runID)
+}
+
+// The caller holds p.mu, including while a guarded stop is claimed.
+func (p *process) runningAsLocked(runID string) bool {
+	return runID != "" && p.active() && !p.stopRequested && p.status.RunID == runID && p.viewLocked().State == "running"
+}
+
 // viewLocked uses the same readiness observation for every state consumer.
 // The caller must hold p.mu.
 func (p *process) viewLocked() RuntimeStatus {
@@ -541,10 +555,24 @@ func (a *App) stop(id string) error {
 	return stopProcess(p)
 }
 func stopProcess(p *process) error {
+	return stopProcessGuarded(p, "")
+}
+
+// A nonempty run ID requires the same running generation at the point the
+// stop is claimed. This prevents a conditional restart from starting an
+// instance that stopped during verification.
+func stopProcessGuarded(p *process, runID string) error {
 	if !p.active() {
+		if runID != "" {
+			return fmt.Errorf("实例运行状态或代次已变化，未重启")
+		}
 		return nil
 	}
 	p.mu.Lock()
+	if runID != "" && !p.runningAsLocked(runID) {
+		p.mu.Unlock()
+		return fmt.Errorf("实例运行状态或代次已变化，未重启")
+	}
 	if !p.stopRequested && !p.upEmitted && p.readiness != nil {
 		// Observe failure before recording the first stop request. A second
 		// stop must not reinterpret the first stop's exit as startup failure.
