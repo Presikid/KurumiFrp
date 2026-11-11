@@ -104,7 +104,7 @@
   } else host.replaceChildren();
   const available = view.versions.filter(eligible);
   if (view.selected && !available.some(version => version.tag === view.selected)) view.selected = '';
-  if (!view.selected && !view.selectedByUser && available.length) view.selected = available[0].tag;
+  if (!view.selected && !view.selectedByUser) view.selected = available.find(version => !version.prerelease && !version.metadataFallback)?.tag || '';
   select.innerHTML = '<option value="">请选择可安装版本</option>' + available.map(version =>
    `<option value="${escape(version.tag)}">${escape(version.tag)} · ${escape(versionChannel(version))}</option>`).join('');
   select.value = view.selected;
@@ -242,7 +242,7 @@
     <section class="panel"><div class="panel-content"><div class="section-heading"><h2>更新状态</h2><button type="button" data-update-status-refresh>读取状态</button></div><p data-update-status role="status" aria-live="polite">正在读取服务端更新状态…</p><progress data-update-progress aria-label="更新正在进行" hidden></progress><p class="small-note">服务端提供执行阶段，不提供下载百分比。</p></div></section></div>
     <div class="notice" role="status" data-update-notice hidden><p data-update-notice-text></p><button type="button" data-update-ack>我已核对，解除提示</button></div>
     <section class="panel"><div class="panel-content"><div class="section-heading"><div><h2>发行版本</h2><p>仅可安装新于当前版本且有适用安装包的版本。</p></div><button type="button" data-update-check>检查版本</button></div>
-    <p class="small-note" data-update-list-status role="status">正在检查发行版本…</p><div data-update-versions></div><label>选择更新版本<select data-update-choice disabled><option value="">请选择可安装版本</option></select></label><div class="actions"><button class="primary" type="button" data-update-install disabled>安装所选版本</button></div><p class="small-note">预发布版本及发布状态待确认的版本请核对后选择。更新可能需要系统授权。</p></div></section>`;
+    <p class="small-note" data-update-list-status role="status">正在检查发行版本…</p><div data-update-versions></div><label>选择更新版本<select data-update-choice disabled><option value="">请选择可安装版本</option></select></label><div class="actions"><button class="primary" type="button" data-update-install disabled>安装所选版本</button></div><p class="small-note">默认选择可安装的正式版；预发布及发布状态待确认的版本需手动选择。更新可能需要系统授权。</p></div></section>`;
   },
   mount(root, data) {
    if (data.identity?.role !== 'admin') return;
