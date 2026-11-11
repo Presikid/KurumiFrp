@@ -36,7 +36,7 @@ are not a runtime guarantee.
 
 The profile rejects virtual networking, admin and metrics servers, includes,
 store sources, OIDC and dynamic token sources, upstream proxies,
-client plugins other than the TCP Unix-domain-socket plugin, all visitor plugins, custom hooks and
+client plugins other than the TCP Unix-domain-socket and SOCKS5 plugins, all visitor plugins, custom hooks and
 unsafe feature overrides. The adapter returns ErrFRPUnsupported for these
 options. XTCP and proxy health checks are available in the development profile,
 but still need end-to-end and failure recovery verification. Other upstream users
@@ -47,6 +47,17 @@ The allowed Unix-domain-socket plugin dials with the control context and tracks
 the local socket in that generation. It requires an absolute socket path and
 does not support frp health checks. As with other proxy streams, dependency
 goroutines and all shutdown or interoperability cases are not yet verified.
+
+The isolated SOCKS5 plugin is limited to TCP CONNECT with a nonempty username
+and password. Its resolver and sockets belong to the client instance; it does
+not support BIND, UDP ASSOCIATE, health checks, PROXY headers or client-side
+bandwidth limits. Server-side bandwidth limits remain available. Some stream
+wrappers do not expose TCP half-close, so the plugin cannot preserve every
+half-close case. Each rule admits at most 512 concurrent SOCKS5 work streams,
+and each isolated client at most 2048. Interoperability and shutdown still need
+runtime verification.
+Isolated client configuration is fixed at construction; changing rules requires
+stopping the instance and creating a new client generation.
 
 Each restricted control generation now owns a separate cancellation scope.
 Its dispatcher, admitted proxy and visitor workers, accepted connections and

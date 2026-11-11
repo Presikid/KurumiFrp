@@ -78,12 +78,24 @@ func ValidateRestrictedProxyConfigurer(cfg v1.ProxyConfigurer) error {
 	if base.Plugin.Type == "" {
 		return nil
 	}
-	if _, ok := cfg.(*v1.TCPProxyConfig); !ok || base.Plugin.Type != v1.PluginUnixDomainSocket {
+	if _, ok := cfg.(*v1.TCPProxyConfig); !ok {
 		return errors.New("proxy plugin is not supported by the isolated client")
 	}
-	opts, ok := base.Plugin.ClientPluginOptions.(*v1.UnixDomainSocketPluginOptions)
-	if !ok || opts == nil || !strings.HasPrefix(opts.UnixPath, "/") || len(opts.UnixPath) > 1024 || strings.ContainsAny(opts.UnixPath, "{}") || strings.IndexFunc(opts.UnixPath, unicode.IsControl) >= 0 || base.HealthCheck.Type != "" {
-		return errors.New("invalid isolated unix socket configuration")
+	switch base.Plugin.Type {
+	case v1.PluginUnixDomainSocket:
+		opts, ok := base.Plugin.ClientPluginOptions.(*v1.UnixDomainSocketPluginOptions)
+		if !ok || opts == nil || !strings.HasPrefix(opts.UnixPath, "/") || len(opts.UnixPath) > 1024 || strings.ContainsAny(opts.UnixPath, "{}") || strings.IndexFunc(opts.UnixPath, unicode.IsControl) >= 0 || base.HealthCheck.Type != "" {
+			return errors.New("invalid isolated unix socket configuration")
+		}
+	case v1.PluginSocks5:
+		// Empty mode defaults to client when the proxy config is completed.
+		// Only an explicitly server-side limit avoids the uncancellable client
+		// bandwidth wrapper used by frp's work streams.
+		if !proxy.ValidIsolatedSocks5Config(base) {
+			return errors.New("invalid isolated SOCKS5 configuration")
+		}
+	default:
+		return errors.New("proxy plugin is not supported by the isolated client")
 	}
 	return nil
 }
@@ -95,6 +107,10 @@ var (
 	ErrServiceRunning = errors.New("client service has already been started")
 	// ErrWorkerPanicked omits the panic value, which could contain secrets.
 	ErrWorkerPanicked = errors.New("client service worker panicked")
+	// ErrPluginCleanupFailed reports an isolated plugin's uncertain cleanup.
+	ErrPluginCleanupFailed = proxy.ErrPluginCleanupFailed
+	// ErrRestrictedConfigReload requires a new isolated service generation.
+	ErrRestrictedConfigReload = errors.New("isolated client configuration is fixed at construction; create a new client")
 )
 
 func (e cancelErr) Error() string {
@@ -157,6 +173,10 @@ type ServiceOptions struct {
 	// OnWorkerPanic is an isolated-profile lifecycle notification. It must be
 	// concurrent-safe, return promptly, and not panic. It receives no panic value.
 	OnWorkerPanic func()
+	// OnPluginCleanupFailure reports uncertain isolated plugin cleanup as soon
+	// as it is detected. It must be concurrent-safe, return promptly, and not
+	// panic or wait for this service to stop.
+	OnPluginCleanupFailure func()
 }
 
 // setServiceOptionsDefault sets the default values for ServiceOptions.
@@ -242,6 +262,7 @@ type Service struct {
 	connectorCreator func(context.Context, *v1.ClientCommonConfig) Connector
 	handleWorkConnCb func(*v1.ProxyBaseConfig, net.Conn, *msg.StartWorkConn) bool
 	onWorkerPanic    func()
+	onPluginCleanupFailure func()
 	workerPanic      func() // published before control workers are started
 	workerPanicked   atomic.Bool
 }
@@ -415,6 +436,7 @@ func NewService(options ServiceOptions) (*Service, error) {
 		connectorCreator: options.ConnectorCreator,
 		handleWorkConnCb: options.HandleWorkConnCb,
 		onWorkerPanic:    options.OnWorkerPanic,
+		onPluginCleanupFailure: options.OnPluginCleanupFailure,
 	}
 
 	if webServer != nil {
@@ -430,6 +452,14 @@ func NewService(options ServiceOptions) (*Service, error) {
 func (svr *Service) Run(ctx context.Context) (runErr error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	if svr.isolateLogs {
+		ctx = proxy.WithPluginCleanupFailureHandler(ctx, func() {
+			// The owner can block new runs before this service starts draining.
+			// Keep cancellation even if a caller violates the no-panic contract.
+			defer cancel(ErrPluginCleanupFailed)
+			if svr.onPluginCleanupFailure != nil {
+				svr.onPluginCleanupFailure()
+			}
+		})
 		// This defer runs after the service's cleanup defer has joined scoped
 		// workers, so a panic during shutdown is not reported as a clean exit.
 		defer func() {
@@ -505,6 +535,9 @@ func (svr *Service) Run(ctx context.Context) (runErr error) {
 			<-reconnectDone
 		}
 		svr.stop()
+		if proxy.PluginCleanupFailed(ctx) {
+			runErr = errors.Join(runErr, ErrPluginCleanupFailed)
+		}
 		svr.lifecycleMu.Lock()
 		svr.closed = true
 		svr.lifecycleMu.Unlock()
@@ -619,12 +652,18 @@ func (svr *Service) keepControllerWorking() {
 	case <-svr.ctx.Done():
 		return
 	}
+	if proxy.PluginCleanupFailed(svr.ctx) {
+		return
+	}
 
 	// There is a situation where the login is successful but due to certain reasons,
 	// the control immediately exits. It is necessary to limit the frequency of reconnection in this case.
 	// The interval for the first three retries in 1 minute will be very short, and then it will increase exponentially.
 	// The maximum interval is 20 seconds.
 	wait.BackoffUntil(func() (bool, error) {
+		if proxy.PluginCleanupFailed(svr.ctx) {
+			return true, nil
+		}
 		// loopLoginUntilSuccess is another layer of loop that will continuously attempt to
 		// login to the server until successful.
 		svr.loopLoginUntilSuccess(20*time.Second, false)
@@ -635,6 +674,9 @@ func (svr *Service) keepControllerWorking() {
 			select {
 			case <-ctl.Done():
 			case <-svr.ctx.Done():
+				return true, nil
+			}
+			if proxy.PluginCleanupFailed(svr.ctx) {
 				return true, nil
 			}
 			return false, errors.New("control is closed and try another loop")
@@ -659,6 +701,9 @@ func (svr *Service) loopLoginUntilSuccess(maxInterval time.Duration, firstLoginE
 	xl := xlog.FromContextSafe(svr.ctx)
 
 	loginFunc := func() (bool, error) {
+		if proxy.PluginCleanupFailed(svr.ctx) {
+			return true, nil
+		}
 		xl.Infof("try to connect to server...")
 		dialer := &controlSessionDialer{
 			ctx:              svr.ctx,
@@ -698,7 +743,7 @@ func (svr *Service) loopLoginUntilSuccess(maxInterval time.Duration, firstLoginE
 		defer svr.reloadMu.Unlock()
 		svr.lifecycleMu.Lock()
 		defer svr.lifecycleMu.Unlock()
-		if svr.closed || svr.ctx.Err() != nil {
+		if svr.closed || svr.ctx.Err() != nil || proxy.PluginCleanupFailed(svr.ctx) {
 			_ = sessionCtx.Conn.Close()
 			_ = sessionCtx.Connector.Close()
 			return true, nil
@@ -739,16 +784,7 @@ func (svr *Service) UpdateAllConfigurer(proxyCfgs []v1.ProxyConfigurer, visitorC
 // Caller must hold reloadMu.
 func (svr *Service) updateAllConfigurerLocked(proxyCfgs []v1.ProxyConfigurer, visitorCfgs []v1.VisitorConfigurer) error {
 	if svr.isolateLogs {
-		for _, cfg := range proxyCfgs {
-			if err := ValidateRestrictedProxyConfigurer(cfg); err != nil {
-				return errors.New("proxy configuration is not supported by the isolated client")
-			}
-		}
-		for _, cfg := range visitorCfgs {
-			if cfg == nil || cfg.GetBaseConfig() == nil || cfg.GetBaseConfig().Plugin.Type != "" {
-				return errors.New("visitor configuration is not supported by the isolated client")
-			}
-		}
+		return ErrRestrictedConfigReload
 	}
 	trafficSnapshot, err := snapshotTraffic(svr.trafficBindings, proxyCfgs, visitorCfgs)
 	if err != nil {
@@ -802,6 +838,11 @@ func (svr *Service) updateConfigSourceLocked(
 	proxyCfgs []v1.ProxyConfigurer,
 	visitorCfgs []v1.VisitorConfigurer,
 ) error {
+	// This path is also used by the configuration manager. Reject before
+	// ReplaceAll so an isolated source cannot be partially changed.
+	if svr.isolateLogs {
+		return ErrRestrictedConfigReload
+	}
 	cfgSource := svr.configSource
 	if cfgSource == nil {
 		return fmt.Errorf("config source is not available")
@@ -930,6 +971,9 @@ func (svr *Service) reloadConfigFromSources() error {
 }
 
 func (svr *Service) reloadConfigFromSourcesLocked() error {
+	if svr.isolateLogs {
+		return ErrRestrictedConfigReload
+	}
 	aggregator := svr.aggregator
 	if aggregator == nil {
 		return errors.New("config aggregator is not initialized")

@@ -146,6 +146,8 @@ func (c *Client) run(ctx context.Context) {
 		c.panicked = panicked
 		reason := ExitStopped
 		switch {
+		case errors.Is(runErr, ErrCleanupFailed):
+			reason = ExitCleanupFailed
 		case panicked:
 			reason = ExitFailed
 		case runErr != nil && !(runErr == context.Canceled && c.state == ClientStopping && ctx.Err() == context.Canceled):

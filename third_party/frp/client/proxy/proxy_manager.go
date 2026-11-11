@@ -210,6 +210,9 @@ func (pm *Manager) UpdateAllWithTraffic(proxyCfgs []v1.ProxyConfigurer, counters
 			delPxyNames = append(delPxyNames, name)
 			delete(pm.proxies, name)
 			pxy.Stop()
+			if PluginCleanupFailed(pm.ctx) {
+				return
+			}
 		}
 	}
 	if len(delPxyNames) > 0 {
@@ -220,14 +223,21 @@ func (pm *Manager) UpdateAllWithTraffic(proxyCfgs []v1.ProxyConfigurer, counters
 	for _, cfg := range proxyCfgs {
 		name := cfg.GetBaseConfig().Name
 		if _, ok := pm.proxies[name]; !ok {
+			if PluginCleanupFailed(pm.ctx) {
+				return
+			}
 			pxy := newWrapper(pm.ctx, cfg, pm.clientCfg, pm.encryptionKey, pm.HandleEvent, pm.msgTransporter, pm.vnetController, pm.udpPacketCodec, counters.Proxy(name))
 			if pm.inWorkConnCallback != nil {
 				pxy.SetInWorkConnCallback(pm.inWorkConnCallback)
 			}
-			pm.proxies[name] = pxy
-			addPxyNames = append(addPxyNames, name)
-
-			pxy.Start()
+			if !startWithCleanPlugins(pm.ctx, func() {
+				pm.proxies[name] = pxy
+				addPxyNames = append(addPxyNames, name)
+				pxy.Start()
+			}) {
+				pxy.discardUnstarted()
+				return
+			}
 		}
 	}
 	if len(addPxyNames) > 0 {

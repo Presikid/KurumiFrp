@@ -30,7 +30,10 @@ var (
 // keeps its own copies. Proxies and visitors use their unprefixed config names.
 // Includes, store sources, frp admin/metrics servers, virtual net, OIDC and
 // token sources, upstream proxies and most plugins are unsupported. A TCP
-// proxy may use the isolated Unix-domain-socket plugin. Scoped DNS accepts an
+// proxy may use the isolated Unix-domain-socket or SOCKS5 plugin. SOCKS5
+// requires credentials and does not support client-side bandwidth limiting.
+// Configuration is fixed at construction; apply changes by creating a new
+// client generation. Scoped DNS accepts an
 // IP literal. Input completed with
 // upstream Complete may already
 // contain an inherited http_proxy; use ParseClientConfig or
@@ -47,6 +50,10 @@ type FRPClientOptions struct {
 	// OnPanic notifies the owner of a scoped worker or client lifecycle panic.
 	// It must be concurrent-safe, return promptly, and not panic.
 	OnPanic func()
+	// OnPluginCleanupFailure reports uncertain plugin cleanup immediately. It
+	// must be concurrent-safe, return promptly, and not panic or wait for this
+	// client to stop.
+	OnPluginCleanupFailure func()
 }
 
 type preparedFRPClient struct {
@@ -163,6 +170,7 @@ func NewFRPClient(options FRPClientOptions) (*Client, error) {
 		Traffic:                options.Traffic,
 		LogSink:                options.LogSink,
 		OnWorkerPanic:          options.OnPanic,
+		OnPluginCleanupFailure: options.OnPluginCleanupFailure,
 		ConfigSourceAggregator: source.NewAggregator(prepared.source),
 	})
 	if err != nil {
@@ -181,8 +189,15 @@ type frpService struct{ service *frpclient.Service }
 
 func (s *frpService) Run(ctx context.Context) error {
 	err := s.service.Run(ctx)
+	var classified error
 	if errors.Is(err, frpclient.ErrWorkerPanicked) {
-		return ErrClientWorkerPanicked
+		classified = errors.Join(classified, ErrClientWorkerPanicked)
+	}
+	if errors.Is(err, frpclient.ErrPluginCleanupFailed) {
+		classified = errors.Join(classified, ErrCleanupFailed)
+	}
+	if classified != nil {
+		return classified
 	}
 	if ctx.Err() == context.Canceled && errors.Is(err, frpclient.ErrServiceClosed) {
 		// Stop may close the service before its Run goroutine starts.
