@@ -137,8 +137,12 @@
    const control = async (node, instance, action) => {
     const notices = nodeNotices();
     if (!notices || notices.length) throw new Error('请先核对并解除已有远程操作记录。');
+    if (!/^[a-f0-9]{64}$/.test(instance.binding || '')) throw new Error('目标未提供实例身份绑定，不能安全执行远程操作。');
     const preview = await timeout('nodes/control', {id:node.id, stamp:node.stamp, instanceId:instance.id, action:'preview', version:''}, 10000);
-    if (!current() || preview.id !== node.id || preview.stamp !== node.stamp || preview.preview?.id !== instance.id || !/^[a-f0-9]{64}$/.test(preview.preview?.version || '')) throw new Error('远程实例状态已变化，请重新读取。');
+    if (!current() || preview.id !== node.id || preview.stamp !== node.stamp || preview.preview?.id !== instance.id || preview.preview?.binding !== instance.binding || preview.preview?.name !== instance.name || preview.preview?.kind !== instance.kind || preview.preview?.state !== instance.state || !/^[a-f0-9]{64}$/.test(preview.preview?.version || '')) {
+     results.delete(node.id); if (current()) paint();
+     throw new Error('远程实例身份或状态已变化，请重新读取。');
+    }
     if (!confirm(`对「${node.name} / ${preview.preview.name}」执行${({start:'启动',stop:'停止',restart:'重启'})[action]}？断线后操作仍可能完成。`)) return;
     const key = beginNodeNotice(node, instance, action); paintNotices();
     try {
@@ -202,6 +206,7 @@
   render() {
    return `<div class="page-head"><div><p class="eyebrow">SECURITY / ACCESS</p><h1>端口访问控制</h1><p>为本机端口设置来源规则，提交后立即应用到 Linux 防火墙。</p></div></div><div data-fw-root>正在读取配置…</div>`;
   },
+  hasUnsaved(root) { return root.dataset.dirty === 'true'; },
   mount(root) {
    const host = root.querySelector('[data-fw-root]');
    const current = () => K.isCurrent('firewall', root);
@@ -219,10 +224,11 @@
     host.innerHTML = `<section class="panel"><div class="panel-content"><p class="notice">${model.supported ? '规则同时作用于所选 TCP 和 UDP 端口。应用失败时请先核对内核状态。' : '当前系统不支持 Linux nftables；可查看已保存的配置。'}</p><p class="small-note">上次应用：${esc(model.lastResult || 'unknown')} ${esc(model.refreshStatus || '')} ${esc(model.restoreStatus || '')}</p><div class="actions"><button type="button" data-fw="reload">重新读取</button><button type="button" data-fw="seen" ${model.supported ? '' : 'disabled'}>查看拦截记录</button></div><div data-fw-seen></div><form data-fw-form><div class="form-grid"><label class="form-check"><input type="checkbox" name="filterEnabled" ${selected.enabled ? 'checked' : ''}>启用端口来源过滤</label><label class="form-check"><input type="checkbox" name="autoRestore" ${selected.autoRestore ? 'checked' : ''}>启动时恢复已保存规则</label><label class="form-check"><input type="checkbox" name="recordBlocked" ${selected.recordBlocked ? 'checked' : ''}>记录被拦截的来源</label></div><div data-fw-rules>${activeRules.map(ruleHTML).join('')}</div><div class="actions"><button type="button" data-fw="add-rule">＋ 添加规则</button><button class="primary" type="submit" ${model.supported ? '' : 'disabled'}>保存并应用</button></div></form></div></section>`;
    };
    const load = async () => {
-    try { const value = await timeout('firewall', undefined); if (!current()) return; model = value; paint(); }
+    try { const value = await timeout('firewall', undefined); if (!current()) return; model = value; root.dataset.dirty = 'false'; paint(); }
     catch (error) { if (current()) host.textContent = '读取失败：' + errorText(error); }
    };
    const settings = () => ({enabled:host.querySelector('[name="filterEnabled"]').checked, autoRestore:host.querySelector('[name="autoRestore"]').checked, recordBlocked:host.querySelector('[name="recordBlocked"]').checked});
+   for (const type of ['input', 'change']) host.addEventListener(type, event => { if (event.target.closest('[data-fw-form]')) root.dataset.dirty = 'true'; });
    host.addEventListener('submit', async event => {
     if (!event.target.matches('[data-fw-form]')) return;
     event.preventDefault(); if (busy || !model?.supported) return;
@@ -241,7 +247,7 @@
      const rules = readRules(), values = settings(), section = button.closest('[data-fw-rule]'), index = [...host.querySelectorAll('[data-fw-rule]')].indexOf(section);
      if (action === 'add-rule') { if (rules.length >= 16) {toast('最多支持 16 条规则。'); return;} rules.push({mode:'block', enabled:true, ports:'', sources:''}); }
      else rules.splice(index, 1);
-     paint(rules, values); return;
+     paint(rules, values); root.dataset.dirty = 'true'; return;
     }
     busy = true; button.disabled = true;
     try {
@@ -271,6 +277,7 @@
       let append = false;
       if (sources.value.trim() && action !== 'normalize' && !confirm('用此次结果替换当前来源？')) { if (!confirm('将此次结果追加到当前来源？')) return; append = true; }
       sources.value = (append ? sources.value.trim() + '\n' : '') + result.prefixes.join('\n');
+      root.dataset.dirty = 'true';
       toast('来源已填入编辑器，尚未应用。');
      }
     } catch (error) { if (current()) toast(errorText(error)); }
