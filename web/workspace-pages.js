@@ -240,11 +240,37 @@
     <div class="stat-grid"><div class="stat"><span>${admin(data) ? '实例' : '授权实例'}</span><strong>${instances.length}</strong></div><div class="stat"><span>运行中</span><strong>${running}</strong></div><div class="stat"><span>${admin(data) ? '规则草稿' : '授权规则草稿'}</span><strong>${configAllowed ? tunnels.length : '—'}</strong></div><div class="stat"><span>配置待应用</span><strong>${configAllowed ? pending : '—'}</strong></div></div>
     <div class="two-column"><section class="panel"><div class="panel-content"><div class="section-heading"><h2>实例状态</h2>${button('go-instances','查看全部')}</div>${instances.length ? `<div class="table-wrap"><table><thead><tr><th>名称</th><th>类型</th><th>状态</th></tr></thead><tbody>${instances.map(item => `<tr><td>${e(item.name)}</td><td>${e(item.kind)}</td><td>${status(runtimeFor(data,item.id))}</td></tr>`).join('')}</tbody></table></div>` : empty('尚无实例','创建客户端或服务端实例后在这里查看。','empty-welcome')}</div></section>
     <section class="panel"><div class="panel-content"><div class="section-heading"><h2>最近变更</h2><span class="pill">草稿 r${data.revision}</span></div>${!admin(data) ? empty('无查看权限','变更记录仅供管理员查看。') : recent.length ? `<div>${recent.map(item => `<p>${e(item.message)}<br><small>${e(item.at ? new Date(item.at).toLocaleString('zh-CN') : '')}</small></p>`).join('')}</div>` : empty('暂无记录','配置变更后将显示在这里。')}</div></section></div><p class="small-note">实例运行不等于代理已注册或公网可达。草稿变更需重新应用到实例。</p>
+    ${admin(data) ? `<section class="panel"><div class="panel-content"><div class="section-heading"><h2>远程节点后台观测</h2><div class="actions">${button('node-observation-refresh','刷新观测')}${button('go-nodes','管理节点')}</div></div><p class="small-note">显示本次工作台进程的后台拉取结果；刷新只读取本机观测，不会主动检查远端。</p><div data-node-observations role="status">正在读取…</div></div></section>` : ''}
     ${trafficAllowed && instances.length ? `<section class="panel"><div class="panel-content"><div class="section-heading"><div><h2>实例流量</h2><p class="small-note">当前运行代次与近 90 天的已记录采样。</p></div><div class="actions">${button('traffic-refresh','刷新流量')}${button('traffic-export','导出历史 CSV')}</div></div><label>实例<select data-traffic-instance>${instances.map(item => `<option value="${e(item.id)}" ${item.id === selected ? 'selected' : ''}>${e(item.name)} · ${e(item.kind)}</option>`).join('')}</select></label><div data-traffic-output>正在读取…</div><div data-traffic-budget role="status">正在读取月度提醒…</div><div data-traffic-history></div></div></section>` : ''}`;
   },
   mount(root,data) {
    const picker = root.querySelector('[data-traffic-instance]');
    let serial = 0, history = null, budget = null;
+   let nodeSerial = 0;
+   const nodeEpoch = K.epoch();
+   async function loadNodeObservations() {
+    const output = root.querySelector('[data-node-observations]');
+    if (!output || !admin(data)) return;
+    const sequence = ++nodeSerial;
+    const current = () => sequence === nodeSerial && nodeEpoch === K.epoch() && K.isCurrent('overview',root) && K.state()?.identity?.role === 'admin';
+    output.textContent = '正在读取…';
+    try {
+     const result = await K.api('nodes');
+     if (!current()) return;
+     if (!result || !Array.isArray(result.nodes)) throw new Error('节点观测格式无效。');
+     const nodes = result.nodes.filter(node => node?.monitorEnabled === true);
+     if (!nodes.length) { output.textContent = '暂无启用后台检查的节点。'; return; }
+     const labels = {available:'可用',pending:'待复查',unavailable:'未确认可用'};
+     const time = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('zh-CN') : '—';
+     output.innerHTML = `<div class="table-wrap"><table><thead><tr><th>节点</th><th>最近后台检查</th><th>最近成功</th></tr></thead><tbody>${nodes.map(node => {
+      const status = node.monitorStatus;
+      const state = status ? (labels[status.state] || '状态未知') : '等待首次检查';
+      return `<tr><td>${e(node.name)}</td><td>${e(state)}${status?.checkedAt ? ' · '+e(time(status.checkedAt)) : ''}</td><td>${status?.lastSuccessAt ? e(time(status.lastSuccessAt)) : '本次运行尚无成功观测'}</td></tr>`;
+     }).join('')}</tbody></table></div>`;
+    } catch (error) {
+     if (current()) output.textContent = '读取后台观测失败：'+error.message;
+    }
+   }
    const bytes = value => typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value) ? value.replace(/\B(?=(\d{3})+(?!\d))/g, ',').replace(/,/g,',<wbr>') + ' B' : '—';
    const rate = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value.toLocaleString('zh-CN',{maximumFractionDigits:2}) + ' B/s' : '—';
    const table = (items, server) => items.length ? `<div class="table-wrap"><table><thead><tr><th>${server ? '代理' : '规则'}</th><th>类型</th><th>接收</th><th>发送</th></tr></thead><tbody>${items.map(item => `<tr><td>${e(item.name)}</td><td>${e(item.type || item.kind)}</td><td>${bytes(item.receivedBytes)}</td><td>${bytes(item.sentBytes)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="small-note">暂无可显示的明细。</p>';
@@ -325,10 +351,13 @@
     },10000);
    }
    if (picker) { picker.addEventListener('change',() => { void loadTraffic(); }); void loadTraffic(); schedule(); }
-   overviewCleanup = () => { ++serial; clearTimeout(timer); };
+   if (admin(data)) void loadNodeObservations();
+   overviewCleanup = () => { ++serial; ++nodeSerial; clearTimeout(timer); };
    bindButtons(root, action => {
     if (action === 'go-instances') K.navigate('instances');
     if (action === 'go-rules') K.navigate('tunnels');
+    if (action === 'go-nodes') K.navigate('nodes');
+    if (action === 'node-observation-refresh') return loadNodeObservations();
     if (action === 'traffic-refresh') return loadTraffic();
     if (action === 'traffic-budget-edit') {
      const current = budget, id = picker?.value, instance = data.state.instances.find(item => item.id === id);

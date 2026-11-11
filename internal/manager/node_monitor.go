@@ -14,6 +14,7 @@ type nodeMonitorObservation struct {
 	state     string
 	reason    string
 	checkedAt string
+	lastSuccessAt string
 	failures  int
 }
 
@@ -21,6 +22,7 @@ type nodeMonitorView struct {
 	State     string `json:"state"`
 	Reason    string `json:"reason,omitempty"`
 	CheckedAt string `json:"checkedAt"`
+	LastSuccessAt string `json:"lastSuccessAt,omitempty"`
 }
 
 func (a *App) nodeMonitorLoop(ctx context.Context) {
@@ -108,6 +110,7 @@ func (a *App) recordNodeMonitor(id, stamp string, code int, checkErr error) {
 	observation.checkedAt = now()
 	if checkErr == nil {
 		observation.state, observation.reason, observation.failures = "available", "", 0
+		observation.lastSuccessAt = observation.checkedAt
 	} else {
 		if observation.failures < 2 {
 			observation.failures++
