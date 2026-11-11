@@ -10,7 +10,7 @@ import (
 // Every API method has an explicit policy. Unknown methods and future routes
 // are denied for all identities until they are deliberately added here.
 func routeAllowed(p principal, r *http.Request) bool {
-	if r.URL.Path == "/api/maintenance" && (r.Method == http.MethodGet || r.Method == http.MethodPost) {
+	if (r.URL.Path == "/api/maintenance" || r.URL.Path == "/api/node-agents") && (r.Method == http.MethodGet || r.Method == http.MethodPost) {
 		return p.admin()
 	}
 	if r.Method == http.MethodPost && (r.URL.Path == "/api/logout" || r.URL.Path == "/api/password") {

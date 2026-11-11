@@ -610,6 +610,9 @@ func (a *App) Close() error {
 			op.cancel()
 		}
 		a.mu.Unlock()
+		if a.agentReceiver != nil {
+			a.agentReceiver.close()
+		}
 		if a.agentReporter != nil {
 			a.agentReporter.stop()
 		}

@@ -55,6 +55,7 @@ type App struct {
 	activeNodeChecks    int
 	nodeMonitors        map[string]nodeMonitorObservation
 	agentReporter       *outboundAgentManager
+	agentReceiver       *inboundAgentRegistry
 	activeBackup        bool
 	activeRegistration  bool
 	activeHealth        bool
@@ -159,6 +160,9 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 		return nil, e
 	}
 	app.trafficDaily = loadTrafficDaily(s.dir, s.DB.State, s.DB.LocalTrafficIDs)
+	// An unreadable registration file disables only inbound reporting and is
+	// retained for repair; it must never be silently replaced.
+	app.agentReceiver, _ = newInboundAgentRegistry(s)
 	app.trafficBudget = loadTrafficBudgets(s.dir)
 	app.firewall = loadFirewall(s.dir)
 	app.maintenance = loadMaintenanceMode(s.dir)
@@ -289,6 +293,14 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.nodeControlAPI(w, r)
 		return
 	}
+	if r.URL.Path == "/api/node-agent/session" || r.URL.Path == "/api/node-agent/report" {
+		if a.agentReceiver == nil {
+			fail(w, http.StatusServiceUnavailable, fmt.Errorf("主动节点接收服务不可用"))
+			return
+		}
+		a.agentReceiver.serveAgent(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		var p principal
 		var ok bool
@@ -319,6 +331,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r = withPrincipal(r, p)
+		if r.URL.Path == "/api/node-agents" {
+			a.inboundAgentAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/maintenance" {
 			a.maintenanceAPI(w, r)
 			return
