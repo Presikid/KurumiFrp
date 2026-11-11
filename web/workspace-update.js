@@ -191,10 +191,12 @@
  async function install(view) {
   if (!current(view) || posting || pending || view.listLoading || view.statusLoading || !view.statusKnown || running(view.status)) return;
   const tag = view.root.querySelector('[data-update-choice]').value;
-  if (!view.versions.some(version => version.tag === tag && eligible(version))) {
+  const selected = view.versions.find(version => version.tag === tag && eligible(version));
+  if (!selected) {
    K.toast('所选版本不可安装，请重新检查版本。'); return;
   }
-  if (!confirm(`确认更新到 ${tag}？更新可能中断工作台和托管连接，安装后请重新打开并核对版本。`)) return;
+  const channelNote = selected.metadataFallback ? '\n此版本的发布状态尚未确认，请先核对发布页面。' : selected.prerelease ? '\n这是预发布版本，请确认需要安装。' : '';
+  if (!confirm(`确认更新到 ${tag}（${versionChannel(selected)}）？更新可能中断工作台和托管连接，安装后请重新打开并核对版本。${channelNote}`)) return;
   if (!current(view) || posting || pending || view.statusLoading || !view.statusKnown || running(view.status) || !view.versions.some(version => version.tag === tag && eligible(version))) return;
   stopPoll(view);
   view.statusController?.abort(); view.statusController = null; view.statusLoading = false;
