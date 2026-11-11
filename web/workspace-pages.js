@@ -387,16 +387,17 @@
   render(data) {
    const rows = data.state.tunnels || [];
    if (!admin(data) && !data.identity?.viewConfig) return head('连接规则','当前账户没有配置详情查看权限。') + empty('无查看权限','请联系管理员授予配置查看权限。');
+   const clients = (data.state.instances || []).filter(item => item.kind === 'frpc');
    const actions = admin(data) ? button('batch-create','批量创建') + button('new-tunnel','新建规则','','primary') : '';
    const cards = rows.map(rule => {
     const instance = data.state.instances.find(item => item.id === rule.instanceId), unavailable = Protocols.probeUnavailable(rule);
-    return `<article class="card" data-rule="${e(rule.id)}" data-search="${e([rule.name,rule.type,rule.localHost,rule.localPort,rule.remotePort,instance?.name,Protocols.remote(rule)].join(' ').toLocaleLowerCase())}" data-type="${e(rule.type)}"><div class="section-heading"><div>${admin(data) ? `<label class="form-check"><input type="checkbox" data-select="${e(rule.id)}">选择</label>` : ''}<h2>${e(rule.name)}</h2><span class="muted">${e(instance?.name || '未知实例')} · ${e(rule.type)}</span></div><span class="pill">${rule.enabled ? '草稿启用' : '草稿停用'}</span></div>
+    return `<article class="card" data-rule="${e(rule.id)}" data-instance-id="${e(rule.instanceId)}" data-search="${e([rule.name,rule.type,rule.localHost,rule.localPort,rule.remotePort,instance?.name,Protocols.remote(rule)].join(' ').toLocaleLowerCase())}" data-type="${e(rule.type)}"><div class="section-heading"><div>${admin(data) ? `<label class="form-check"><input type="checkbox" data-select="${e(rule.id)}">选择</label>` : ''}<h2>${e(rule.name)}</h2><span class="muted">${e(instance?.name || '未知实例')} · ${e(rule.type)}</span></div><span class="pill">${rule.enabled ? '草稿启用' : '草稿停用'}</span></div>
      <p><span class="muted">本地目标 / 监听</span> <code>${e(Protocols.endpoint(rule))}</code> → <span class="muted">远端 / 配对</span> <code>${e(Protocols.remote(rule))}</code></p>
      <p>实例：<span data-rule-runtime="${e(rule.instanceId)}">${status(runtimeFor(data,rule.instanceId))}</span> · 代理注册：<span data-registration="${e(rule.id)}">等待读取</span></p><p class="small-note" data-probe="${e(rule.id)}"></p>
      ${admin(data) ? `<div class="actions">${button('probe',unavailable ? '不支持检测' : '检测目标',rule.id)}${button('edit-tunnel','编辑',rule.id)}${button('duplicate-tunnel','复制',rule.id)}${button('toggle',rule.enabled ? '草稿停用' : '草稿启用',rule.id)}${button('delete-tunnel','删除',rule.id,'danger')}</div>` : ''}</article>`;
    }).join('');
    return head('连接规则','筛选规则并查看草稿状态；修改不会自动应用到运行中的实例。',actions) +
-    `<p class="notice" data-rules-stale hidden>草稿已变化，请刷新后重新选择并操作。</p><div class="toolbar"><label>搜索<input type="search" data-filter placeholder="规则、实例或地址"></label><label>协议<select data-protocol><option value="">全部协议</option>${Protocols.types.map(type => `<option value="${e(type)}">${e(type)}</option>`).join('')}</select></label>${admin(data) && rows.length ? button('probe-visible','检测当前筛选') : ''}</div>
+    `<p class="notice" data-rules-stale hidden>草稿已变化，请刷新后重新选择并操作。</p><div class="toolbar"><label>搜索<input type="search" data-filter placeholder="规则、实例或地址"></label><label>协议<select data-protocol><option value="">全部协议</option>${Protocols.types.map(type => `<option value="${e(type)}">${e(type)}</option>`).join('')}</select></label><label>客户端<select data-rule-instance><option value="">全部客户端</option>${clients.map(item => `<option value="${e(item.id)}">${e(item.name)}</option>`).join('')}</select></label>${admin(data) && rows.length ? button('probe-visible','检测当前筛选') : ''}</div>
     ${admin(data) && rows.length ? `<div class="toolbar"><label class="form-check"><input type="checkbox" data-select-visible>选择当前筛选</label><span data-selection-count>已选 0 条</span><div class="actions">${button('batch-copy','批量复制')}${button('batch-enable','批量启用')}${button('batch-disable','批量停用')}${button('batch-delete','批量删除','','danger')}${button('batch-export','导出 ZIP')}${button('batch-export-toml','导出 TOML')}</div></div>` : ''}
     <div class="cards" data-rule-list>${cards || empty('暂无规则',admin(data) ? '先创建 frpc 客户端，再添加规则。' : '当前授权实例没有可显示的规则。','empty-search')}</div><p class="small-note" data-filter-empty hidden>没有匹配的规则。</p>`;
   },
@@ -405,13 +406,14 @@
    const selected = new Set(), cards = [...root.querySelectorAll('[data-rule]')];
    const refreshSelection = () => { const label = root.querySelector('[data-selection-count]'); if (label) label.textContent = `已选 ${selected.size} 条`; };
    const applyFilter = () => {
-    const query = root.querySelector('[data-filter]').value.toLocaleLowerCase(), type = root.querySelector('[data-protocol]').value;
-    selected.clear(); cards.forEach(card => { card.hidden = !card.dataset.search.includes(query) || (!!type && card.dataset.type !== type); const checkbox = card.querySelector('[data-select]'); if (checkbox) checkbox.checked = false; });
+    const query = root.querySelector('[data-filter]').value.toLocaleLowerCase(), type = root.querySelector('[data-protocol]').value, instance = root.querySelector('[data-rule-instance]').value;
+    selected.clear(); cards.forEach(card => { card.hidden = !card.dataset.search.includes(query) || (!!type && card.dataset.type !== type) || (!!instance && card.dataset.instanceId !== instance); const checkbox = card.querySelector('[data-select]'); if (checkbox) checkbox.checked = false; });
     const all = root.querySelector('[data-select-visible]'); if (all) all.checked = false;
     root.querySelector('[data-filter-empty]').hidden = !cards.length || cards.some(card => !card.hidden); refreshSelection();
    };
    root.querySelector('[data-filter]').addEventListener('input',applyFilter);
    root.querySelector('[data-protocol]').addEventListener('change',applyFilter);
+   root.querySelector('[data-rule-instance]').addEventListener('change',applyFilter);
    root.addEventListener('change',event => {
     if (event.target.matches('[data-select]')) { if (event.target.checked) selected.add(event.target.dataset.select); else selected.delete(event.target.dataset.select); refreshSelection(); }
     if (event.target.matches('[data-select-visible]')) { cards.filter(card => !card.hidden).forEach(card => { const input = card.querySelector('[data-select]'); if (!input) return; input.checked = event.target.checked; if (input.checked) selected.add(input.dataset.select); else selected.delete(input.dataset.select); }); refreshSelection(); }
