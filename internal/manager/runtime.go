@@ -319,6 +319,12 @@ func runtimeConfig(i Instance, r Rendered) RuntimeConfig {
 	return RuntimeConfig{InstanceID: i.ID, Kind: i.Kind, Rendered: r, ServerAccessMode: i.ServerAccessMode, ServerAccessList: i.ServerAccessList}
 }
 
+func cloneRuntimeConfig(cfg RuntimeConfig) RuntimeConfig {
+	cfg.Rendered.Env = append([]string(nil), cfg.Rendered.Env...)
+	cfg.Rendered.Secrets = append([]string(nil), cfg.Rendered.Secrets...)
+	return cfg
+}
+
 func (a *App) verify(i Instance, r Rendered) (string, error) {
 	target, e := a.resolveRuntime(i.Kind)
 	if e != nil {
@@ -327,6 +333,13 @@ func (a *App) verify(i Instance, r Rendered) (string, error) {
 	return a.verifyRuntime(context.Background(), target, i, r)
 }
 func (a *App) verifyRuntime(parent context.Context, target string, i Instance, r Rendered) (string, error) {
+	return a.verifyRuntimeConfig(parent, target, i, runtimeConfig(i, r))
+}
+
+func (a *App) verifyRuntimeConfig(parent context.Context, target string, i Instance, config RuntimeConfig) (string, error) {
+	if err := a.checkManagedAccountBackend(i, config); err != nil {
+		return "", err
+	}
 	if err := a.checkControlAccessBackend(i); err != nil {
 		return "", err
 	}
@@ -338,8 +351,8 @@ func (a *App) verifyRuntime(parent context.Context, target string, i Instance, r
 	}
 	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
-	output, err := a.runtime.Verify(ctx, target, runtimeConfig(i, r))
-	output = redact(output, r.Secrets)
+	output, err := a.runtime.Verify(ctx, target, cloneRuntimeConfig(config))
+	output = redact(output, config.Rendered.Secrets)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return output, fmt.Errorf("frp 配置检查超时")
 	}
@@ -347,7 +360,7 @@ func (a *App) verifyRuntime(parent context.Context, target string, i Instance, r
 		return output, fmt.Errorf("frp 配置检查已取消")
 	}
 	if err != nil {
-		return output, errors.New(redact(err.Error(), r.Secrets))
+		return output, errors.New(redact(err.Error(), config.Rendered.Secrets))
 	}
 	return output, nil
 }
@@ -374,8 +387,21 @@ func (a *App) startPrepared(i Instance, r Rendered, target string) error {
 // startPreparedWithSource is called with a.mu held. Automatic restoration
 // records later asynchronous startup failures against this generation.
 func (a *App) startPreparedWithSource(i Instance, r Rendered, target string, autoStart bool) error {
+	return a.startPreparedConfigWithSource(i, runtimeConfig(i, r), target, autoStart)
+}
+
+func (a *App) startPreparedConfigWithSource(i Instance, cfg RuntimeConfig, target string, autoStart bool) error {
 	if a.closing {
 		return fmt.Errorf("工作台正在关闭")
+	}
+	if err := a.checkManagedAccountBackend(i, cfg); err != nil {
+		return err
+	}
+	if cfg.ManagedAccountLogin {
+		current, ok := a.store.DB.State.Instance(i.ID)
+		if !ok || current.Kind != i.Kind || a.store.DB.LocalTrafficIDs[i.ID] != cfg.ManagedAccountIncarnation {
+			return fmt.Errorf("服务端实例或实例标识已变化，请重新校验")
+		}
 	}
 	if err := a.checkTrafficBudgetStartLocked(i); err != nil {
 		return err
@@ -392,6 +418,7 @@ func (a *App) startPreparedWithSource(i Instance, r Rendered, target string, aut
 	if p := a.procs[i.ID]; p.active() {
 		return fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
+	r := cfg.Rendered
 	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), appliedConfig: r.Text, appliedDigest: r.Digest, appliedSecretDigest: r.SecretDigest, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
 	for _, tunnel := range a.store.DB.State.clone().Tunnels {
 		if tunnel.InstanceID == i.ID && tunnel.Enabled {
@@ -401,7 +428,7 @@ func (a *App) startPreparedWithSource(i Instance, r Rendered, target string, aut
 			}
 		}
 	}
-	config := runtimeConfig(i, r)
+	config := cloneRuntimeConfig(cfg)
 	config.RunID = randomHex(8)
 	instance, err := a.runtime.Start(target, config, p.logs)
 	if err != nil {

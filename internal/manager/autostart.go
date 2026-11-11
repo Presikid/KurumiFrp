@@ -60,7 +60,7 @@ func (a *App) recordAutoStartFailureLocked(ctx context.Context, req runtimeReque
 		message = "自动恢复期间配置已变化，请检查后手动启动"
 	} else if len(err.Error()) > 4096 {
 		message = "失败信息过长，已隐藏；请手动校验配置后重试"
-	} else if safe := safeStatusText(err.Error(), snapshot.rendered.Secrets); safe != "" {
+	} else if safe := safeStatusText(err.Error(), snapshot.config.Rendered.Secrets); safe != "" {
 		message = strings.ToValidUTF8(safe, "")
 	}
 	if a.startupErrors == nil {
@@ -73,7 +73,7 @@ func (a *App) recordAutoStartFailureLocked(ctx context.Context, req runtimeReque
 }
 
 func (a *App) restoreOne(snapshot runtimeSnapshot, op *runtimeOperation) error {
-	if _, err := a.verifyRuntime(op.ctx, snapshot.target, snapshot.instance, snapshot.rendered); err != nil {
+	if _, err := a.verifyRuntimeConfig(op.ctx, snapshot.target, snapshot.instance, snapshot.config); err != nil {
 		return fmt.Errorf("配置校验失败：%w", err)
 	}
 	a.mu.Lock()
@@ -84,5 +84,5 @@ func (a *App) restoreOne(snapshot runtimeSnapshot, op *runtimeOperation) error {
 	}
 	// Scheduled launches have their own failure state; do not attribute them
 	// to restoration merely because the same launch helper is shared.
-	return a.startPreparedWithSource(snapshot.instance, snapshot.rendered, snapshot.target, snapshot.scheduleVersion == "")
+	return a.startPreparedConfigWithSource(snapshot.instance, snapshot.config, snapshot.target, snapshot.scheduleVersion == "")
 }

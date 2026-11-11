@@ -21,7 +21,8 @@ type runtimeRequest struct {
 
 type runtimeSnapshot struct {
 	instance        Instance
-	rendered        Rendered
+	config          RuntimeConfig
+	incarnation     string
 	target          string
 	revision        uint64
 	process         *process
@@ -118,7 +119,7 @@ func (a *App) beginRuntimeOperationSourceLocked(parent context.Context, req runt
 	if !validate && req.Action == "start" && p.active() {
 		return snapshot, nil, http.StatusBadRequest, fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
-	snapshot = runtimeSnapshot{instance: i, revision: req.Revision, process: p}
+	snapshot = runtimeSnapshot{instance: i, incarnation: a.store.DB.LocalTrafficIDs[i.ID], revision: req.Revision, process: p}
 	if a.nodeOperationVersions == nil {
 		a.nodeOperationVersions = make(map[string]string)
 	}
@@ -142,7 +143,8 @@ func (a *App) beginRuntimeOperationSourceLocked(parent context.Context, req runt
 	}
 	if validate || req.Action != "stop" {
 		var err error
-		snapshot.rendered, err = a.store.render(req.ID, false)
+		rendered, err := a.store.render(req.ID, false)
+		snapshot.config = runtimeConfig(i, rendered)
 		if err != nil {
 			return snapshot, nil, http.StatusBadRequest, fmt.Errorf("无法生成实例配置：%w", err)
 		}
@@ -194,8 +196,17 @@ func (a *App) checkRuntimeSnapshot(ctx context.Context, snapshot runtimeSnapshot
 	if a.store.DB.Revision != snapshot.revision || a.procs[snapshot.instance.ID] != snapshot.process {
 		return http.StatusConflict, fmt.Errorf("操作期间配置或进程已变化，请刷新后重试")
 	}
+	if snapshot.config.ManagedAccountLogin {
+		if err := a.checkManagedAccountBackend(snapshot.instance, snapshot.config); err != nil {
+			return http.StatusConflict, err
+		}
+		if snapshot.config.ManagedAccountIncarnation != snapshot.incarnation ||
+			a.store.DB.LocalTrafficIDs[snapshot.instance.ID] != snapshot.incarnation {
+			return http.StatusConflict, fmt.Errorf("操作期间服务端实例标识已变化，请刷新后重试")
+		}
+	}
 	rendered, err := a.store.render(snapshot.instance.ID, false)
-	if err != nil || rendered.Digest != snapshot.rendered.Digest {
+	if err != nil || rendered.Digest != snapshot.config.Rendered.Digest {
 		return http.StatusConflict, fmt.Errorf("操作期间实例配置已变化，请重新验证后应用")
 	}
 	target, err := a.resolveRuntime(snapshot.instance.Kind)
@@ -277,7 +288,7 @@ func (a *App) runRuntimeOperation(w http.ResponseWriter, req runtimeRequest, val
 		return
 	}
 
-	output, err := a.verifyRuntime(op.ctx, snapshot.target, snapshot.instance, snapshot.rendered)
+	output, err := a.verifyRuntimeConfig(op.ctx, snapshot.target, snapshot.instance, snapshot.config)
 	if err != nil {
 		failure(http.StatusBadRequest, err)
 		return
@@ -313,7 +324,7 @@ func (a *App) runRuntimeOperation(w http.ResponseWriter, req runtimeRequest, val
 	a.mu.Lock()
 	status, err = a.checkRuntimeSnapshot(op.ctx, snapshot)
 	if err == nil {
-		err = a.startPrepared(snapshot.instance, snapshot.rendered, snapshot.target)
+		err = a.startPreparedConfigWithSource(snapshot.instance, snapshot.config, snapshot.target, false)
 		if err != nil {
 			status = http.StatusBadRequest
 			if _, ok := err.(trafficBudgetStartError); ok {
