@@ -571,19 +571,19 @@ func stopProcess(p *process) error {
 }
 
 // A nonempty run ID requires the same running generation at the point the
-// stop is claimed. This prevents a conditional restart from starting an
-// instance that stopped during verification.
+// stop is claimed. Conditional stops and restarts cannot affect a replacement
+// that started after the caller observed the previous run.
 func stopProcessGuarded(p *process, runID string) error {
 	if !p.active() {
 		if runID != "" {
-			return fmt.Errorf("实例运行状态或代次已变化，未重启")
+			return fmt.Errorf("实例运行状态或代次已变化，未停止目标运行代次")
 		}
 		return nil
 	}
 	p.mu.Lock()
 	if runID != "" && !p.runningAsLocked(runID) {
 		p.mu.Unlock()
-		return fmt.Errorf("实例运行状态或代次已变化，未重启")
+		return fmt.Errorf("实例运行状态或代次已变化，未停止目标运行代次")
 	}
 	if !p.stopRequested && !p.upEmitted && p.readiness != nil {
 		// Observe failure before recording the first stop request. A second
