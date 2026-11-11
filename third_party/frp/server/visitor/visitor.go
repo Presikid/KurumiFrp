@@ -67,7 +67,23 @@ func (vm *Manager) Listen(name string, sk string, allowUsers []string) (*netpkg.
 func (vm *Manager) NewConn(name string, conn net.Conn, timestamp int64, signKey string,
 	useEncryption bool, useCompression bool, visitorUser string,
 	wireProtocol string, udpPacketCodecs ...string,
-) (err error) {
+) error {
+	rejected, err := vm.NewConnDeferredClose(name, conn, timestamp, signKey,
+		useEncryption, useCompression, visitorUser, wireProtocol, udpPacketCodecs...)
+	if rejected != nil {
+		_ = rejected.Close()
+	}
+	return err
+}
+
+// NewConnDeferredClose admits a visitor without closing a full-queue
+// connection under the manager lock. A non-nil rejected connection belongs to
+// the caller and must be closed after any outer admission locks are released.
+// On error, the original conn remains the caller's responsibility.
+func (vm *Manager) NewConnDeferredClose(name string, conn net.Conn, timestamp int64, signKey string,
+	useEncryption bool, useCompression bool, visitorUser string,
+	wireProtocol string, udpPacketCodecs ...string,
+) (rejected net.Conn, err error) {
 	udpPacketCodec := ""
 	if len(udpPacketCodecs) > 0 {
 		udpPacketCodec = udpPacketCodecs[0]
@@ -98,12 +114,19 @@ func (vm *Manager) NewConn(name string, conn net.Conn, timestamp int64, signKey 
 		}
 		visitorConn := netpkg.WrapReadWriteCloserToConn(rwc, conn)
 		response, _ := conn.(interface{ WaitVisitorResponse(context.Context) bool })
-		err = l.l.PutConn(&wireProtocolConn{
+		wrapped := &wireProtocolConn{
 			Conn:           visitorConn,
 			wireProtocol:   wireProtocol,
 			udpPacketCodec: udpPacketCodec,
 			response:       response,
-		})
+		}
+		accepted, err := l.l.TryPutConn(wrapped)
+		if err != nil {
+			return nil, err
+		}
+		if !accepted {
+			return wrapped, nil
+		}
 	} else {
 		err = fmt.Errorf("custom listener for [%s] doesn't exist", name)
 		return
