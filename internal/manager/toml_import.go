@@ -528,6 +528,7 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 		}
 		i.LoginFailExit = m.boolean(root, "loginFailExit", "", true)
 		i.ClientTLSDisabled = !m.boolean(root, "transport.tls.enable", "", true)
+		i.ClientTLSUseSystemCA = m.boolean(root, "transport.tls.useSystemCa", "", false)
 		i.User = m.str(root, "user", "", "")
 		i.NatHoleSTUNServer = m.str(root, "natHoleStunServer", "", "")
 		i.DNSServer = m.str(root, "dnsServer", "", "")

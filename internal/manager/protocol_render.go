@@ -23,6 +23,9 @@ func renderProtocolInstance(b *strings.Builder, i Instance) error {
 		fmt.Fprintf(b, "transport.tcpMuxKeepaliveInterval = %d\n", i.MuxKeepalive)
 	}
 	if i.Kind == "frpc" {
+		if i.ClientTLSUseSystemCA {
+			fmt.Fprintln(b, "transport.tls.useSystemCa = true")
+		}
 		if i.ClientTransport != "" && i.ClientTransport != "tcp" {
 			fmt.Fprintf(b, "transport.protocol = %s\n", quote(i.ClientTransport))
 		}

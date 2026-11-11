@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"io"
 )
 
@@ -48,6 +49,24 @@ type RuntimeBackend interface {
 // control-entry policy. A runtime must reject unsupported policy values.
 type ControlAccessCapable interface {
 	SupportsControlAccess() bool
+}
+
+// SystemCATLSCapable opts a runtime into enforcing frpc's system-CA TLS
+// verification. A supporting backend must honor transport.tls.useSystemCa
+// for every accepted client transport and must not silently fall back.
+type SystemCATLSCapable interface {
+	SupportsSystemCATLS() bool
+}
+
+func (a *App) checkSystemCATLSBackend(i Instance) error {
+	if !i.ClientTLSUseSystemCA {
+		return nil
+	}
+	backend, ok := a.runtime.(SystemCATLSCapable)
+	if !ok || !backend.SupportsSystemCATLS() {
+		return fmt.Errorf("当前运行核心不支持使用系统信任库验证服务端证书")
+	}
+	return nil
 }
 
 // RuntimeInstance represents exactly one generation. Wait is called once and

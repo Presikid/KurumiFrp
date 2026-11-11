@@ -257,6 +257,9 @@ func validateProtocolInstance(i Instance) error {
 		if i.ClientTLSDisabled && (i.ClientTransport == "wss" || i.ClientTransport == "quic") {
 			return fmt.Errorf("WSS 和 QUIC 连接必须使用 TLS")
 		}
+		if i.ClientTLSUseSystemCA && i.ClientTLSDisabled {
+			return fmt.Errorf("使用系统证书验证服务端时不能关闭客户端 TLS")
+		}
 		if i.User != "" && !namePattern.MatchString(i.User) {
 			return fmt.Errorf("客户端用户名称无效")
 		}
@@ -271,7 +274,7 @@ func validateProtocolInstance(i Instance) error {
 			return fmt.Errorf("客户端不能设置服务端 TCPMUX 或子域名选项")
 		}
 	} else {
-		if i.User != "" || i.NatHoleSTUNServer != "" || i.DNSServer != "" || i.ClientTransport != "" || i.LoginFailExit || i.ClientTLSDisabled {
+		if i.User != "" || i.NatHoleSTUNServer != "" || i.DNSServer != "" || i.ClientTransport != "" || i.LoginFailExit || i.ClientTLSDisabled || i.ClientTLSUseSystemCA {
 			return fmt.Errorf("服务端不能设置客户端连接、用户、STUN 或 DNS 选项")
 		}
 		if i.TCPMuxPassthrough && i.TCPMuxHTTPConnectPort == 0 {
