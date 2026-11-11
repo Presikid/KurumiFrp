@@ -185,7 +185,7 @@ func (a *auth) loginAdminPassword(r *http.Request, password string) (string, boo
 	file, legacy, generation, loadErr := a.adminPassword, a.adminPasswordLegacy, a.adminPasswordGeneration, a.adminPasswordErr
 	a.mu.Unlock()
 	if loadErr != nil {
-		return "", false, fmt.Errorf("主密码文件无法读取，原文件已保留")
+		return "", false, fmt.Errorf("主密码文件无法安全确认，请重启并核对原文件")
 	}
 	if !a.acquireHash() {
 		return "", false, fmt.Errorf("登录繁忙，请稍后再试")
@@ -229,7 +229,7 @@ func (a *App) adminPasswordAPI(w http.ResponseWriter, r *http.Request, p princip
 	original, legacy, generation, loadErr := a.auth.adminPassword, a.auth.adminPasswordLegacy, a.auth.adminPasswordGeneration, a.auth.adminPasswordErr
 	a.auth.mu.Unlock()
 	if loadErr != nil {
-		fail(w, http.StatusConflict, fmt.Errorf("主密码文件无法读取，原文件已保留"))
+		fail(w, http.StatusConflict, fmt.Errorf("主密码文件无法安全确认，请重启并核对原文件"))
 		return
 	}
 	if !a.auth.acquireHash() {
@@ -270,11 +270,19 @@ func (a *App) adminPasswordAPI(w http.ResponseWriter, r *http.Request, p princip
 	}
 	path := a.auth.adminPasswordPath
 	committed := false
+	credentialUncertain := false
 	if legacy {
 		committed, err = createAdminPasswordFile(path, data)
+		if err != nil && !committed {
+			// Another writer may have created a password file while the legacy
+			// token was in use. An inaccessible path is equally uncertain.
+			_, statErr := os.Lstat(path)
+			credentialUncertain = !os.IsNotExist(statErr)
+		}
 	} else {
 		var matches bool
 		matches, err = privateFileMatches(path, a.auth.adminPasswordData)
+		credentialUncertain = err != nil || !matches
 		if err == nil && !matches {
 			err = fmt.Errorf("主密码文件已变化，原文件已保留")
 		}
@@ -286,16 +294,20 @@ func (a *App) adminPasswordAPI(w http.ResponseWriter, r *http.Request, p princip
 			}
 		}
 	}
-	if committed {
-		// An error after creation can still leave either a complete or partial
-		// file. Read it back and fail closed if it cannot be validated.
-		stored, storedData, readErr := readAdminPassword(path)
-		if readErr == nil && stored != newFile {
-			readErr = fmt.Errorf("主密码文件在保存时发生变化")
-		}
-		a.auth.adminPasswordErr = readErr
-		if readErr == nil {
-			a.auth.adminPassword, a.auth.adminPasswordData, a.auth.adminPasswordLegacy = stored, storedData, false
+	if committed || credentialUncertain {
+		// A credential conflict invalidates cached authentication. A file that
+		// may have been committed must be read back before it can be trusted.
+		if committed {
+			stored, storedData, readErr := readAdminPassword(path)
+			if readErr == nil && stored != newFile {
+				readErr = fmt.Errorf("主密码文件在保存时发生变化")
+			}
+			a.auth.adminPasswordErr = readErr
+			if readErr == nil {
+				a.auth.adminPassword, a.auth.adminPasswordData, a.auth.adminPasswordLegacy = stored, storedData, false
+			}
+		} else {
+			a.auth.adminPasswordErr = fmt.Errorf("主密码文件状态无法安全确认")
 		}
 		a.auth.adminPasswordGeneration++
 		for sid, session := range a.auth.sessions {
@@ -304,7 +316,11 @@ func (a *App) adminPasswordAPI(w http.ResponseWriter, r *http.Request, p princip
 			}
 		}
 	}
-	if err != nil || a.auth.adminPasswordErr != nil {
+	if a.auth.adminPasswordErr != nil {
+		fail(w, http.StatusConflict, fmt.Errorf("主密码文件无法安全确认，请重启并核对原文件"))
+		return
+	}
+	if err != nil {
 		fail(w, http.StatusConflict, fmt.Errorf("主密码无法安全保存或确认；已有文件已保留，请重新登录"))
 		return
 	}
