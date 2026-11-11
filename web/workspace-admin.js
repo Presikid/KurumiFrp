@@ -254,10 +254,22 @@
     const action = button.dataset.fw;
     if (action === 'reload') { if (confirm('重新读取将丢弃尚未保存的编辑，继续？')) await load(); return; }
     if (action === 'add-rule' || action === 'remove-rule') {
-     const rules = readRules(), values = settings(), section = button.closest('[data-fw-rule]'), index = [...host.querySelectorAll('[data-fw-rule]')].indexOf(section);
-     if (action === 'add-rule') { if (rules.length >= 16) {toast('最多支持 16 条规则。'); return;} rules.push({mode:'block', enabled:true, ports:'', sources:''}); }
-     else rules.splice(index, 1);
-     paint(rules, values); root.dataset.dirty = 'true'; return;
+     const rulesHost = host.querySelector('[data-fw-rules]');
+     if (!rulesHost) return;
+     if (action === 'add-rule') {
+      const count = rulesHost.querySelectorAll('[data-fw-rule]').length;
+      if (count >= 16) {toast('最多支持 16 条规则。'); return;}
+      rulesHost.insertAdjacentHTML('beforeend', ruleHTML({mode:'block', enabled:true, ports:'', sources:''}, count));
+     } else {
+      const section = button.closest('[data-fw-rule]');
+      if (!section || section.parentElement !== rulesHost) return;
+      section.remove();
+      rulesHost.querySelectorAll('[data-fw-rule]').forEach((rule, index) => {
+       const title = rule.querySelector('h3');
+       if (title) title.textContent = `规则 ${index + 1}`;
+      });
+     }
+     root.dataset.dirty = 'true'; return;
     }
     busy = true; button.disabled = true;
     try {
