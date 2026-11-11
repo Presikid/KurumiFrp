@@ -263,14 +263,25 @@ func newWrapper(
 		socks5Rule:     socks5Rule,
 	}
 
-	if baseInfo.HealthCheck.Type != "" && baseInfo.LocalPort > 0 {
-		// Do not register the proxy until the first successful check, and do
-		// not report a failure until the configured threshold has been reached.
-		pw.health = healthPending
-		addr := net.JoinHostPort(baseInfo.LocalIP, strconv.Itoa(baseInfo.LocalPort))
-		pw.monitor = health.NewMonitor(pw.ctx, baseInfo.HealthCheck, addr,
-			pw.statusNormalCallback, pw.statusFailedCallback)
-		xl.Tracef("enable health check monitor")
+	if baseInfo.HealthCheck.Type != "" {
+		if pluginCleanupFromContext(ctx) != nil && baseInfo.Plugin.Type == v1.PluginUnixDomainSocket {
+			opts, _ := baseInfo.Plugin.ClientPluginOptions.(*v1.UnixDomainSocketPluginOptions)
+			var addr string
+			if opts != nil {
+				addr = opts.UnixPath
+			}
+			pw.monitor = health.NewUnixConnectMonitor(pw.ctx, baseInfo.HealthCheck, addr,
+				pw.statusNormalCallback, pw.statusFailedCallback)
+		} else if baseInfo.LocalPort > 0 {
+			addr := net.JoinHostPort(baseInfo.LocalIP, strconv.Itoa(baseInfo.LocalPort))
+			pw.monitor = health.NewMonitor(pw.ctx, baseInfo.HealthCheck, addr,
+				pw.statusNormalCallback, pw.statusFailedCallback)
+		}
+		if pw.monitor != nil {
+			// Wait for the first success; report failure only at the threshold.
+			pw.health = healthPending
+			xl.Tracef("enable health check monitor")
+		}
 	}
 
 	pw.pxy = newProxy(pw.ctx, pw.Cfg, clientCfg, encryptionKey, pw.msgTransporter, pw.vnetController, udpPacketCodec, pw.trafficCounter)
