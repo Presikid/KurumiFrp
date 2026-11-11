@@ -39,12 +39,12 @@
   render(data) {
    const admin = data.identity?.role === 'admin';
    return `<div class="page-head"><div><p class="eyebrow">NETWORK / NODES</p><h1>节点管理</h1><p>连接到其他工作台，查看和管理授权实例。</p></div>${admin ? '<button class="primary" data-node="new">＋ 添加节点</button>' : ''}</div>
-    <div data-node-notices></div><section class="panel"><div class="panel-content"><div class="actions"><button data-node="reload">刷新节点</button></div><div data-node-list>正在读取节点…</div></div></section>
+    <div data-node-notices></div><section class="panel"><div class="panel-content"><div class="actions"><button data-node="reload">刷新节点</button><button data-node="auto" aria-pressed="false">开启自动检查</button></div><p class="small-note">自动检查只在此页面打开时运行；节点后台检查需单独启用。</p><div data-node-list>正在读取节点…</div></div></section>
     ${admin ? `<section class="panel"><div class="panel-content"><h2>共享本机</h2><p class="small-note">只读与控制授权独立。新授权只显示一次；远程访问需自行配置可信 HTTPS 入口。</p><div data-node-share>正在读取…</div></div></section>` : ''}`;
   },
   mount(root, data) {
    const admin = data.identity?.role === 'admin', list = root.querySelector('[data-node-list]'), share = root.querySelector('[data-node-share]');
-   let model = null, busy = false;
+   let model = null, busy = false, auto = false, autoTimer = null, autoGeneration = 0;
    const results = new Map();
    const current = () => K.isCurrent('nodes', root);
    const paintNotices = () => {
@@ -63,7 +63,11 @@
      const instances = Array.isArray(state?.summary?.instances) ? state.summary.instances : [];
      const detail = state?.error ? `<p class="error">${esc(state.error)}</p>` : state?.summary ? `<p class="small-note">工作台 ${esc(state.summary.version)} · ${instances.length} 个实例</p>${instances.map(instance => {
       const running = instance.state === 'running', canControl = admin ? node.hasControl : instance.canControl;
-      return `<div class="card"><strong>${esc(instance.name)}</strong> <span class="pill">${esc(instance.state)}</span> <small>${esc(instance.kind)}</small>${instance.traffic ? `<p class="small-note">接收 ${esc(instance.traffic.receivedBytes)} B · 发送 ${esc(instance.traffic.sentBytes)} B</p>` : ''}${canControl ? `<div class="actions"><button data-node="control" data-node-id="${esc(node.id)}" data-instance="${esc(instance.id)}" data-operation="${running ? 'stop' : 'start'}">${running ? '停止' : '启动'}</button>${running ? `<button data-node="control" data-node-id="${esc(node.id)}" data-instance="${esc(instance.id)}" data-operation="restart">重启</button>` : ''}</div>` : ''}</div>`;
+      const permitted = action => canControl && (admin || (data.identity?.allowedActions || []).includes(action));
+      const operation = (action, label) => permitted(action) ? `<button data-node="control" data-node-id="${esc(node.id)}" data-instance="${esc(instance.id)}" data-operation="${action}">${label}</button>` : '';
+      const controls = running ? operation('stop', '停止') + operation('restart', '重启') : operation('start', '启动');
+      const traffic = instance.traffic ? `<p class="small-note">接收 ${esc(instance.traffic.receivedBytes ?? '暂无数据')} B · 发送 ${esc(instance.traffic.sentBytes ?? '暂无数据')} B</p>` : '';
+      return `<div class="card"><strong>${esc(instance.name)}</strong> <span class="pill">${esc(instance.state)}</span> <small>${esc(instance.kind)}</small>${traffic}${controls ? `<div class="actions">${controls}</div>` : ''}</div>`;
      }).join('')}` : '<p class="small-note">尚未读取实例状态。</p>';
      return `<article class="card"><h3>${esc(node.name)}</h3>${admin ? `<p><code>${esc(node.url)}</code></p><p class="small-note">${addresses.length ? '已确认：' + esc(addresses.join('、')) : '尚未确认地址'} · ${esc(monitor)}</p>` : `<p class="small-note">${ready ? '地址已确认' : '等待管理员确认地址'}</p>`}<div class="actions">${admin ? `<button data-node="resolve" data-id="${esc(node.id)}">核对地址</button><button data-node="monitor" data-id="${esc(node.id)}">${node.monitorEnabled ? '关闭后台检查' : '开启后台检查'}</button><button data-node="edit" data-id="${esc(node.id)}">编辑</button><button class="danger" data-node="delete" data-id="${esc(node.id)}">删除</button>` : ''}<button data-node="check" data-id="${esc(node.id)}" ${ready ? '' : 'disabled'}>读取状态</button></div>${detail}</article>`;
     }).join('')}</div>` : '<p class="empty">暂无可访问的远程节点。</p>';
@@ -78,8 +82,25 @@
      for (const [id, result] of results) {
       if (!model.nodes.some(node => node.id === id && node.stamp === result.stamp)) results.delete(id);
      }
-     paint();
-    } catch (error) { if (current()) list.textContent = '读取失败：' + errorText(error); }
+     paint(); return true;
+    } catch (error) { if (current()) list.textContent = '读取失败：' + errorText(error); return false; }
+   };
+   const pollNodes = async generation => {
+    if (!auto || generation !== autoGeneration || !current()) return;
+    if (await load()) {
+     const nodes = [...model.nodes];
+     for (const node of nodes) {
+      if (!auto || generation !== autoGeneration || !current()) return;
+      if (admin ? !node.addresses?.length : !node.ready) continue;
+      try {
+       const value = await timeout('nodes/check', {id:node.id, stamp:node.stamp}, 10000);
+       if (auto && generation === autoGeneration && current() && model.nodes.some(item => item.id === node.id && item.stamp === node.stamp) && value.id === node.id && value.stamp === node.stamp && Array.isArray(value.summary?.instances)) { results.set(node.id, value); paint(); }
+      } catch (error) {
+       if (auto && generation === autoGeneration && current() && model.nodes.some(item => item.id === node.id && item.stamp === node.stamp)) { results.set(node.id, {stamp:node.stamp, error:errorText(error)}); paint(); }
+      }
+     }
+    }
+    if (auto && generation === autoGeneration && current()) autoTimer = setTimeout(() => { void pollNodes(generation); }, 15000);
    };
    const mutate = async payload => {
     if (!model || !Number.isSafeInteger(model.revision)) throw new Error('节点列表已变化，请刷新。');
@@ -136,6 +157,12 @@
     }
     if (action === 'new') {edit(); return;}
     if (action === 'reload') {await load(); return;}
+    if (action === 'auto') {
+     auto = !auto; const generation = ++autoGeneration; clearTimeout(autoTimer);
+     button.textContent = auto ? '关闭自动检查' : '开启自动检查'; button.setAttribute('aria-pressed', String(auto));
+     if (auto) void pollNodes(generation);
+     return;
+    }
     if (!model) return;
     const id = button.dataset.id || button.dataset.nodeId, node = model.nodes.find(n => n.id === id);
     if (action === 'edit' && node) {edit(node); return;}
@@ -184,7 +211,7 @@
     const kind = get('refreshKind').value;
     return {name:get('name').value.trim(), enabled:get('enabled').checked, mode:get('mode').value, ports:get('ports').value.trim(), sources:get('sources').value.trim(), ...(kind ? {refresh:{kind, value:get('refreshValue').value.trim(), intervalMinutes:Number(get('refreshMinutes').value)}} : {})};
    });
-   const ruleHTML = (rule, index) => `<section class="card" data-fw-rule><div class="actions"><h3>规则 ${index + 1}</h3><button type="button" data-fw="remove-rule">删除规则</button></div><div class="form-grid"><label>名称<input name="name" maxlength="64" value="${esc(rule.name || '')}"></label><label>处理方式<select name="mode"><option value="block" ${rule.mode !== 'allow' ? 'selected' : ''}>阻止列出的来源</option><option value="allow" ${rule.mode === 'allow' ? 'selected' : ''}>只允许列出的来源</option></select></label><label class="span-2">TCP / UDP 端口<input name="ports" value="${esc(rule.ports || '')}" placeholder="例如 7000, 8000-8010"></label><label class="span-2">IP 地址或网段<textarea name="sources" rows="5" placeholder="每行一个 IP 或 CIDR">${esc(rule.sources || '')}</textarea></label><label class="form-check"><input type="checkbox" name="enabled" ${rule.enabled !== false ? 'checked' : ''}>启用此规则</label><label>自动刷新<select name="refreshKind"><option value="">关闭</option><option value="asn" ${rule.refresh?.kind === 'asn' ? 'selected' : ''}>ASN</option><option value="https" ${rule.refresh?.kind === 'https' ? 'selected' : ''}>HTTPS 清单</option></select></label><label>刷新来源<input name="refreshValue" value="${esc(rule.refresh?.value || '')}" placeholder="AS 号或 HTTPS 地址"></label><label>刷新间隔（分钟）<input name="refreshMinutes" type="number" min="60" max="10080" value="${esc(rule.refresh?.intervalMinutes || 1440)}"></label></div><p class="small-note">自动刷新会替换整条规则的来源快照；首次应用前请先核对来源。</p><div class="actions"><button type="button" data-fw="asn">查询 ASN 网段</button><button type="button" data-fw="list">获取 HTTPS 清单</button><button type="button" data-fw="normalize">整理当前来源</button></div></section>`;
+   const ruleHTML = (rule, index) => `<section class="card" data-fw-rule><div class="actions"><h3>规则 ${index + 1}</h3><button type="button" data-fw="remove-rule">删除规则</button></div><div class="form-grid"><label>名称<input name="name" maxlength="64" value="${esc(rule.name || '')}"></label><label>处理方式<select name="mode"><option value="block" ${rule.mode !== 'allow' ? 'selected' : ''}>阻止列出的来源</option><option value="allow" ${rule.mode === 'allow' ? 'selected' : ''}>只允许列出的来源</option></select></label><label class="span-2">TCP / UDP 端口<input name="ports" value="${esc(rule.ports || '')}" placeholder="例如 7000, 8000-8010"></label><label class="span-2">IP 地址或网段<textarea name="sources" rows="5" placeholder="每行一个 IP 或 CIDR">${esc(rule.sources || '')}</textarea></label><label class="form-check"><input type="checkbox" name="enabled" ${rule.enabled !== false ? 'checked' : ''}>启用此规则</label><label>自动刷新<select name="refreshKind"><option value="">关闭</option><option value="asn" ${rule.refresh?.kind === 'asn' ? 'selected' : ''}>ASN</option><option value="https" ${rule.refresh?.kind === 'https' ? 'selected' : ''}>HTTPS 清单</option></select></label><label>刷新来源<input name="refreshValue" value="${esc(rule.refresh?.value || '')}" placeholder="AS 号或 HTTPS 地址"></label><label>刷新间隔（分钟）<input name="refreshMinutes" type="number" min="60" max="10080" value="${esc(rule.refresh?.intervalMinutes || 1440)}"></label><label class="span-2">导入本地来源文件<input name="sourceFile" type="file" accept=".txt,text/plain"></label></div><p class="small-note">自动刷新会替换整条规则的来源快照；首次应用前请先核对来源。</p><div class="actions"><button type="button" data-fw="import-file">导入文件</button><button type="button" data-fw="asn">查询 ASN 网段</button><button type="button" data-fw="list">获取 HTTPS 清单</button><button type="button" data-fw="normalize">整理当前来源</button></div></section>`;
    const paint = (rules, settings) => {
     if (!current() || !model) return;
     const c = model.config || {}, activeRules = rules || (Array.isArray(c.rules) && c.rules.length ? c.rules : c.mode ? [{name:'', enabled:true, mode:c.mode, ports:c.ports, sources:c.sources}] : []);
@@ -231,9 +258,21 @@
      const section = button.closest('[data-fw-rule]'); if (!section) return;
      const sources = section.querySelector('[name="sources"]'); let result;
      if (action === 'normalize') result = await timeout('firewall/import', {text:sources.value}, 15000);
+     if (action === 'import-file') {
+      const file = section.querySelector('[name="sourceFile"]').files[0];
+      if (!file || file.size > 256 * 1024) throw new Error('请选择不超过 256 KiB 的 UTF-8 来源文件。');
+      let text; try { text = new TextDecoder('utf-8', {fatal:true}).decode(await file.arrayBuffer()); } catch (_) { throw new Error('来源文件必须是 UTF-8。'); }
+      result = await timeout('firewall/import', {text}, 15000);
+     }
      if (action === 'asn') { const value = prompt('输入要查询的 ASN，例如 AS4134：', section.querySelector('[name="refreshValue"]').value); if (value === null) return; result = await timeout('firewall/asn', {asn:value.trim()}, 40000); }
      if (action === 'list') { const value = prompt('输入公网 HTTPS 清单地址：', section.querySelector('[name="refreshValue"]').value); if (value === null) return; result = await timeout('firewall/list', {url:value.trim()}, 25000); }
-     if (result) { if (!Array.isArray(result.prefixes)) throw new Error('来源清单格式无效'); if (sources.value.trim() && action !== 'normalize' && !confirm('用查询结果替换当前编辑中的来源？')) return; sources.value = result.prefixes.join('\n'); toast('来源已填入编辑器，尚未应用。'); }
+     if (result) {
+      if (!Array.isArray(result.prefixes)) throw new Error('来源清单格式无效');
+      let append = false;
+      if (sources.value.trim() && action !== 'normalize' && !confirm('用此次结果替换当前来源？')) { if (!confirm('将此次结果追加到当前来源？')) return; append = true; }
+      sources.value = (append ? sources.value.trim() + '\n' : '') + result.prefixes.join('\n');
+      toast('来源已填入编辑器，尚未应用。');
+     }
     } catch (error) { if (current()) toast(errorText(error)); }
     finally {busy = false; if (button.isConnected) button.disabled = false;}
    });
