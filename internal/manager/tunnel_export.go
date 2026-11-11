@@ -83,6 +83,7 @@ func renderRuleExport(s *Store, client Instance, rules []Tunnel, revision uint64
 		return "", fmt.Errorf("客户端名称或标识无效")
 	}
 	fmt.Fprintln(&out, "# Contains plaintext credentials; keep this file private.")
+	fmt.Fprintln(&out, "# Disabled rules use enabled = false; verify client compatibility before running.")
 	fmt.Fprintf(&out, "# Client: %s (%s)\n", client.Name, client.ID)
 	fmt.Fprintf(&out, "# Draft revision: %d\n", revision)
 	if err := renderInstance(&out, client); err != nil {
