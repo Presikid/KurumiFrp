@@ -155,6 +155,17 @@ func probeHTTP(parent context.Context, t Tunnel, result ProbeResult) ProbeResult
 	if ip := net.ParseIP(host); ip != nil && strings.Contains(host, ":") {
 		hostHeader = "[" + host + "]"
 	}
+	if t.Type == "http" && t.HostHeaderRewrite != "" {
+		if !validHostHeaderRewrite(t.HostHeaderRewrite) {
+			result.Status = "invalid"
+			result.Message = "HTTP Host 重写值无效"
+			return stampProbe(result)
+		}
+		// This probe dials the local service directly, so use the Host that
+		// frps would send after applying the HTTP rule's rewrite.
+		hostHeader = t.HostHeaderRewrite
+		result.Host = hostHeader
+	}
 
 	path := t.ProbePath
 	if path == "" {
