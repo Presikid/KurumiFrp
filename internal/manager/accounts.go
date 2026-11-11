@@ -453,7 +453,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		revision := a.auth.accountsRevision
 		a.auth.mu.Unlock()
-		reply(w, 200, map[string]any{"revision": revision, "accounts": views})
+		reply(w, 200, map[string]any{"revision": revision, "accounts": views, "sampledAt": now.UTC().Format(time.RFC3339)})
 		return
 	}
 	if r.Method != http.MethodPost {
