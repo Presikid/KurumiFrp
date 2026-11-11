@@ -6,7 +6,7 @@ const esc = (value = '') => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'
 
 window.Kurumi = (() => {
  const pages = new Map();
- const names = {overview:'总览', tunnels:'规则', instances:'实例', nodes:'节点', firewall:'访问控制', health:'链路诊断', config:'配置', core:'运行核心', logs:'日志', update:'软件更新', accounts:'账户'};
+ const names = {overview:'总览', tunnels:'规则', instances:'实例', nodes:'节点', 'reported-nodes':'主动上报', firewall:'访问控制', health:'链路诊断', config:'配置', core:'运行核心', logs:'日志', update:'软件更新', accounts:'账户'};
  const $ = selector => document.querySelector(selector);
  let snapshot = null, page = 'overview', session = 0, request = null, root = null, activePage = null;
  let timer = null, toastTimer = null, dialogSpec = null, dialogBusy = false;
@@ -121,7 +121,7 @@ window.Kurumi = (() => {
    const selected = button.dataset.page === page;
    button.classList.toggle('active', selected);
    if (selected) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current');
-   button.hidden = !admin && ['firewall','health','update','accounts'].includes(button.dataset.page);
+   button.hidden = !admin && ['reported-nodes','firewall','health','update','accounts'].includes(button.dataset.page);
   });
   $('#quit-app').hidden = !admin; $('#change-password').hidden = false;
  }
