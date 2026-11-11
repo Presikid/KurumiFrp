@@ -469,15 +469,37 @@ func (svr *Service) Run(ctx context.Context) (runErr error) {
 		}
 	}
 	svr.lifecycleMu.Unlock()
+	var stopNetworkClose func() bool
+	var networkCloseDone chan struct{}
 	if svr.network != nil {
-		stopNetworkClose := context.AfterFunc(ctx, svr.network.Close)
-		defer stopNetworkClose()
+		networkCloseDone = make(chan struct{})
+		stopNetworkClose = context.AfterFunc(ctx, func() {
+			defer close(networkCloseDone)
+			if svr.workerPanic != nil {
+				defer func() {
+					if recover() != nil {
+						svr.workerPanic()
+					}
+				}()
+			}
+			svr.network.Close()
+		})
 	}
 	var reconnectDone <-chan struct{}
 	defer func() {
+		// Prevent the callback if it has not started. Otherwise wait for it to
+		// report any panic before publishing completion to Close and the owner.
+		stoppedNetworkClose := true
+		if stopNetworkClose != nil {
+			stoppedNetworkClose = stopNetworkClose()
+		}
 		cancel(nil)
 		if svr.network != nil {
-			svr.network.Close()
+			if stoppedNetworkClose {
+				svr.network.Close()
+			} else {
+				<-networkCloseDone
+			}
 		}
 		if reconnectDone != nil {
 			<-reconnectDone
