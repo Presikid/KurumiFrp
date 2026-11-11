@@ -936,7 +936,7 @@ dialog.addEventListener('cancel',e=>{if(editing?.submitting)e.preventDefault();}
 dialog.addEventListener('close',()=>scheduleRefresh(0));
 $('#diff-close').addEventListener('click',()=>diffDialog.close());
 diffDialog.addEventListener('close',()=>scheduleRefresh(0));
-$('#editor').addEventListener('click',e=>{if(editing?.kind==='tunnel'){ProtocolEditor.headerClick(e.currentTarget,e.target);}});
+$('#editor').addEventListener('click',e=>{if(editing?.kind==='tunnel'){ProtocolEditor.actionClick(e.currentTarget,e.target);}});
 $('#editor').addEventListener('change',updateFields);
 $('#editor').addEventListener('click',e=>{
  if(editing?.kind!=='schedule'||editing.submitting)return;
@@ -996,7 +996,7 @@ async function exportSelectedRules() {
  if(data?.identity?.role!=='admin')return;
  const plan=RulesPage.plan(rulesContext(),null);
  if(!plan){RulesPage.clear();paintRulesList();toast('规则选择已失效，请重新选择。');return;}
- if(!confirm(`导出选中的 ${plan.ids.length} 条规则？\nZIP 内每个客户端一份 TOML，包含明文客户端认证令牌、配对密钥、HTTP 密码和自定义 HTTP 头值，文件不加密。请妥善保管。`))return;
+ if(!confirm(`导出选中的 ${plan.ids.length} 条规则？\nZIP 内每个客户端一份 TOML，包含明文客户端认证令牌、配对密钥、HTTP 密码、SOCKS5 插件密码和自定义 HTTP 头值，文件不加密。请妥善保管。`))return;
  if(!data || data.revision!==plan.revision){toast('草稿已变化，请刷新后重新选择。');return;}
  const generation=authGeneration,navigation=navigationGeneration,controller=new AbortController();
  const timeout=setTimeout(()=>controller.abort(),60000);

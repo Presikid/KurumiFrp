@@ -195,6 +195,10 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 				fail(w, 400, err)
 				return
 			}
+			if err = check.validatePluginSecret(t); err != nil {
+				fail(w, 400, err)
+				return
+			}
 			if t.Secret != "" {
 				if _, err = check.decrypt(t.Secret); err != nil {
 					fail(w, 400, err)

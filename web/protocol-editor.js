@@ -59,7 +59,25 @@ const ProtocolEditor = (() => {
   return `<div class="http-routing-field span-2 http-header-editor"><h3>自定义 HTTP 头</h3><p class="small-note">每个方向最多 32 项，每个客户端最多 128 项；名称不区分大小写。值加密保存，不会回显。已有项留空保留，勾选“设为空值”可清空；新项留空即为空值。重命名需重新输入值或明确设为空值。</p>${section('请求头', 'request', v.requestHeaders)}${section('响应头', 'response', v.responseHeaders)}<p class="small-note">非空短值可能与普通文字相同，命中的日志或诊断内容会整条隐藏。空值不参与脱敏匹配。</p></div><p class="http-header-removal-note small-note span-2" hidden>更换协议前，请返回 HTTP 并删除全部自定义头后再保存。</p>`;
  }
 
- function headerClick(form, target) {
+ function actionClick(form, target) {
+  const generate = target.closest('[data-socks-generate]');
+  if (generate) {
+   if (!window.crypto?.getRandomValues) throw new Error('当前浏览器无法生成安全随机密码，请自行填写。');
+   const bytes = window.crypto.getRandomValues(new Uint8Array(24));
+   const input = form.elements.pluginPassword;
+   input.value = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+   input.type = 'text';
+   form.querySelector('[data-socks-visibility]').textContent = '隐藏密码';
+   input.select();
+   return;
+  }
+  const visibility = target.closest('[data-socks-visibility]');
+  if (visibility) {
+   const input = form.elements.pluginPassword;
+   input.type = input.type === 'password' ? 'text' : 'password';
+   visibility.textContent = input.type === 'password' ? '显示密码' : '隐藏密码';
+   return;
+  }
   const add = target.closest('[data-http-header-add]');
   if (add) {
    const list = form.querySelector(`[data-http-header-list="${add.dataset.httpHeaderAdd}"]`);
@@ -105,10 +123,14 @@ const ProtocolEditor = (() => {
     <div class="bandwidth-field">${field('bandwidthKB', '带宽上限（KB/s，0 不限）', v.bandwidthKB ?? 0, 'number', 'min="0" max="10000000" step="1"')}</div>
     <div class="bandwidth-field"><label>限速位置<select name="bandwidthMode"><option value="client" ${(v.bandwidthMode || 'client') === 'client' ? 'selected' : ''}>客户端</option><option value="server" ${v.bandwidthMode === 'server' ? 'selected' : ''}>服务端</option></select></label></div>
     <div class="proxy-protocol-field span-2"><label>PROXY 协议<select name="proxyProtocolVersion"><option value="" ${!v.proxyProtocolVersion ? 'selected' : ''}>关闭</option><option value="v1" ${v.proxyProtocolVersion === 'v1' ? 'selected' : ''}>v1</option><option value="v2" ${v.proxyProtocolVersion === 'v2' ? 'selected' : ''}>v2</option></select></label><small>目标服务必须支持所选版本；frp 取得来源地址时会传递连接信息。</small></div>
-    <div class="unix-target-choice span-2"><label>本地目标类型<select name="targetKind"><option value="network" ${!v.unixSocketPath ? 'selected' : ''}>TCP 地址和端口</option><option value="unix" ${v.unixSocketPath ? 'selected' : ''}>Unix 域套接字</option></select></label><small>Unix 目标仅用于 TCP 规则；切换目标类型会清除原目标和代理健康检查配置。</small></div>
+    <div class="unix-target-choice span-2"><label>本地目标类型<select name="targetKind"><option value="network" ${!v.unixSocketPath && v.pluginType !== 'socks5' ? 'selected' : ''}>TCP 地址和端口</option><option value="unix" ${v.unixSocketPath ? 'selected' : ''}>Unix 域套接字</option><option value="socks5" ${v.pluginType === 'socks5' ? 'selected' : ''}>SOCKS5 代理</option></select></label><small>Unix 和 SOCKS5 目标仅用于 TCP 规则；切换为插件目标会清除原本地目标和代理健康检查，SOCKS5 还会清除 PROXY 协议和本地诊断参数。</small></div>
     <label class="network-target-field"><span class="local-host-label">本地目标地址</span><input name="localHost" type="text" value="${esc(v.localHost)}" required></label>
     <label class="network-target-field"><span class="local-port-label">本地目标端口</span><input name="localPort" type="number" value="${esc(v.localPort)}" required min="1" max="65535" step="1" ${lockedPort ? 'readonly' : ''}><small class="unbound-note" hidden>负数表示仅接收回退连接，不监听本地端口。</small>${lockedPort ? '<small>当前暂不支持更改此规则的回退监听端口。</small>' : ''}</label>
     <div class="unix-target-field span-2">${field('unixSocketPath', 'Unix 套接字绝对路径', v.unixSocketPath || '', 'text', 'maxlength="1024" placeholder="/run/service.sock"')}<small>需运行在支持 Unix 域套接字的平台，且工作台账户有访问该套接字的权限。</small></div>
+    <div class="socks-target-field">${field('pluginUser', 'SOCKS5 用户名（1–255 UTF-8 字节）', v.pluginType === 'socks5' ? (v.pluginUser || '') : '', 'text', 'maxlength="255" autocomplete="off"')}</div>
+    <div class="socks-target-field">${field('pluginPassword', old?.pluginType === 'socks5' && old?.hasPluginPassword ? 'SOCKS5 密码（已保存，留空保留）' : 'SOCKS5 密码（1–255 UTF-8 字节）', '', 'password', 'maxlength="255" autocomplete="new-password"')}<div class="actions"><button type="button" data-socks-generate>生成随机密码</button><button type="button" data-socks-visibility>显示密码</button></div><small>建议使用随机密码；生成后可复制，保存时才会替换已有密码。</small></div>
+    <p class="socks-target-field small-note span-2">仅支持 TCP CONNECT。代理可访问 frpc 主机能够访问的内网；用户名和密码只验证代理入口，不限制目标地址，也不加密 SOCKS5 连接。请限制远端代理端口的访问并保护连接。客户端限速暂不可用，可选择服务端限速。</p>
+    <div class="socks-removal-field span-2" hidden>${check('confirmPluginRemoval', '确认切换目标并清除已保存的 SOCKS5 认证信息', false)}<small>保存后原有 SOCKS5 用户名和密码将被清除；切换回来须重新输入。</small></div>
     <div class="port-field">${field('remotePort', '远端端口（0 请求动态分配）', ['tcp', 'udp'].includes(v.type) ? (v.remotePort ?? '') : '', 'number', 'min="0" max="65535" step="1"')}</div>
     <div class="domain-field span-2">${field('domains', '域名（多个用逗号分隔）', (v.domains || []).join(', '))}<small>支持 * 和 *.example.com；后者不匹配 example.com 本身。HTTPS 证书须覆盖访问的具体域名。</small></div>
     <div class="probe-field span-2 protocol-subgrid">
@@ -195,26 +217,34 @@ const ProtocolEditor = (() => {
    return;
   }
   const type = f.type.value, visitor = Protocols.isVisitor(type), paired = Protocols.hasPairingSecret(type);
-  const unixTarget = type === 'tcp' && f.targetKind.value === 'unix';
+  const unixTarget = type === 'tcp' && f.targetKind.value === 'unix', socksTarget = type === 'tcp' && f.targetKind.value === 'socks5';
+  const networkTarget = !unixTarget && !socksTarget;
   visible(form, '.unix-target-choice', type === 'tcp');
   visible(form, '.unix-target-field', unixTarget);
-  visible(form, '.network-target-field', !unixTarget);
+  visible(form, '.socks-target-field', socksTarget);
+  visible(form, '.network-target-field', networkTarget);
   f.unixSocketPath.required = unixTarget;
-  f.localHost.required = !unixTarget;
-  f.localPort.required = !unixTarget;
+  f.localHost.required = networkTarget;
+  f.localPort.required = networkTarget;
+  f.pluginUser.required = socksTarget;
+  f.pluginPassword.required = socksTarget && !(editing.old?.pluginType === 'socks5' && editing.old?.hasPluginPassword);
+  const removeSocks = editing.old?.pluginType === 'socks5' && !socksTarget;
+  visible(form, '.socks-removal-field', removeSocks);
+  f.confirmPluginRemoval.required = removeSocks;
+  if (!removeSocks) f.confirmPluginRemoval.checked = false;
   form.querySelector('.visitor-transfer-note').hidden = !(editing.old && Protocols.isVisitor(editing.old.type) && visitor && f.instanceId.value !== editing.old.instanceId);
   visible(form, '.bandwidth-field', !visitor);
-  visible(form, '.proxy-protocol-field', !visitor && !['udp', 'sudp'].includes(type));
+  visible(form, '.proxy-protocol-field', !visitor && !socksTarget && !['udp', 'sudp'].includes(type));
   visible(form, '.port-field', ['tcp', 'udp'].includes(type));
   visible(form, '.domain-field', ['http', 'https', 'tcpmux'].includes(type));
   visible(form, '.subdomain-field', ['http', 'https', 'tcpmux'].includes(type));
   visible(form, '.http-routing-field', type === 'http');
   visible(form, '.http-header-removal-note', type !== 'http' && !!form.querySelector('[data-http-header-row]'));
   visible(form, '.probe-field', ['http', 'https'].includes(type));
-  visible(form, '.health-check-field', !visitor && !unixTarget);
-  visible(form, '.health-check-options', !visitor && !unixTarget && f.healthCheckType.value !== '');
-  visible(form, '.health-http-field', !visitor && !unixTarget && f.healthCheckType.value === 'http');
-  f.healthCheckPath.required = !visitor && !unixTarget && f.healthCheckType.value === 'http';
+  visible(form, '.health-check-field', !visitor && !unixTarget && !socksTarget);
+  visible(form, '.health-check-options', !visitor && !unixTarget && !socksTarget && f.healthCheckType.value !== '');
+  visible(form, '.health-http-field', !visitor && !unixTarget && !socksTarget && f.healthCheckType.value === 'http');
+  f.healthCheckPath.required = !visitor && !unixTarget && !socksTarget && f.healthCheckType.value === 'http';
   visible(form, '.tcpmux-field', type === 'tcpmux');
   visible(form, '.http-credential-field', type === 'tcpmux' || (type === 'http' && f.httpAuthEnabled.checked));
   visible(form, '.visitor-field', visitor);
@@ -249,6 +279,11 @@ const ProtocolEditor = (() => {
   form.querySelector('#fallback-candidates').innerHTML = options.map(t => `<option value="${esc(t.name)}">${esc(t.type)}</option>`).join('');
  }
 
+ function validSocksCredential(text) {
+  const bytes = new TextEncoder().encode(text).length;
+  return bytes >= 1 && bytes <= 255 && !/[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(text);
+ }
+
  function value(form, editing) {
   const f = form.elements, val = name => f[name].value;
   const result = {...(editing.old || {}), id:editing.id};
@@ -263,11 +298,21 @@ const ProtocolEditor = (() => {
    return result;
   }
   const type = val('type'), visitor = Protocols.isVisitor(type), paired = Protocols.hasPairingSecret(type);
-  const unixTarget = type === 'tcp' && val('targetKind') === 'unix';
+  const unixTarget = type === 'tcp' && val('targetKind') === 'unix', socksTarget = type === 'tcp' && val('targetKind') === 'socks5';
+  if (socksTarget) {
+   if (!validSocksCredential(val('pluginUser'))) throw new Error('SOCKS5 用户名须为 1–255 个 UTF-8 字节，不能包含控制字符。');
+   const password = val('pluginPassword'), hasSaved = editing.old?.pluginType === 'socks5' && editing.old?.hasPluginPassword;
+   if ((password === '' && !hasSaved) || (password !== '' && !validSocksCredential(password))) throw new Error('SOCKS5 密码须为 1–255 个 UTF-8 字节，不能包含控制字符；已有密码可留空保留。');
+   if (+val('bandwidthKB') > 0 && val('bandwidthMode') === 'client') throw new Error('SOCKS5 暂不支持客户端限速，请关闭限速或选择服务端限速。');
+  }
+  if (editing.old?.pluginType === 'socks5' && !socksTarget && !f.confirmPluginRemoval.checked) throw new Error('请确认切换目标并清除已保存的 SOCKS5 认证信息。');
   delete result.hasSecret; delete result.hasHTTPPassword; delete result.secret; delete result.httpPassword;
-  Object.assign(result, {name:val('name').trim(), instanceId:val('instanceId'), type, localHost:unixTarget ? '' : val('localHost').trim(), localPort:unixTarget ? 0 : +val('localPort'), unixSocketPath:unixTarget ? val('unixSocketPath').trim() : '',
-   bandwidthKB:visitor ? 0 : +val('bandwidthKB'), bandwidthMode:visitor ? '' : val('bandwidthMode'), proxyProtocolVersion:visitor || ['udp', 'sudp'].includes(type) ? '' : val('proxyProtocolVersion'), enabled:f.enabled.checked, useEncryption:f.useEncryption.checked, useCompression:f.useCompression.checked});
-  const health = visitor || unixTarget ? '' : val('healthCheckType');
+  delete result.hasPluginPassword; delete result.pluginPassword; delete result.clearPluginPassword;
+  Object.assign(result, {name:val('name').trim(), instanceId:val('instanceId'), type, localHost:unixTarget || socksTarget ? '' : val('localHost').trim(), localPort:unixTarget || socksTarget ? 0 : +val('localPort'), unixSocketPath:unixTarget ? val('unixSocketPath').trim() : '',
+   pluginType:socksTarget ? 'socks5' : '', pluginUser:socksTarget ? val('pluginUser') : '', pluginPassword:socksTarget ? val('pluginPassword') : '',
+   bandwidthKB:visitor ? 0 : +val('bandwidthKB'), bandwidthMode:visitor ? '' : val('bandwidthMode'), proxyProtocolVersion:visitor || socksTarget || ['udp', 'sudp'].includes(type) ? '' : val('proxyProtocolVersion'), enabled:f.enabled.checked, useEncryption:f.useEncryption.checked, useCompression:f.useCompression.checked});
+  if (editing.old?.pluginType === 'socks5' && !socksTarget) result.clearPluginPassword = true;
+  const health = visitor || unixTarget || socksTarget ? '' : val('healthCheckType');
   Object.assign(result, {healthCheckType:health, healthCheckPath:health === 'http' ? val('healthCheckPath').trim() : '',
    healthCheckTimeoutSeconds:health ? +val('healthCheckTimeoutSeconds') : 0,
    healthCheckIntervalSeconds:health ? +val('healthCheckIntervalSeconds') : 0,
@@ -278,6 +323,7 @@ const ProtocolEditor = (() => {
    result.subdomain = val('subdomain').trim();
   } else result.subdomain = '';
   if (['http', 'https'].includes(type)) { result.probePath = val('probePath').trim(); result.probeMethod = val('probeMethod'); }
+  else if (socksTarget) { result.probePath = ''; result.probeMethod = ''; }
   result.hostHeaderRewrite = type === 'http' ? val('hostHeaderRewrite').trim() : '';
   result.locations = type === 'http' ? val('locations').split(/\r?\n/).map(s => s.trim()).filter(Boolean) : [];
   result.httpRouteByUser = type === 'http' ? val('httpRouteByUser') : '';
@@ -298,5 +344,5 @@ const ProtocolEditor = (() => {
   return result;
  }
 
- return {instance, tunnel, batch, batchValue, update, value, headerClick};
+ return {instance, tunnel, batch, batchValue, update, value, actionClick};
 })();

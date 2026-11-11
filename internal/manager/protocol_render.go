@@ -131,7 +131,14 @@ func renderProtocolTunnel(b *strings.Builder, t Tunnel, secret func(string, stri
 		}
 	} else {
 		fmt.Fprintf(b, "\n[[proxies]]\nname = %s\ntype = %s\n", quote(t.Name), quote(t.Type))
-		if t.UnixSocketPath != "" {
+		if t.PluginType == socks5PluginType {
+			fmt.Fprintf(b, "plugin.type = \"socks5\"\nplugin.username = %s\n", quote(t.PluginUser))
+			password, err := secret(t.PluginPassword, "KURUMI_PLUGIN_PASSWORD_"+t.ID)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(b, "plugin.password = %s\n", password)
+		} else if t.UnixSocketPath != "" {
 			fmt.Fprintf(b, "plugin.type = \"unix_domain_socket\"\nplugin.unixPath = %s\n", quote(t.UnixSocketPath))
 		} else {
 			fmt.Fprintf(b, "localIP = %s\nlocalPort = %d\n", quote(t.LocalHost), t.LocalPort)

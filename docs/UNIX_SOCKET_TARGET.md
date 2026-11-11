@@ -4,4 +4,4 @@ TCP 代理规则可以选择 Unix 域套接字作为本地目标，填写以 `/`
 
 内嵌客户端使用 frp 的 `unix_domain_socket` 插件连接目标，并把套接字连接纳入当前客户端代次的生命周期。PROXY 协议、加密、压缩和带宽设置仍按 TCP 规则配置。此目标暂不支持 frp 代理健康检查和工作台本地检测；切换目标类型时会清除原目标及健康检查设置。
 
-支持导入和导出包含 `plugin.type = "unix_domain_socket"` 与 `plugin.unixPath` 的 TCP 代理。其他客户端插件尚未开放；Unix 套接字的协议互通与异常回收仍需进一步验收。
+支持导入和导出包含 `plugin.type = "unix_domain_socket"` 与 `plugin.unixPath` 的 TCP 代理。开发中的 SOCKS5 插件及其边界见 [SOCKS5 插件](SOCKS5_PLUGIN.md)；其他客户端插件尚未开放。Unix 套接字的协议互通与异常回收仍需进一步验收。

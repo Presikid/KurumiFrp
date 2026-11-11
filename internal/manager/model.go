@@ -63,6 +63,10 @@ type Tunnel struct {
 	LocalHost            string   `json:"localHost"`
 	LocalPort            int      `json:"localPort"`
 	UnixSocketPath       string   `json:"unixSocketPath,omitempty"`
+	PluginType           string   `json:"pluginType,omitempty"`
+	PluginUser           string   `json:"pluginUser,omitempty"`
+	PluginPassword       string   `json:"pluginPassword,omitempty"`
+	HasPluginPassword    bool     `json:"hasPluginPassword,omitempty"`
 	RemotePort           int      `json:"remotePort"`
 	Domains              []string `json:"domains"`
 	Locations            []string `json:"locations,omitempty"`
@@ -148,6 +152,8 @@ func (s State) public() State {
 		n.Tunnels[j].Secret = ""
 		n.Tunnels[j].HasHTTPPassword = n.Tunnels[j].HTTPPassword != ""
 		n.Tunnels[j].HTTPPassword = ""
+		n.Tunnels[j].HasPluginPassword = n.Tunnels[j].PluginPassword != ""
+		n.Tunnels[j].PluginPassword = ""
 		for _, headers := range [][]HTTPHeader{n.Tunnels[j].RequestHeaders, n.Tunnels[j].ResponseHeaders} {
 			for k := range headers {
 				headers[k].HasValue = headers[k].Value != ""
@@ -373,7 +379,12 @@ func validate(s State) error {
 			return fmt.Errorf("同一实例的规则名称不能重复")
 		}
 		names[key] = true
-		if t.UnixSocketPath != "" {
+		if err := validatePluginTarget(t); err != nil {
+			return err
+		}
+		if t.PluginType == socks5PluginType {
+			// The plugin handles the target itself; no local address is used.
+		} else if t.UnixSocketPath != "" {
 			if t.Type != "tcp" || !strings.HasPrefix(t.UnixSocketPath, "/") || !protocolTextOK(t.UnixSocketPath) || t.LocalHost != "" || t.LocalPort != 0 || t.HealthCheckType != "" || t.HealthCheckPath != "" || t.HealthCheckTimeout != 0 || t.HealthCheckInterval != 0 || t.HealthCheckMaxFailed != 0 {
 				return fmt.Errorf("Unix 套接字仅适用于 TCP 规则；请使用绝对路径并关闭代理健康检查")
 			}

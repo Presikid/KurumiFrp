@@ -140,6 +140,15 @@ func (m *tomlMapper) secret(s *Store, value, path string) string {
 	return enc
 }
 
+func (m *tomlMapper) pluginSecret(s *Store, value, path string) string {
+	enc, err := s.encryptPluginPassword(value)
+	if err != nil {
+		m.issue(path, "需要 1–255 字节、无控制字符的实际插件密码")
+		return ""
+	}
+	return enc
+}
+
 func (m *tomlMapper) httpHeaders(store *Store, t *tomlTable, field, prefix string) []HTTPHeader {
 	raw, ok := m.take(t, field+".set", prefix)
 	if !ok {
@@ -331,6 +340,8 @@ func (m *tomlMapper) mapRule(store *Store, t *tomlTable, prefix, instanceID stri
 		}
 	} else {
 		pluginType := m.str(t, "plugin.type", prefix, "")
+		_, hasLocalIP := t.values["localIP"]
+		_, hasLocalPort := t.values["localPort"]
 		r.LocalHost = m.str(t, "localIP", prefix, "127.0.0.1")
 		if r.LocalHost == "" {
 			r.LocalHost = "127.0.0.1"
@@ -346,6 +357,21 @@ func (m *tomlMapper) mapRule(store *Store, t *tomlTable, prefix, instanceID stri
 			if r.LocalPort != 0 || r.LocalHost != "127.0.0.1" {
 				m.issue(prefix+"localIP / localPort", "Unix 套接字规则不能同时保留本地 TCP 地址和端口")
 			}
+			r.LocalHost, r.LocalPort = "", 0
+		case socks5PluginType:
+			r.PluginType = socks5PluginType
+			r.PluginUser = m.str(t, "plugin.username", prefix, "")
+			password := m.str(t, "plugin.password", prefix, "")
+			if typ != "tcp" {
+				m.issue(prefix+"plugin.type", "SOCKS5 插件仅支持 TCP 规则")
+			}
+			if hasLocalIP || hasLocalPort {
+				m.issue(prefix+"localIP / localPort", "SOCKS5 插件不能同时指定本地地址或端口")
+			}
+			if !validPluginCredential(r.PluginUser) {
+				m.issue(prefix+"plugin.username", "需要 1–255 字节、无控制字符的用户名")
+			}
+			r.PluginPassword = m.pluginSecret(store, password, prefix+"plugin.password")
 			r.LocalHost, r.LocalPort = "", 0
 		default:
 			m.issue(prefix+"plugin.type", "当前产品不支持此客户端插件")
@@ -415,10 +441,10 @@ func (m *tomlMapper) mapRule(store *Store, t *tomlTable, prefix, instanceID stri
 	if typ == "stcp" || typ == "xtcp" || typ == "sudp" {
 		r.Secret = m.secret(store, m.str(t, "secretKey", prefix, ""), prefix+"secretKey")
 	}
-	if r.UnixSocketPath == "" && !hostOK(r.LocalHost) {
+	if r.UnixSocketPath == "" && r.PluginType == "" && !hostOK(r.LocalHost) {
 		m.issue(prefix+"localIP / bindAddr", "地址不符合当前产品的格式")
 	}
-	if r.UnixSocketPath == "" && !portOK(r.LocalPort) && !(visitor && supportsUnboundVisitor(r.Type) && r.LocalPort < 0) {
+	if r.UnixSocketPath == "" && r.PluginType == "" && !portOK(r.LocalPort) && !(visitor && supportsUnboundVisitor(r.Type) && r.LocalPort < 0) {
 		m.issue(prefix+"localPort / bindPort", "端口无效")
 	}
 	pruneImportTables(t, "transport", "healthCheck", "natTraversal", "requestHeaders", "responseHeaders", "plugin")
@@ -603,8 +629,16 @@ func (a *App) tomlPreviewHash(req tomlImportRequest) string {
 // Called under the application mutex after authentication and origin checks.
 func (a *App) tomlImportAPI(w http.ResponseWriter, r *http.Request) {
 	var req tomlImportRequest
-	if err := decode(w, r, &req); err != nil {
+	var raw json.RawMessage
+	if err := decode(w, r, &raw); err != nil {
 		fail(w, http.StatusBadRequest, fmt.Errorf("导入请求无效或超过大小限制"))
+		return
+	}
+	var fields struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &fields) != nil || !validPluginJSONText(fields.Content) || decodeStrictJSON(raw, &req) != nil {
+		fail(w, http.StatusBadRequest, fmt.Errorf("导入请求无效或包含无效 Unicode 文本"))
 		return
 	}
 	if a.closing || req.Revision != a.store.DB.Revision {

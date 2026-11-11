@@ -513,6 +513,9 @@ func newStore(dir string) (*Store, error) {
 			if e = s.validateStoredHTTPHeaders(t); e != nil {
 				return nil, e
 			}
+			if e = s.validatePluginSecret(t); e != nil {
+				return nil, e
+			}
 			if t.Secret != "" {
 				if _, e = s.decrypt(t.Secret); e != nil {
 					return nil, e
@@ -651,6 +654,11 @@ func (s *Store) commit(st State, summary string) error {
 func (s *Store) commitRestoring(st State, summary string, restoring bool) error {
 	if e := validate(st); e != nil {
 		return e
+	}
+	for _, t := range st.Tunnels {
+		if e := s.validatePluginSecret(t); e != nil {
+			return e
+		}
 	}
 	if e := validateVisitorListeners(s.DB.State, st); e != nil {
 		return e

@@ -199,6 +199,7 @@ func duplicatedTunnel(src Tunnel, id, instanceID, name string) Tunnel {
 	return Tunnel{
 		ID: id, InstanceID: instanceID, Name: name, Type: src.Type,
 		LocalHost: src.LocalHost, LocalPort: src.LocalPort, UnixSocketPath: src.UnixSocketPath,
+		PluginType: src.PluginType, PluginUser: src.PluginUser, PluginPassword: src.PluginPassword,
 		RemotePort: src.RemotePort, Domains: append([]string(nil), src.Domains...), Locations: append([]string(nil), src.Locations...),
 		ProbePath: src.ProbePath, ProbeMethod: src.ProbeMethod,
 		HealthCheckType: src.HealthCheckType, HealthCheckPath: src.HealthCheckPath,

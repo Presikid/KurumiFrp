@@ -97,6 +97,11 @@ func (s *Store) render(id string, preview bool) (Rendered, error) {
 			return "", e
 		}
 		if preview {
+			// An unquoted placeholder makes a SOCKS5 preview invalid TOML,
+			// while the literal "<redacted>" remains a valid real password.
+			if strings.HasPrefix(key, "KURUMI_PLUGIN_PASSWORD_") {
+				return "<redacted>", nil
+			}
 			return quote("<redacted>"), nil
 		}
 		// The template is expanded once; the environment contains TOML-safe
