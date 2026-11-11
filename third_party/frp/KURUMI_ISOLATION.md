@@ -90,6 +90,9 @@ upstream errors and warnings; callers must not expose those blindly. The parser
 returns stage-only diagnostics and warnings because raw TOML can itself contain
 credentials. Crypto, logging and cleanup changes still require real
 interoperability and concurrent runtime validation.
+For STCP and SUDP, a visitor connection worker now waits for the registration
+response before forwarding payload. That ordering still needs interoperability
+and shutdown validation with real clients.
 Server-side frp OIDC discovery now returns an initialization error instead of
 panicking when the provider is unavailable. Discovery and token verification
 use the server's context and an HTTP client with a ten-second timeout. A remote
