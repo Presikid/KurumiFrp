@@ -291,10 +291,10 @@
  K.register('logs', {
   render(data) {
    const items = (data.state.instances || []).filter(item => admin(data) || (data.identity?.logInstances || []).includes(item.id)), selected = chosen(items);
-   return head('运行日志','按实例查看近期输出；日志可能包含网络地址等信息。') + `<section class="panel"><div class="panel-content"><div class="toolbar"><label>实例${instancePicker(items,selected)}</label><label>筛选<input data-log-filter type="search" placeholder="搜索日志"></label><div class="actions">${button('log-refresh','刷新')}${button('log-pause','暂停更新',`aria-pressed="false" ${selected ? '' : 'disabled'}`)}${button('log-bottom','跳到最新')}${button('log-download','导出当前内容')}</div></div><p class="small-note">暂停期间实例继续运行；继续后只能读取最近 200 行。</p><p class="small-note" data-log-status>${selected ? '正在读取…' : '没有可查看日志的实例。'}</p><pre class="code-block" data-log-output tabindex="0"></pre></div></section>`;
+   return head('运行日志','按实例查看近期输出；日志可能包含网络地址等信息。') + `<section class="panel"><div class="panel-content"><div class="toolbar"><label>实例${instancePicker(items,selected)}</label><label>包含<input data-log-filter type="search" placeholder="搜索日志"></label><label>排除<input data-log-exclude type="search" placeholder="隐藏包含此内容的日志"></label><label class="form-check"><input data-log-case type="checkbox">区分大小写</label><div class="actions">${button('log-refresh','刷新')}${button('log-pause','暂停更新',`aria-pressed="false" ${selected ? '' : 'disabled'}`)}${button('log-bottom','跳到最新')}${button('log-download','导出当前内容')}</div></div><p class="small-note">包含和排除条件同时生效；暂停期间实例继续运行，继续后只能读取最近 200 行。</p><p class="small-note" data-log-status>${selected ? '正在读取…' : '没有可查看日志的实例。'}</p><pre class="code-block" data-log-output tabindex="0"></pre></div></section>`;
   },
   mount(root,data) {
-   const picker = root.querySelector('[data-instance]'), filter = root.querySelector('[data-log-filter]'), output = root.querySelector('[data-log-output]'), status = root.querySelector('[data-log-status]'), pauseButton = root.querySelector('[data-action="log-pause"]');
+   const picker = root.querySelector('[data-instance]'), filter = root.querySelector('[data-log-filter]'), exclude = root.querySelector('[data-log-exclude]'), caseSensitive = root.querySelector('[data-log-case]'), output = root.querySelector('[data-log-output]'), status = root.querySelector('[data-log-status]'), pauseButton = root.querySelector('[data-action="log-pause"]');
    let timer = null, controller = null, version = 0, lines = [], runId = '', painted = '', stopped = false, stream = null, pendingPaint = false, paused = false, pausedStale = false;
    const current = () => !stopped && K.isCurrent('logs',root);
    function stopStream() { if (!stream) return; clearTimeout(stream.watchdog); stream.source.close(); stream = null; }
@@ -307,7 +307,9 @@
     if (!current()) return;
     if (!force && selectingOutput()) { pendingPaint = true; return; }
     pendingPaint = false;
-    const query = filter.value.toLocaleLowerCase(), matched = query ? lines.filter(line => line.toLocaleLowerCase().includes(query)) : lines;
+    const normalize = value => caseSensitive.checked ? value : value.toLocaleLowerCase();
+    const include = normalize(filter.value), omitted = normalize(exclude.value);
+    const matched = lines.filter(line => { const value = normalize(line); return (!include || value.includes(include)) && (!omitted || !value.includes(omitted)); });
     const text = matched.join('\n'), follow = output.scrollHeight-output.scrollTop-output.clientHeight < 36;
     if (output.textContent !== text) { output.textContent = text; if (follow) output.scrollTop = output.scrollHeight; }
     painted = text; status.textContent = pausedStale ? '实例运行代次已变化，日志已清空；请刷新或继续更新。' : `${paused ? '已暂停更新' : stream?.ready ? '实时更新' : '轮询更新'} · 显示 ${matched.length} / ${lines.length} 行${runId ? '' : ' · 实例尚无运行输出'}`;
@@ -396,6 +398,8 @@
    const selectionChanged = () => { if (pendingPaint && !selectingOutput()) paint(); };
    picker.addEventListener('change',() => { clearLogs(); void load(); });
    filter.addEventListener('input',() => paint(true));
+    exclude.addEventListener('input',() => paint(true));
+    caseSensitive.addEventListener('change',() => paint(true));
    root.addEventListener('mouseup',() => paint());
    root.addEventListener('click',event => {
     const action = event.target.closest('[data-action]')?.dataset.action;
