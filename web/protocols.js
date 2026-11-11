@@ -8,7 +8,6 @@ const Protocols = Object.freeze({
  supportsUnbound: type => ['stcp-visitor', 'xtcp-visitor'].includes(type),
  probeUnavailable(t) {
   if (t.pluginType === 'socks5') return 'SOCKS5 代理目标不支持普通目标检测';
-  if (t.unixSocketPath) return 'Unix 套接字目标暂不支持检测';
   if (['udp', 'sudp', 'sudp-visitor'].includes(t.type)) return 'UDP 不支持通用检测';
   if (this.supportsUnbound(t.type) && t.localPort < 0) return '此 Visitor 仅接收回退连接';
   return '';
