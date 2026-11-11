@@ -165,6 +165,7 @@ type webhookDispatcher struct {
 	queue   chan queuedWebhook
 	targets map[string]*webhookDelivery
 	order   []string
+	testing bool
 }
 
 func newWebhookDispatcher() *webhookDispatcher {
@@ -508,6 +509,8 @@ func formatWebhookEventWithChat(format string, event webhookEvent, chatID string
 		description = "登录尝试已限流"
 	case "update.available":
 		description = "发现可用的软件更新"
+	case "webhook.test":
+		description = "手动发送的测试通知"
 	default:
 		return nil, "", fmt.Errorf("unsupported event")
 	}

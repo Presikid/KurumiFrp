@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 )
@@ -262,12 +263,75 @@ func (a *App) webhookTargetsAPI(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, fmt.Errorf("通知设置请求格式无效"))
 		return
 	}
+	if req.Action == "test" {
+		result, accepted, code, err := a.testWebhook(r.Context(), req.Revision, req.ID)
+		if err != nil {
+			fail(w, code, err)
+			return
+		}
+		reply(w, http.StatusOK, map[string]any{"accepted": accepted, "result": result})
+		return
+	}
 	revision, code, err := a.mutateWebhookTarget(req)
 	if err != nil {
 		fail(w, code, err)
 		return
 	}
 	reply(w, http.StatusOK, map[string]any{"ok": true, "revision": revision})
+}
+
+// A manual send uses the selected saved target, including a disabled target.
+// Admission is serialized with configuration changes; delivery runs without
+// holding App.mu and is cancelled if delivery settings change or it is removed.
+func (a *App) testWebhook(ctx context.Context, revision uint64, id string) (string, bool, int, error) {
+	a.mu.Lock()
+	if a.closing {
+		a.mu.Unlock()
+		return "", false, http.StatusServiceUnavailable, fmt.Errorf("工作台正在关闭")
+	}
+	if revision != a.store.DB.Revision {
+		a.mu.Unlock()
+		return "", false, http.StatusConflict, fmt.Errorf("配置已变化，请刷新后重试")
+	}
+	d := a.webhooks
+	d.mu.Lock()
+	delivery := d.targets[id]
+	if delivery == nil {
+		d.mu.Unlock()
+		a.mu.Unlock()
+		return "", false, http.StatusNotFound, fmt.Errorf("通知目标不存在")
+	}
+	if d.ctx.Err() != nil || delivery.ctx.Err() != nil || delivery.target == "" {
+		d.mu.Unlock()
+		a.mu.Unlock()
+		return "", false, http.StatusBadRequest, fmt.Errorf("通知目标不可用，请检查已保存的地址、签名和模板")
+	}
+	if d.testing {
+		d.mu.Unlock()
+		a.mu.Unlock()
+		return "", false, http.StatusTooManyRequests, fmt.Errorf("已有测试通知正在发送，请稍后重试")
+	}
+	d.testing = true
+	address, format, secret, template, targetCtx := delivery.target, delivery.config.Format, delivery.signingSecret, delivery.template, delivery.ctx
+	d.mu.Unlock()
+	a.mu.Unlock()
+	defer func() {
+		d.mu.Lock()
+		d.testing = false
+		d.mu.Unlock()
+	}()
+
+	sendCtx, cancel := context.WithCancel(targetCtx)
+	stop := context.AfterFunc(ctx, cancel)
+	defer func() { stop(); cancel() }()
+	if ctx.Err() != nil {
+		cancel()
+	}
+	result, accepted := sendWebhook(sendCtx, address, format, secret, webhookEvent{Event: "webhook.test", At: now()}, template)
+	if ctx.Err() != nil || targetCtx.Err() != nil {
+		return "", false, http.StatusConflict, fmt.Errorf("测试已取消，消息可能已经发送，请核对接收端")
+	}
+	return result, accepted, http.StatusOK, nil
 }
 
 func (a *App) mutateWebhookTarget(req webhookTargetRequest) (uint64, int, error) {
