@@ -20,6 +20,41 @@ type RuntimeConfig struct {
 	// Embedded-only control-entry policy, copied with the instance snapshot.
 	ServerAccessMode string
 	ServerAccessList string
+	// Internal opt-in for account-token frps. The resolver must be bound to
+	// this instance and incarnation, return promptly, and never log tokens.
+	ManagedAccountLogin       bool
+	ManagedAccountIncarnation string
+	ManagedLoginResolver      func(context.Context, string) (string, error)
+}
+
+func validateManagedRuntimeConfig(cfg RuntimeConfig) error {
+	if !cfg.ManagedAccountLogin {
+		if cfg.ManagedLoginResolver != nil || cfg.ManagedAccountIncarnation != "" {
+			return fmt.Errorf("未启用账户认证，不能提供账户认证配置")
+		}
+		return nil
+	}
+	if cfg.Kind != "frps" || !idPattern.MatchString(cfg.InstanceID) ||
+		!validLocalTrafficID(cfg.ManagedAccountIncarnation) || cfg.ManagedLoginResolver == nil {
+		return fmt.Errorf("账户认证需要有效的服务端实例、实例标识及令牌查询器")
+	}
+	return nil
+}
+
+func (a *App) checkManagedAccountBackend(i Instance, cfg RuntimeConfig) error {
+	if err := validateManagedRuntimeConfig(cfg); err != nil {
+		return err
+	}
+	if !cfg.ManagedAccountLogin {
+		return nil
+	}
+	if cfg.InstanceID != i.ID || cfg.Kind != i.Kind {
+		return fmt.Errorf("账户认证配置与目标实例不匹配")
+	}
+	if _, ok := a.runtime.(*embeddedRuntime); !ok {
+		return fmt.Errorf("当前运行核心不支持账户认证，仅内嵌服务端可用")
+	}
+	return nil
 }
 
 // RuntimeBackend selects, validates and starts runtime instances. Resolve is

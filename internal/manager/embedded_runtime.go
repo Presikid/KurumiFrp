@@ -63,6 +63,9 @@ func parseEmbeddedConfig(ctx context.Context, target string, cfg RuntimeConfig) 
 	if err := ctx.Err(); err != nil {
 		return embeddedConfig{}, err
 	}
+	if err := validateManagedRuntimeConfig(cfg); err != nil {
+		return embeddedConfig{}, err
+	}
 	if cfg.InstanceID == "" || target != embeddedTarget+cfg.Kind {
 		return embeddedConfig{}, errors.New("内嵌核心目标与实例不匹配")
 	}
@@ -91,7 +94,11 @@ func parseEmbeddedConfig(ctx context.Context, target string, cfg RuntimeConfig) 
 		if err != nil || server == nil {
 			return result, errors.New("服务端配置未通过检查")
 		}
-		if _, err := embedded.NewServer(server); err != nil {
+		if cfg.ManagedAccountLogin {
+			if err := embedded.ValidateManagedLoginConfig(server); err != nil {
+				return result, fmt.Errorf("账户认证服务端配置无效：%w", err)
+			}
+		} else if _, err := embedded.NewServer(server); err != nil {
 			return result, errors.New("服务端配置包含当前内嵌核心不支持的功能")
 		}
 		result.server, result.access, result.warn = server, policy, warning != nil
@@ -116,6 +123,9 @@ func (*embeddedRuntime) Verify(ctx context.Context, target string, cfg RuntimeCo
 }
 
 func (b *embeddedRuntime) Start(target string, cfg RuntimeConfig, output io.Writer) (RuntimeInstance, error) {
+	if err := validateManagedRuntimeConfig(cfg); err != nil {
+		return nil, err
+	}
 	resolved, err := b.Resolve(cfg.Kind)
 	if err != nil {
 		return nil, err
@@ -185,7 +195,7 @@ func (r *embeddedRun) serve(ctx context.Context, target string, cfg RuntimeConfi
 		return
 	}
 	if cfg.Kind == "frps" {
-		r.err = r.runServer(ctx, config.server, config.access, sink)
+		r.err = r.runServer(ctx, config.server, config.access, sink, cfg)
 		return
 	}
 	r.err = r.runClient(ctx, cfg.InstanceID, config.client, sink)
@@ -265,8 +275,14 @@ func publishEmbeddedReady(ctx context.Context, ready, exiting, done <-chan struc
 	}
 }
 
-func (r *embeddedRun) runServer(ctx context.Context, config *v1.ServerConfig, access *controlAccessPolicy, sink *xlog.Sink) error {
+func (r *embeddedRun) runServer(ctx context.Context, config *v1.ServerConfig, access *controlAccessPolicy, sink *xlog.Sink, cfg RuntimeConfig) error {
+	if err := validateManagedRuntimeConfig(cfg); err != nil {
+		return err
+	}
 	options := embedded.ServerOptions{LogSink: sink, OnPanic: r.markCleanupUncertain}
+	if cfg.ManagedAccountLogin {
+		options.ManagedLogin = cfg.ManagedLoginResolver
+	}
 	if access != nil {
 		options.AllowControlConnection = access.permits
 	}
