@@ -41,7 +41,16 @@ func openBrowser(address string) error {
 	return nil
 }
 func openExisting(addr, token string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("invalid local manager address")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || (host != "127.0.0.1" && host != "::1") || n < 1024 || n > 65535 {
+		return fmt.Errorf("invalid local manager address")
+	}
 	client := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{Proxy: nil}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	defer client.CloseIdleConnections()
 	req, err := http.NewRequest("POST", "http://"+addr+"/api/browser-ticket", bytes.NewBufferString("{}"))
 	if err != nil {
 		return err
@@ -62,10 +71,11 @@ func openExisting(addr, token string) error {
 	if err = json.NewDecoder(http.MaxBytesReader(nil, resp.Body, 4096)).Decode(&result); err != nil {
 		return err
 	}
-	if !strings.HasPrefix(result.URL, "http://"+addr+"/#launch=") {
-		return fmt.Errorf("unexpected browser ticket response")
+	address := "http://" + addr + "/"
+	if result.URL != address {
+		return fmt.Errorf("unexpected browser address response")
 	}
-	return openBrowser(result.URL)
+	return openBrowser(address)
 }
 
 // Installation launchers use auto; explicit --listen retains its original behavior.

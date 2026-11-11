@@ -712,7 +712,7 @@ func (a *App) passwordAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	p := requestPrincipal(r)
 	if p.AccountID == "" {
-		fail(w, 400, fmt.Errorf("管理令牌不使用账户密码"))
+		a.adminPasswordAPI(w, r, p)
 		return
 	}
 	var req struct {

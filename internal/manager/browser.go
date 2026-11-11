@@ -3,63 +3,14 @@ package manager
 import (
 	"fmt"
 	"net/http"
-	"time"
 )
 
-// Launch tickets are short-lived, single-use credentials placed only in a URL
-// fragment. The persistent access token is never put in a URL or browser history.
+// Opening the browser never authenticates it; the administrator password is
+// required even when the page was opened by a local shortcut.
 func (a *App) BrowserURL() string {
-	a.auth.mu.Lock()
-	defer a.auth.mu.Unlock()
-	if a.auth.tickets == nil {
-		a.auth.tickets = map[string]time.Time{}
-	}
-	for k, t := range a.auth.tickets {
-		if time.Now().After(t) {
-			delete(a.auth.tickets, k)
-		}
-	}
-	if len(a.auth.tickets) >= 8 {
-		return "http://" + a.addr + "/"
-	}
-	ticket := randomHex(32)
-	a.auth.tickets[ticket] = time.Now().Add(time.Minute)
-	return "http://" + a.addr + "/#launch=" + ticket
+	return "http://" + a.addr + "/"
 }
 func (a *App) launchLogin(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Ticket string `json:"ticket"`
-	}
-	if err := decode(w, r, &req); err != nil {
-		fail(w, 400, err)
-		return
-	}
-	a.auth.mu.Lock()
-	expires, ok := a.auth.tickets[req.Ticket]
-	for k, t := range a.auth.sessions {
-		if !time.Now().Before(t.expires) {
-			delete(a.auth.sessions, k)
-		}
-	}
-	if !ok || !time.Now().Before(expires) {
-		delete(a.auth.tickets, req.Ticket)
-		a.auth.mu.Unlock()
-		a.loginHistory.record(r, "启动凭据", false)
-		fail(w, 401, fmt.Errorf("启动凭据无效或已过期，请重新打开桌面快捷方式"))
-		return
-	}
-	sid, err := a.auth.newSessionLocked(r, "", time.Now())
-	if err == nil {
-		// The ticket remains valid only on a transient capacity/gate failure.
-		// Holding auth.mu makes successful consumption strictly single-use.
-		delete(a.auth.tickets, req.Ticket)
-	}
-	a.auth.mu.Unlock()
-	a.loginHistory.record(r, "启动凭据", err == nil)
-	if err != nil {
-		fail(w, http.StatusTooManyRequests, err)
-		return
-	}
-	http.SetCookie(w, &http.Cookie{Name: "kurumi_session", Value: sid, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 43200})
-	reply(w, 200, map[string]bool{"ok": true})
+	a.loginHistory.record(r, "启动凭据", false)
+	fail(w, http.StatusUnauthorized, fmt.Errorf("请使用密码登录"))
 }
