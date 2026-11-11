@@ -292,8 +292,8 @@
       toast(`网段：${result.prefix || '未知'}；ASN：${(result.asns || []).join('、') || '未知'}`); return;
      }
      const section = button.closest('[data-fw-rule]'); if (!section) return;
-     const sources = section.querySelector('[name="sources"]'); let result;
-     if (action === 'normalize') result = await timeout('firewall/import', {text:sources.value}, 15000);
+     const sources = section.querySelector('[name="sources"]'), originalSources = sources.value; let result;
+     if (action === 'normalize') result = await timeout('firewall/import', {text:originalSources}, 15000);
      if (action === 'import-file') {
       const file = section.querySelector('[name="sourceFile"]').files[0];
       if (!file || file.size > 256 * 1024) throw new Error('请选择不超过 256 KiB 的 UTF-8 来源文件。');
@@ -303,7 +303,9 @@
      if (action === 'asn') { const value = prompt('输入要查询的 ASN，例如 AS4134：', section.querySelector('[name="refreshValue"]').value); if (value === null) return; result = await timeout('firewall/asn', {asn:value.trim()}, 40000); }
      if (action === 'list') { const value = prompt('输入公网 HTTPS 清单地址：', section.querySelector('[name="refreshValue"]').value); if (value === null) return; result = await timeout('firewall/list', {url:value.trim()}, 25000); }
      if (result) {
+      if (!current() || !section.isConnected) return;
       if (!Array.isArray(result.prefixes)) throw new Error('来源清单格式无效');
+      if (action === 'normalize' && sources.value !== originalSources) throw new Error('来源在整理期间已变化，请重新整理。');
       let append = false;
       if (sources.value.trim() && action !== 'normalize' && !confirm('用此次结果替换当前来源？')) { if (!confirm('将此次结果追加到当前来源？')) return; append = true; }
       sources.value = (append ? sources.value.trim() + '\n' : '') + result.prefixes.join('\n');
