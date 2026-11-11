@@ -19,8 +19,6 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.admin()
 		case "/api/webhooks":
 			return p.admin()
-		case "/api/passkeys":
-			return p.AccountID != ""
 		case "/api/nodes":
 			return p.admin() || p.Role == "operator" || p.Role == "viewer"
 		case "/api/state":
@@ -44,8 +42,6 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.admin()
 		case "/api/webhooks":
 			return p.admin()
-		case "/api/passkeys/register/start", "/api/passkeys/register/finish", "/api/passkeys/delete":
-			return p.AccountID != ""
 		case "/api/tunnels/export", "/api/schedules":
 			return p.admin()
 		case "/api/nodes/check":
