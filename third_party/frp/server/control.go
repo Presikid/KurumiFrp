@@ -24,6 +24,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -140,6 +141,11 @@ func (cm *ControlManager) Add(ctl *Control) error {
 				old.runMu.Unlock()
 			}
 			continue
+		}
+		if old != nil && old.ctl.sessionCtx.managedAccountID != ctl.sessionCtx.managedAccountID {
+			cm.mu.Unlock()
+			old.runMu.Unlock()
+			return fmt.Errorf("run id belongs to another account")
 		}
 
 		id := ControlID(nextControlID.Add(1))
@@ -432,6 +438,8 @@ type SessionContext struct {
 	// negotiated wire protocol for this client session
 	WireProtocol   string
 	UDPPacketCodec string
+	// Assigned only after the account token verifies its control login.
+	managedAccountID string
 }
 
 type controlState uint8
@@ -886,16 +894,25 @@ func (ctl *Control) handlePing(m msg.Message) {
 }
 
 func (ctl *Control) handleNatHoleVisitor(m msg.Message) {
+	if ctl.sessionCtx.managedAccountID != "" {
+		return
+	}
 	inMsg := m.(*msg.NatHoleVisitor)
 	ctl.sessionCtx.RC.NatHoleController.HandleVisitorContext(ctl.ctx, inMsg, ctl.msgTransporter, ctl.sessionCtx.LoginMsg.User)
 }
 
 func (ctl *Control) handleNatHoleClient(m msg.Message) {
+	if ctl.sessionCtx.managedAccountID != "" {
+		return
+	}
 	inMsg := m.(*msg.NatHoleClient)
 	ctl.sessionCtx.RC.NatHoleController.HandleClient(inMsg, ctl.msgTransporter)
 }
 
 func (ctl *Control) handleNatHoleReport(m msg.Message) {
+	if ctl.sessionCtx.managedAccountID != "" {
+		return
+	}
 	inMsg := m.(*msg.NatHoleReport)
 	ctl.sessionCtx.RC.NatHoleController.HandleReport(inMsg)
 }
@@ -908,6 +925,13 @@ func (ctl *Control) handleCloseProxy(m msg.Message) {
 }
 
 func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err error) {
+	if accountID := ctl.sessionCtx.managedAccountID; accountID != "" {
+		prefix := accountID + "."
+		if pxyMsg.ProxyType != string(v1.ProxyTypeTCP) || pxyMsg.Group != "" ||
+			!strings.HasPrefix(pxyMsg.ProxyName, prefix) || len(pxyMsg.ProxyName) == len(prefix) {
+			return "", fmt.Errorf("account login supports ungrouped TCP proxies in the account namespace only")
+		}
+	}
 	var pxyConf v1.ProxyConfigurer
 	// Load configures from NewProxy message and validate.
 	pxyConf, err = config.NewProxyConfigurerFromMsg(pxyMsg, ctl.sessionCtx.ServerCfg)

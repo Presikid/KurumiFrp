@@ -156,6 +156,7 @@ type Service struct {
 	trafficCounter *traffic.ServerCounter
 	// Optional instance-owned admission policy for frp control connections.
 	allowControlConnection func(net.Addr) bool
+	managedLogin           ManagedLoginResolver
 	accessLogMu            sync.Mutex
 	accessLogAt            time.Time
 	accessLogSuppressed    uint64
@@ -211,6 +212,11 @@ type ServiceOptions struct {
 	// listener, including work and visitor connections. It must be concurrent-
 	// safe, prompt and non-panicking. It does not filter public proxy traffic.
 	AllowControlConnection func(net.Addr) bool
+	// ManagedLogin replaces shared-token authentication only when explicitly
+	// supplied. It affects new control logins and does not revoke existing work.
+	// Clients must enable auth.additionalScopes = ["NewWorkConns"]; otherwise
+	// a control login can succeed while its work connections are rejected.
+	ManagedLogin ManagedLoginResolver
 	// OnWorkerPanic enables instance-scoped worker recovery and notification.
 	// It must be concurrent-safe, return promptly, and not panic. It receives no
 	// panic value and must cause the owning instance to stop.
@@ -237,6 +243,11 @@ func NewServiceWithLogSink(cfg *v1.ServerConfig, sink *xlog.Sink) (*Service, err
 
 // NewServiceWithOptions creates a server with instance-specific options.
 func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result *Service, resultErr error) {
+	if options.ManagedLogin != nil {
+		if err := ValidateManagedLoginConfig(cfg); err != nil {
+			return nil, err
+		}
+	}
 	if options.LogSink != nil {
 		if err := options.LogSink.Claim(); err != nil {
 			return nil, err
@@ -277,6 +288,7 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 		ctlManager:             NewControlManager(clientRegistry),
 		clientRegistry:         clientRegistry,
 		allowControlConnection: options.AllowControlConnection,
+		managedLogin:           options.ManagedLogin,
 		pxyManager:             proxy.NewManager(),
 		pluginManager:          plugin.NewManagerWithLogger(xl),
 		rc: &controller.ResourceController{
@@ -408,18 +420,20 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 		xl.Infof("frps sshTunnelGateway listen on port %d", cfg.SSHTunnelGateway.BindPort)
 	}
 
-	// Listen for accepting connections from client using websocket protocol.
-	websocketPrefix := []byte("GET " + netpkg.FrpWebsocketPath)
-	websocketLn := svr.muxer.Listen(0, uint32(len(websocketPrefix)), func(data []byte) bool {
-		return bytes.Equal(data, websocketPrefix)
-	})
-	svr.websocketListener, err = netpkg.NewWebsocketListenerWithContext(svr.workCtx, websocketLn)
-	if err != nil {
-		return nil, fmt.Errorf("create websocket listener: %w", err)
-	}
-	svr.wssListener, err = newWSSBridge(svr.workCtx)
-	if err != nil {
-		return nil, fmt.Errorf("create secure websocket listener: %w", err)
+	// Account login initially supports only the direct TCP/TLS listener.
+	if options.ManagedLogin == nil {
+		websocketPrefix := []byte("GET " + netpkg.FrpWebsocketPath)
+		websocketLn := svr.muxer.Listen(0, uint32(len(websocketPrefix)), func(data []byte) bool {
+			return bytes.Equal(data, websocketPrefix)
+		})
+		svr.websocketListener, err = netpkg.NewWebsocketListenerWithContext(svr.workCtx, websocketLn)
+		if err != nil {
+			return nil, fmt.Errorf("create websocket listener: %w", err)
+		}
+		svr.wssListener, err = newWSSBridge(svr.workCtx)
+		if err != nil {
+			return nil, fmt.Errorf("create secure websocket listener: %w", err)
+		}
 	}
 
 	// Create http vhost muxer.
@@ -620,7 +634,9 @@ func (svr *Service) Run(ctx context.Context) (runErr error) {
 		svr.startWorker("metrics server", svr.metricsServer.Run)
 	}
 
-	svr.startWorker("ssh tunnel listener", func() error { return svr.HandleListener(svr.sshTunnelListener, true) })
+	if svr.managedLogin == nil {
+		svr.startWorker("ssh tunnel listener", func() error { return svr.HandleListener(svr.sshTunnelListener, true) })
+	}
 
 	if svr.kcpListener != nil {
 		svr.startWorker("kcp listener", func() error { return svr.HandleListener(svr.kcpListener, false) })
@@ -628,9 +644,13 @@ func (svr *Service) Run(ctx context.Context) (runErr error) {
 	if svr.quicListener != nil {
 		svr.startWorker("quic listener", func() error { return svr.HandleQUICListener(svr.quicListener) })
 	}
-	svr.startWorker("websocket listener", func() error { return svr.HandleListener(svr.websocketListener, false) })
-	svr.startWorker("wss listener", func() error { return svr.handleListener(svr.wssListener, false, true, false) })
-	svr.startWorker("tls listener", func() error { return svr.handleListener(svr.tlsListener, false, false, true) })
+	if svr.websocketListener != nil {
+		svr.startWorker("websocket listener", func() error { return svr.HandleListener(svr.websocketListener, false) })
+	}
+	if svr.wssListener != nil {
+		svr.startWorker("wss listener", func() error { return svr.handleListener(svr.wssListener, false, true, false) })
+	}
+	svr.startWorker("tls listener", func() error { return svr.handleListener(svr.tlsListener, false, false, svr.managedLogin == nil) })
 
 	if svr.rc.NatHoleController != nil {
 		lifetime.Go(svr.workCtx, func() { svr.rc.NatHoleController.CleanWorker(svr.ctx) })
@@ -645,7 +665,12 @@ func (svr *Service) Run(ctx context.Context) (runErr error) {
 
 	// This is the last admission to the same monotonic work scope; if it is
 	// rejected, at least one listener worker may not have started.
-	if !svr.startWorker("tcp listener", func() error { return svr.HandleListener(svr.listener, false) }) {
+	if !svr.startWorker("tcp listener", func() error {
+		if svr.managedLogin != nil {
+			return svr.handleListener(svr.listener, false, false, false)
+		}
+		return svr.HandleListener(svr.listener, false)
+	}) {
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -825,6 +850,10 @@ func (svr *Service) logDeniedControl(ctx context.Context, remote net.Addr) {
 }
 
 func (svr *Service) handleConnection(ctx context.Context, conn net.Conn, internal bool, session io.Closer) {
+	if svr.managedLogin != nil && internal {
+		_ = conn.Close()
+		return
+	}
 	if svr.allowControlConnection != nil && !svr.allowControlConnection(conn.RemoteAddr()) {
 		svr.logDeniedControl(ctx, conn.RemoteAddr())
 		_ = conn.Close()
@@ -851,16 +880,24 @@ func (svr *Service) handleConnection(ctx context.Context, conn net.Conn, interna
 		var ctl *Control
 		if err == nil {
 			m = &retContent.Login
+			var managed *managedLogin
+			if svr.managedLogin != nil {
+				managed, err = resolveManagedLogin(ctx, svr.managedLogin, m, svr.cfg.Auth.AdditionalScopes)
+			}
 			controlConn := acceptedConn.conn
-			if !internal {
+			if err == nil && !internal {
 				var controlRW io.ReadWriter
-				controlRW, err = acceptedConn.newControlReadWriter(conn, svr.auth.EncryptionKey())
+				key := svr.auth.EncryptionKey()
+				if managed != nil {
+					key = managed.key
+				}
+				controlRW, err = acceptedConn.newControlReadWriter(conn, key)
 				if err == nil {
 					controlConn = acceptedConn.messageConnFor(controlRW)
 				}
 			}
 			if err == nil {
-				ctl, err = svr.RegisterControl(controlConn, m, internal, acceptedConn.wireProtocol, acceptedConn.udpPacketCodec, session)
+				ctl, err = svr.registerControl(controlConn, m, internal, acceptedConn.wireProtocol, acceptedConn.udpPacketCodec, session, managed)
 			}
 		}
 
@@ -899,15 +936,23 @@ func (svr *Service) handleConnection(ctx context.Context, conn net.Conn, interna
 			return
 		}
 	case *msg.NewWorkConn:
-		if err := svr.RegisterWorkConn(
+		if err := svr.registerWorkConn(
 			acceptedConn.conn,
 			m,
 			acceptedConn.wireProtocol,
 			acceptedConn.clientHelloPresent,
+			svr.managedLogin != nil,
 		); err != nil {
-			_ = acceptedConn.conn.WriteMsg(&msg.StartWorkConn{
-				Error: util.GenerateResponseErrorString("invalid NewWorkConn", err, lo.FromPtr(svr.cfg.DetailedErrorsToClient)),
-			})
+			writeError := func() error {
+				return acceptedConn.conn.WriteMsg(&msg.StartWorkConn{
+					Error: util.GenerateResponseErrorString("invalid NewWorkConn", err, lo.FromPtr(svr.cfg.DetailedErrorsToClient)),
+				})
+			}
+			if svr.managedLogin != nil {
+				_ = writeWithDeadline(conn, connWriteTimeout, writeError)
+			} else {
+				_ = writeError()
+			}
 			conn.Close()
 		}
 	case *msg.NewVisitorConn:
@@ -1112,6 +1157,9 @@ func (ac *acceptedConnection) handleClientHello(conn net.Conn, wireConn *wire.Co
 // If internal is true, it means that this listener is used for internal communication like ssh tunnel gateway.
 // TODO(fatedier): Pass some parameters of listener/connection through context to avoid passing too many parameters.
 func (svr *Service) HandleListener(l net.Listener, internal bool) error {
+	if svr.managedLogin != nil {
+		return errors.New("account login requires a service-owned listener")
+	}
 	return svr.handleListener(l, internal, false, false)
 }
 
@@ -1123,6 +1171,16 @@ func (svr *Service) handleListener(l net.Listener, internal, alreadyTLS, inspect
 		c, err := l.Accept()
 		if err != nil {
 			return err
+		}
+		// Account mode checks the physical peer before TLS or TCP multiplexing.
+		// handleConnection still rechecks the policy for each admitted stream.
+		if svr.managedLogin != nil && svr.allowControlConnection != nil {
+			peer := c.RemoteAddr()
+			if !svr.allowControlConnection(peer) {
+				svr.logDeniedControl(svr.ctx, peer)
+				_ = c.Close()
+				continue
+			}
 		}
 		c, ok := lifetime.TrackConn(svr.workCtx, c)
 		if !ok {
@@ -1217,6 +1275,9 @@ type quicSessionCloser struct{ conn *quic.Conn }
 func (c quicSessionCloser) Close() error { return c.conn.CloseWithError(0, "") }
 
 func (svr *Service) HandleQUICListener(l *quic.Listener) error {
+	if svr.managedLogin != nil {
+		return errors.New("account login does not support QUIC")
+	}
 	// Listen for incoming connections from client.
 	for {
 		c, err := l.Accept(svr.ctx)
@@ -1261,6 +1322,29 @@ func (svr *Service) RegisterControl(
 	udpPacketCodec string,
 	session io.Closer,
 ) (*Control, error) {
+	if svr.managedLogin != nil {
+		return nil, errors.New("account login requires a service-owned connection")
+	}
+	return svr.registerControl(ctlConn, loginMsg, internal, wireProtocol, udpPacketCodec, session, nil)
+}
+
+func (svr *Service) registerControl(
+	ctlConn *msg.Conn,
+	loginMsg *msg.Login,
+	internal bool,
+	wireProtocol string,
+	udpPacketCodec string,
+	session io.Closer,
+	managed *managedLogin,
+) (*Control, error) {
+	if svr.managedLogin != nil {
+		if internal || managed == nil || managed.verifier == nil || len(managed.key) != 64 ||
+			managed.accountID != loginMsg.User || !managedTimestampOK(loginMsg.Timestamp) {
+			return nil, errors.New("verified account login is required")
+		}
+	} else if managed != nil {
+		return nil, errors.New("account login is unavailable on this service")
+	}
 	switch wireProtocol {
 	case wire.ProtocolV1:
 		if udpPacketCodec != "" {
@@ -1295,26 +1379,35 @@ func (svr *Service) RegisterControl(
 
 	// Check auth.
 	authVerifier := svr.auth.Verifier
-	if internal && loginMsg.ClientSpec.AlwaysAuthPass {
+	encryptionKey := svr.auth.EncryptionKey()
+	if managed != nil {
+		authVerifier = managed.verifier
+		encryptionKey = managed.key
+	} else if internal && loginMsg.ClientSpec.AlwaysAuthPass {
 		authVerifier = auth.AlwaysPassVerifier
 	}
 	if err := authVerifier.VerifyLogin(loginMsg); err != nil {
 		return nil, err
 	}
 
+	accountID := ""
+	if managed != nil {
+		accountID = managed.accountID
+	}
 	ctl, err := NewControl(ctx, &SessionContext{
 		RC:             svr.rc,
 		ServerMetrics:  svr.metrics,
 		PxyManager:     svr.pxyManager,
 		PluginManager:  svr.pluginManager,
 		AuthVerifier:   authVerifier,
-		EncryptionKey:  svr.auth.EncryptionKey(),
+		EncryptionKey:  encryptionKey,
 		Conn:           ctlConn,
 		Session:        session,
 		LoginMsg:       loginMsg,
 		ServerCfg:      svr.cfg,
 		WireProtocol:   wireProtocol,
 		UDPPacketCodec: udpPacketCodec,
+		managedAccountID: accountID,
 	})
 	if err != nil {
 		xl.Warnf("create new controller error: %v", err)
@@ -1345,6 +1438,22 @@ func (svr *Service) RegisterWorkConn(
 	workWireProtocol string,
 	workClientHelloPresent bool,
 ) error {
+	if svr.managedLogin != nil {
+		return errors.New("account login requires a service-owned connection")
+	}
+	return svr.registerWorkConn(workConn, newMsg, workWireProtocol, workClientHelloPresent, false)
+}
+
+func (svr *Service) registerWorkConn(
+	workConn *msg.Conn,
+	newMsg *msg.NewWorkConn,
+	workWireProtocol string,
+	workClientHelloPresent bool,
+	managedTransport bool,
+) error {
+	if (svr.managedLogin != nil) != managedTransport {
+		return errors.New("account work connection requires service-owned TLS")
+	}
 	if workClientHelloPresent {
 		return fmt.Errorf("ClientHello is not allowed on work connections")
 	}
@@ -1371,16 +1480,26 @@ func (svr *Service) RegisterWorkConn(
 	if err == nil {
 		newMsg = &retContent.NewWorkConn
 		// Check auth.
-		err = ctl.sessionCtx.AuthVerifier.VerifyNewWorkConn(newMsg)
+		if managedTransport && (ctl.sessionCtx.managedAccountID == "" || !managedTimestampOK(newMsg.Timestamp)) {
+			err = errors.New("account credentials are invalid")
+		} else {
+			err = ctl.sessionCtx.AuthVerifier.VerifyNewWorkConn(newMsg)
+		}
 	}
 	if err != nil {
 		xl.Warnf("invalid NewWorkConn with run id [%s]", newMsg.RunID)
+		if managedTransport {
+			return errors.New("account credentials are invalid")
+		}
 		return err
 	}
 	return svr.ctlManager.RegisterWorkConn(ctl, proxy.NewWorkConn(workConn))
 }
 
 func (svr *Service) RegisterVisitorConn(visitorConn net.Conn, newMsg *msg.NewVisitorConn, wireProtocol string) error {
+	if svr.managedLogin != nil {
+		return errors.New("account login does not support visitor connections")
+	}
 	var rejected net.Conn
 	defer func() {
 		// The visitor/control admission locks have been released before this
