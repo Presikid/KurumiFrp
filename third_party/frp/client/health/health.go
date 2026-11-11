@@ -45,8 +45,9 @@ type Monitor struct {
 	timeout        time.Duration
 	maxFailedTimes int
 
-	// For tcp
-	addr string
+	// For connection checks
+	addr       string
+	unixSocket bool
 
 	// For http
 	url            string
@@ -108,6 +109,16 @@ func NewMonitor(ctx context.Context, cfg v1.HealthCheckConfig, addr string,
 		doneCh:         make(chan struct{}),
 		timerFactory:   newHealthTimer,
 	}
+}
+
+// NewUnixConnectMonitor checks whether an absolute Unix socket can be connected.
+// Only the tcp health check type is supported for this target.
+func NewUnixConnectMonitor(ctx context.Context, cfg v1.HealthCheckConfig, addr string,
+	statusNormalFn func(), statusFailedFn func(),
+) *Monitor {
+	monitor := NewMonitor(ctx, cfg, addr, statusNormalFn, statusFailedFn)
+	monitor.unixSocket = true
+	return monitor
 }
 
 func (monitor *Monitor) Start() {
@@ -192,6 +203,9 @@ func (monitor *Monitor) waitForNextCheck() bool {
 }
 
 func (monitor *Monitor) doCheck(ctx context.Context) error {
+	if monitor.unixSocket && monitor.checkType != "tcp" {
+		return ErrHealthCheckType
+	}
 	switch monitor.checkType {
 	case "tcp":
 		return monitor.doTCPCheck(ctx)
@@ -203,6 +217,13 @@ func (monitor *Monitor) doCheck(ctx context.Context) error {
 }
 
 func (monitor *Monitor) doTCPCheck(ctx context.Context) error {
+	networkType := "tcp"
+	if monitor.unixSocket {
+		if !strings.HasPrefix(monitor.addr, "/") {
+			return errors.New("unix socket health check requires an absolute path")
+		}
+		networkType = "unix"
+	}
 	// if tcp address is not specified, always return nil
 	if monitor.addr == "" {
 		return nil
@@ -211,10 +232,10 @@ func (monitor *Monitor) doTCPCheck(ctx context.Context) error {
 	var conn net.Conn
 	var err error
 	if network := netx.FromContext(ctx); network != nil {
-		conn, err = network.DialContext(ctx, "tcp", monitor.addr, 0, 0, false)
+		conn, err = network.DialContext(ctx, networkType, monitor.addr, 0, 0, false)
 	} else {
 		var d net.Dialer
-		conn, err = d.DialContext(ctx, "tcp", monitor.addr)
+		conn, err = d.DialContext(ctx, networkType, monitor.addr)
 	}
 	if err != nil {
 		return err

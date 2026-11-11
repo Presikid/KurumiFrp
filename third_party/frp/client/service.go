@@ -84,7 +84,7 @@ func ValidateRestrictedProxyConfigurer(cfg v1.ProxyConfigurer) error {
 	switch base.Plugin.Type {
 	case v1.PluginUnixDomainSocket:
 		opts, ok := base.Plugin.ClientPluginOptions.(*v1.UnixDomainSocketPluginOptions)
-		if !ok || opts == nil || !strings.HasPrefix(opts.UnixPath, "/") || len(opts.UnixPath) > 1024 || strings.ContainsAny(opts.UnixPath, "{}") || strings.IndexFunc(opts.UnixPath, unicode.IsControl) >= 0 || base.HealthCheck.Type != "" {
+		if !ok || opts == nil || !strings.HasPrefix(opts.UnixPath, "/") || len(opts.UnixPath) > 1024 || strings.ContainsAny(opts.UnixPath, "{}") || strings.IndexFunc(opts.UnixPath, unicode.IsControl) >= 0 || (base.HealthCheck.Type != "" && base.HealthCheck.Type != "tcp") {
 			return errors.New("invalid isolated unix socket configuration")
 		}
 	case v1.PluginSocks5:
