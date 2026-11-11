@@ -353,7 +353,16 @@ func (ctl *Control) UpdateAllConfigurer(proxyCfgs []v1.ProxyConfigurer, visitorC
 }
 
 func (ctl *Control) updateAllConfigurer(proxyCfgs []v1.ProxyConfigurer, visitorCfgs []v1.VisitorConfigurer, counters *traffic.BindingSnapshot) error {
+	// Initial configuration and reconnects use run(), not this reload path.
+	// A running isolated control cannot distinguish a delayed work request for
+	// an old rule from one for a replacement with the same name.
+	if ctl.sessionCtx.Isolated {
+		return ErrRestrictedConfigReload
+	}
 	ctl.vm.UpdateAllWithTraffic(visitorCfgs, counters)
 	ctl.pm.UpdateAllWithTraffic(proxyCfgs, counters)
+	if proxy.PluginCleanupFailed(ctl.ctx) {
+		return proxy.ErrPluginCleanupFailed
+	}
 	return nil
 }

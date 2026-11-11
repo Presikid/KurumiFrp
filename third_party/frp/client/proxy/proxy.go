@@ -125,6 +125,9 @@ type BaseProxy struct {
 	// It's only validate for TCP protocol now.
 	proxyPlugin        plugin.Plugin
 	inWorkConnCallback func(*v1.ProxyBaseConfig, net.Conn, *msg.StartWorkConn) /* continue */ bool
+	pluginCloseOnce    sync.Once
+	pluginCloseErr     error
+	pluginInitErr      error
 
 	mu             sync.RWMutex
 	xl             *xlog.Logger
@@ -135,13 +138,43 @@ type BaseProxy struct {
 
 func (pxy *BaseProxy) Run() error {
 	if pxy.baseCfg.Plugin.Type != "" {
-		p, err := plugin.Create(pxy.baseCfg.Plugin.Type, plugin.PluginContext{
-			Name:           pxy.baseCfg.Name,
-			VnetController: pxy.vnetController,
-			Logger:         pxy.xl,
-		}, pxy.baseCfg.Plugin.ClientPluginOptions)
+		// The owning Wrapper serializes Run and Close. A restricted proxy keeps
+		// its plugin across re-registration instead of replacing a live owner.
+		state := pluginCleanupFromContext(pxy.ctx)
+		if state != nil && pxy.proxyPlugin != nil {
+			return pxy.pluginInitErr
+		}
+		var p plugin.Plugin
+		var err error
+		if state != nil && pxy.baseCfg.Plugin.Type == v1.PluginSocks5 {
+			// Never use the process-wide SOCKS5 plugin for an isolated client:
+			// its dialer and sessions are not owned by this service.
+			if !ValidIsolatedSocks5Config(pxy.baseCfg) || pxy.limiter != nil {
+				return fmt.Errorf("invalid isolated SOCKS5 configuration")
+			}
+			opts := pxy.baseCfg.Plugin.ClientPluginOptions.(*v1.Socks5PluginOptions)
+			p, err = newIsolatedSocks5Plugin(netx.FromContext(pxy.ctx), state, opts)
+		} else {
+			p, err = plugin.Create(pxy.baseCfg.Plugin.Type, plugin.PluginContext{
+				Name:           pxy.baseCfg.Name,
+				VnetController: pxy.vnetController,
+				Logger:         pxy.xl,
+			}, pxy.baseCfg.Plugin.ClientPluginOptions)
+		}
 		if err != nil {
+			if state != nil && p != nil {
+				// A partially constructed plugin is still owned and must not be
+				// replaced or closed more than once on a subsequent retry.
+				pxy.proxyPlugin = p
+				pxy.pluginInitErr = err
+				if closeErr := pxy.closePlugin(); closeErr != nil {
+					return closeErr
+				}
+			}
 			return err
+		}
+		if state != nil && p == nil {
+			return fmt.Errorf("isolated client plugin was not created")
 		}
 		pxy.proxyPlugin = p
 	}
@@ -152,9 +185,24 @@ func (pxy *BaseProxy) Run() error {
 func (pxy *BaseProxy) getPlugin() plugin.Plugin { return pxy.proxyPlugin }
 
 func (pxy *BaseProxy) Close() {
-	if pxy.proxyPlugin != nil {
-		pxy.proxyPlugin.Close()
+	_ = pxy.closePlugin()
+}
+
+func (pxy *BaseProxy) closePlugin() error {
+	if pxy.proxyPlugin == nil {
+		return nil
 	}
+	state := pluginCleanupFromContext(pxy.ctx)
+	if state == nil {
+		return pxy.proxyPlugin.Close()
+	}
+	pxy.pluginCloseOnce.Do(func() {
+		if err := pxy.proxyPlugin.Close(); err != nil {
+			pxy.pluginCloseErr = ErrPluginCleanupFailed
+			state.fail()
+		}
+	})
+	return pxy.pluginCloseErr
 }
 
 // wrapWorkConn applies rate limiting, encryption, and compression
@@ -253,6 +301,11 @@ func (pxy *BaseProxy) HandleTCPWorkConnection(workConn net.Conn, m *msg.StartWor
 		// if plugin is set, let plugin handle connection first
 		// Don't recycle compression resources here because plugins may
 		// retain the connection after Handle returns.
+		// The isolated SOCKS5 handler joins all of its workers before it
+		// returns, so it is safe to release its compression resources.
+		if _, ok := pxy.proxyPlugin.(*isolatedSocks5Plugin); ok && recycleFn != nil {
+			defer recycleFn()
+		}
 		xl.Debugf("handle by plugin: %s", pxy.proxyPlugin.Name())
 		pxy.proxyPlugin.Handle(pxy.ctx, &connInfo)
 		xl.Debugf("handle by plugin finished")

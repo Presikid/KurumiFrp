@@ -327,6 +327,7 @@ func (r *embeddedRun) runClient(ctx context.Context, instanceID string, config *
 	client, err := embedded.NewFRPClient(embedded.FRPClientOptions{
 		Common: config.Common, Proxies: config.Proxies, Visitors: config.Visitors,
 		LogSink: sink, Traffic: bindings, OnPanic: r.markCleanupUncertain,
+		OnPluginCleanupFailure: r.markCleanupUncertain,
 	})
 	if err != nil {
 		return errors.New("无法创建内嵌客户端")
