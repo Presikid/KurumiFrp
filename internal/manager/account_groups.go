@@ -10,11 +10,74 @@ import (
 
 const maxAccountGroups = 100
 
-// Groups are organizational labels. They never grant permissions or change
-// account expiry. Empty GroupID means that an account is ungrouped.
+// Groups organize accounts and may hold an optional, explicitly applied
+// template. Membership itself never changes permissions or account expiry.
 type accountGroup struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID       string                `json:"id"`
+	Name     string                `json:"name"`
+	Template *accountGroupTemplate `json:"template,omitempty"`
+}
+
+type accountGroupTemplate struct {
+	Role             string                 `json:"role"`
+	Instances        []string               `json:"instances"`
+	ControlInstances []string               `json:"controlInstances"`
+	AllowedActions   []string               `json:"allowedActions"`
+	ReadPermissions  accountReadPermissions `json:"readPermissions"`
+	AllowLogs        bool                   `json:"allowLogs"`
+	LogInstances     []string               `json:"logInstances"`
+}
+
+func cloneAccountGroups(groups []accountGroup) []accountGroup {
+	copyGroups := append([]accountGroup{}, groups...)
+	for i := range copyGroups {
+		if original := copyGroups[i].Template; original != nil {
+			template := *original
+			template.Instances = append([]string{}, original.Instances...)
+			template.ControlInstances = append([]string{}, original.ControlInstances...)
+			template.AllowedActions = append([]string{}, original.AllowedActions...)
+			template.LogInstances = append([]string{}, original.LogInstances...)
+			copyGroups[i].Template = &template
+		}
+	}
+	return copyGroups
+}
+
+// Copy effective permissions, not legacy nil defaults. Remote grants,
+// credentials, expiry and enabled state are deliberately not copied.
+func accountTemplateFromUser(user localAccount) *accountGroupTemplate {
+	template := &accountGroupTemplate{
+		Role: user.Role, Instances: []string{}, ControlInstances: []string{},
+		AllowedActions: []string{}, ReadPermissions: effectiveReadPermissions(user), LogInstances: []string{},
+	}
+	if user.Role != "admin" {
+		template.Instances = append([]string{}, user.Instances...)
+		template.ControlInstances = effectiveControlInstances(user)
+		template.AllowedActions = effectiveOperatorActions(user)
+		template.AllowLogs = user.AllowLogs
+		template.LogInstances = effectiveLogInstances(user)
+	}
+	return template
+}
+
+func validAccountGroupTemplate(template *accountGroupTemplate) bool {
+	if template == nil {
+		return true
+	}
+	if !validRole(template.Role) || !validGrants(template.Instances) ||
+		!validGrants(template.ControlInstances) || !validGrants(template.LogInstances) ||
+		!validOperatorActions(template.AllowedActions) ||
+		!subsetGrants(template.ControlInstances, template.Instances) ||
+		!subsetGrants(template.LogInstances, template.Instances) {
+		return false
+	}
+	if template.Role != "operator" && (len(template.ControlInstances) != 0 || len(template.AllowedActions) != 0) {
+		return false
+	}
+	if !template.AllowLogs && len(template.LogInstances) != 0 {
+		return false
+	}
+	return template.Role != "admin" || (len(template.Instances) == 0 && !template.AllowLogs)
 }
 
 func normalizeAccountGroupName(value string) (string, error) {
@@ -40,7 +103,7 @@ func validateAccountGroups(groups []accountGroup, accounts []localAccount) error
 	ids := make(map[string]bool, len(groups))
 	for i, group := range groups {
 		name, err := normalizeAccountGroupName(group.Name)
-		if err != nil || name != group.Name || !accountIDPattern.MatchString(group.ID) || ids[group.ID] {
+		if err != nil || name != group.Name || !accountIDPattern.MatchString(group.ID) || ids[group.ID] || !validAccountGroupTemplate(group.Template) {
 			return fmt.Errorf("账户分组无效")
 		}
 		for _, previous := range groups[:i] {
@@ -60,7 +123,7 @@ func validateAccountGroups(groups []accountGroup, accounts []localAccount) error
 
 // Group mutations share the account revision and file. They deliberately do
 // not revoke sessions: only metadata changes, never identity or permissions.
-func (a *App) accountGroupAction(w http.ResponseWriter, r *http.Request, action string, revision uint64, id string, groupID *string, groupName string) {
+func (a *App) accountGroupAction(w http.ResponseWriter, r *http.Request, action string, revision uint64, id string, groupID *string, groupName string, templateFrom *string) {
 	a.mu.Lock()
 	a.auth.mu.Lock()
 	status, mutationErr := func() (int, error) {
@@ -80,7 +143,7 @@ func (a *App) accountGroupAction(w http.ResponseWriter, r *http.Request, action 
 		if revision != a.auth.accountsRevision {
 			return http.StatusConflict, fmt.Errorf("账户或分组已发生变化，请刷新后重试")
 		}
-		groups := append([]accountGroup{}, a.auth.accountGroups...)
+		groups := cloneAccountGroups(a.auth.accountGroups)
 		users := append([]localAccount{}, a.auth.accounts...)
 		switch action {
 		case "group-save":
@@ -98,6 +161,31 @@ func (a *App) accountGroupAction(w http.ResponseWriter, r *http.Request, action 
 			}
 			if id != "" && index < 0 {
 				return http.StatusNotFound, fmt.Errorf("分组不存在")
+			}
+			var template *accountGroupTemplate
+			if index >= 0 {
+				template = groups[index].Template
+			}
+			if templateFrom != nil {
+				template = nil
+				if *templateFrom != "" {
+					found := false
+					for _, user := range users {
+						if user.ID == *templateFrom {
+							template = accountTemplateFromUser(user)
+							found = true
+							break
+						}
+					}
+					if !found {
+						return http.StatusBadRequest, fmt.Errorf("模板来源账户不存在，请刷新")
+					}
+					for _, instanceID := range template.Instances {
+						if _, exists := a.store.DB.State.Instance(instanceID); !exists {
+							return http.StatusConflict, fmt.Errorf("模板来源包含不存在的实例，请刷新")
+						}
+					}
+				}
 			}
 			if index < 0 {
 				if len(groups) >= maxAccountGroups {
@@ -120,11 +208,12 @@ func (a *App) accountGroupAction(w http.ResponseWriter, r *http.Request, action 
 				if id == "" {
 					return http.StatusInternalServerError, fmt.Errorf("无法创建分组")
 				}
-				groups = append(groups, accountGroup{ID: id, Name: name})
-			} else if groups[index].Name == name {
+				groups = append(groups, accountGroup{ID: id, Name: name, Template: template})
+			} else if groups[index].Name == name && templateFrom == nil {
 				return http.StatusOK, nil
 			} else {
 				groups[index].Name = name
+				groups[index].Template = template
 			}
 		case "group-delete":
 			index := -1

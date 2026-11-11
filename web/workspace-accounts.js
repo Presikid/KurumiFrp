@@ -22,7 +22,7 @@
   render(data) {
    if (data.identity?.role !== 'admin') return '<section class="panel"><div class="panel-content">此页面仅供管理员使用。</div></section>';
    return `<header class="page-head"><div><p class="eyebrow">ACCESS / ACCOUNTS</p><h1>账户管理</h1><p>为本地账户分配角色和实例权限。</p></div><div class="actions"><button type="button" data-account="reload">刷新账户</button><button class="primary" type="button" data-account="new" disabled>＋ 新建账户</button></div></header>
-    <section class="panel"><div class="panel-content"><p class="small-note">管理员拥有全部权限。删除实例或替换配置会撤销相关授权，请在操作后核对账户。账户配置独立保存，不包含在配置导出或加密备份中。</p><div class="section-heading"><h2>账户分组</h2><button type="button" data-account="group-new" disabled>新建分组</button></div><p class="small-note">分组仅用于组织和筛选账户，不影响角色、权限、到期时间或流量。</p><div data-account-groups>正在读取分组…</div><div class="toolbar"><label>搜索用户名<input type="search" data-account-search placeholder="输入用户名" maxlength="32" disabled></label><label>账户状态<select data-account-filter disabled><option value="all">全部状态</option><option value="active">启用（含即将到期）</option><option value="expiring">7 天内到期</option><option value="expired">已到期</option><option value="disabled">已停用</option></select></label><label>所属分组<select data-account-group-filter disabled><option value="*">全部分组</option><option value="">未分组</option></select></label></div><p class="small-note" data-account-summary role="status"></p><div data-account-list>正在读取账户…</div></div></section>
+    <section class="panel"><div class="panel-content"><p class="small-note">管理员拥有全部权限。删除实例或替换配置会撤销相关授权，请在操作后核对账户。账户配置独立保存，不包含在配置导出或加密备份中。</p><div class="section-heading"><h2>账户分组</h2><button type="button" data-account="group-new" disabled>新建分组</button></div><p class="small-note">分组用于整理账户；可保存手动应用的权限模板。更改分组或模板不会自动修改账户权限，不提供套餐或流量配额。</p><div data-account-groups>正在读取分组…</div><div class="toolbar"><label>搜索用户名<input type="search" data-account-search placeholder="输入用户名" maxlength="32" disabled></label><label>账户状态<select data-account-filter disabled><option value="all">全部状态</option><option value="active">启用（含即将到期）</option><option value="expiring">7 天内到期</option><option value="expired">已到期</option><option value="disabled">已停用</option></select></label><label>所属分组<select data-account-group-filter disabled><option value="*">全部分组</option><option value="">未分组</option></select></label></div><p class="small-note" data-account-summary role="status"></p><div data-account-list>正在读取账户…</div></div></section>
     <section class="panel"><div class="panel-content"><div class="actions"><h2>登录记录</h2><button type="button" data-account="history">刷新记录</button><button type="button" class="danger" data-account="clear-history" disabled>清空记录</button></div><p class="small-note">来源为工作台收到连接的对端地址；通过 SSH 转发时可能显示本机地址。重复失败会限频记录。</p><div data-login-history>正在读取记录…</div></div></section>`;
   },
   mount(root, data) {
@@ -71,7 +71,7 @@
     groupFilter.innerHTML = '<option value="*">全部分组</option><option value="">未分组</option>' + model.groups.map(group => `<option value="${esc(group.id)}">${esc(group.name)}</option>`).join('');
     groupFilter.value = previous === '*' || previous === '' || model.groups.some(group => group.id === previous) ? previous : '*';
     groupNew.disabled = groupBusy;
-    groupList.innerHTML = model.groups.length ? `<div class="table-wrap"><table><thead><tr><th>分组</th><th>账户数</th><th>操作</th></tr></thead><tbody>${model.groups.map(group => `<tr><td>${esc(group.name)}</td><td>${model.accounts.filter(user => user.groupId === group.id).length}</td><td><div class="actions"><button type="button" data-account="group-edit" data-id="${esc(group.id)}" ${groupBusy ? 'disabled' : ''}>重命名</button><button type="button" class="danger" data-account="group-delete" data-id="${esc(group.id)}" ${groupBusy ? 'disabled' : ''}>删除</button></div></td></tr>`).join('')}</tbody></table></div>` : '<p class="small-note">尚未创建分组；账户暂为未分组。</p>';
+    groupList.innerHTML = model.groups.length ? `<div class="table-wrap"><table><thead><tr><th>分组</th><th>账户数</th><th>权限模板</th><th>操作</th></tr></thead><tbody>${model.groups.map(group => `<tr><td>${esc(group.name)}</td><td>${model.accounts.filter(user => user.groupId === group.id).length}</td><td>${group.template ? `已保存 · ${esc(roles[group.template.role] || group.template.role)}` : '未设置'}</td><td><div class="actions"><button type="button" data-account="group-edit" data-id="${esc(group.id)}" ${groupBusy ? 'disabled' : ''}>编辑</button><button type="button" class="danger" data-account="group-delete" data-id="${esc(group.id)}" ${groupBusy ? 'disabled' : ''}>删除</button></div></td></tr>`).join('')}</tbody></table></div>` : '<p class="small-note">尚未创建分组；账户暂为未分组。</p>';
    };
    const loadAccounts = async () => {
     const serial = ++accountSerial;
@@ -84,6 +84,8 @@
      const ids = new Set();
      for (const group of value.groups) {
       if (!group || !/^[a-f0-9]{32}$/.test(group.id || '') || typeof group.name !== 'string' || ids.has(group.id)) throw new Error('账户分组格式无效。');
+      const template = group.template;
+      if (template && (!Object.hasOwn(roles,template.role) || !Array.isArray(template.instances) || !Array.isArray(template.controlInstances) || !Array.isArray(template.allowedActions) || !Array.isArray(template.logInstances) || typeof template.allowLogs !== 'boolean' || typeof template.readPermissions?.config !== 'boolean' || typeof template.readPermissions?.traffic !== 'boolean')) throw new Error('账户权限模板格式无效。');
       ids.add(group.id);
      }
      if (value.accounts.some(user => !user || typeof user.groupId !== 'string' || (user.groupId && !ids.has(user.groupId)))) throw new Error('账户分组信息无效。');
@@ -116,7 +118,7 @@
     const source = model, revision = source.revision;
     let saveUncertain = false;
     K.openDialog({
-     html:`<h2>${group ? '重命名分组' : '新建账户分组'}</h2><p class="small-note">分组只用于组织和筛选，不影响账户权限或到期时间。</p><div class="form-grid"><label>分组名称<input name="groupName" maxlength="128" required value="${esc(group?.name || '')}"></label></div>`,
+     html:`<h2>${group ? '编辑账户分组' : '新建账户分组'}</h2><p class="small-note">分组本身不会改变账户权限。可从现有账户复制角色和本机授权作为模板；模板不会自动应用，也不包含远程授权、密码或到期时间。</p><div class="form-grid"><label>分组名称<input name="groupName" maxlength="128" required value="${esc(group?.name || '')}"></label><label>权限模板<select name="templateFrom"><option value="keep">${group?.template ? '保留现有模板' : '不设置模板'}</option>${group?.template ? '<option value="clear">删除现有模板</option>' : ''}${source.accounts.map(user => `<option value="${esc(user.id)}">复制 ${esc(user.username)} · ${esc(roles[user.role] || user.role)}</option>`).join('')}</select></label></div>`,
      submitLabel:'保存分组',
      async onSubmit(form) {
       requireCurrent();
@@ -124,9 +126,14 @@
       if (model !== source || model.revision !== revision) throw new Error('账户或分组已变化，请刷新后重试。');
       const groupName = form.elements.groupName.value.trim();
       if (!groupName || [...groupName].length > 40 || new TextEncoder().encode(groupName).length > 128) throw new Error('分组名称须为 1 至 40 个字符，且不超过 128 字节。');
+      const templateFrom = form.elements.templateFrom.value;
+      const sourceUser = source.accounts.find(user => user.id === templateFrom);
+      if (sourceUser?.role === 'admin' && !confirm('该账户是管理员，复制的模板可授予全部管理权限。继续保存模板？')) return false;
+      const payload = {action:'group-save',revision,id:group?.id || '',groupName};
+      if (templateFrom !== 'keep') payload.templateFrom = templateFrom === 'clear' ? '' : templateFrom;
       groupBusy = true; renderGroups(); renderList();
       try {
-       await request('accounts',{action:'group-save',revision,id:group?.id || '',groupName},30000);
+       await request('accounts',payload,30000);
        if (current()) { K.toast('分组已保存。'); await loadAccounts(); }
       } catch (error) {
        if (uncertain(error)) { saveUncertain = true; throw new Error('保存结果未确认，请关闭窗口并刷新账户后核对，勿重复提交。'); }
@@ -169,6 +176,7 @@
      html:`<span data-account-editor-marker hidden></span><h2>${user ? '编辑账户' : '新建账户'}</h2><p class="small-note">用户名由 3–32 位英文字母、数字、点、下划线或连字符组成；开头须为字母或数字。新账户密码须为 12–1024 字节的有效文本，不能含控制字符。</p><div class="form-grid">
       <label>用户名<input name="username" required pattern="[A-Za-z0-9][A-Za-z0-9_.-]{2,31}" maxlength="32" value="${esc(user?.username || '')}" ${user ? 'readonly' : ''} autocomplete="off"></label>
       <label>角色<select name="role"><option value="viewer" ${!user || user.role === 'viewer' ? 'selected' : ''}>查看者</option><option value="operator" ${user?.role === 'operator' ? 'selected' : ''}>操作员</option><option value="admin" ${user?.role === 'admin' ? 'selected' : ''}>管理员（全部权限）</option></select></label>
+      <label>所属分组<select name="groupId"><option value="">未分组</option>${source.groups.map(group => `<option value="${esc(group.id)}" ${group.id === user?.groupId ? 'selected' : ''}>${esc(group.name)}</option>`).join('')}</select></label><div><button type="button" data-apply-template>应用所选分组的权限模板</button><p class="small-note">选择分组不会自动应用模板；应用只填入草稿，保存账户后才生效。远程授权、密码和到期时间不从模板复制。</p></div>
       <label class="span-2">${user ? '重置密码（留空保留原密码）' : '账户密码（至少 12 字节）'}<input name="password" type="password" autocomplete="new-password" maxlength="1024" ${user ? '' : 'required'}></label>
       <label class="span-2">账户到期时间（UTC，留空不限）<input name="expiresAt" type="datetime-local" step="1" value="${esc(user?.expiresAt ? user.expiresAt.slice(0,19) : '')}"><small>这里填写 UTC 时间。到期后不能登录，现有会话也会失效。</small></label>
       <label class="form-check span-2"><input type="checkbox" name="enabled" ${!user || user.enabled ? 'checked' : ''}>启用账户</label>
@@ -197,6 +205,26 @@
       } else updateForm(form);
      },
      async onClick(event, form) {
+      if (event.target.closest('[data-apply-template]')) {
+       requireCurrent();
+       if (!formCurrent(form) || model !== source || model.revision !== revision) throw new Error('账户或分组已变化，请重新打开编辑窗口。');
+       const group = source.groups.find(item => item.id === form.elements.groupId.value), template = group?.template;
+       if (!template) throw new Error('所选分组没有权限模板。');
+       if (template.instances.some(id => !instances.some(item => item.id === id))) throw new Error('模板包含已不存在的实例，请先编辑分组模板。');
+       const remote = [...choices.values()].filter(choice => choice.selected), currentActions = [...form.querySelectorAll('[name="action"]:checked')].map(box => box.value);
+       const sameActions = currentActions.length === template.allowedActions.length && currentActions.every(action => template.allowedActions.includes(action));
+       if (remote.length && (template.role !== form.elements.role.value || template.readPermissions.config !== form.elements.viewConfig.checked || template.readPermissions.traffic !== form.elements.viewTraffic.checked || (remote.some(choice => choice.grant.control) && !sameActions) || template.role === 'admin' || (template.role === 'viewer' && remote.some(choice => choice.grant.control)))) throw new Error('该模板会影响现有远程权限；请先手动调整远程授权，或选择不改变其角色和操作权限的模板。');
+       const role = roles[template.role] || template.role;
+       const actionNames = template.allowedActions.map(id => actions.find(([key]) => key === id)?.[1] || id).join('、') || '无';
+       const details = template.role === 'admin' ? '管理员拥有全部实例和管理权限。' : `本机查看 ${template.instances.length} 个实例、操作 ${template.controlInstances.length} 个实例、日志 ${template.logInstances.length} 个实例。\n操作项：${actionNames}；配置查看：${template.readPermissions.config ? '允许' : '不允许'}；流量查看：${template.readPermissions.traffic ? '允许' : '不允许'}。`;
+       if (!confirm(`应用「${group.name}」模板？\n角色：${role}。${details}\n将覆盖当前草稿中的角色、本机授权、操作项和配置/流量/日志查看设置；远程授权不会复制。保存账户后才生效。`)) return;
+       const setChecks = (name, values) => { const selected = new Set(values); form.querySelectorAll(`[name="${name}"]`).forEach(box => { box.checked = selected.has(box.value); }); };
+       form.elements.role.value = template.role;
+       setChecks('instance',template.instances); setChecks('controlInstance',template.controlInstances); setChecks('action',template.allowedActions); setChecks('logInstance',template.logInstances);
+       form.elements.viewConfig.checked = template.readPermissions.config; form.elements.viewTraffic.checked = template.readPermissions.traffic; form.elements.allowLogs.checked = template.allowLogs;
+       updateForm(form);
+       return;
+      }
       const button = event.target.closest('[data-load-remote]');
       if (!button || reading) return;
       requireCurrent();
@@ -251,7 +279,7 @@
       }
       const select = name => [...form.querySelectorAll(`[name="${name}"]:checked`)].filter(box => !box.disabled).map(box => box.value);
       const expiry = form.elements.expiresAt.value;
-      const payload = {action:'save',revision,id:user?.id || '',username:form.elements.username.value,role,enabled:form.elements.enabled.checked,expiresAt:expiry ? (expiry.length === 16 ? expiry + ':00Z' : expiry + 'Z') : '',password,
+      const payload = {action:'save',revision,id:user?.id || '',username:form.elements.username.value,role,groupId:form.elements.groupId.value,enabled:form.elements.enabled.checked,expiresAt:expiry ? (expiry.length === 16 ? expiry + ':00Z' : expiry + 'Z') : '',password,
        instances:role === 'admin' ? [] : select('instance'),controlInstances:role === 'operator' ? select('controlInstance') : [],allowedActions:role === 'operator' ? select('action') : [],
        readPermissions:role === 'admin' ? null : {config:form.elements.viewConfig.checked,traffic:form.elements.viewTraffic.checked},allowLogs:role !== 'admin' && form.elements.allowLogs.checked,
        logInstances:role !== 'admin' && form.elements.allowLogs.checked ? select('logInstance') : [],remoteInstances:role === 'admin' ? [] : chosen.map(choice => ({...choice.grant,control:role === 'operator' && !!choice.grant.control}))};

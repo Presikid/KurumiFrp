@@ -117,6 +117,28 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 			}
 		}
 	}
+	if accountLoadErr == nil {
+		for _, group := range accountGroups {
+			if group.Template == nil {
+				continue
+			}
+			for _, grants := range [][]string{group.Template.Instances, group.Template.ControlInstances, group.Template.LogInstances} {
+				for _, id := range grants {
+					if _, exists := s.DB.State.Instance(id); !exists {
+						accountLoadErr = fmt.Errorf("账户分组模板授权引用了不存在的实例")
+						break
+					}
+				}
+				if accountLoadErr != nil {
+					break
+				}
+			}
+			if accountLoadErr != nil {
+				accounts, accountGroups, accountsRevision = nil, nil, 0
+				break
+			}
+		}
+	}
 	tokenPath := filepath.Join(s.dir, "access.token")
 	token, e := privateFile(tokenPath)
 	if os.IsNotExist(e) {
