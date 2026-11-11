@@ -314,5 +314,5 @@ window.Kurumi = (() => {
   void refresh().catch(error => { if (session === initialSession && error.status !== 401) $('#login-error').textContent = error.message; });
  }
  document.addEventListener('DOMContentLoaded', bind, {once:true});
- return {register:(name, component) => pages.set(name, component), api, refresh, navigate, toast, esc, download, openDialog, closeDialog, showDiff, transfer:transfers, state:() => snapshot, epoch:() => session, isCurrent:(target, element) => page === target && !!snapshot && element?.isConnected && $('#content').contains(element)};
+ return {register:(name, component) => pages.set(name, component), api, refresh, navigate, toast, esc, download, openDialog, closeDialog, showDiff, endCurrentSession:() => { showLogin(); announce(); }, transfer:transfers, state:() => snapshot, epoch:() => session, isCurrent:(target, element) => page === target && !!snapshot && element?.isConnected && $('#content').contains(element)};
 })();

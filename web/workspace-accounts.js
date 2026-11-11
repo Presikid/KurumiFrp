@@ -62,7 +62,8 @@
      const accountState = state(user), status = {disabled:'已停用',expired:'已到期',expiring:'7 天内到期',active:'启用'}[accountState];
      const grants = user.role === 'admin' ? '全部实例' : `${local.length ? local.map(id => esc(names.get(id) || `实例 ${id}`)).join('、') : '无本机实例'} · 远程 ${remote.length} 项`;
      const groupOptions = `<option value="">未分组</option>` + model.groups.map(group => `<option value="${esc(group.id)}" ${group.id === user.groupId ? 'selected' : ''}>${esc(group.name)}</option>`).join('');
-     return `<tr><td>${esc(user.username)}${self ? ' <span class="pill">当前账户</span>' : ''}</td><td>${esc(roles[user.role] || user.role)}</td><td><span class="pill ${accountState === 'expiring' || accountState === 'expired' ? 'warn' : ''}">${status}</span>${user.expiresAt ? `<br><small>到期 ${esc(user.expiresAt)} (UTC)</small>` : ''}</td><td><select data-account-group="${esc(user.id)}" aria-label="${esc(user.username)} 的分组" ${groupBusy ? 'disabled' : ''}>${groupOptions}</select></td><td>${grants}</td><td>${self ? '<span class="small-note">请使用“修改登录密码”</span>' : `<div class="actions"><button type="button" data-account="edit" data-id="${esc(user.id)}">编辑</button><button type="button" class="danger" data-account="delete" data-id="${esc(user.id)}">删除</button></div>`}</td></tr>`;
+     const revoke = `<button type="button" data-account="revoke-sessions" data-id="${esc(user.id)}">撤销工作台会话</button>`;
+     return `<tr><td>${esc(user.username)}${self ? ' <span class="pill">当前账户</span>' : ''}</td><td>${esc(roles[user.role] || user.role)}</td><td><span class="pill ${accountState === 'expiring' || accountState === 'expired' ? 'warn' : ''}">${status}</span>${user.expiresAt ? `<br><small>到期 ${esc(user.expiresAt)} (UTC)</small>` : ''}</td><td><select data-account-group="${esc(user.id)}" aria-label="${esc(user.username)} 的分组" ${groupBusy ? 'disabled' : ''}>${groupOptions}</select></td><td>${grants}</td><td>${self ? `<div class="actions">${revoke}<span class="small-note">修改密码请使用“修改登录密码”</span></div>` : `<div class="actions"><button type="button" data-account="edit" data-id="${esc(user.id)}">编辑</button>${revoke}<button type="button" class="danger" data-account="delete" data-id="${esc(user.id)}">删除</button></div>`}</td></tr>`;
     }).join('')}</tbody></table></div>`;
    };
    const renderGroups = () => {
@@ -322,7 +323,7 @@
     if (!button || !root.contains(button) || button.disabled) return;
     const action = button.dataset.account;
     try {
-     if (groupBusy && ['reload','new','edit','delete','group-new','group-edit','group-delete'].includes(action)) throw new Error('账户分组操作尚未结束，请稍后再试。');
+     if (groupBusy && ['reload','new','edit','delete','revoke-sessions','group-new','group-edit','group-delete'].includes(action)) throw new Error('账户分组操作尚未结束，请稍后再试。');
      if (action === 'reload') { await loadAccounts(); return; }
      if (action === 'history') { await loadHistory(); return; }
      if (action === 'group-new') { editGroup(null); return; }
@@ -354,6 +355,31 @@
       const user = model?.accounts.find(item => item.id === button.dataset.id);
       if (!user) throw new Error('账户已变化，请刷新。');
       editAccount(user); return;
+     }
+     if (action === 'revoke-sessions') {
+      requireCurrent();
+      const source = model, user = source?.accounts.find(item => item.id === button.dataset.id);
+      if (!source || !user || deleting) throw new Error('账户已变化或操作尚未结束，请刷新后重试。');
+      const self = ownAccount(user);
+      if (!confirm(`撤销「${user.username}」现有的本机工作台会话？${self ? '\n当前浏览器也将退出登录。' : ''}\n不会禁用账户或更改密码，也不撤销 frp 连接及节点授权。已受理的操作可能继续，正在进行或之后的登录仍可能建立新会话。`)) return;
+      deleting = true; button.disabled = true;
+      try {
+       const result = await request('accounts',{action:'revoke-sessions',revision:source.revision,id:user.id},30000);
+       if (result?.ok !== true || result.revision !== source.revision) throw new Error('响应无法确认会话撤销结果。');
+       if (self && K.epoch() === epoch) {
+        K.endCurrentSession(); document.querySelector('#login-error').textContent = '工作台会话已撤销，请重新登录。';
+       } else if (current()) K.toast('现有工作台会话已撤销；有效凭据仍可重新登录。');
+      } catch (error) {
+       if (uncertain(error)) {
+        if (self && K.epoch() === epoch) {
+         K.endCurrentSession(); document.querySelector('#login-error').textContent = '撤销结果未确认，请重新登录；本页面无法核实旧会话是否已撤销。';
+        } else if (current()) K.toast('撤销结果未确认；本页面无法核实旧会话是否已撤销，请按需停用账户或重置密码。');
+       } else if (current()) {
+        K.toast(error.message);
+        if (error.status === 409) await loadAccounts();
+       }
+      } finally { deleting = false; if (button.isConnected) button.disabled = false; }
+      return;
      }
      if (action === 'delete') {
       requireCurrent();
