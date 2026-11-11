@@ -233,9 +233,12 @@
     const selected = settings || c;
     host.innerHTML = `<section class="panel"><div class="panel-content"><p class="notice">${model.supported ? '规则同时作用于所选 TCP 和 UDP 端口。应用失败时请先核对内核状态。' : '当前系统不支持 Linux nftables；可查看已保存的配置。'}</p><p class="small-note">上次应用：${esc(model.lastResult || 'unknown')} ${esc(model.refreshStatus || '')} ${esc(model.restoreStatus || '')}</p><div class="actions"><button type="button" data-fw="reload">重新读取</button><button type="button" data-fw="seen" ${model.supported ? '' : 'disabled'}>查看拦截记录</button></div><div data-fw-seen></div><form data-fw-form><div class="form-grid"><label class="form-check"><input type="checkbox" name="filterEnabled" ${selected.enabled ? 'checked' : ''}>启用端口来源过滤</label><label class="form-check"><input type="checkbox" name="autoRestore" ${selected.autoRestore ? 'checked' : ''}>启动时恢复已保存规则</label><label class="form-check"><input type="checkbox" name="recordBlocked" ${selected.recordBlocked ? 'checked' : ''}>记录被拦截的来源</label></div><div data-fw-rules>${activeRules.map(ruleHTML).join('')}</div><div class="actions"><button type="button" data-fw="add-rule">＋ 添加规则</button><button class="primary" type="submit" ${model.supported ? '' : 'disabled'}>保存并应用</button></div></form></div></section>`;
    };
-   const load = async () => {
+   const load = async (keepFormOnError = false) => {
     try { const value = await timeout('firewall', undefined); if (!current()) return; model = value; root.dataset.dirty = 'false'; paint(); }
-    catch (error) { if (current()) host.textContent = '读取失败：' + errorText(error); }
+    catch (error) { if (current()) {
+     if (keepFormOnError && host.querySelector('[data-fw-form]')) toast('重新读取失败，已保留当前表单：' + errorText(error));
+     else host.textContent = '读取失败：' + errorText(error);
+    } }
    };
    const settings = () => ({enabled:host.querySelector('[name="filterEnabled"]').checked, autoRestore:host.querySelector('[name="autoRestore"]').checked, recordBlocked:host.querySelector('[name="recordBlocked"]').checked});
    for (const type of ['input', 'change']) host.addEventListener(type, event => { if (event.target.closest('[data-fw-form]')) root.dataset.dirty = 'true'; });
@@ -244,10 +247,15 @@
     event.preventDefault(); if (busy || !model?.supported) return;
     const values = settings(), rules = readRules();
     if (!confirm(values.enabled ? '保存并立即应用这些端口来源规则？来源匹配错误可能影响连接。' : '关闭端口来源过滤？尚未应用的规则编辑不会保存。')) return;
-    busy = true; const submit = event.target.querySelector('[type="submit"]'); submit.disabled = true;
-    try { await timeout('firewall', {revision:model.config.revision, ...values, rules}, 45000); toast('规则已保存并应用。'); await load(); }
+    busy = true; const form = event.target, submit = form.querySelector('[type="submit"]'); submit.disabled = true; form.inert = true;
+    try {
+     const saved = await timeout('firewall', {revision:model.config.revision, ...values, rules}, 45000);
+     if (!current()) return;
+     if (!saved?.config || !Number.isSafeInteger(saved.config.revision)) throw new Error('保存响应无效，请重新读取并核对。');
+     model = {...model, ...saved}; toast('规则已保存并应用。'); await load(true);
+    }
     catch (error) { toast(error.status === 400 || error.status === 409 ? error.message : '应用结果可能未确认，请重新读取并核对内核状态：' + errorText(error)); }
-    finally {busy = false; if (submit.isConnected) submit.disabled = false;}
+    finally {busy = false; form.inert = false; submit.disabled = false;}
    });
    host.addEventListener('click', async event => {
     const button = event.target.closest('[data-fw]'); if (!button || busy) return;
