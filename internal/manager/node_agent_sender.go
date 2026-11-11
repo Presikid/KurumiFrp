@@ -23,7 +23,7 @@ const (
 )
 
 var (
-	errOutboundAgentAuthorization = errors.New("节点上报授权无效或已撤销")
+	errOutboundAgentAuthorization = errors.New("目标拒绝请求，请检查授权和 HTTPS 代理配置")
 	errOutboundAgentConflict = errors.New("节点上报会话已失效或序号冲突")
 	errOutboundAgentAddressChanged = errors.New("上报目标解析地址已变化，请重新确认")
 	errOutboundAgentIdentity = errors.New("上报目标返回的节点身份不匹配")
