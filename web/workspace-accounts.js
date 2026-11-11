@@ -99,6 +99,9 @@
      logSection.hidden = isAdmin || !form.elements.allowLogs.checked;
      const enabled = new Set([...form.querySelectorAll('[name="instance"]:checked')].map(box => box.value));
      form.querySelectorAll('[name="controlInstance"], [name="logInstance"]').forEach(box => { box.disabled = !enabled.has(box.value); });
+     form.querySelector('[data-account-remote]').hidden = isAdmin && ![...choices.values()].some(choice => choice.selected);
+     form.querySelector('[data-load-remote]').hidden = isAdmin;
+     form.querySelectorAll('[data-remote-view]').forEach(box => { box.disabled = isAdmin && !box.checked; });
      form.querySelectorAll('[data-remote-control-label]').forEach(label => { label.hidden = role !== 'operator'; });
     };
     const paintRemote = form => { form.querySelector('[data-remote-choices]').innerHTML = remoteHTML(); updateForm(form); };
@@ -115,7 +118,7 @@
       <fieldset class="span-2" data-operator><legend>允许的操作</legend>${actions.map(([id,label]) => `<label class="form-check"><input type="checkbox" name="action" value="${id}" ${allowed.has(id) ? 'checked' : ''}>${label}</label>`).join('')}<p class="small-note">对获授权的本机和远程实例生效；配置校验仅适用于本机。</p></fieldset>
       <div class="span-2" data-restricted><label class="form-check"><input type="checkbox" name="allowLogs" ${user?.allowLogs ? 'checked' : ''}>允许查看日志</label><p class="small-note">日志可能包含敏感信息。</p></div>
       <fieldset class="span-2" data-account-logs><legend>可查看日志的本机实例</legend>${rows('logInstance',logs)}<p class="small-note">日志授权必须属于可查看的实例。</p></fieldset>
-      <fieldset class="span-2" data-restricted><legend>远程实例授权</legend><p class="small-note">已有授权会保留。可读取已确认地址的节点，选择实例和身份绑定；目标替换实例后需重新授权。查看者不保留控制权限。转为管理员前请先明确移除已有远程授权。</p><button type="button" data-load-remote>读取远程实例</button><p class="small-note" data-remote-status></p><div data-remote-choices></div></fieldset>
+      <fieldset class="span-2" data-account-remote><legend>远程实例授权</legend><p class="small-note">已有授权会保留。可读取已确认地址的节点，选择实例和身份绑定；目标替换实例后需重新授权。查看者不保留控制权限。转为管理员时请在此逐项取消全部已选远程授权，保存后才能生效。</p><button type="button" data-load-remote>读取远程实例</button><p class="small-note" data-remote-status></p><div data-remote-choices></div></fieldset>
      </div>`,
      submitLabel:'保存账户',
      onReady(form) { marker = form.querySelector('[data-account-editor-marker]'); paintRemote(form); },
