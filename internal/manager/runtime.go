@@ -610,6 +610,9 @@ func (a *App) Close() error {
 			op.cancel()
 		}
 		a.mu.Unlock()
+		if a.agentReporter != nil {
+			a.agentReporter.stop()
+		}
 		if a.startupDone != nil {
 			<-a.startupDone
 		}

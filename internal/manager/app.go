@@ -54,6 +54,7 @@ type App struct {
 	activeProbes        int
 	activeNodeChecks    int
 	nodeMonitors        map[string]nodeMonitorObservation
+	agentReporter       *outboundAgentManager
 	activeBackup        bool
 	activeRegistration  bool
 	activeHealth        bool
@@ -187,6 +188,10 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 	app.nodeMonitorDone = make(chan struct{})
 	go app.nodeMonitorLoop(scheduleCtx)
 	go app.runTrafficDaily()
+	app.agentReporter = &outboundAgentManager{}
+	app.agentReporter.gate.Lock()
+	app.agentReporter.restartLocked(app)
+	app.agentReporter.gate.Unlock()
 	return app, nil
 }
 func (a *App) SetDistribution(distribution string) {
