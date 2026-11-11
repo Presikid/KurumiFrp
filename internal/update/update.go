@@ -249,6 +249,10 @@ func (m *Manager) download(ctx context.Context, a Asset, dir string) (string, er
 	return path, nil
 }
 func (m *Manager) Status() string { m.mu.Lock(); defer m.mu.Unlock(); return m.status }
+
+// Busy reports whether the asynchronous update worker has finished.
+func (m *Manager) Busy() bool { m.mu.Lock(); defer m.mu.Unlock(); return m.busy }
+
 func (m *Manager) Start(tag string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
