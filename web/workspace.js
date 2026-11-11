@@ -60,6 +60,9 @@ window.Kurumi = (() => {
   if (activePage?.dispose) { try { activePage.dispose(); } catch (_) {} }
   activePage = null; root = null;
  }
+ function confirmDiscard() {
+  return !root || !activePage?.hasUnsaved?.(root) || confirm('当前页面有尚未保存的修改，离开或刷新会丢弃这些修改。继续？');
+ }
  function stopTimer() { clearTimeout(timer); timer = null; }
  function closeMenu(focus = false) {
   const opened = $('#app').classList.contains('menu-open');
@@ -134,17 +137,18 @@ window.Kurumi = (() => {
   if (!snapshot || document.hidden) return;
   timer = setTimeout(() => { timer = null; void refresh(true).catch(() => {}); }, 10000);
  }
- async function refresh(silent = false) {
+ async function refresh(silent = false, discardEdits = false) {
   const generation = session;
   if (request) {
    if (silent) return request;
    try { await request; } catch (_) {}
    if (generation !== session) return false;
-   return refresh(false);
+   return refresh(false, discardEdits);
   }
   const previous = snapshot && JSON.stringify(snapshot);
   const scope = value => JSON.stringify([value?.identity || null, (value?.state?.instances || []).map(item => item.id).sort()]);
   const previousScope = snapshot && scope(snapshot);
+  const previousIdentity = snapshot && JSON.stringify(snapshot.identity || null);
   const pending = (async () => {
    const controller = new AbortController(), deadline = setTimeout(() => controller.abort(),15000);
    let next;
@@ -157,13 +161,15 @@ window.Kurumi = (() => {
    updateShell();
    const changed = previous !== JSON.stringify(snapshot);
    const accessChanged = previousScope !== null && previousScope !== scope(snapshot);
-   if (accessChanged) {
+   const identityChanged = previousIdentity !== null && previousIdentity !== JSON.stringify(snapshot.identity || null);
+   const keepEdits = !discardEdits && !identityChanged && root && activePage?.hasUnsaved?.(root);
+   if (accessChanged && !keepEdits) {
     if ($('#dialog').open) $('#dialog').close();
     if ($('#diff-dialog').open) $('#diff-dialog').close();
    }
    const active = document.activeElement;
    const busy = $('#dialog').open || $('#diff-dialog').open || (active && $('#content').contains(active)) || Boolean(window.getSelection()?.toString());
-   if (accessChanged || !silent || (!busy && changed && ['overview','instances'].includes(page))) render();
+   if (!keepEdits && (accessChanged || !silent || (!busy && changed && ['overview','instances'].includes(page)))) render();
    return true;
   })();
   request = pending;
@@ -172,6 +178,11 @@ window.Kurumi = (() => {
  }
  function navigate(target) {
   if (!pages.has(target)) return;
+  if (target === page && root?.isConnected) { closeMenu(); return; }
+  if (!confirmDiscard()) {
+   if (location.hash !== '#' + page) history.replaceState(null, '', location.pathname + location.search + '#' + page);
+   return;
+  }
   const menuWasOpen = $('#app').classList.contains('menu-open');
   page = target; closeMenu();
   if (location.hash !== '#' + target) history.replaceState(null, '', location.pathname + location.search + '#' + target);
@@ -238,7 +249,7 @@ window.Kurumi = (() => {
     showLogin(); announce(); $('#login-error').textContent = '密码已更新，请重新登录。';
    }
   }));
-  $('#refresh').addEventListener('click', () => { void refresh().catch(error => toast(error.message)); });
+  $('#refresh').addEventListener('click', () => { if (confirmDiscard()) void refresh(false, true).catch(error => toast(error.message)); });
   try { document.body.classList.toggle('light', localStorage.getItem('kurumi-theme') === 'light'); } catch (_) {}
   $('#theme').addEventListener('click', () => {
    document.body.classList.toggle('light');
