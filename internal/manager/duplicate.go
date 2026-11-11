@@ -181,6 +181,7 @@ func duplicatedInstance(src Instance, id, name string) Instance {
 	return Instance{
 		ID: id, Name: name, Kind: src.Kind, Host: src.Host, Port: src.Port,
 		HTTPPort: src.HTTPPort, HTTPSPort: src.HTTPSPort, Token: src.Token,
+		AuthHeartbeats: src.AuthHeartbeats, AuthNewWorkConns: src.AuthNewWorkConns,
 		User: src.User, NatHoleSTUNServer: src.NatHoleSTUNServer, DNSServer: src.DNSServer, ClientTransport: src.ClientTransport,
 		ClientBindIP: src.ClientBindIP, ClientDialTimeout: src.ClientDialTimeout,
 		TCPKeepalive: src.TCPKeepalive, MuxKeepalive: src.MuxKeepalive,
