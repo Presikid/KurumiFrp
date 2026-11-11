@@ -442,17 +442,25 @@
    }).join('');
    return head('连接规则','筛选规则并查看草稿状态；修改不会自动应用到运行中的实例。',actions) +
     `<p class="notice" data-rules-stale hidden>草稿已变化，请刷新后重新选择并操作。</p><div class="toolbar"><label>搜索<input type="search" data-filter placeholder="规则、实例或地址"></label><label>协议<select data-protocol><option value="">全部协议</option>${Protocols.types.map(type => `<option value="${e(type)}">${e(type)}</option>`).join('')}</select></label><label>客户端<select data-rule-instance><option value="">全部客户端</option>${clients.map(item => `<option value="${e(item.id)}">${e(item.name)}</option>`).join('')}</select></label>${admin(data) && rows.length ? button('probe-visible','检测当前筛选') : ''}</div>
-    ${admin(data) && rows.length ? `<div class="toolbar"><label class="form-check"><input type="checkbox" data-select-visible>选择当前筛选</label><span data-selection-count>已选 0 条</span><div class="actions">${button('batch-copy','批量复制')}${button('batch-enable','批量启用')}${button('batch-disable','批量停用')}${button('batch-delete','批量删除','','danger')}${button('batch-export','导出 ZIP')}${button('batch-export-toml','导出 TOML')}</div></div>` : ''}
+    ${admin(data) && rows.length ? `<div class="toolbar"><label class="form-check"><input type="checkbox" data-select-visible>选择当前筛选</label><span data-selection-count>已选 0 条（筛选外 0 条）</span><button type="button" data-selection-action="visible" disabled>仅保留当前筛选</button><button type="button" data-selection-action="clear" disabled>清空全部选择</button><div class="actions">${button('batch-copy','批量复制')}${button('batch-enable','批量启用')}${button('batch-disable','批量停用')}${button('batch-delete','批量删除','','danger')}${button('batch-export','导出 ZIP')}${button('batch-export-toml','导出 TOML')}</div></div>` : ''}
     <div class="cards" data-rule-list>${cards || empty('暂无规则',admin(data) ? '先创建 frpc 客户端，再添加规则。' : '当前授权实例没有可显示的规则。','empty-search')}</div><p class="small-note" data-filter-empty hidden>没有匹配的规则。</p>`;
   },
   mount(root,data) {
    if (!admin(data) && !data.identity?.viewConfig) return;
    const selected = new Set(), cards = [...root.querySelectorAll('[data-rule]')];
-   const refreshSelection = () => { const label = root.querySelector('[data-selection-count]'); if (label) label.textContent = `已选 ${selected.size} 条`; };
+   const hiddenSelectionCount = () => cards.filter(card => card.hidden && selected.has(card.dataset.rule)).length;
+   const refreshSelection = () => {
+    const visible = cards.filter(card => !card.hidden), visibleSelected = visible.filter(card => selected.has(card.dataset.rule)).length;
+    const hidden = hiddenSelectionCount(), label = root.querySelector('[data-selection-count]'), all = root.querySelector('[data-select-visible]');
+    if (label) label.textContent = `已选 ${selected.size} 条（筛选外 ${hidden} 条）`;
+    if (all) { all.disabled = !visible.length; all.checked = visible.length > 0 && visibleSelected === visible.length; all.indeterminate = visibleSelected > 0 && visibleSelected < visible.length; }
+    const keep = root.querySelector('[data-selection-action="visible"]'), clear = root.querySelector('[data-selection-action="clear"]');
+    if (keep) keep.disabled = hidden === 0;
+    if (clear) clear.disabled = selected.size === 0;
+   };
    const applyFilter = () => {
     const query = root.querySelector('[data-filter]').value.toLocaleLowerCase(), type = root.querySelector('[data-protocol]').value, instance = root.querySelector('[data-rule-instance]').value;
-    selected.clear(); cards.forEach(card => { card.hidden = !card.dataset.search.includes(query) || (!!type && card.dataset.type !== type) || (!!instance && card.dataset.instanceId !== instance); const checkbox = card.querySelector('[data-select]'); if (checkbox) checkbox.checked = false; });
-    const all = root.querySelector('[data-select-visible]'); if (all) all.checked = false;
+    cards.forEach(card => { card.hidden = !card.dataset.search.includes(query) || (!!type && card.dataset.type !== type) || (!!instance && card.dataset.instanceId !== instance); });
     root.querySelector('[data-filter-empty]').hidden = !cards.length || cards.some(card => !card.hidden); refreshSelection();
    };
    root.querySelector('[data-filter]').addEventListener('input',applyFilter);
@@ -462,6 +470,14 @@
     if (event.target.matches('[data-select]')) { if (event.target.checked) selected.add(event.target.dataset.select); else selected.delete(event.target.dataset.select); refreshSelection(); }
     if (event.target.matches('[data-select-visible]')) { cards.filter(card => !card.hidden).forEach(card => { const input = card.querySelector('[data-select]'); if (!input) return; input.checked = event.target.checked; if (input.checked) selected.add(input.dataset.select); else selected.delete(input.dataset.select); }); refreshSelection(); }
    });
+   root.addEventListener('click',event => {
+    const control = event.target.closest('[data-selection-action]'); if (!control || control.disabled) return;
+    if (control.dataset.selectionAction === 'clear') selected.clear();
+    else if (control.dataset.selectionAction === 'visible') cards.filter(card => card.hidden).forEach(card => selected.delete(card.dataset.rule));
+    cards.forEach(card => { const input = card.querySelector('[data-select]'); if (input) input.checked = selected.has(card.dataset.rule); });
+    refreshSelection();
+   });
+   refreshSelection();
    let observationTimer = null, stopped = false;
    async function observeRules() {
     if (stopped || !K.isCurrent('tunnels',root)) return;
@@ -496,7 +512,7 @@
    bindButtons(root, async (action,id,target) => {
     if (action === 'new-tunnel' || action === 'edit-tunnel') return editObject('tunnel',id,data);
     if (action === 'batch-create') return editBatch(data);
-    if (action === 'batch-copy') return window.KurumiBatchCopy.open(root,target);
+    if (action === 'batch-copy') { requireRevision(data); return window.KurumiBatchCopy.open(root,target,data.revision); }
     requireRevision(data);
     if (action === 'probe-visible') {
      const visible = cards.filter(card => !card.hidden).map(card => data.state.tunnels.find(rule => rule.id === card.dataset.rule)).filter(Boolean);
@@ -523,6 +539,8 @@
     }
     if (['batch-enable','batch-disable','batch-delete','batch-export','batch-export-toml'].includes(action)) {
      const ids = [...selected]; if (!ids.length) throw new Error('请先选择规则。');
+     const hiddenCount = hiddenSelectionCount();
+     const selectionNote = `\n总计 ${ids.length} 条，筛选外 ${hiddenCount} 条。${hiddenCount ? '筛选外规则也会一并处理。' : ''}`;
      if (action === 'batch-export' || action === 'batch-export-toml') {
       const toml = action === 'batch-export-toml', rules = ids.map(id => data.state.tunnels.find(rule => rule.id === id));
       if (rules.some(rule => !rule)) throw new Error('部分规则已不存在，请刷新后重新选择。');
@@ -534,7 +552,7 @@
        if (!/^[a-f0-9]{16}$/.test(clientId) || !data.state.instances.some(instance => instance.id === clientId && instance.kind === 'frpc')) throw new Error('所选规则的 frpc 客户端不可用，请刷新后重试。');
       }
       const disabledNote = rules.some(rule => !rule.enabled) ? '\n选中包含停用规则：导出文件使用 enabled = false，运行前请确认目标 frpc 支持该字段并核对规则状态。' : '';
-      if (!confirm(`导出 ${ids.length} 条规则为 ${toml ? 'TOML' : 'ZIP'}？文件不加密，包含明文认证令牌、配对密钥、HTTP 密码、SOCKS5 插件密码及自定义 HTTP 头值，请妥善保管。${disabledNote}`)) return;
+      if (!confirm(`导出选中规则为 ${toml ? 'TOML' : 'ZIP'}？${selectionNote}\n文件不加密，包含明文认证令牌、配对密钥、HTTP 密码、SOCKS5 插件密码及自定义 HTTP 头值，请妥善保管。${disabledNote}`)) return;
       const payload = {revision:data.revision,ids,confirmed:true,...(toml ? {format:'toml'} : {})};
       const response = await fetch('/api/tunnels/export',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       if (!response.ok) { let message = '导出失败。'; try { message = (await response.json()).error || message; } catch (_) {} if (response.status === 401) void K.refresh().catch(() => {}); throw new Error(message); }
@@ -545,7 +563,7 @@
       K.download(toml ? `frpc-${clientId}.toml` : 'kurumi-selected-rules.zip',blob,type); K.toast('导出完成，请妥善保管明文凭据。'); return;
      }
      const deleting = action === 'batch-delete', enabled = action === 'batch-enable';
-     if (!confirm(`${deleting ? '删除' : enabled ? '启用' : '停用'}选中的 ${ids.length} 条规则草稿？运行中的实例不会立即改变。`)) return;
+     if (!confirm(`${deleting ? '删除' : enabled ? '启用' : '停用'}选中的规则草稿？${selectionNote}\n运行中的实例不会立即改变。`)) return;
      try { await mutation(deleting ? 'tunnels/batch-delete' : 'tunnels/batch-enabled', {revision:data.revision,ids,...(deleting ? {} : {enabled})},'规则草稿已更新。'); }
      catch (error) { await K.refresh().catch(() => {}); throw new Error(`批量操作未完成或结果未确认：${error.message}。请核对草稿。`); }
      return;
