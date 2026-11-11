@@ -104,7 +104,7 @@ func (a *App) scheduleTick(ctx context.Context, minute int64) {
 		req := runtimeRequest{Revision: a.store.DB.Revision, ID: id, Action: action}
 		snapshot, op, _, err := a.beginRuntimeOperationSourceLocked(ctx, req, false, false)
 		if err != nil {
-			a.finishScheduleLocked(id, plan, true, false)
+			a.finishScheduleLocked(id, plan, true, false, trafficBudgetScheduleReason(err))
 			continue
 		}
 		op.scheduled = true
@@ -113,13 +113,17 @@ func (a *App) scheduleTick(ctx context.Context, minute int64) {
 	}
 }
 
-func (a *App) finishScheduleLocked(id string, plan instanceSchedule, failed, active bool) {
+func (a *App) finishScheduleLocked(id string, plan instanceSchedule, failed, active bool, reasons ...string) {
 	current, ok := a.store.DB.Schedules[id]
 	if !ok || a.scheduleBlocks[id] != "" || current.Version != plan.Version || current.LastMinute != plan.LastMinute || current.LastStatus != "pending" {
 		return
 	}
 	if failed {
-		current = pauseSchedule(current, "计划操作失败或结果未知，请核对实例后重新启用")
+		reason := "计划操作失败或结果未知，请核对实例后重新启用"
+		if len(reasons) > 0 && reasons[0] != "" {
+			reason = reasons[0]
+		}
+		current = pauseSchedule(current, reason)
 		current.LastStatus = "failed"
 	} else if active {
 		current.LastStatus = "active"
@@ -183,9 +187,16 @@ func (a *App) runScheduleAction(snapshot runtimeSnapshot, op *runtimeOperation, 
 	a.mu.Lock()
 	plan, ok := a.store.DB.Schedules[id]
 	if ok && plan.Version == snapshot.scheduleVersion {
-		a.finishScheduleLocked(id, plan, err != nil, action == "start")
+		a.finishScheduleLocked(id, plan, err != nil, action == "start", trafficBudgetScheduleReason(err))
 	}
 	a.mu.Unlock()
+}
+
+func trafficBudgetScheduleReason(err error) string {
+	if budgetErr, ok := err.(trafficBudgetStartError); ok {
+		return budgetErr.Error() + "；计划已暂停，请核对后重新启用"
+	}
+	return ""
 }
 
 // Called only after all managed processes stopped successfully. A persisted

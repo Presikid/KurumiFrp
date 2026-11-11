@@ -111,11 +111,17 @@ func (a *App) beginRuntimeOperationSourceLocked(parent context.Context, req runt
 	if !validate && req.Action == "start" && p.active() {
 		return snapshot, nil, http.StatusBadRequest, fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
+	snapshot = runtimeSnapshot{instance: i, revision: req.Revision, process: p}
 	if a.nodeOperationVersions == nil {
 		a.nodeOperationVersions = make(map[string]string)
 	}
 	// Consume older control previews even if rendering or core resolution fails.
 	a.nodeOperationVersions[req.ID] = randomHex(16)
+	if !validate && (req.Action == "start" || req.Action == "restart") {
+		if err := a.checkTrafficBudgetStartLocked(i); err != nil {
+			return snapshot, nil, http.StatusConflict, err
+		}
+	}
 	if !validate && req.Action == "stop" && a.startupDone != nil {
 		select {
 		case <-a.startupDone:
@@ -127,7 +133,6 @@ func (a *App) beginRuntimeOperationSourceLocked(parent context.Context, req runt
 		}
 		delete(a.startupErrors, req.ID)
 	}
-	snapshot = runtimeSnapshot{instance: i, revision: req.Revision, process: p}
 	if validate || req.Action != "stop" {
 		var err error
 		snapshot.rendered, err = a.store.render(req.ID, false)
@@ -273,6 +278,11 @@ func (a *App) runRuntimeOperation(w http.ResponseWriter, req runtimeRequest, val
 	// Do not stop a healthy instance when its replacement became stale during verification.
 	a.mu.Lock()
 	status, err = a.checkRuntimeSnapshot(op.ctx, snapshot)
+	if err == nil && !validate && req.Action == "restart" {
+		if err = a.checkTrafficBudgetStartLocked(snapshot.instance); err != nil {
+			status = http.StatusConflict
+		}
+	}
 	a.mu.Unlock()
 	if err != nil {
 		failure(status, err)
@@ -299,6 +309,9 @@ func (a *App) runRuntimeOperation(w http.ResponseWriter, req runtimeRequest, val
 		err = a.startPrepared(snapshot.instance, snapshot.rendered, snapshot.target)
 		if err != nil {
 			status = http.StatusBadRequest
+			if _, ok := err.(trafficBudgetStartError); ok {
+				status = http.StatusConflict
+			}
 		} else {
 			started = true
 		}
@@ -306,6 +319,9 @@ func (a *App) runRuntimeOperation(w http.ResponseWriter, req runtimeRequest, val
 	revision := a.store.DB.Revision
 	a.mu.Unlock()
 	if err != nil {
+		if req.Action == "restart" {
+			err = fmt.Errorf("重启的旧实例已停止或此前未运行，替代实例未启动：%w", err)
+		}
 		failure(status, err)
 		return
 	}
