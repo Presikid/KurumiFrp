@@ -118,7 +118,6 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (*Ap
 	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2)}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	app.auth.oidcSettings, app.auth.oidcLoadErr = loadOIDCSettings(s.dir)
 	app.auth.oidcStartSlots = make(chan struct{}, 4)
-	app.auth.passkeys = loadPasskeys(s.dir)
 	if e = app.recoverSchedules(); e != nil {
 		return nil, e
 	}
@@ -210,18 +209,6 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.oidcStart(w, r)
 		return
 	}
-	if r.URL.Path == "/api/passkeys/status" && r.Method == http.MethodGet {
-		a.passkeyStatus(w, r)
-		return
-	}
-	if r.URL.Path == "/api/passkeys/login/start" && r.Method == http.MethodPost {
-		a.passkeyLoginStart(w, r)
-		return
-	}
-	if r.URL.Path == "/api/passkeys/login/finish" && r.Method == http.MethodPost {
-		a.passkeyLoginFinish(w, r)
-		return
-	}
 	if r.URL.Path == "/api/launch-login" && r.Method == "POST" {
 		a.launchLogin(w, r)
 		return
@@ -279,10 +266,6 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r = withPrincipal(r, p)
-		if r.URL.Path == "/api/passkeys" || strings.HasPrefix(r.URL.Path, "/api/passkeys/register/") || r.URL.Path == "/api/passkeys/delete" {
-			a.passkeysAPI(w, r)
-			return
-		}
 		if r.URL.Path == "/api/oidc/config" {
 			a.oidcSettingsAPI(w, r)
 			return
