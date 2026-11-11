@@ -522,7 +522,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		a.accountGroupAction(w, r, req.Action, req.Revision, req.ID, req.GroupID, req.GroupName, req.TemplateFrom)
 		return
 	}
-	if req.Action != "save" && req.Action != "delete" {
+	if req.Action != "save" && req.Action != "delete" && req.Action != "revoke-sessions" {
 		fail(w, 400, fmt.Errorf("未知账户操作"))
 		return
 	}
@@ -629,6 +629,25 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if index >= 0 && users[index].gate != targetGate {
 		fail(w, 409, fmt.Errorf("账户已发生变化，请刷新后重试"))
+		return
+	}
+	if req.Action == "revoke-sessions" {
+		if index < 0 {
+			fail(w, 404, fmt.Errorf("账户不存在"))
+			return
+		}
+		if targetGate == nil {
+			fail(w, 503, fmt.Errorf("无法确认账户会话状态"))
+			return
+		}
+		if r.Context().Err() != nil {
+			fail(w, http.StatusRequestTimeout, fmt.Errorf("请求已取消，会话未撤销"))
+			return
+		}
+		// Only sessions already present are removed. A login in flight or a
+		// later login can create another session using still-valid credentials.
+		a.auth.revoke(req.ID)
+		reply(w, 200, map[string]any{"ok": true, "revision": a.auth.accountsRevision})
 		return
 	}
 	if req.Action == "delete" {
