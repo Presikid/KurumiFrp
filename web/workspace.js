@@ -98,8 +98,12 @@ window.Kurumi = (() => {
    body:body === undefined ? undefined : JSON.stringify(body), signal:options.signal
   });
   let result;
-  try { result = await response.json(); } catch (_) { result = {}; }
-  if (generation !== session) throw new DOMException('会话已变化', 'AbortError');
+  try { result = await response.json(); }
+  catch (_) {
+   if (response.ok) throw new Error('响应格式无效，操作结果可能未确认，请刷新后核对。');
+   result = {};
+  }
+  if (generation !== session && !(options.acceptLateSuccess && response.ok)) throw new DOMException('会话已变化', 'AbortError');
   if (!response.ok) {
    if (response.status === 401 && path !== 'login' && generation === session) showLogin();
    const error = new Error(result.error || `请求失败（HTTP ${response.status}）`); error.status = response.status; throw error;
@@ -156,6 +160,7 @@ window.Kurumi = (() => {
    catch (error) { if (controller.signal.aborted) throw new Error('读取状态超时，请重试。'); throw error; }
    finally { clearTimeout(deadline); }
    if (generation !== session) return false;
+   if (!next || !Number.isSafeInteger(next.revision) || !Array.isArray(next.state?.instances) || !Array.isArray(next.state?.tunnels) || !next.runtime || typeof next.runtime !== 'object' || !next.identity || typeof next.identity.role !== 'string') throw new Error('工作台状态格式无效，请刷新后重试。');
    snapshot = next;
    $('#login').hidden = true; $('#app').hidden = false;
    updateShell();

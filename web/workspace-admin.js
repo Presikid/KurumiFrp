@@ -6,9 +6,9 @@
  const K = window.Kurumi;
  const {api, esc, toast, openDialog} = K;
  const noticePrefix = 'kurumi-node-control-';
- const timeout = async (path, body, ms = 15000) => {
+ const timeout = async (path, body, ms = 15000, options = {}) => {
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), ms);
-  try { return await api(path, body, {signal:controller.signal}); }
+  try { return await api(path, body, {...options, signal:controller.signal}); }
   finally { clearTimeout(timer); }
  };
  const errorText = error => error.name === 'AbortError' ? '请求超时，请先刷新核对结果。' : error.message;
@@ -102,9 +102,18 @@
     }
     if (auto && generation === autoGeneration && current()) autoTimer = setTimeout(() => { void pollNodes(generation); }, 15000);
    };
-   const mutate = async payload => {
+   const syncRevision = async revision => {
+    try {
+     await K.refresh(true);
+     if (Number.isSafeInteger(revision) && K.state()?.revision < revision) await K.refresh(true);
+    } catch (_) { toast('节点设置已保存，但工作台状态刷新失败，请手动刷新。'); }
+   };
+   const mutate = async (payload, options = {}) => {
     if (!model || !Number.isSafeInteger(model.revision)) throw new Error('节点列表已变化，请刷新。');
-    return timeout('nodes', {revision:model.revision, ...payload}, 20000);
+    const result = await timeout('nodes', {revision:model.revision, ...payload}, 20000, options);
+    if (options.acceptLateSuccess) { if (K.state()) void syncRevision(result.revision); }
+    else await syncRevision(result.revision);
+    return result;
    };
    const edit = node => {
     const v = node || {};
@@ -125,7 +134,7 @@
     dialog.querySelector('[data-close]').addEventListener('click', () => dialog.close());
     dialog.showModal();
     try {
-     const value = await mutate({action});
+     const value = await mutate({action}, {acceptLateSuccess:true});
      if (!/^[a-f0-9]{64}$/.test(value.credential || '')) throw new Error('授权响应无效，请重新生成。');
      dialog.querySelector('[data-message]').textContent = '请复制此授权并通过安全渠道交给目标；关闭后不能再次显示。';
      const output = dialog.querySelector('[data-value]'); output.value = value.credential; output.hidden = false; output.focus(); output.select();
@@ -182,7 +191,8 @@
       const value = await timeout('nodes/resolve', {id:node.id, stamp:node.stamp}, 10000);
       if (value.id !== node.id || value.stamp !== node.stamp || !Array.isArray(value.addresses) || !value.addresses.length) throw new Error('解析结果无效。');
       if (!confirm(`确认下列地址属于 ${node.name}？\n${value.addresses.join('\n')}`)) return;
-      await timeout('nodes/confirm', {id:node.id, stamp:node.stamp, revision:value.revision, addresses:value.addresses}, 20000);
+      const saved = await timeout('nodes/confirm', {id:node.id, stamp:node.stamp, revision:value.revision, addresses:value.addresses}, 20000);
+      await syncRevision(saved.revision);
       toast('地址已确认。'); await load(); return;
      }
      if (action === 'control' && node) {
