@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode"
@@ -196,6 +197,17 @@ func parseServerAllowedPorts(value string) ([]allowedPortRange, error) {
 }
 
 func validateProtocolInstance(i Instance) error {
+	if (i.TLSCertFile == "") != (i.TLSKeyFile == "") {
+		return fmt.Errorf("TLS 证书与私钥路径必须同时填写或同时留空")
+	}
+	for _, path := range []string{i.TLSCertFile, i.TLSKeyFile, i.TLSTrustedCAFile} {
+		if path != "" && (!filepath.IsAbs(path) || !protocolTextOK(path)) {
+			return fmt.Errorf("TLS 证书、私钥和 CA 须使用当前系统的绝对路径，最多 1024 字节，不能含控制字符或花括号")
+		}
+	}
+	if i.ClientTLSServerName != "" && (i.Kind != "frpc" || !hostOK(i.ClientTLSServerName)) {
+		return fmt.Errorf("TLS 服务端名称仅适用于客户端，须为不含端口的 DNS 名称或 IP 地址")
+	}
 	if i.ClientDialTimeout < 0 || i.ClientDialTimeout > 3600 || (i.Kind != "frpc" && i.ClientDialTimeout != 0) {
 		return fmt.Errorf("客户端连接超时须为 0–3600 秒；0 使用默认值")
 	}
@@ -260,6 +272,9 @@ func validateProtocolInstance(i Instance) error {
 		if i.ClientTLSUseSystemCA && i.ClientTLSDisabled {
 			return fmt.Errorf("使用系统证书验证服务端时不能关闭客户端 TLS")
 		}
+		if i.ClientTLSDisabled && (i.TLSCertFile != "" || i.TLSKeyFile != "" || i.TLSTrustedCAFile != "" || i.ClientTLSServerName != "") {
+			return fmt.Errorf("配置客户端 TLS 证书、私钥、CA 或服务端名称时不能关闭 TLS")
+		}
 		if i.User != "" && !namePattern.MatchString(i.User) {
 			return fmt.Errorf("客户端用户名称无效")
 		}
@@ -274,6 +289,9 @@ func validateProtocolInstance(i Instance) error {
 			return fmt.Errorf("客户端不能设置服务端 TCPMUX 或子域名选项")
 		}
 	} else {
+		if i.TLSTrustedCAFile != "" && i.ServerAllowPlaintext {
+			return fmt.Errorf("配置客户端证书 CA 时不能允许服务端明文连接")
+		}
 		if i.User != "" || i.NatHoleSTUNServer != "" || i.DNSServer != "" || i.ClientTransport != "" || i.LoginFailExit || i.ClientTLSDisabled || i.ClientTLSUseSystemCA {
 			return fmt.Errorf("服务端不能设置客户端连接、用户、STUN 或 DNS 选项")
 		}

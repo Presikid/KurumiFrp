@@ -30,7 +30,13 @@ const ProtocolEditor = (() => {
     <div>${field('muxKeepalive', '多路复用保活间隔（秒）', v.muxKeepalive ?? 0, 'number', 'min="0" max="3600" step="1"')}<small>0 使用默认 30 秒；需启用 TCP 多路复用。</small></div>
     <div class="client-field span-2">${check('loginFailExit', '首次登录失败时退出（关闭时持续重连）', v.loginFailExit)}</div>
     <div class="client-field span-2">${check('clientTLSDisabled', '关闭客户端 TLS（WSS 和 QUIC 始终使用 TLS）', v.clientTLSDisabled)}</div>
-    <div class="client-field span-2">${check('clientTLSUseSystemCA', '使用系统信任库验证服务端 TLS 证书', v.clientTLSUseSystemCA)}<small>默认仅启用 TLS 时不验证服务端证书。勾选后须启用 TLS，且证书受系统信任并匹配连接地址；默认生成的自签名 frps 证书不能直接通过验证。此设置不识别账户。</small></div>
+    <div class="client-field span-2">${check('clientTLSUseSystemCA', '使用系统信任库验证服务端 TLS 证书', v.clientTLSUseSystemCA)}<small>可与下方 CA 文件合用；两者都未配置时不验证服务端证书。此设置不识别账户。</small></div>
+    <div class="span-2">${field('tlsCertFile', 'frp TLS 证书文件绝对路径（可选）', v.tlsCertFile || '', 'text', 'maxlength="1024" autocomplete="off"')}</div>
+    <div class="span-2">${field('tlsKeyFile', 'frp TLS 私钥文件绝对路径（可选）', v.tlsKeyFile || '', 'text', 'maxlength="1024" autocomplete="off"')}<small>证书和私钥须成对填写。只保存路径，不上传或复制文件；工作台账户须有读取权限。配置检查不读取文件，启动或连接时才加载。</small></div>
+    <div class="span-2">${field('tlsTrustedCAFile', 'frp TLS 可信 CA 文件绝对路径（可选）', v.tlsTrustedCAFile || '', 'text', 'maxlength="1024" autocomplete="off"')}</div>
+    <p class="client-field small-note span-2">客户端 CA 用于验证服务端证书；与系统信任库同时启用时合并信任。证书、私钥和 CA 文件均要求启用客户端 TLS。</p>
+    <div class="client-field span-2">${field('clientTLSServerName', '验证服务端证书时使用的名称（可选）', v.clientTLSServerName || '', 'text', 'maxlength="253" placeholder="例如 frps.example.com"')}<small>留空使用连接地址；填写 DNS 名称或 IP，不含端口。仅设置名称不会启用证书验证。</small></div>
+    <p class="server-field small-note span-2">服务端 CA 用于要求并验证 frp 客户端证书，填写后不能允许明文控制连接；不保护公网代理端口。</p>
     <div class="server-field">${field('kcpBindPort', 'KCP 监听端口（0 关闭）', v.kcpBindPort ?? 0, 'number', 'min="0" max="65535" step="1"')}</div>
     <div class="server-field">${field('quicBindPort', 'QUIC 监听端口（0 关闭）', v.quicBindPort ?? 0, 'number', 'min="0" max="65535" step="1"')}</div>
     <div class="server-field">${field('httpPort', 'HTTP 虚拟主机端口（0 关闭）', v.httpPort ?? 0, 'number', 'min="0" max="65535" step="1"')}</div>
@@ -296,8 +302,14 @@ const ProtocolEditor = (() => {
   const result = {...(editing.old || {}), id:editing.id};
   if (editing.kind === 'instance') {
    const kind = val('kind');
+   const certFile = val('tlsCertFile'), keyFile = val('tlsKeyFile'), trustedCAFile = val('tlsTrustedCAFile');
+   const tlsServerName = kind === 'frpc' ? val('clientTLSServerName').trim() : '';
+   if (!!certFile !== !!keyFile) throw new Error('TLS 证书和私钥路径须同时填写或同时留空。');
+   if (kind === 'frpc' && f.clientTLSDisabled.checked && (certFile || keyFile || trustedCAFile || tlsServerName)) throw new Error('配置客户端证书、私钥、CA 或服务端名称时不能关闭 TLS。');
+   if (kind === 'frps' && f.serverAllowPlaintext.checked && trustedCAFile) throw new Error('配置客户端证书 CA 时不能允许明文连接。');
    delete result.hasToken;
    Object.assign(result, {name:val('name').trim(), kind, host:val('host').trim(), port:+val('port'), token:val('token'), autoStart:f.autoStart.checked, authHeartbeats:f.authHeartbeats.checked, authNewWorkConns:f.authNewWorkConns.checked,
+    tlsCertFile:certFile, tlsKeyFile:keyFile, tlsTrustedCAFile:trustedCAFile, clientTLSServerName:tlsServerName,
     httpPort:kind === 'frps' ? +val('httpPort') : 0, httpsPort:kind === 'frps' ? +val('httpsPort') : 0,
     user:kind === 'frpc' ? val('user').trim() : '', natHoleStunServer:kind === 'frpc' ? val('natHoleStunServer').trim() : '', dnsServer:kind === 'frpc' ? val('dnsServer').trim() : '', clientTransport:kind === 'frpc' ? val('clientTransport') : '', clientBindIP:kind === 'frpc' ? val('clientBindIP').trim() : '', loginFailExit:kind === 'frpc' && f.loginFailExit.checked, clientTLSDisabled:kind === 'frpc' && f.clientTLSDisabled.checked, clientTLSUseSystemCA:kind === 'frpc' && f.clientTLSUseSystemCA.checked, serverAllowPlaintext:kind === 'frps' && f.serverAllowPlaintext.checked, kcpBindPort:kind === 'frps' ? +val('kcpBindPort') : 0, quicBindPort:kind === 'frps' ? +val('quicBindPort') : 0,
     tcpmuxHTTPConnectPort:kind === 'frps' ? +val('tcpmuxHTTPConnectPort') : 0, serverAccessMode:kind === 'frps' ? val('serverAccessMode') : '', serverAccessList:kind === 'frps' && val('serverAccessMode') ? val('serverAccessList').trim() : '', clientDialTimeout:kind === 'frpc' ? +val('clientDialTimeout') : 0, tcpKeepalive:+val('tcpKeepalive'), muxKeepalive:+val('muxKeepalive'),

@@ -333,6 +333,9 @@ func (a *App) verifyRuntime(parent context.Context, target string, i Instance, r
 	if err := a.checkSystemCATLSBackend(i); err != nil {
 		return "", err
 	}
+	if err := a.checkTLSFileBackend(i); err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
 	output, err := a.runtime.Verify(ctx, target, runtimeConfig(i, r))
@@ -381,6 +384,9 @@ func (a *App) startPreparedWithSource(i Instance, r Rendered, target string, aut
 		return err
 	}
 	if err := a.checkSystemCATLSBackend(i); err != nil {
+		return err
+	}
+	if err := a.checkTLSFileBackend(i); err != nil {
 		return err
 	}
 	if p := a.procs[i.ID]; p.active() {

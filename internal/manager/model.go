@@ -33,6 +33,10 @@ type Instance struct {
 	LoginFailExit         bool   `json:"loginFailExit,omitempty"`
 	ClientTLSDisabled     bool   `json:"clientTLSDisabled,omitempty"`
 	ClientTLSUseSystemCA  bool   `json:"clientTLSUseSystemCA,omitempty"`
+	TLSCertFile           string `json:"tlsCertFile,omitempty"`
+	TLSKeyFile            string `json:"tlsKeyFile,omitempty"`
+	TLSTrustedCAFile      string `json:"tlsTrustedCAFile,omitempty"`
+	ClientTLSServerName   string `json:"clientTLSServerName,omitempty"`
 	ServerAllowPlaintext  bool   `json:"serverAllowPlaintext,omitempty"`
 	KCPBindPort           int    `json:"kcpBindPort,omitempty"`
 	QUICBindPort          int    `json:"quicBindPort,omitempty"`
