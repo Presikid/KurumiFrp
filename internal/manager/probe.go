@@ -43,8 +43,30 @@ func probeTargetContext(parent context.Context, t Tunnel) ProbeResult {
 		return stampProbe(result)
 	}
 	if t.UnixSocketPath != "" {
-		result.Status = "unsupported"
-		result.Message = "Unix 套接字目标暂不提供工作台检测"
+		result.Address = t.UnixSocketPath
+		if t.Type != "tcp" || !strings.HasPrefix(t.UnixSocketPath, "/") || !protocolTextOK(t.UnixSocketPath) {
+			result.Status = "invalid"
+			result.Message = "Unix 套接字目标无效"
+			return stampProbe(result)
+		}
+		ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+		defer cancel()
+		started := time.Now()
+		conn, err := (&net.Dialer{}).DialContext(ctx, "unix", t.UnixSocketPath)
+		if err != nil {
+			if parent.Err() != nil {
+				result.Status = "cancelled"
+				result.Message = "检测已取消"
+				return stampProbe(result)
+			}
+			result.Status = "unreachable"
+			result.Message = fmt.Sprintf("尝试连接 Unix 套接字失败：%v", err)
+			return stampProbe(result)
+		}
+		_ = conn.Close()
+		result.Status = "reachable"
+		result.LatencyMS = time.Since(started).Milliseconds()
+		result.Message = "已建立并立即关闭一次 Unix 套接字连接；仅代表当时可连接，不代表服务正常响应或远端隧道可达"
 		return stampProbe(result)
 	}
 	if t.PluginType == socks5PluginType {
