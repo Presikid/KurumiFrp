@@ -233,11 +233,18 @@
   },
   mount(root,data) {
    const picker = root.querySelector('[data-instance]'), filter = root.querySelector('[data-log-filter]'), output = root.querySelector('[data-log-output]'), status = root.querySelector('[data-log-status]');
-   let timer = null, controller = null, version = 0, lines = [], runId = '', painted = '', stopped = false, stream = null;
+   let timer = null, controller = null, version = 0, lines = [], runId = '', painted = '', stopped = false, stream = null, pendingPaint = false;
    const current = () => !stopped && K.isCurrent('logs',root);
    function stopStream() { if (!stream) return; clearTimeout(stream.watchdog); stream.source.close(); stream = null; }
-   function paint() {
-    if (!current() || window.getSelection()?.toString()) return;
+   function selectingOutput() {
+    const selection = window.getSelection();
+    return !!selection && !selection.isCollapsed && selection.rangeCount > 0 && selection.getRangeAt(0).intersectsNode(output);
+   }
+   function clearLogs() { pendingPaint = false; lines = []; painted = ''; runId = ''; output.textContent = ''; }
+   function paint(force = false) {
+    if (!current()) return;
+    if (!force && selectingOutput()) { pendingPaint = true; return; }
+    pendingPaint = false;
     const query = filter.value.toLocaleLowerCase(), matched = query ? lines.filter(line => line.toLocaleLowerCase().includes(query)) : lines;
     const text = matched.join('\n'), follow = output.scrollHeight-output.scrollTop-output.clientHeight < 36;
     if (output.textContent !== text) { output.textContent = text; if (follow) output.scrollTop = output.scrollHeight; }
@@ -260,7 +267,7 @@
     const receive = (event,reset) => {
      if (!valid()) return;
      if ((K.state()?.runtime?.[id]?.runId || '') !== expectedRun) {
-      lines = []; painted = ''; output.textContent = ''; fail('实例运行代次已变化，正在重新读取。'); return;
+      clearLogs(); fail('实例运行代次已变化，正在重新读取。'); return;
      }
      let payload;
      try { payload = JSON.parse(event.data); } catch (_) { fail('实时日志格式无效，正在改用轮询。'); return; }
@@ -275,7 +282,7 @@
     source.addEventListener('lines',event => receive(event,false));
     source.addEventListener('heartbeat',() => {
      if (!valid()) return;
-     if ((K.state()?.runtime?.[id]?.runId || '') !== expectedRun) { lines = []; painted = ''; runId = ''; output.textContent = ''; fail('实例运行代次已变化，正在重新读取。'); }
+     if ((K.state()?.runtime?.[id]?.runId || '') !== expectedRun) { clearLogs(); fail('实例运行代次已变化，正在重新读取。'); }
      else touch();
     });
     source.addEventListener('end',event => {
@@ -290,29 +297,31 @@
    async function load() {
     clearTimeout(timer); stopStream(); controller?.abort(); const request = new AbortController(); controller = request;
     const id = picker.value, serial = ++version; K.selectedInstance = id;
-    if (!id) { lines = []; painted = ''; output.textContent = ''; status.textContent = '没有可查看日志的实例。'; return; }
+    if (!id) { clearLogs(); status.textContent = '没有可查看日志的实例。'; return; }
     try {
      const result = await K.api('logs?id='+encodeURIComponent(id),undefined,{signal:request.signal});
      if (!current() || serial !== version || picker.value !== id) return;
      if (!Array.isArray(result.lines) || result.lines.length > 200 || !result.lines.every(line => typeof line === 'string')) throw new Error('日志响应无效。');
      const observed = K.state()?.runtime?.[id]?.runId || '';
-     if ((result.runId || '') !== observed) { lines = []; painted = ''; runId = ''; output.textContent = ''; status.textContent = '实例运行状态正在更新，请稍候。'; void K.refresh(true).catch(() => {}); return; }
+     if ((result.runId || '') !== observed) { clearLogs(); status.textContent = '实例运行状态正在更新，请稍候。'; void K.refresh(true).catch(() => {}); return; }
      runId = result.runId || ''; lines = result.lines; paint(); openStream(id,runId);
     } catch (error) {
-     if (current() && serial === version && error.name !== 'AbortError') { status.textContent = '读取失败：'+error.message; lines = []; painted = ''; output.textContent = ''; }
+     if (current() && serial === version && error.name !== 'AbortError') { clearLogs(); status.textContent = '读取失败：'+error.message; }
     } finally { if (controller === request) controller = null; schedule(); }
    }
    const visible = () => { if (document.hidden) { clearTimeout(timer); stopStream(); controller?.abort(); } else if (current()) void load(); };
-   picker.addEventListener('change',() => { lines = []; painted = ''; runId = ''; output.textContent = ''; void load(); });
-   filter.addEventListener('input',paint);
-   root.addEventListener('mouseup',paint);
+   const selectionChanged = () => { if (pendingPaint && !selectingOutput()) paint(); };
+   picker.addEventListener('change',() => { clearLogs(); void load(); });
+   filter.addEventListener('input',() => paint(true));
+   root.addEventListener('mouseup',() => paint());
    root.addEventListener('click',event => {
     const action = event.target.closest('[data-action]')?.dataset.action;
     if (action === 'log-refresh') void load();
     if (action === 'log-download') { if ((K.state()?.runtime?.[picker.value]?.runId || '') !== runId) K.toast('实例运行代次已变化，请先刷新日志。'); else if (!painted) K.toast('当前没有可导出的日志。'); else K.download('kurumi-logs.txt',painted,'text/plain'); }
    });
    document.addEventListener('visibilitychange',visible);
-   logCleanup = () => { stopped = true; ++version; clearTimeout(timer); stopStream(); controller?.abort(); document.removeEventListener('visibilitychange',visible); };
+   document.addEventListener('selectionchange',selectionChanged);
+   logCleanup = () => { stopped = true; ++version; clearTimeout(timer); stopStream(); controller?.abort(); document.removeEventListener('visibilitychange',visible); document.removeEventListener('selectionchange',selectionChanged); };
    void load();
   },
   dispose() { logCleanup?.(); logCleanup = null; }
