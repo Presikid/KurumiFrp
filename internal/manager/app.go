@@ -647,10 +647,33 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			var edit struct {
 				Tunnel
 				ClearHTTPPassword bool            `json:"clearHTTPPassword,omitempty"`
+				ClearPluginPassword bool          `json:"clearPluginPassword,omitempty"`
 				RequestHeaders    json.RawMessage `json:"requestHeaders"`
 				ResponseHeaders   json.RawMessage `json:"responseHeaders"`
 			}
 			if err = decodeStrictJSON(req.Value, &edit); err != nil {
+				break
+			}
+			var pluginFields struct {
+				Type     json.RawMessage `json:"pluginType"`
+				User     json.RawMessage `json:"pluginUser"`
+				Password json.RawMessage `json:"pluginPassword"`
+				Clear    json.RawMessage `json:"clearPluginPassword"`
+			}
+			if err = json.Unmarshal(req.Value, &pluginFields); err != nil {
+				break
+			}
+			for _, field := range []json.RawMessage{pluginFields.Type, pluginFields.User, pluginFields.Password, pluginFields.Clear} {
+				if len(field) != 0 && strings.TrimSpace(string(field)) == "null" {
+					err = fmt.Errorf("插件字段不能为 null")
+					break
+				}
+			}
+			if err != nil {
+				break
+			}
+			if !validPluginJSONText(pluginFields.User) || !validPluginJSONText(pluginFields.Password) {
+				err = fmt.Errorf("插件用户名和密码须为有效的 Unicode 文本")
 				break
 			}
 			v := edit.Tunnel
@@ -659,6 +682,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				v = old
 				v.Secret = ""
 				v.HTTPPassword = ""
+				v.PluginPassword = ""
 				// Do not let json.Unmarshal reuse and mutate the old header slices.
 				v.RequestHeaders, v.ResponseHeaders = nil, nil
 				if err = json.Unmarshal(req.Value, &v); err != nil {
@@ -704,6 +728,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			}
 			v.HasSecret = false
 			v.HasHTTPPassword = false
+			v.HasPluginPassword = false
 			if !usesPairingSecret(v.Type) {
 				// A previously imported state may contain an unused encrypted
 				// value. Preserve it on same-type edits until explicitly changed.
@@ -743,6 +768,29 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				}
 			} else if exists && old.Type == v.Type {
 				v.HTTPPassword = old.HTTPPassword
+			}
+			if edit.ClearPluginPassword && v.PluginPassword != "" {
+				err = fmt.Errorf("不能同时设置和清除插件密码")
+				break
+			}
+			if exists && old.PluginType == socks5PluginType && old.PluginPassword != "" && v.PluginType != old.PluginType && !edit.ClearPluginPassword {
+				err = fmt.Errorf("切换插件目标前请确认清除已保存的插件密码")
+				break
+			}
+			if edit.ClearPluginPassword {
+				v.PluginPassword = ""
+			} else if v.PluginType == socks5PluginType {
+				if v.PluginPassword != "" {
+					v.PluginPassword, err = a.store.encryptPluginPassword(v.PluginPassword)
+					if err != nil {
+						break
+					}
+				} else if exists && old.PluginType == socks5PluginType {
+					v.PluginPassword = old.PluginPassword
+				}
+			} else if v.PluginPassword != "" {
+				err = fmt.Errorf("未启用 SOCKS5 时不能设置插件密码")
+				break
 			}
 			if exists {
 				for j := range st.Tunnels {

@@ -123,6 +123,11 @@ func (a *App) healthAPI(w http.ResponseWriter, r *http.Request) {
 				secrets = append(secrets, v)
 			}
 		}
+		if t.InstanceID == i.ID && t.PluginPassword != "" {
+			if v, err := a.store.decrypt(t.PluginPassword); err == nil {
+				secrets = append(secrets, v)
+			}
+		}
 		if t.InstanceID == i.ID {
 			for _, headers := range [][]HTTPHeader{t.RequestHeaders, t.ResponseHeaders} {
 				for _, header := range headers {

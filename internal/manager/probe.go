@@ -47,6 +47,11 @@ func probeTargetContext(parent context.Context, t Tunnel) ProbeResult {
 		result.Message = "Unix 套接字目标暂不提供工作台检测"
 		return stampProbe(result)
 	}
+	if t.PluginType == socks5PluginType {
+		result.Status = "unsupported"
+		result.Message = "SOCKS5 插件没有可检测的本地目标地址"
+		return stampProbe(result)
+	}
 	if !hostOK(t.LocalHost) || !portOK(t.LocalPort) {
 		result.Status = "invalid"
 		result.Message = "本地目标地址或端口无效"
