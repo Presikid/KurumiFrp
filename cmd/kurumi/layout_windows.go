@@ -448,6 +448,40 @@ func stopMachine(install string) (err error) {
 	}
 	return nil // Keep the gate until the new installer finishes init.
 }
+
+// Uninstall keeps the profile data, so release the gate once the uninstaller
+// has finished removing the program files. Only remove our own marker.
+func finishMachineMaintenance(install string) error {
+	root, err := windowsDataRoot(install)
+	if err != nil {
+		return err
+	}
+	if err = verifyMachine(root, install); err != nil {
+		return err
+	}
+	marker := filepath.Join(root, ".uninstalling")
+	if err = windowsPlainPath(marker); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	info, err := os.Lstat(marker)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Size() != int64(len(productID)) {
+		return fmt.Errorf("unrecognized maintenance marker")
+	}
+	contents, err := os.ReadFile(marker)
+	if err != nil {
+		return err
+	}
+	if string(contents) != productID {
+		return fmt.Errorf("unrecognized maintenance marker")
+	}
+	return os.Remove(marker)
+}
+
 func preflightMachine(install string, requireExisting bool) error {
 	data, err := windowsDataRoot(install)
 	if err != nil {
@@ -500,6 +534,8 @@ func installedOperation(exe, operation, target string) error {
 		return initMachine(root)
 	case "stop":
 		return stopMachine(root)
+	case "finish-stop":
+		return finishMachineMaintenance(root)
 	default:
 		return fmt.Errorf("invalid native operation")
 	}
