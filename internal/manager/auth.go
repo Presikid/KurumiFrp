@@ -45,6 +45,10 @@ type auth struct {
 	accountsRevision  uint64
 	accountGroups     []accountGroup
 	accountLoadErr    error
+	// A failed account-file write may have reached disk despite returning an
+	// error. Freeze account-file writes until restart; readers must treat the
+	// current in-memory state as potentially different from disk.
+	accountsWriteUncertain bool
 	oidcSettings      oidcSettings
 	oidcLoadErr       error
 	oidcFlows         map[string]oidcFlow

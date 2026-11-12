@@ -131,6 +131,9 @@ func (a *App) changeAccountFRPToken(r *http.Request, action string, revision uin
 	if a.closing || a.auth.accountLoadErr != nil {
 		return nil, http.StatusServiceUnavailable, fmt.Errorf("账户状态不可用")
 	}
+	if a.auth.accountsWriteUncertain {
+		return nil, http.StatusServiceUnavailable, fmt.Errorf("账户文件写入状态未确认，请安全重启工作台后核对")
+	}
 	current, valid := a.auth.identityLocked(r)
 	if !valid {
 		return nil, http.StatusUnauthorized, fmt.Errorf("请先登录")

@@ -300,8 +300,19 @@ func (a *auth) writeAccounts(accounts []localAccount) error {
 	return a.writeAccountsAndGroups(accounts, a.accountGroups)
 }
 
+// Caller holds auth.mu. Avoid telling users to retry against uncertain state.
+func (a *auth) accountWriteFailure() error {
+	if a.accountsWriteUncertain {
+		return fmt.Errorf("账户配置保存状态未确认，请联系管理员安全重启工作台后核对")
+	}
+	return fmt.Errorf("无法保存账户配置")
+}
+
 // Caller holds auth.mu. Accounts and groups are one atomic file and revision.
 func (a *auth) writeAccountsAndGroups(accounts []localAccount, groups []accountGroup) error {
+	if a.accountsWriteUncertain {
+		return fmt.Errorf("账户文件写入状态未确认，请安全重启工作台后核对")
+	}
 	if a.accountsRevision >= maxJSONRevision {
 		return fmt.Errorf("账户版本已达到上限")
 	}
@@ -316,6 +327,7 @@ func (a *auth) writeAccountsAndGroups(accounts []localAccount, groups []accountG
 		return fmt.Errorf("账户配置过大")
 	}
 	if _, err = writeIfChanged(a.accountPath, data); err != nil {
+		a.accountsWriteUncertain = true
 		return err
 	}
 	a.accounts = accounts
@@ -338,6 +350,9 @@ func (a *auth) revoke(id string) {
 func (a *App) clearInstanceGrantsLocked(instanceID string) error {
 	a.auth.mu.Lock()
 	defer a.auth.mu.Unlock()
+	if a.auth.accountsWriteUncertain {
+		return fmt.Errorf("账户文件写入状态未确认，请安全重启工作台后核对")
+	}
 	users := append([]localAccount(nil), a.auth.accounts...)
 	groups := cloneAccountGroups(a.auth.accountGroups)
 	changed := false
@@ -489,12 +504,13 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, ExpiresAt: u.ExpiresAt, Expired: expired, GroupID: u.GroupID, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowedActions: effectiveOperatorActions(u), ReadPermissions: effectiveReadPermissions(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...), FRPTokens: a.accountFRPTokenViewsLocked(u)})
 		}
 		revision := a.auth.accountsRevision
+		writesUncertain := a.auth.accountsWriteUncertain
 		configRevision := a.store.DB.Revision
 		frpInstances := a.accountFRPInstancesLocked()
 		groups := cloneAccountGroups(a.auth.accountGroups)
 		a.auth.mu.Unlock()
 		a.mu.Unlock()
-		reply(w, 200, map[string]any{"revision": revision, "configRevision": configRevision, "frpInstances": frpInstances, "accounts": views, "groups": groups, "sampledAt": now.UTC().Format(time.RFC3339)})
+		reply(w, 200, map[string]any{"revision": revision, "accountWritesUncertain": writesUncertain, "configRevision": configRevision, "frpInstances": frpInstances, "accounts": views, "groups": groups, "sampledAt": now.UTC().Format(time.RFC3339)})
 		return
 	}
 	if r.Method != http.MethodPost {
@@ -671,7 +687,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		users = append(users[:index], users[index+1:]...)
 		if err := a.auth.writeAccounts(users); err != nil {
-			fail(w, 500, fmt.Errorf("无法保存账户配置"))
+			fail(w, 500, a.auth.accountWriteFailure())
 			return
 		}
 		a.auth.revoke(req.ID)
@@ -788,7 +804,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			users[index] = u
 		}
 		if err := a.auth.writeAccounts(users); err != nil {
-			fail(w, 500, fmt.Errorf("无法保存账户配置"))
+			fail(w, 500, a.auth.accountWriteFailure())
 			return
 		}
 		if index >= 0 {
@@ -884,7 +900,7 @@ func (a *App) passwordAPI(w http.ResponseWriter, r *http.Request) {
 		if u.ID == original.ID && u.Enabled && u.Salt == original.Salt && u.Hash == original.Hash {
 			users[i].Salt, users[i].Hash = newSalt, newHash
 			if err := a.auth.writeAccounts(users); err != nil {
-				fail(w, 500, fmt.Errorf("无法保存账户配置"))
+				fail(w, 500, a.auth.accountWriteFailure())
 				return
 			}
 			a.auth.revoke(u.ID)
