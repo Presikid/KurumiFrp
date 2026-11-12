@@ -144,9 +144,12 @@ func (a *App) beginRuntimeOperationSourceLocked(parent context.Context, req runt
 	if validate || req.Action != "stop" {
 		var err error
 		rendered, err := a.store.render(req.ID, false)
-		snapshot.config = runtimeConfig(i, rendered)
 		if err != nil {
 			return snapshot, nil, http.StatusBadRequest, fmt.Errorf("无法生成实例配置：%w", err)
+		}
+		snapshot.config, err = a.runtimeConfigLocked(i, rendered, snapshot.incarnation)
+		if err != nil {
+			return snapshot, nil, http.StatusBadRequest, err
 		}
 		snapshot.target, err = a.resolveRuntime(i.Kind)
 		if err != nil {
@@ -196,8 +199,15 @@ func (a *App) checkRuntimeSnapshot(ctx context.Context, snapshot runtimeSnapshot
 	if a.store.DB.Revision != snapshot.revision || a.procs[snapshot.instance.ID] != snapshot.process {
 		return http.StatusConflict, fmt.Errorf("操作期间配置或进程已变化，请刷新后重试")
 	}
+	if err := a.checkManagedAccountBackend(snapshot.instance, snapshot.config); err != nil {
+		return http.StatusConflict, err
+	}
+	current, ok := a.store.DB.State.Instance(snapshot.instance.ID)
+	if !ok || current.Kind != snapshot.instance.Kind || current.ManagedAccountLogin != snapshot.config.ManagedAccountLogin {
+		return http.StatusConflict, fmt.Errorf("操作期间账户认证配置已变化，请刷新后重试")
+	}
 	if snapshot.config.ManagedAccountLogin {
-		if err := a.checkManagedAccountBackend(snapshot.instance, snapshot.config); err != nil {
+		if err := a.checkManagedAccountWritesLocked(snapshot.config); err != nil {
 			return http.StatusConflict, err
 		}
 		if snapshot.config.ManagedAccountIncarnation != snapshot.incarnation ||

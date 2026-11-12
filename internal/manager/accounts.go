@@ -328,6 +328,9 @@ func (a *auth) writeAccountsAndGroups(accounts []localAccount, groups []accountG
 	}
 	if _, err = writeIfChanged(a.accountPath, data); err != nil {
 		a.accountsWriteUncertain = true
+		if a.onAccountsWriteUncertain != nil {
+			a.onAccountsWriteUncertain()
+		}
 		return err
 	}
 	a.accounts = accounts
@@ -600,6 +603,22 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	var response map[string]any
+	var frpRevocations []*accountFRPRevocation
+	defer func() {
+		if response == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		for _, revocation := range frpRevocations {
+			if !a.finishAccountFRPRevocation(ctx, revocation) {
+				response["revocation"] = "unconfirmed"
+				response["warning"] = "账户已修改，但旧连接关闭状态未确认；已请求停止相关实例，请核对实例并安全重启工作台"
+			}
+		}
+		reply(w, 200, response)
+	}()
 	// Only the edited account waits for its already admitted requests. Password
 	// derivation above happens before taking this gate or either state mutex.
 	var targetGate *sync.RWMutex
@@ -685,10 +704,18 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			fail(w, 404, fmt.Errorf("账户不存在"))
 			return
 		}
+		if a.accountFRPRevocationPendingLocked(req.ID) {
+			fail(w, 409, fmt.Errorf("该账户的旧连接尚未确认关闭，请安全重启工作台后核对"))
+			return
+		}
+		frpRevocations = a.accountFRPRevocationsLocked(users[index])
 		users = append(users[:index], users[index+1:]...)
 		if err := a.auth.writeAccounts(users); err != nil {
 			fail(w, 500, a.auth.accountWriteFailure())
 			return
+		}
+		for _, revocation := range frpRevocations {
+			a.publishAccountFRPRevocationLocked(revocation)
 		}
 		a.auth.revoke(req.ID)
 	} else {
@@ -792,6 +819,13 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, fmt.Errorf("请先启用日志权限"))
 			return
 		}
+		if index >= 0 && (u.Enabled != users[index].Enabled || u.ExpiresAt != users[index].ExpiresAt) {
+			if a.accountFRPRevocationPendingLocked(req.ID) {
+				fail(w, 409, fmt.Errorf("该账户的旧连接尚未确认关闭，请安全重启工作台后核对"))
+				return
+			}
+			frpRevocations = a.accountFRPRevocationsLocked(users[index])
+		}
 		if index < 0 {
 			u.ID = randomHex(16)
 			u.gate = &sync.RWMutex{}
@@ -807,11 +841,14 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			fail(w, 500, a.auth.accountWriteFailure())
 			return
 		}
+		for _, revocation := range frpRevocations {
+			a.publishAccountFRPRevocationLocked(revocation)
+		}
 		if index >= 0 {
 			a.auth.revoke(u.ID)
 		}
 	}
-	reply(w, 200, map[string]any{"ok": true, "revision": a.auth.accountsRevision})
+	response = map[string]any{"ok": true, "revision": a.auth.accountsRevision}
 }
 
 func (a *App) passwordAPI(w http.ResponseWriter, r *http.Request) {

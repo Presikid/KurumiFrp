@@ -49,6 +49,8 @@ type auth struct {
 	// error. Freeze account-file writes until restart; readers must treat the
 	// current in-memory state as potentially different from disk.
 	accountsWriteUncertain bool
+	// Invoked under mu; the callback must return promptly and not take locks.
+	onAccountsWriteUncertain func()
 	oidcSettings      oidcSettings
 	oidcLoadErr       error
 	oidcFlows         map[string]oidcFlow

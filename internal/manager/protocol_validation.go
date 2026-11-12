@@ -217,7 +217,7 @@ func validateProtocolInstance(i Instance) error {
 	if i.Kind == "frpc" && i.TCPKeepalive != 0 && (i.ClientTransport == "kcp" || i.ClientTransport == "quic") {
 		return fmt.Errorf("KCP 和 QUIC 不使用此 TCP 保活设置")
 	}
-	if i.MuxKeepalive < 0 || i.MuxKeepalive > 3600 || (i.MuxKeepalive != 0 && (i.TransportMuxDisabled || (i.Kind == "frpc" && i.ClientTransport == "quic"))) {
+	if i.MuxKeepalive < 0 || i.MuxKeepalive > 3600 || (i.MuxKeepalive != 0 && (i.TransportMuxDisabled || i.ManagedAccountLogin || (i.Kind == "frpc" && i.ClientTransport == "quic"))) {
 		return fmt.Errorf("多路复用保活间隔须为 0–3600 秒，且需要启用 TCP 多路复用")
 	}
 	if i.ClientBindIP != "" {

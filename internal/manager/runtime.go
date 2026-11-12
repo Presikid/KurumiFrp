@@ -35,6 +35,10 @@ type process struct {
 	appliedConfig       string
 	appliedDigest       string
 	appliedSecretDigest string
+
+	// Immutable after publication; empty for runs without account login.
+	managedAccountIncarnation string
+
 	// Set before publication for an in-process client and kept for this run.
 	registrationReader      ProxyRegistrationReader
 	readiness               RuntimeReadiness
@@ -316,7 +320,32 @@ func (a *App) resolveRuntime(kind string) (string, error) {
 func runtimeConfig(i Instance, r Rendered) RuntimeConfig {
 	r.Env = append([]string(nil), r.Env...)
 	r.Secrets = append([]string(nil), r.Secrets...)
-	return RuntimeConfig{InstanceID: i.ID, Kind: i.Kind, Rendered: r, ServerAccessMode: i.ServerAccessMode, ServerAccessList: i.ServerAccessList}
+	return RuntimeConfig{InstanceID: i.ID, Kind: i.Kind, Rendered: r, ServerAccessMode: i.ServerAccessMode, ServerAccessList: i.ServerAccessList, ManagedAccountLogin: i.ManagedAccountLogin}
+}
+
+// runtimeConfigLocked binds managed authentication to the persisted instance
+// and its current incarnation. The caller holds a.mu and owns the resulting
+// snapshot for both verification and startup.
+func (a *App) runtimeConfigLocked(i Instance, r Rendered, incarnation string) (RuntimeConfig, error) {
+	cfg := runtimeConfig(i, r)
+	if a.store == nil {
+		return RuntimeConfig{}, fmt.Errorf("工作台配置不可用")
+	}
+	current, ok := a.store.DB.State.Instance(i.ID)
+	if !ok || current.Kind != i.Kind || current.ManagedAccountLogin != i.ManagedAccountLogin {
+		return RuntimeConfig{}, fmt.Errorf("实例或账户认证配置已变化，请刷新后重试")
+	}
+	if cfg.ManagedAccountLogin {
+		if !validLocalTrafficID(incarnation) || a.store.DB.LocalTrafficIDs[i.ID] != incarnation {
+			return RuntimeConfig{}, fmt.Errorf("服务端实例标识不可用，请刷新后重试")
+		}
+		cfg.ManagedAccountIncarnation = incarnation
+		cfg.ManagedLoginProvider = a.accountFRPLoginProvider(i.ID, incarnation)
+	}
+	if err := a.checkManagedAccountBackend(i, cfg); err != nil {
+		return RuntimeConfig{}, err
+	}
+	return cfg, nil
 }
 
 func cloneRuntimeConfig(cfg RuntimeConfig) RuntimeConfig {
@@ -333,7 +362,43 @@ func (a *App) verify(i Instance, r Rendered) (string, error) {
 	return a.verifyRuntime(context.Background(), target, i, r)
 }
 func (a *App) verifyRuntime(parent context.Context, target string, i Instance, r Rendered) (string, error) {
-	return a.verifyRuntimeConfig(parent, target, i, runtimeConfig(i, r))
+	// Legacy callers do not carry a bound provider from verification to start.
+	// Refuse managed instances, including a stale caller-supplied copy that
+	// predates enabling managed login. Never wait on an unknown caller's lock.
+	if !a.mu.TryLock() {
+		return "", fmt.Errorf("实例状态正忙，请使用运行快照重新校验")
+	}
+	if a.closing || a.store == nil {
+		a.mu.Unlock()
+		return "", fmt.Errorf("工作台配置不可用")
+	}
+	current, ok := a.store.DB.State.Instance(i.ID)
+	if !ok || current.Kind != i.Kind || current.ManagedAccountLogin != i.ManagedAccountLogin {
+		a.mu.Unlock()
+		return "", fmt.Errorf("实例或账户认证配置已变化，请重新校验")
+	}
+	if current.ManagedAccountLogin {
+		a.mu.Unlock()
+		return "", fmt.Errorf("账户认证服务端须使用绑定的运行快照校验")
+	}
+	revision := a.store.DB.Revision
+	a.mu.Unlock()
+	output, err := a.verifyRuntimeConfig(parent, target, i, runtimeConfig(i, r))
+	if err != nil {
+		return output, err
+	}
+	if !a.mu.TryLock() {
+		return "", fmt.Errorf("实例状态正忙，请重新校验")
+	}
+	defer a.mu.Unlock()
+	if a.closing || a.store == nil || a.store.DB.Revision != revision {
+		return "", fmt.Errorf("校验期间配置已变化，请重新校验")
+	}
+	current, ok = a.store.DB.State.Instance(i.ID)
+	if !ok || current.Kind != i.Kind || current.ManagedAccountLogin {
+		return "", fmt.Errorf("校验期间账户认证配置已变化，请重新校验")
+	}
+	return output, nil
 }
 
 func (a *App) verifyRuntimeConfig(parent context.Context, target string, i Instance, config RuntimeConfig) (string, error) {
@@ -394,12 +459,23 @@ func (a *App) startPreparedConfigWithSource(i Instance, cfg RuntimeConfig, targe
 	if a.closing {
 		return fmt.Errorf("工作台正在关闭")
 	}
+	if a.store == nil {
+		return fmt.Errorf("工作台配置不可用")
+	}
+	current, ok := a.store.DB.State.Instance(i.ID)
+	if !ok || current.Kind != i.Kind || current.ManagedAccountLogin != i.ManagedAccountLogin {
+		return fmt.Errorf("实例或账户认证配置已变化，请重新校验")
+	}
 	if err := a.checkManagedAccountBackend(i, cfg); err != nil {
 		return err
 	}
 	if cfg.ManagedAccountLogin {
-		current, ok := a.store.DB.State.Instance(i.ID)
-		if !ok || current.Kind != i.Kind || a.store.DB.LocalTrafficIDs[i.ID] != cfg.ManagedAccountIncarnation {
+		// App.mu is held, so a failed account write cannot miss a newly
+		// published managed run while its stop callback takes a snapshot.
+		if err := a.checkManagedAccountWritesLocked(cfg); err != nil {
+			return err
+		}
+		if a.store.DB.LocalTrafficIDs[i.ID] != cfg.ManagedAccountIncarnation {
 			return fmt.Errorf("服务端实例或实例标识已变化，请重新校验")
 		}
 	}
@@ -419,7 +495,7 @@ func (a *App) startPreparedConfigWithSource(i Instance, cfg RuntimeConfig, targe
 		return fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
 	r := cfg.Rendered
-	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), appliedConfig: r.Text, appliedDigest: r.Digest, appliedSecretDigest: r.SecretDigest, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
+	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), appliedConfig: r.Text, appliedDigest: r.Digest, appliedSecretDigest: r.SecretDigest, managedAccountIncarnation: cfg.ManagedAccountIncarnation, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
 	for _, tunnel := range a.store.DB.State.clone().Tunnels {
 		if tunnel.InstanceID == i.ID && tunnel.Enabled {
 			p.appliedTunnels[tunnel.ID] = tunnel

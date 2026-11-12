@@ -16,7 +16,9 @@ func renderProtocolInstance(b *strings.Builder, i Instance) error {
 	if len(scopes) != 0 {
 		renderStringArray(b, "auth.additionalScopes", scopes)
 	}
-	if i.TransportMuxDisabled {
+	// Managed account revocation operates per connection. Do not permit a
+	// shared transport session to couple connections belonging to accounts.
+	if i.TransportMuxDisabled || i.ManagedAccountLogin {
 		fmt.Fprintln(b, "transport.tcpMux = false")
 	}
 	if i.MuxKeepalive != 0 {

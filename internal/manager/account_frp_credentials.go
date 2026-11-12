@@ -1,10 +1,12 @@
 package manager
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"time"
 )
 
 // These records are administrative preparations only. No runtime consumes
@@ -80,18 +82,29 @@ func accountFRPRandomHex(size int) (string, error) {
 }
 
 func (a *App) accountFRPTokenAPI(w http.ResponseWriter, r *http.Request, action string, revision uint64, configRevision *uint64, accountID, instanceID, instanceBinding string) {
-	result, status, err := a.changeAccountFRPToken(r, action, revision, configRevision, accountID, instanceID, instanceBinding)
+	var revocation *accountFRPRevocation
+	result, status, err := a.changeAccountFRPToken(r, action, revision, configRevision, accountID, instanceID, instanceBinding, &revocation)
 	if err != nil {
 		fail(w, status, err)
 		return
+	}
+	if revocation != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if a.finishAccountFRPRevocation(ctx, revocation) {
+			result["revocation"] = "complete"
+		} else {
+			result["revocation"] = "unconfirmed"
+			result["warning"] = "凭据已修改，但旧连接关闭状态未确认；已请求停止实例，请核对实例并安全重启工作台"
+		}
 	}
 	reply(w, status, result)
 }
 
 // Acquire the same target gate and lock order as ordinary account changes.
-// The caller must not use these records as a runtime resolver: existing frp
-// controls and in-flight logins are not revoked by this administrative API.
-func (a *App) changeAccountFRPToken(r *http.Request, action string, revision uint64, configRevision *uint64, accountID, instanceID, instanceBinding string) (map[string]any, int, error) {
+// Any affected live credential is blocked under this gate before the caller
+// waits for its connections to close without holding manager locks.
+func (a *App) changeAccountFRPToken(r *http.Request, action string, revision uint64, configRevision *uint64, accountID, instanceID, instanceBinding string, revocation **accountFRPRevocation) (map[string]any, int, error) {
 	if !accountIDPattern.MatchString(accountID) || !idPattern.MatchString(instanceID) {
 		return nil, http.StatusBadRequest, fmt.Errorf("账户或实例标识无效")
 	}
@@ -133,6 +146,9 @@ func (a *App) changeAccountFRPToken(r *http.Request, action string, revision uin
 	}
 	if a.auth.accountsWriteUncertain {
 		return nil, http.StatusServiceUnavailable, fmt.Errorf("账户文件写入状态未确认，请安全重启工作台后核对")
+	}
+	if a.accountFRPRevocations[accountFRPRevocationKey{accountID, instanceID}] != nil {
+		return nil, http.StatusConflict, fmt.Errorf("该账户的旧连接尚未确认关闭，请安全重启工作台后核对")
 	}
 	current, valid := a.auth.identityLocked(r)
 	if !valid {
@@ -234,10 +250,16 @@ func (a *App) changeAccountFRPToken(r *http.Request, action string, revision uin
 	if r.Context().Err() != nil {
 		return nil, http.StatusRequestTimeout, fmt.Errorf("请求已取消，请刷新核对")
 	}
+	var pending *accountFRPRevocation
+	if action != "frp-issue" {
+		pending = a.accountFRPRevocationLocked(users[index], instanceID)
+	}
 	users[index].FRPTokens = entries
 	if err := a.auth.writeAccounts(users); err != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("保存结果未确认，请安全停止并重启工作台后核对")
 	}
+	a.publishAccountFRPRevocationLocked(pending)
+	*revocation = pending
 	result := map[string]any{"ok": true, "revision": a.auth.accountsRevision, "configRevision": a.store.DB.Revision}
 	if action != "frp-disable" {
 		views := a.accountFRPTokenViewsLocked(users[index])
