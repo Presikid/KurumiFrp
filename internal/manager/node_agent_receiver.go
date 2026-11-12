@@ -21,6 +21,9 @@ import (
 )
 
 const (
+	nodeAgentStateCapabilityHeader = "X-Kurumi-Agent-States"
+	nodeAgentTransitionCapability  = "transitions-v1"
+
 	inboundAgentFormat         = 1
 	inboundAgentMaxNodes       = 32
 	inboundAgentMaxRetired     = 16384
@@ -583,11 +586,14 @@ func (registry *inboundAgentRegistry) serveAgent(w http.ResponseWriter, r *http.
 		}
 		registry.sessions[id] = next
 		registry.mu.Unlock()
+		// The JSON protocol remains compatible with older senders. A sender
+		// must see this header before reporting additional instance states.
+		w.Header().Set(nodeAgentStateCapabilityHeader, nodeAgentTransitionCapability)
 		reply(w, http.StatusOK, inboundAgentSessionResponse{Protocol: 1, NodeID: id, Session: session, NextSequence: "1", IntervalSeconds: inboundAgentInterval})
 		return
 	}
 	var request inboundAgentReportRequest
-	if decodeStrictJSON(body, &request) != nil || request.Protocol != 1 || !nodeTokenPattern.MatchString(request.Session) || !validNodeSummary(request.Summary) {
+	if decodeStrictJSON(body, &request) != nil || request.Protocol != 1 || !nodeTokenPattern.MatchString(request.Session) || !validNodeSummaryWithTransitions(request.Summary, true) {
 		fail(w, http.StatusBadRequest, fmt.Errorf("节点上报格式无效"))
 		return
 	}

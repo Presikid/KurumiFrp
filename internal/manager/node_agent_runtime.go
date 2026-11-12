@@ -190,7 +190,7 @@ func (m *outboundAgentManager) run(ctx context.Context, a *App, sender *outbound
 		}
 		if err == nil && sender.pending == nil {
 			var summary nodeSummary
-			summary, err = a.captureOutboundAgentSummary(ctx, stamp, sender.allowTraffic)
+			summary, err = a.captureOutboundAgentSummaryForPeer(ctx, stamp, sender.allowTraffic, sender.allowTransitions)
 			if errors.Is(err, errOutboundAgentSnapshotUnavailable) {
 				m.setStatus(stamp, "waiting", "实例状态正在变化，本轮未发送。", false)
 				if !outboundAgentWait(ctx, sender.interval) {
@@ -267,6 +267,10 @@ var (
 // or proxies. Runtime readers run without App.mu; all instance generations and
 // the configuration revision are rechecked before the result is returned.
 func (a *App) captureOutboundAgentSummary(ctx context.Context, stamp string, shareTraffic bool) (nodeSummary, error) {
+	return a.captureOutboundAgentSummaryForPeer(ctx, stamp, shareTraffic, false)
+}
+
+func (a *App) captureOutboundAgentSummaryForPeer(ctx context.Context, stamp string, shareTraffic, allowTransitions bool) (nodeSummary, error) {
 	type source struct {
 		proc *process
 		state string
@@ -286,12 +290,12 @@ func (a *App) captureOutboundAgentSummary(ctx context.Context, stamp string, sha
 		if proc != nil {
 			status = proc.view()
 		}
-		if status.State == "starting" || status.State == "stopping" {
+		if !allowTransitions && (status.State == "starting" || status.State == "stopping") {
 			a.mu.Unlock()
 			return nodeSummary{}, errOutboundAgentSnapshotUnavailable
 		}
 		state := status.State
-		if instance.AutoStart && a.startupErrors[instance.ID] != "" && state != "running" {
+		if instance.AutoStart && a.startupErrors[instance.ID] != "" && state != "running" && state != "starting" && state != "stopping" {
 			state = "autostart-failed"
 		}
 		instances = append(instances, nodeInstanceSummary{ID: instance.ID, Name: instance.Name, Kind: instance.Kind, State: state, Binding: nodeInstanceBinding(a.store.DB.LocalTrafficIDs[instance.ID])})
@@ -338,7 +342,7 @@ func (a *App) captureOutboundAgentSummary(ctx context.Context, stamp string, sha
 				status = source.proc.view()
 			}
 			state := status.State
-			if instance.AutoStart && a.startupErrors[instance.ID] != "" && state != "running" {
+			if instance.AutoStart && a.startupErrors[instance.ID] != "" && state != "running" && state != "starting" && state != "stopping" {
 				state = "autostart-failed"
 			}
 			if state != source.state || status.RunID != source.runID {
@@ -352,7 +356,7 @@ func (a *App) captureOutboundAgentSummary(ctx context.Context, stamp string, sha
 		return nodeSummary{}, errOutboundAgentSnapshotUnavailable
 	}
 	summary := nodeSummary{Protocol: 1, Version: version.Current, Instances: instances}
-	if !validNodeSummary(summary) {
+	if !validNodeSummaryWithTransitions(summary, allowTransitions) {
 		return nodeSummary{}, fmt.Errorf("node summary does not fit the reporting protocol")
 	}
 	return summary, nil

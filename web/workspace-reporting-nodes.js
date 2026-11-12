@@ -5,6 +5,7 @@
  const idOK = value => /^[a-f0-9]{16}$/.test(value || '');
  const credentialOK = value => /^[a-f0-9]{64}$/.test(value || '');
  const states = {pending:'尚无报告', online:'近期收到报告', offline:'近期无报告', revoked:'已撤销'};
+ const instanceStates = {running:'运行中', stopped:'已停止', exited:'已退出', 'autostart-failed':'自动启动失败', starting:'启动中', stopping:'停止中'};
  let cleanup = null, needsAttention = () => false;
 
  K.register('reported-nodes', {
@@ -54,7 +55,7 @@
     const bytes = value => typeof value === 'string' && /^\d+$/.test(value) ? `${esc(value)} 字节` : '未知';
     return `<details><summary>最近报告摘要（${instances.length} 个实例）</summary><p class="small-note">工作台版本：${esc(node.summary.version || '未知')}。流量为对方可选提供的本次运行样本，不能用于计费或配额。</p><div class="table-wrap"><table><thead><tr><th>实例</th><th>类型</th><th>报告中的状态</th><th>可选流量</th></tr></thead><tbody>${instances.map(item => {
      const traffic = item?.traffic;
-     return `<tr><td>${esc(item?.name || '')}<br><span class="small-note">${esc(item?.id || '')}</span></td><td>${esc(item?.kind || '未知')}</td><td>${esc(item?.state || '未知')}</td><td>${traffic ? `收 ${bytes(traffic.receivedBytes)} / 发 ${bytes(traffic.sentBytes)}<br><span class="small-note">对方自报流量采样时间 ${time(traffic.sampledAt)}</span>` : '未提供'}</td></tr>`;
+     return `<tr><td>${esc(item?.name || '')}<br><span class="small-note">${esc(item?.id || '')}</span></td><td>${esc(item?.kind || '未知')}</td><td>${esc(instanceStates[item?.state] || item?.state || '未知')}</td><td>${traffic ? `收 ${bytes(traffic.receivedBytes)} / 发 ${bytes(traffic.sentBytes)}<br><span class="small-note">对方自报流量采样时间 ${time(traffic.sampledAt)}</span>` : '未提供'}</td></tr>`;
     }).join('')}</tbody></table></div></details>`;
    }
    function renderList() {

@@ -658,6 +658,10 @@ func (a *App) nodeSummaryAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func validNodeSummary(s nodeSummary) bool {
+	return validNodeSummaryWithTransitions(s, false)
+}
+
+func validNodeSummaryWithTransitions(s nodeSummary, allowTransitions bool) bool {
 	if s.Protocol != 1 || s.Version == "" || len(s.Version) > 80 || !utf8.ValidString(s.Version) || len(s.Instances) > 64 {
 		return false
 	}
@@ -681,6 +685,10 @@ func validNodeSummary(s nodeSummary) bool {
 		}
 		switch i.State {
 		case "running", "stopped", "exited", "autostart-failed":
+		case "starting", "stopping":
+			if !allowTransitions {
+				return false
+			}
 		default:
 			return false
 		}
