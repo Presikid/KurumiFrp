@@ -111,13 +111,22 @@ func NewMonitor(ctx context.Context, cfg v1.HealthCheckConfig, addr string,
 	}
 }
 
-// NewUnixConnectMonitor checks whether an absolute Unix socket can be connected.
-// Only the tcp health check type is supported for this target.
+// NewUnixConnectMonitor checks an absolute Unix socket by connecting or issuing
+// an HTTP GET through the isolated client's tracked network.
 func NewUnixConnectMonitor(ctx context.Context, cfg v1.HealthCheckConfig, addr string,
 	statusNormalFn func(), statusFailedFn func(),
 ) *Monitor {
 	monitor := NewMonitor(ctx, cfg, addr, statusNormalFn, statusFailedFn)
 	monitor.unixSocket = true
+	if cfg.Type == "http" && cfg.Path != "" {
+		path := cfg.Path
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		// The URL supplies only the HTTP Host and request path. DialContext
+		// below always connects to the configured Unix socket instead.
+		monitor.url = "http://localhost" + path
+	}
 	return monitor
 }
 
@@ -203,7 +212,7 @@ func (monitor *Monitor) waitForNextCheck() bool {
 }
 
 func (monitor *Monitor) doCheck(ctx context.Context) error {
-	if monitor.unixSocket && monitor.checkType != "tcp" {
+	if monitor.unixSocket && monitor.checkType != "tcp" && monitor.checkType != "http" {
 		return ErrHealthCheckType
 	}
 	switch monitor.checkType {
@@ -252,10 +261,22 @@ func (monitor *Monitor) doHTTPCheck(ctx context.Context) error {
 	req.Header = monitor.header
 	req.Host = monitor.header.Get("Host")
 	client := http.DefaultClient
-	if network := netx.FromContext(ctx); network != nil {
+	network := netx.FromContext(ctx)
+	if monitor.unixSocket {
+		if !strings.HasPrefix(monitor.addr, "/") {
+			return errors.New("unix socket health check requires an absolute path")
+		}
+		if network == nil {
+			return errors.New("unix socket HTTP health check requires an isolated network")
+		}
+	}
+	if network != nil {
 		transport := &http.Transport{
 			DisableKeepAlives: true,
 			DialContext: func(ctx context.Context, networkType, address string) (net.Conn, error) {
+				if monitor.unixSocket {
+					return network.DialContext(ctx, "unix", monitor.addr, 0, 0, false)
+				}
 				return network.DialContext(ctx, networkType, address, 0, 0, false)
 			},
 		}

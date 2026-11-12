@@ -84,6 +84,13 @@ func renderRuleExport(s *Store, client Instance, rules []Tunnel, revision uint64
 	}
 	fmt.Fprintln(&out, "# Contains plaintext credentials; keep this file private.")
 	fmt.Fprintln(&out, "# Disabled rules use enabled = false; verify client compatibility before running.")
+	for _, rule := range rules {
+		if rule.UnixSocketPath != "" && rule.HealthCheckType != "" {
+			fmt.Fprintln(&out, "# WARNING: Unix socket health checks require a compatible client, such as KurumiFRP's embedded client.")
+			fmt.Fprintln(&out, "# Official frpc v0.72.0 does not start these checks without localPort.")
+			break
+		}
+	}
 	fmt.Fprintf(&out, "# Client: %s (%s)\n", client.Name, client.ID)
 	fmt.Fprintf(&out, "# Draft revision: %d\n", revision)
 	if err := renderInstance(&out, client); err != nil {

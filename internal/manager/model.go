@@ -399,11 +399,14 @@ func validate(s State) error {
 			if t.Type != "tcp" || !strings.HasPrefix(t.UnixSocketPath, "/") || !protocolTextOK(t.UnixSocketPath) || t.LocalHost != "" || t.LocalPort != 0 {
 				return fmt.Errorf("Unix 套接字仅适用于 TCP 规则；请使用绝对路径且不指定本地 TCP 地址和端口")
 			}
-			if (t.HealthCheckType != "" && t.HealthCheckType != "tcp") || t.HealthCheckPath != "" {
-				return fmt.Errorf("Unix 套接字仅支持连接式代理健康检查，不支持 HTTP 健康检查路径")
+			if t.HealthCheckType != "http" && t.HealthCheckPath != "" {
+				return fmt.Errorf("仅 HTTP 健康检查可设置检查路径")
+			}
+			if t.HealthCheckType == "http" && strings.Contains(t.HealthCheckPath, "#") {
+				return fmt.Errorf("HTTP 健康检查路径不能包含片段；请将 # 编码为 %%23")
 			}
 			if t.HealthCheckType == "" && (t.HealthCheckTimeout != 0 || t.HealthCheckInterval != 0 || t.HealthCheckMaxFailed != 0) {
-				return fmt.Errorf("Unix 套接字健康检查参数需要先启用连接式检查")
+				return fmt.Errorf("Unix 套接字健康检查参数需要先启用检查")
 			}
 		} else if !hostOK(t.LocalHost) || (!portOK(t.LocalPort) && !(supportsUnboundVisitor(t.Type) && t.LocalPort < 0)) {
 			return fmt.Errorf("本地地址或端口无效")
