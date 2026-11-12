@@ -490,7 +490,17 @@ func (a *auth) loginAccount(r *http.Request, username, password string) (string,
 	for _, current := range a.accounts {
 		if current.ID == account.ID && current.activeAt(time.Now()) && current.Salt == account.Salt && current.Hash == account.Hash {
 			sid, err := a.newSessionLocked(r, current.ID, time.Now())
-			return sid, false, err
+			if err != nil {
+				return "", false, err
+			}
+			session, ok := a.sessions[sid]
+			if !ok || session.accountID != current.ID || session.oidcRevision != 0 {
+				delete(a.sessions, sid)
+				return "", false, fmt.Errorf("无法建立本地账户会话")
+			}
+			session.passwordAccount = true
+			a.sessions[sid] = session
+			return sid, false, nil
 		}
 	}
 	return "", false, fmt.Errorf("用户名或密码不正确")
