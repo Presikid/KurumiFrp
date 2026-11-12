@@ -244,8 +244,21 @@ func validThemeDirectory(root *os.Root, name string, spec themeSpec) bool {
 			return false
 		}
 		config, err := png.DecodeConfig(f)
+		valid := err == nil && config.Width == part.rect.Dx() && config.Height == part.rect.Dy()
+		if valid {
+			// A complete encoder output ends with IEND; this catches truncation
+			// without decoding every image on each status or asset request.
+			info, statErr := f.Stat()
+			var ending [12]byte
+			if statErr != nil || info.Size() < int64(len(ending)) {
+				valid = false
+			} else {
+				_, readErr := f.ReadAt(ending[:], info.Size()-int64(len(ending)))
+				valid = readErr == nil && ending == [12]byte{0, 0, 0, 0, 'I', 'E', 'N', 'D', 0xae, 0x42, 0x60, 0x82}
+			}
+		}
 		f.Close()
-		if err != nil || config.Width != part.rect.Dx() || config.Height != part.rect.Dy() {
+		if !valid {
 			return false
 		}
 	}
