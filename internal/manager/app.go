@@ -112,7 +112,7 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (res
 	if backend == nil {
 		backend = NewEmbeddedRuntime()
 	}
-	adminPassword, adminPasswordData, adminPasswordLegacy, e := prepareAdminPassword(dir)
+	adminPassword, adminPasswordData, e := prepareAdminPassword(dir)
 	var adminPasswordErr error
 	if e != nil {
 		// Keep the workbench and existing account/token recovery available if a
@@ -122,7 +122,6 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (res
 			return nil, e
 		}
 		adminPassword, adminPasswordData, adminPasswordErr = readAdminPassword(path)
-		adminPasswordLegacy = false
 	}
 	s, e := newStore(dir)
 	if e != nil {
@@ -179,7 +178,7 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (res
 	if len(token) != 64 {
 		return nil, fmt.Errorf("invalid access token file")
 	}
-	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, dataLock: dataLock, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountGroups: accountGroups, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordLegacy: adminPasswordLegacy, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), themes: newThemeManager(s.dir), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, dataLock: dataLock, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountGroups: accountGroups, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), themes: newThemeManager(s.dir), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	app.auth.onAccountsWriteUncertain = func() { go app.stopAccountFRPRuns() }
 	app.auth.oidcSettings, app.auth.oidcLoadErr = loadOIDCSettings(s.dir)
 	app.auth.oidcStartSlots = make(chan struct{}, 4)
