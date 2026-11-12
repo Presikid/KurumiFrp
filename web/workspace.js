@@ -140,6 +140,8 @@ window.Kurumi = (() => {
    if (button.dataset.page === 'own-proxies') button.hidden = !canViewOwnProxies();
   });
   $('#quit-app').hidden = !admin; $('#change-password').hidden = false;
+  const otherSessions = $('#revoke-other-sessions');
+  if (otherSessions) otherSessions.hidden = !snapshot.identity?.account || !snapshot.identity?.passwordAccount;
  }
  function render() {
   if (!snapshot) return;
@@ -342,6 +344,28 @@ window.Kurumi = (() => {
     showLogin(); announce(); $('#login-error').textContent = '密码已更新，请重新登录。';
    }
   }));
+  const otherSessions = document.createElement('button');
+  otherSessions.type = 'button'; otherSessions.id = 'revoke-other-sessions';
+  otherSessions.textContent = '结束其他会话'; otherSessions.hidden = true;
+  $('#change-password').after(otherSessions);
+  otherSessions.addEventListener('click', async () => {
+   if (!confirm('结束此账户当时存在的其他工作台会话？当前会话及共享该会话的标签页会保留。正在进行或之后的登录仍可能建立新会话，frp 连接不受影响。')) return;
+   const generation = session, controller = new AbortController();
+   const deadline = setTimeout(() => controller.abort(), 15000);
+   otherSessions.disabled = true;
+   try {
+    const result = await api('me/sessions/revoke-others', {}, {signal:controller.signal});
+    if (generation !== session) return;
+    if (result?.ok !== true) throw new Error('会话操作结果尚未确认');
+    toast('已结束当时存在的其他会话；之后的登录仍可建立新会话。');
+   } catch (error) {
+    if (generation !== session) return;
+    if ([400, 403, 409].includes(error.status)) toast(error.message);
+    else toast('会话操作结果尚未确认；旧请求可能仍在处理，请先核对再决定是否重试。');
+   } finally {
+    clearTimeout(deadline); otherSessions.disabled = false;
+   }
+  });
   $('#refresh').addEventListener('click', () => { if (confirmDiscard()) void refresh(false, true).catch(error => toast(error.message)); });
   applySkin(savedSkin());
   const picker = document.createElement('button');

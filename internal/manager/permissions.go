@@ -44,6 +44,9 @@ func routeAllowed(p principal, r *http.Request) bool {
 	}
 	if r.Method == http.MethodPost {
 		switch r.URL.Path {
+		case "/api/me/sessions/revoke-others":
+			return p.Account && p.PasswordAccount && p.AccountID != "" && p.gate != nil &&
+				(p.Role == "admin" || p.Role == "operator" || p.Role == "viewer")
 		case "/api/login-history", "/api/logs/history", "/api/firewall", "/api/firewall/asn", "/api/firewall/ip-asn", "/api/firewall/import", "/api/firewall/list", "/api/oidc/config":
 			return p.admin()
 		case "/api/webhooks":

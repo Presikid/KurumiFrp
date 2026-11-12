@@ -352,6 +352,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		managedProxySample := r.Method == http.MethodGet && r.URL.Path == "/api/me/managed-proxies"
+		selfSessionRevoke := r.Method == http.MethodPost && r.URL.Path == "/api/me/sessions/revoke-others"
 		if managedProxySample {
 			w.Header().Set("Cache-Control", "no-store")
 			if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -365,7 +366,16 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Account mutations take the target's exclusive gate themselves after
 		// expensive password work. Streams acquire it separately per frame.
 		ungated := (r.Method == http.MethodPost && (r.URL.Path == "/api/accounts" || r.URL.Path == "/api/password" || r.URL.Path == "/api/logout")) || (r.Method == http.MethodGet && r.URL.Path == "/api/logs/stream")
-		if ungated {
+		if selfSessionRevoke {
+			// The handler takes this account's exclusive gate; do not acquire a
+			// read gate here or wait for auth.mu while another request owns it.
+			if !a.auth.mu.TryLock() {
+				fail(w, http.StatusServiceUnavailable, fmt.Errorf("会话操作繁忙，请稍后重试"))
+				return
+			}
+			p, ok = a.auth.identityLocked(r)
+			a.auth.mu.Unlock()
+		} else if ungated {
 			p, ok = a.auth.identity(r)
 		} else if managedProxySample {
 			p, unlock, ok = a.auth.tryLockManagedProxyRequest(r)
@@ -394,6 +404,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r = withPrincipal(r, p)
+		if r.URL.Path == "/api/me/sessions/revoke-others" {
+			a.revokeOtherSessionsAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/me/managed-proxies" {
 			a.accountManagedProxySnapshotAPI(w, r)
 			return
