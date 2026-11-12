@@ -72,6 +72,7 @@ const (
 	connWriteTimeout       time.Duration = 5 * time.Second
 	vhostReadWriteTimeout  time.Duration = 30 * time.Second
 	serviceShutdownTimeout               = 10 * time.Second
+	maxPendingTLSChecks                  = 128
 )
 
 var (
@@ -193,6 +194,7 @@ type Service struct {
 	workScope      *lifetime.Scope
 	workCtx        context.Context
 	workCancel     context.CancelFunc
+	tlsCheckSlots  chan struct{}
 	workerPanicked atomic.Bool
 }
 
@@ -309,6 +311,7 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 		workCtx:           workCtx,
 		workScope:         workScope,
 		workCancel:        workCancel,
+		tlsCheckSlots:     make(chan struct{}, maxPendingTLSChecks),
 		closeDone:         make(chan struct{}),
 		ready:             make(chan struct{}),
 		exiting:           make(chan struct{}),
@@ -1240,34 +1243,53 @@ func (svr *Service) handleListener(l net.Listener, internal, alreadyTLS, inspect
 
 		c = netpkg.NewContextConn(ctx, c)
 
-		inspectTLS := false
-		if !internal && !alreadyTLS {
-			xl.Tracef("start check TLS connection...")
-			originConn := c
-			forceTLS := svr.cfg.Transport.TLS.Force
-			var isTLS, custom bool
-			c, isTLS, custom, err = netpkg.CheckAndEnableTLSServerConnWithTimeout(c, svr.tlsConfig, forceTLS, connReadTimeout)
-			if err != nil {
-				xl.Warnf("checkAndEnableTLSServerConnWithTimeout error: %v", err)
-				originConn.Close()
-				continue
-			}
-			xl.Tracef("check TLS connection success, isTLS: %v custom: %v internal: %v", isTLS, custom, internal)
-			inspectTLS = inspectWSS && isTLS
-		}
-		if svr.managedLogin != nil {
-			secure, ok := c.(*tls.Conn)
-			if !ok {
+		checkTLS := !internal && !alreadyTLS
+		if checkTLS {
+			// Bound connections waiting for the first protocol byte per service.
+			select {
+			case svr.tlsCheckSlots <- struct{}{}:
+			default:
+				_ = c.SetDeadline(time.Now())
 				_ = c.Close()
 				continue
 			}
-			c = &managedTLSConn{Conn: secure}
 		}
 
 		// Start a new goroutine to handle connection.
 		frpConn := c
 		if !lifetime.Go(ctx, func() {
+			slotHeld := checkTLS
+			defer func() {
+				if slotHeld {
+					<-svr.tlsCheckSlots
+				}
+			}()
 			conn := frpConn
+			inspectTLS := false
+			if checkTLS {
+				xl.Tracef("start check TLS connection...")
+				var isTLS, custom bool
+				var checkErr error
+				conn, isTLS, custom, checkErr = netpkg.CheckAndEnableTLSServerConnWithTimeout(conn, svr.tlsConfig, svr.cfg.Transport.TLS.Force, connReadTimeout)
+				<-svr.tlsCheckSlots
+				slotHeld = false
+				if checkErr != nil {
+					xl.Warnf("checkAndEnableTLSServerConnWithTimeout error: %v", checkErr)
+					_ = frpConn.SetDeadline(time.Now())
+					_ = frpConn.Close()
+					return
+				}
+				xl.Tracef("check TLS connection success, isTLS: %v custom: %v internal: %v", isTLS, custom, internal)
+				inspectTLS = inspectWSS && isTLS
+			}
+			if svr.managedLogin != nil {
+				secure, ok := conn.(*tls.Conn)
+				if !ok {
+					_ = conn.Close()
+					return
+				}
+				conn = &managedTLSConn{Conn: secure}
+			}
 			if inspectTLS {
 				// Reject disallowed physical peers before TLS handshake and
 				// protocol detection. handleConnection rechecks the policy.
@@ -1320,6 +1342,10 @@ func (svr *Service) handleListener(l net.Listener, internal, alreadyTLS, inspect
 				svr.handleConnection(ctx, conn, internal, nil)
 			}
 		}) {
+			if checkTLS {
+				<-svr.tlsCheckSlots
+			}
+			_ = frpConn.SetDeadline(time.Now())
 			_ = frpConn.Close()
 			return net.ErrClosed
 		}
