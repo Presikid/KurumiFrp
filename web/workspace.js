@@ -14,9 +14,9 @@ window.Kurumi = (() => {
  const names = {overview:'总览', tunnels:'规则', instances:'实例', nodes:'节点', 'reported-nodes':'主动上报', firewall:'访问控制', health:'链路诊断', config:'配置', core:'运行核心', logs:'日志', update:'软件更新', accounts:'账户', 'own-proxies':'我的代理'};
  const $ = selector => document.querySelector(selector);
  let snapshot = null, page = 'overview', session = 0, request = null, root = null, activePage = null;
- let timer = null, toastTimer = null, dialogSpec = null, dialogBusy = false;
+ let timer = null, toastTimer = null, dialogSpec = null, dialogBusy = false, dialogOperation = 0;
  let transfer = null, transferRequest = null;
- let themeCatalogSession = -1, themeCatalogRequest = null;
+ let themeCatalogSession = -1, themeCatalogRequest = null, themeVersion = 0, themeChoiceSequence = 0;
  let channel = null, signal = '';
  const signalKey = 'kurumi-workspace-session';
  const transferKey = 'kurumi-workspace-transfer';
@@ -77,14 +77,22 @@ window.Kurumi = (() => {
   $('#menu-toggle').setAttribute('aria-expanded', 'false');
   if (focus && opened) $('#menu-toggle').focus();
  }
- function showLogin() {
-  ++session; stopTimer(); dispose(); snapshot = null; request = null;
-  closeMenu();
+ function invalidateDialog() {
+  const wasBusy = dialogBusy;
+  ++dialogOperation; dialogBusy = false; dialogSpec = null;
   if ($('#dialog').open) $('#dialog').close();
+  $('#cancel').disabled = false; $('#dialog-body').inert = false;
+  $('#editor button[type="submit"]').disabled = false;
+  return wasBusy;
+ }
+ function showLogin(message = '') {
+  ++session; stopTimer(); dispose(); snapshot = null; request = null;
+  closeMenu(); const wasBusy = invalidateDialog();
   if ($('#diff-dialog').open) $('#diff-dialog').close();
   $('#content').replaceChildren(); $('#app').hidden = true; $('#login').hidden = false;
   const picker = $('#skin-picker'); if (picker) picker.hidden = true;
   $('#login-form').elements.token.value = '';
+  if (message || wasBusy) $('#login-error').textContent = [message, wasBusy ? '此前提交的操作可能仍在处理，重新登录后请先核对。' : ''].filter(Boolean).join(' ');
  }
  function announce() {
   signal = `${Date.now()}:${Math.random()}`;
@@ -189,8 +197,9 @@ window.Kurumi = (() => {
    const identityChanged = previousIdentity !== null && previousIdentity !== JSON.stringify(snapshot.identity || null);
    const keepEdits = !discardEdits && !identityChanged && root && activePage?.hasUnsaved?.(root);
    if (accessChanged && !keepEdits) {
-    if ($('#dialog').open) $('#dialog').close();
+    const wasBusy = invalidateDialog();
     if ($('#diff-dialog').open) $('#diff-dialog').close();
+    if (wasBusy) toast('已提交的操作可能仍在处理，请刷新并核对。');
    }
    const active = document.activeElement;
    const busy = $('#dialog').open || $('#diff-dialog').open || (active && $('#content').contains(active)) || Boolean(window.getSelection()?.toString());
@@ -222,7 +231,7 @@ window.Kurumi = (() => {
  function closeDialog() { if (!dialogBusy && $('#dialog').open) $('#dialog').close(); }
  function openDialog(spec) {
   if ($('#dialog').open || dialogBusy) return;
-  dialogSpec = spec;
+  ++dialogOperation; dialogSpec = spec;
   $('#dialog-body').innerHTML = spec.html;
   $('#form-error').textContent = '';
   $('#editor button[type="submit"]').textContent = spec.submitLabel || '保存';
@@ -238,6 +247,7 @@ window.Kurumi = (() => {
   } catch (_) { return ''; }
  }
  function applySkin(id) {
+  ++themeVersion;
   if (id && id !== 'default') document.body.dataset.kurumiSkin = id;
   else delete document.body.dataset.kurumiSkin;
   try { if (id && id !== 'default') localStorage.setItem('kurumi-skin', id); else localStorage.removeItem('kurumi-skin'); } catch (_) {}
@@ -245,7 +255,7 @@ window.Kurumi = (() => {
  async function updateThemePicker() {
   const active = document.body.dataset.kurumiSkin || savedSkin();
   if ((themeCatalogSession === session && !active) || themeCatalogRequest === session || !snapshot) return;
-  const generation = session;
+  const generation = session, version = themeVersion;
   themeCatalogRequest = generation;
   const controller = new AbortController(), deadline = setTimeout(() => controller.abort(), 15000);
   try {
@@ -253,7 +263,7 @@ window.Kurumi = (() => {
    if (generation !== session || !snapshot || !Array.isArray(result.themes)) return;
    themeCatalogSession = generation;
    $('#skin-picker').hidden = result.themes.length === 0;
-   if (active && !result.themes.some(item => item.id === active && item.installed)) {
+   if (version === themeVersion && active && !result.themes.some(item => item.id === active && item.installed)) {
     applySkin('default');
     toast('当前主题不可用或素材缺失，已恢复默认主题。');
    }
@@ -262,9 +272,18 @@ window.Kurumi = (() => {
    if (themeCatalogRequest === generation) themeCatalogRequest = null;
   }
  }
- async function chooseSkin() {
-  const generation = session, result = await api('themes');
-  if (generation !== session || !snapshot || !Array.isArray(result.themes) || !result.themes.length) return;
+ function currentThemeChoice(choice) {
+  return choice.generation === session && choice.operation === dialogOperation && choice.sequence === themeChoiceSequence && !!snapshot && !$('#dialog').open && !$('#diff-dialog').open && !dialogBusy;
+ }
+ async function chooseSkin(choice) {
+  const generation = choice.generation, controller = new AbortController(), deadline = setTimeout(() => controller.abort(), 15000);
+  let result;
+  try { result = await api('themes', undefined, {signal:controller.signal}); }
+  catch (error) {
+   if (controller.signal.aborted) throw new Error('读取主题目录超时，请重试。');
+   throw error;
+  } finally { clearTimeout(deadline); }
+  if (!currentThemeChoice(choice) || !Array.isArray(result.themes) || !result.themes.length) return;
   const admin = snapshot.identity?.role === 'admin';
   const themes = result.themes.filter(item => item && typeof item.id === 'string' && item.id.length <= 32 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item.id));
   const active = document.body.dataset.kurumiSkin || 'default';
@@ -279,25 +298,32 @@ window.Kurumi = (() => {
    html:`<h2>狂三主题</h2><p class="muted">主题只在选择时从 GitHub 下载；已安装的主题可离线使用，选择保存在当前浏览器。</p><div class="form-grid"><label>选择主题<select name="skin">${options.join('')}</select></label></div>`,
    submitLabel:'应用主题',
    async onSubmit(form) {
+    const operation = dialogOperation;
     const id = form.elements.skin.value;
     if (id !== 'default') {
      const selected = themes.find(item => item.id === id);
      if (!selected || (!selected.installed && !admin)) throw new Error('此主题尚不可用。');
      if (!selected.installed) {
       const submit = form.querySelector('[type="submit"]'), label = submit.textContent;
+      const controller = new AbortController(), deadline = setTimeout(() => controller.abort(), 120000);
       submit.textContent = '正在下载主题…';
-      try { await api('themes/install', {id}); }
+      try { await api('themes/install', {id}, {signal:controller.signal}); }
       catch (error) {
        if (!error.status || error.status >= 500) throw new Error('主题安装结果尚未确认，请重新打开主题选择并检查。当前主题未更改。');
        throw error;
-      } finally { submit.textContent = label; }
+      } finally {
+       clearTimeout(deadline);
+       if (generation === session && operation === dialogOperation) submit.textContent = label;
+      }
      }
     }
+    if (generation !== session || operation !== dialogOperation) return false;
     applySkin(id); toast('主题已切换。');
    }
   });
  }
  function showDiff(value) {
+  ++themeChoiceSequence;
   $('#diff-title').textContent = `${value.instanceName || '实例'} · 配置差异`;
   $('#diff-summary').textContent = `新增 ${value.addedCount || 0} 行 · 移除 ${value.removedCount || 0} 行${value.secretChanged ? ' · 认证凭据已变化' : ''}${value.orderChanged ? ' · 顺序变化' : ''}`;
   $('#diff-content').textContent = [...(value.removed || []).map(line => '- ' + line), ...(value.added || []).map(line => '+ ' + line)].join('\n') || '没有可显示的行变化';
@@ -327,21 +353,26 @@ window.Kurumi = (() => {
   $('#logout').addEventListener('click', async () => { try { await api('logout', {}); showLogin(); announce(); } catch (error) { toast(error.message); } });
   $('#quit-app').addEventListener('click', async () => {
    if (!confirm('退出 KurumiFRP 并停止全部托管实例？现有连接会中断。')) return;
-   try { await api('quit', {}); showLogin(); $('#login-error').textContent = '程序已退出。'; } catch (error) { toast(error.message); }
+   try { await api('quit', {}); showLogin('程序已退出。'); } catch (error) { toast(error.message); }
   });
   $('#change-password').addEventListener('click', () => openDialog({
    html:'<h2>修改登录密码</h2><p class="muted">修改后需要重新登录。主密码可以为空；本地账户密码须符合账户要求。</p><div class="form-grid"><label>当前密码<input name="old" type="password" autocomplete="current-password"></label><label>新密码<input name="new" type="password" autocomplete="new-password"></label><label>再次输入新密码<input name="confirm" type="password" autocomplete="new-password"></label></div>',
    submitLabel:'更新密码',
    async onSubmit(form) {
     if (form.elements.new.value !== form.elements.confirm.value) throw new Error('两次输入的新密码不一致。');
+    const generation = session, operation = dialogOperation;
     try { await api('password', {old:form.elements.old.value, new:form.elements.new.value}); }
     catch (error) {
+     if (generation !== session || operation !== dialogOperation) return false;
      if (error.status === 409 || !error.status || error.status >= 500) {
-      showLogin(); announce(); $('#login-error').textContent = '密码状态或保存结果尚未确认，请重新登录后核对。'; return;
+      showLogin('密码状态或保存结果尚未确认，请重新登录后核对。'); announce(); return;
      }
      throw error;
     }
-    showLogin(); announce(); $('#login-error').textContent = '密码已更新，请重新登录。';
+    if (generation !== session || operation !== dialogOperation) return false;
+    // The password change has completed successfully; this is not an interrupted submission.
+    dialogBusy = false;
+    showLogin('密码已更新，请重新登录。'); announce();
    }
   }));
   const otherSessions = document.createElement('button');
@@ -371,7 +402,11 @@ window.Kurumi = (() => {
   const picker = document.createElement('button');
   picker.id = 'skin-picker'; picker.type = 'button'; picker.className = 'icon-button'; picker.hidden = true;
   picker.title = '选择狂三主题'; picker.setAttribute('aria-label', '选择狂三主题'); picker.textContent = '✦';
-  picker.addEventListener('click', () => { void chooseSkin().catch(error => toast(error.message)); });
+  picker.addEventListener('click', () => {
+   if ($('#dialog').open || $('#diff-dialog').open || dialogBusy || !snapshot) return;
+   const choice = {generation:session, operation:dialogOperation, sequence:++themeChoiceSequence};
+   void chooseSkin(choice).catch(error => { if (currentThemeChoice(choice)) toast(error.message); });
+  });
   $('#theme').before(picker);
   try { document.body.classList.toggle('light', localStorage.getItem('kurumi-theme') === 'light'); } catch (_) {}
   $('#theme').addEventListener('click', () => {
@@ -406,9 +441,9 @@ window.Kurumi = (() => {
   $('#dialog').addEventListener('close', () => { if (!$('#dialog').open) dialogSpec = null; });
   $('#diff-close').addEventListener('click', () => $('#diff-dialog').close());
   for (const type of ['click','change','input']) $('#editor').addEventListener(type, event => {
-   const spec = dialogSpec, callback = spec?.['on' + type[0].toUpperCase() + type.slice(1)];
+   const spec = dialogSpec, generation = session, operation = dialogOperation, callback = spec?.['on' + type[0].toUpperCase() + type.slice(1)];
    if (!callback || dialogBusy) return;
-   const showError = error => { if ($('#dialog').open && dialogSpec === spec) $('#form-error').textContent = error.message; else if (snapshot) toast(error.message); };
+   const showError = error => { if (generation === session && operation === dialogOperation && $('#dialog').open && dialogSpec === spec) $('#form-error').textContent = error.message; };
    try { Promise.resolve(callback(event, $('#editor'))).catch(showError); }
    catch (error) { showError(error); }
   });
@@ -416,13 +451,19 @@ window.Kurumi = (() => {
    event.preventDefault();
    if (!dialogSpec?.onSubmit || dialogBusy) return;
    const spec = dialogSpec, button = event.currentTarget.querySelector('[type="submit"]');
+   const operation = ++dialogOperation, generation = session;
    dialogBusy = true; button.disabled = true; $('#cancel').disabled = true; $('#dialog-body').inert = true; $('#form-error').textContent = '';
    try {
     const result = await spec.onSubmit(event.currentTarget);
+    if (operation !== dialogOperation || generation !== session) return;
     dialogBusy = false;
     if (result !== false && $('#dialog').open && dialogSpec === spec) $('#dialog').close();
-   } catch (error) { if ($('#dialog').open && dialogSpec === spec) $('#form-error').textContent = error.message; }
-   finally { dialogBusy = false; button.disabled = false; $('#cancel').disabled = false; $('#dialog-body').inert = false; }
+   } catch (error) { if (operation === dialogOperation && generation === session && $('#dialog').open && dialogSpec === spec) $('#form-error').textContent = error.message; }
+   finally {
+    if (operation === dialogOperation && generation === session) {
+     dialogBusy = false; button.disabled = false; $('#cancel').disabled = false; $('#dialog-body').inert = false;
+    }
+   }
   });
   const hash = location.hash.slice(1);
   if (pages.has(hash)) page = hash;
