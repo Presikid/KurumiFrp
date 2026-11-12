@@ -582,15 +582,23 @@ func (a *App) nodeSummaryAPI(w http.ResponseWriter, r *http.Request) {
 	type trafficSource struct {
 		index int
 		proc  *process
+	}
+	type instanceSnapshot struct {
+		proc  *process
+		state string
 		runID string
 	}
 	instances := make([]nodeInstanceSummary, 0, len(a.store.DB.State.Instances))
 	sources := make([]trafficSource, 0)
+	var snapshots []instanceSnapshot
+	if cfg.ShareTraffic {
+		snapshots = make([]instanceSnapshot, 0, len(a.store.DB.State.Instances))
+	}
 	revision := a.store.DB.Revision
 	for _, i := range a.store.DB.State.Instances {
 		state := "stopped"
 		p := a.procs[i.ID]
-		status := RuntimeStatus{}
+		status := RuntimeStatus{State: "stopped"}
 		if p != nil {
 			status = p.view()
 			state = status.State
@@ -607,8 +615,11 @@ func (a *App) nodeSummaryAPI(w http.ResponseWriter, r *http.Request) {
 			state = "autostart-failed"
 		}
 		instances = append(instances, nodeInstanceSummary{ID: i.ID, Name: i.Name, Kind: i.Kind, State: state, Binding: nodeInstanceBinding(a.store.DB.LocalTrafficIDs[i.ID])})
+		if cfg.ShareTraffic {
+			snapshots = append(snapshots, instanceSnapshot{proc: p, state: status.State, runID: status.RunID})
+		}
 		if cfg.ShareTraffic && state == "running" && p != nil && status.RunID != "" {
-			sources = append(sources, trafficSource{index: len(instances) - 1, proc: p, runID: status.RunID})
+			sources = append(sources, trafficSource{index: len(instances) - 1, proc: p})
 		}
 	}
 	a.mu.Unlock()
@@ -635,13 +646,21 @@ func (a *App) nodeSummaryAPI(w http.ResponseWriter, r *http.Request) {
 	if len(sources) != 0 {
 		a.mu.Lock()
 		valid := !a.closing && revision == a.store.DB.Revision
-		for _, source := range sources {
-			if !valid || a.procs[instances[source.index].ID] != source.proc {
+		for index, snapshot := range snapshots {
+			instance, exists := a.store.DB.State.Instance(instances[index].ID)
+			if !valid || !exists || a.procs[instances[index].ID] != snapshot.proc {
 				valid = false
 				break
 			}
-			status := source.proc.view()
-			if status.State != "running" || status.RunID != source.runID {
+			status := RuntimeStatus{State: "stopped"}
+			if snapshot.proc != nil {
+				status = snapshot.proc.view()
+			}
+			state := status.State
+			if instance.AutoStart && a.startupErrors[instance.ID] != "" && state != "running" {
+				state = "autostart-failed"
+			}
+			if status.State != snapshot.state || status.RunID != snapshot.runID || state != instances[index].State {
 				valid = false
 				break
 			}
