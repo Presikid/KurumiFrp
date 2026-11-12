@@ -6,6 +6,9 @@ import (
 )
 
 func renderProtocolInstance(b *strings.Builder, i Instance) error {
+	if i.UDPPacketSize > 0 {
+		fmt.Fprintf(b, "udpPacketSize = %d\n", i.UDPPacketSize)
+	}
 	scopes := make([]string, 0, 2)
 	if i.AuthHeartbeats {
 		scopes = append(scopes, "HeartBeats")
