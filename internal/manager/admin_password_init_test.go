@@ -13,17 +13,17 @@ func TestAdminPasswordInitializationWithDataLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lock.release()
-	file, _, legacy, err := prepareAdminPassword(dir)
-	if err != nil || legacy {
-		t.Fatalf("fresh directory: legacy=%v err=%v", legacy, err)
+	file, _, err := prepareAdminPassword(dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	ok, err := verifyAdminPassword(file, false, "token", "")
+	ok, err := verifyAdminPassword(file, "")
 	if err != nil || !ok {
 		t.Fatalf("empty password: valid=%v err=%v", ok, err)
 	}
 }
 
-func TestAdminPasswordInitializationPreservesLegacy(t *testing.T) {
+func TestAdminPasswordInitializationWithExistingData(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte("{}"), 0600); err != nil {
 		t.Fatal(err)
@@ -33,11 +33,15 @@ func TestAdminPasswordInitializationPreservesLegacy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lock.release()
-	_, _, legacy, err := prepareAdminPassword(dir)
-	if err != nil || !legacy {
-		t.Fatalf("existing directory: legacy=%v err=%v", legacy, err)
+	file, _, err := prepareAdminPassword(dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "admin-password.json")); !os.IsNotExist(err) {
-		t.Fatalf("unexpected password file: %v", err)
+	ok, err := verifyAdminPassword(file, "")
+	if err != nil || !ok {
+		t.Fatalf("empty password with existing data: valid=%v err=%v", ok, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "admin-password.json")); err != nil {
+		t.Fatalf("password file was not created: %v", err)
 	}
 }

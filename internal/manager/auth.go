@@ -63,7 +63,6 @@ type auth struct {
 	adminPasswordPath        string
 	adminPassword            adminPasswordFile
 	adminPasswordData        []byte
-	adminPasswordLegacy      bool
 	adminPasswordGeneration  uint64
 	adminPasswordErr         error
 }
