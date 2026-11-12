@@ -343,18 +343,23 @@
  K.register('logs', {
   render(data) {
    const items = (data.state.instances || []).filter(item => admin(data) || (data.identity?.logInstances || []).includes(item.id)), selected = chosen(items);
-   return head('运行日志','按实例查看近期输出；日志可能包含网络地址等信息。') + `<section class="panel"><div class="panel-content"><div class="toolbar"><label>实例${instancePicker(items,selected)}</label><label>包含<input data-log-filter type="search" placeholder="搜索日志"></label><label>排除<input data-log-exclude type="search" placeholder="隐藏包含此内容的日志"></label><label class="form-check"><input data-log-case type="checkbox">区分大小写</label><div class="actions">${button('log-refresh','刷新')}${button('log-pause','暂停更新',`aria-pressed="false" ${selected ? '' : 'disabled'}`)}${button('log-bottom','跳到最新')}${button('log-download','导出当前内容')}</div></div><p class="small-note">包含和排除条件同时生效；暂停期间实例继续运行，继续后只能读取最近 200 行。</p><p class="small-note" data-log-status>${selected ? '正在读取…' : '没有可查看日志的实例。'}</p><pre class="code-block" data-log-output tabindex="0"></pre></div></section>`;
+   const historyAdmin = admin(data) ? `<div data-log-history-admin><p class="small-note" data-history-settings>正在读取日志历史设置…</p><div class="actions"><button type="button" data-action="log-history-toggle" disabled>启用本机历史</button><button type="button" data-action="log-history-clear" disabled>清除全部本机历史</button></div></div>` : '';
+   return head('运行日志','按实例查看近期输出；日志可能包含网络地址等信息。') + `<section class="panel"><div class="panel-content"><div class="toolbar"><label>实例${instancePicker(items,selected)}</label><label>范围<select data-log-mode><option value="live">当前运行</option><option value="history">本机历史</option></select></label><label>包含<input data-log-filter type="search" placeholder="搜索日志"></label><label>排除<input data-log-exclude type="search" placeholder="隐藏包含此内容的日志"></label><label class="form-check"><input data-log-case type="checkbox">区分大小写</label><div class="actions">${button('log-refresh','刷新')}${button('log-pause','暂停更新',`aria-pressed="false" ${selected ? '' : 'disabled'}`)}${button('log-bottom','跳到最新')}${button('log-download','导出当前内容')}</div></div><p class="small-note">实时模式保留当前运行最近 200 行。本机历史默认关闭，开启后所有实例共享最多 2 MiB；较早记录会被覆盖，积压、异常退出或写入失败可能丢行。脱敏后的日志仍可能包含敏感信息。</p>${historyAdmin}<p class="small-note" data-log-status>${selected ? '正在读取…' : '没有可查看日志的实例。'}</p><pre class="code-block" data-log-output tabindex="0"></pre></div></section>`;
   },
   mount(root,data) {
    const picker = root.querySelector('[data-instance]'), filter = root.querySelector('[data-log-filter]'), exclude = root.querySelector('[data-log-exclude]'), caseSensitive = root.querySelector('[data-log-case]'), output = root.querySelector('[data-log-output]'), status = root.querySelector('[data-log-status]'), pauseButton = root.querySelector('[data-action="log-pause"]');
+   const mode = root.querySelector('[data-log-mode]'), settingsBox = root.querySelector('[data-log-history-admin]'), settingsText = root.querySelector('[data-history-settings]');
+   const toggleHistory = root.querySelector('[data-action="log-history-toggle"]'), clearHistory = root.querySelector('[data-action="log-history-clear"]');
    let timer = null, controller = null, version = 0, lines = [], runId = '', painted = '', stopped = false, stream = null, pendingPaint = false, paused = false, pausedStale = false;
+   let historyStatus = null, settingsStatus = null, settingsPending = false, settingsVersion = 0;
    const current = () => !stopped && K.isCurrent('logs',root);
+   const isHistory = () => mode.value === 'history';
    function stopStream() { if (!stream) return; clearTimeout(stream.watchdog); stream.source.close(); stream = null; }
    function selectingOutput() {
     const selection = window.getSelection();
     return !!selection && !selection.isCollapsed && selection.rangeCount > 0 && selection.getRangeAt(0).intersectsNode(output);
    }
-   function clearLogs() { pendingPaint = false; pausedStale = false; lines = []; painted = ''; runId = ''; output.textContent = ''; }
+   function clearLogs() { pendingPaint = false; pausedStale = false; historyStatus = null; lines = []; painted = ''; runId = ''; output.textContent = ''; }
    function paint(force = false) {
     if (!current()) return;
     if (!force && selectingOutput()) { pendingPaint = true; return; }
@@ -364,21 +369,24 @@
     const matched = lines.filter(line => { const value = normalize(line); return (!include || value.includes(include)) && (!omitted || !value.includes(omitted)); });
     const text = matched.join('\n'), follow = output.scrollHeight-output.scrollTop-output.clientHeight < 36;
     if (output.textContent !== text) { output.textContent = text; if (follow) output.scrollTop = output.scrollHeight; }
-    painted = text; status.textContent = pausedStale ? '实例运行代次已变化，日志已清空；请刷新或继续更新。' : `${paused ? '已暂停更新' : stream?.ready ? '实时更新' : '轮询更新'} · 显示 ${matched.length} / ${lines.length} 行${runId ? '' : ' · 实例尚无运行输出'}`;
+    painted = text;
+    if (isHistory()) status.textContent = !historyStatus ? (picker.value ? '正在读取日志历史…' : '没有可查看日志的实例。') : `本机历史（可能不完整） · ${historyStatus.enabled ? '记录已启用' : '已停用记录，已有历史保留'} · 显示 ${matched.length} / ${lines.length} 行${historyStatus.available === false ? ' · 存储状态异常，请联系管理员' : ''}`;
+    else status.textContent = pausedStale ? '实例运行代次已变化，日志已清空；请刷新或继续更新。' : `${paused ? '已暂停更新' : stream?.ready ? '实时更新' : '轮询更新'} · 显示 ${matched.length} / ${lines.length} 行${runId ? '' : ' · 实例尚无运行输出'}`;
    }
    function checkPausedRun() {
+    if (isHistory()) return;
     if ((K.state()?.runtime?.[picker.value]?.runId || '') === runId) return;
     clearLogs(); pausedStale = true; paint(true);
    }
    function schedule(delay = 5000) {
     clearTimeout(timer);
-    if (!current() || document.hidden || !picker.value) return;
+    if (!current() || document.hidden || !picker.value || isHistory()) return;
     if (paused) timer = setTimeout(() => { if (current() && !document.hidden && paused) { checkPausedRun(); schedule(); } },delay);
     else if (!stream) timer = setTimeout(() => { if (current() && !document.hidden && !paused) void load(); },delay);
    }
    function openStream(id, expectedRun) {
     const runtime = K.state()?.runtime?.[id];
-    if (paused || typeof EventSource !== 'function' || !expectedRun || !['starting','running','stopping'].includes(runtime?.state) || document.hidden) return;
+    if (isHistory() || paused || typeof EventSource !== 'function' || !expectedRun || !['starting','running','stopping'].includes(runtime?.state) || document.hidden) return;
     const generation = K.epoch(), query = new URLSearchParams({id,runId:expectedRun});
     let source;
     try { source = new EventSource('/api/logs/stream?'+query); } catch (_) { return; }
@@ -421,11 +429,15 @@
    }
    async function load() {
     clearTimeout(timer); stopStream(); controller?.abort(); const request = new AbortController(); controller = request;
-    const id = picker.value, serial = ++version; K.selectedInstance = id;
+    const id = picker.value, serial = ++version, historical = isHistory(); K.selectedInstance = id;
     if (!id) { clearLogs(); status.textContent = '没有可查看日志的实例。'; return; }
     try {
-     const result = await K.api('logs?id='+encodeURIComponent(id),undefined,{signal:request.signal});
-     if (!current() || serial !== version || picker.value !== id) return;
+     const result = await K.api('logs?id='+encodeURIComponent(id)+(historical ? '&history=1' : ''),undefined,{signal:request.signal});
+     if (!current() || serial !== version || picker.value !== id || historical !== isHistory()) return;
+     if (historical) {
+      if (result.history !== true || !Array.isArray(result.lines) || result.lines.length > 20000 || !result.lines.every(line => typeof line === 'string') || typeof result.status?.enabled !== 'boolean' || typeof result.status?.available !== 'boolean') throw new Error('日志历史响应无效。');
+      historyStatus = result.status; runId = ''; lines = result.lines; pausedStale = false; paint(); return;
+     }
      if (!Array.isArray(result.lines) || result.lines.length > 200 || !result.lines.every(line => typeof line === 'string')) throw new Error('日志响应无效。');
      const observed = K.state()?.runtime?.[id]?.runId || '';
      if ((result.runId || '') !== observed) { clearLogs(); status.textContent = '实例运行状态正在更新，请稍候。'; void K.refresh(true).catch(() => {}); return; }
@@ -435,6 +447,7 @@
     } finally { if (controller === request) { controller = null; schedule(); } }
    }
    function setPaused(value) {
+    if (isHistory()) return;
     paused = value; pauseButton.textContent = paused ? '继续更新' : '暂停更新'; pauseButton.setAttribute('aria-pressed',String(paused));
     clearTimeout(timer);
     if (paused) {
@@ -446,28 +459,80 @@
      if (!document.hidden) void load();
     }
    }
+   function validHistorySettings(value) {
+    return value && typeof value.enabled === 'boolean' && typeof value.available === 'boolean' && typeof value.settingsError === 'boolean' && typeof value.dropped === 'string' && /^\d{1,20}$/.test(value.dropped);
+   }
+   function renderHistorySettings() {
+    if (!settingsBox) return;
+    toggleHistory.disabled = settingsPending || !settingsStatus || settingsStatus.settingsError;
+    clearHistory.disabled = settingsPending || !settingsStatus;
+    if (!settingsStatus) return;
+    toggleHistory.textContent = settingsStatus.enabled ? '停用本机历史' : '启用本机历史';
+    settingsText.textContent = settingsStatus.settingsError ? '日志历史设置文件无法读取，采集已停用；原文件已保留，请检查数据目录后重启工作台。' : `本机历史${settingsStatus.enabled ? '记录已启用' : '已停用记录'}；${settingsStatus.available ? '未报告存储错误' : '存储状态异常'}；本次工作台因队列满或写入失败丢弃 ${settingsStatus.dropped} 行。停用保留已有文件，清除才删除。`;
+   }
+   async function loadHistorySettings() {
+    if (!settingsBox || settingsPending || !current()) return;
+    const serial = ++settingsVersion;
+    try {
+     const value = await K.api('logs/history');
+     if (!current() || serial !== settingsVersion) return;
+     if (value?.ok !== true || !validHistorySettings(value.status)) throw new Error('日志历史设置响应无效。');
+     settingsStatus = value.status; renderHistorySettings();
+    } catch (_) {
+     if (current() && serial === settingsVersion) { settingsStatus = null; renderHistorySettings(); settingsText.textContent = '无法读取日志历史设置，请刷新后重试。'; }
+    }
+   }
+   async function changeHistorySettings(buttonAction) {
+    if (!settingsBox || settingsPending || !settingsStatus) return;
+    const action = buttonAction === 'log-history-clear' ? 'clear' : settingsStatus.enabled ? 'disable' : 'enable';
+    if (action !== 'clear' && settingsStatus.settingsError) return;
+    const question = {
+     enable:'启用本机历史？新日志会以脱敏后文本保存在本机，仍可能包含敏感信息；所有实例共享最多 2 MiB。',
+     disable:'停用本机历史记录？已有文件会保留，仍可查看和手动清除。',
+     clear:'清除所有实例的本机日志历史？清除不可撤销，运行中的实例可能立即产生新记录。'
+    }[action];
+    if (!confirm(question)) return;
+    settingsPending = true; ++settingsVersion; renderHistorySettings(); settingsText.textContent = '正在提交；关闭页面不能保证取消操作。';
+    try {
+     const value = await K.api('logs/history',{action});
+     if (!current()) return;
+     if (value?.ok !== true || !validHistorySettings(value.status) || (action === 'enable' && !value.status.enabled) || (action === 'disable' && value.status.enabled)) throw new Error('日志历史响应无效。');
+     settingsStatus = value.status;
+     K.toast({enable:'已启用本机历史。',disable:'已停用记录，已有历史保留。',clear:'已清除本机历史，运行中的实例可能立即产生新记录。'}[action]);
+    } catch (_) {
+     if (current()) K.toast('操作结果未确认，请刷新设置并核对后再决定是否重试。');
+    } finally {
+     settingsPending = false;
+     if (current()) { renderHistorySettings(); void loadHistorySettings(); if (isHistory()) void load(); }
+    }
+   }
    const visible = () => { if (document.hidden) { clearTimeout(timer); stopStream(); controller?.abort(); } else if (current()) { if (paused) { checkPausedRun(); schedule(); } else void load(); } };
    const selectionChanged = () => { if (pendingPaint && !selectingOutput()) paint(); };
-   picker.addEventListener('change',() => { clearLogs(); void load(); });
+   picker.addEventListener('change',() => { pauseButton.disabled = isHistory() || !picker.value; clearLogs(); void load(); });
+   mode.addEventListener('change',() => {
+    paused = false; pauseButton.textContent = '暂停更新'; pauseButton.setAttribute('aria-pressed','false'); pauseButton.disabled = isHistory() || !picker.value;
+    clearLogs(); void load();
+   });
    filter.addEventListener('input',() => paint(true));
     exclude.addEventListener('input',() => paint(true));
     caseSensitive.addEventListener('change',() => paint(true));
    root.addEventListener('mouseup',() => paint());
    root.addEventListener('click',event => {
     const action = event.target.closest('[data-action]')?.dataset.action;
-    if (action === 'log-refresh') void load();
+    if (action === 'log-refresh') { void load(); void loadHistorySettings(); }
     if (action === 'log-pause') setPaused(!paused);
     if (action === 'log-bottom') {
-     if ((K.state()?.runtime?.[picker.value]?.runId || '') !== runId) { clearLogs(); status.textContent = '实例运行代次已变化，正在重新读取。'; void load(); return; }
+     if (!isHistory() && (K.state()?.runtime?.[picker.value]?.runId || '') !== runId) { clearLogs(); status.textContent = '实例运行代次已变化，正在重新读取。'; void load(); return; }
      if (!lines.length) { K.toast('当前没有可查看的日志。'); return; }
      paint(true); output.scrollTop = output.scrollHeight;
     }
-    if (action === 'log-download') { if ((K.state()?.runtime?.[picker.value]?.runId || '') !== runId) K.toast('实例运行代次已变化，请先刷新日志。'); else if (!painted) K.toast('当前没有可导出的日志。'); else K.download('kurumi-logs.txt',painted,'text/plain'); }
+    if (action === 'log-download') { if (!isHistory() && (K.state()?.runtime?.[picker.value]?.runId || '') !== runId) K.toast('实例运行代次已变化，请先刷新日志。'); else if (!painted) K.toast('当前没有可导出的日志。'); else K.download(isHistory() ? 'kurumi-log-history.txt' : 'kurumi-logs.txt',painted,'text/plain'); }
+    if (action === 'log-history-toggle' || action === 'log-history-clear') void changeHistorySettings(action);
    });
    document.addEventListener('visibilitychange',visible);
    document.addEventListener('selectionchange',selectionChanged);
-   logCleanup = () => { stopped = true; ++version; clearTimeout(timer); stopStream(); controller?.abort(); document.removeEventListener('visibilitychange',visible); document.removeEventListener('selectionchange',selectionChanged); };
-   void load();
+   logCleanup = () => { stopped = true; ++version; ++settingsVersion; clearTimeout(timer); stopStream(); controller?.abort(); document.removeEventListener('visibilitychange',visible); document.removeEventListener('selectionchange',selectionChanged); };
+   void load(); void loadHistorySettings();
   },
   dispose() { logCleanup?.(); logCleanup = null; }
  });

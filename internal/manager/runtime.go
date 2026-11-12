@@ -73,6 +73,7 @@ type logBuffer struct {
 	redactor *logRedactor
 	sequence uint64
 	changed  chan struct{}
+	history  func(string)
 }
 
 var ansi = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
@@ -234,6 +235,9 @@ func (l *logBuffer) Write(b []byte) (int, error) {
 			line = l.redactor.Replace(ansi.ReplaceAllString(string(l.pending), ""))
 		}
 		l.lines = append(l.lines, line)
+		if l.history != nil {
+			l.history(line)
+		}
 		l.sequence++
 		added = true
 		if len(l.lines) > 200 {
@@ -495,7 +499,13 @@ func (a *App) startPreparedConfigWithSource(i Instance, cfg RuntimeConfig, targe
 		return fmt.Errorf("实例正在运行，请明确选择重启应用")
 	}
 	r := cfg.Rendered
+	config := cloneRuntimeConfig(cfg)
+	config.RunID = randomHex(8)
 	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), appliedConfig: r.Text, appliedDigest: r.Digest, appliedSecretDigest: r.SecretDigest, managedAccountIncarnation: cfg.ManagedAccountIncarnation, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
+	if binding := nodeInstanceBinding(a.store.DB.LocalTrafficIDs[i.ID]); a.logHistory != nil && binding != "" {
+		history, instanceID, runID := a.logHistory, i.ID, config.RunID
+		p.logs.history = func(line string) { history.enqueue(instanceID, binding, runID, line) }
+	}
 	for _, tunnel := range a.store.DB.State.clone().Tunnels {
 		if tunnel.InstanceID == i.ID && tunnel.Enabled {
 			p.appliedTunnels[tunnel.ID] = tunnel
@@ -504,8 +514,6 @@ func (a *App) startPreparedConfigWithSource(i Instance, cfg RuntimeConfig, targe
 			}
 		}
 	}
-	config := cloneRuntimeConfig(cfg)
-	config.RunID = randomHex(8)
 	instance, err := a.runtime.Start(target, config, p.logs)
 	if err != nil {
 		return fmt.Errorf("无法启动 frp：%s", redact(err.Error(), r.Secrets))
@@ -801,6 +809,13 @@ func (a *App) Close() error {
 			}(p)
 		}
 		wg.Wait()
+		if a.logHistory != nil {
+			historyCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			if err := a.logHistory.shutdown(historyCtx); err != nil {
+				failures = append(failures, fmt.Errorf("日志历史未能确认安全关闭，数据目录锁将保留到进程退出"))
+			}
+			cancel()
+		}
 		for _, p := range processes {
 			if observer, ok := p.instance.(runtimeCleanupObserver); ok && observer.CleanupUncertain() {
 				failures = append(failures, fmt.Errorf("实例清理状态未知，数据目录锁将保留到进程退出"))

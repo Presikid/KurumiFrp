@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -28,6 +29,10 @@ func (a *App) pollLogs(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, fmt.Errorf("需要有效的实例"))
 		return
 	}
+	if r.URL.Query().Get("history") == "1" {
+		a.pollLogHistory(w, r, id)
+		return
+	}
 	a.mu.Lock()
 	if !a.canReadInstanceLogs(r, id) {
 		a.mu.Unlock()
@@ -46,6 +51,40 @@ func (a *App) pollLogs(w http.ResponseWriter, r *http.Request) {
 	a.mu.Unlock()
 	// As with the stream, a slow response must not hold the application lock.
 	reply(w, http.StatusOK, map[string]any{"lines": lines, "runId": runID})
+}
+
+func (a *App) pollLogHistory(w http.ResponseWriter, r *http.Request, id string) {
+	a.mu.Lock()
+	if !a.canReadInstanceLogs(r, id) {
+		a.mu.Unlock()
+		fail(w, http.StatusForbidden, fmt.Errorf("没有查看实例日志的权限"))
+		return
+	}
+	_, exists := a.store.DB.State.Instance(id)
+	binding := nodeInstanceBinding(a.store.DB.LocalTrafficIDs[id])
+	a.mu.Unlock()
+	if !exists || binding == "" {
+		fail(w, http.StatusNotFound, fmt.Errorf("实例或实例身份不可用"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	result, err := a.logHistory.request(ctx, "read", id, binding)
+	if err != nil {
+		fail(w, http.StatusServiceUnavailable, fmt.Errorf("日志历史无法读取，请稍后重试或联系管理员"))
+		return
+	}
+	a.mu.Lock()
+	_, exists = a.store.DB.State.Instance(id)
+	valid := exists && nodeInstanceBinding(a.store.DB.LocalTrafficIDs[id]) == binding && a.canReadInstanceLogs(r, id)
+	a.mu.Unlock()
+	if !valid {
+		fail(w, http.StatusConflict, fmt.Errorf("实例或日志权限已变化，请刷新后重试"))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	status := map[string]bool{"enabled": result.status.Enabled, "available": result.status.Available}
+	reply(w, http.StatusOK, map[string]any{"lines": result.lines, "history": true, "status": status})
 }
 
 type logStreamLines struct {
