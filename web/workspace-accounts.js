@@ -13,6 +13,15 @@
  let frpReviewTarget = null, frpReviewSnapshot = null;
  let revocationNotices = [];
  let disposeFRP = null, activeFRPWarning = null, activeRevocationWarning = null, refreshActiveAccounts = null;
+ let managedPending = false, managedNeedsRefresh = false, managedNotice = '', activeManagedRender = null, activeManagedView = null, unbindAccountDialog = null;
+ let deleting = false, clearing = false, groupBusy = false, accountSaving = false;
+ const accountDialogOpen = () => !!document.querySelector('#dialog')?.open;
+ const accountWorkPending = () => groupBusy || deleting || clearing || accountSaving || frpPending;
+ const requireManagedIdle = () => { if (managedPending) throw new Error('认证配置操作尚未完成，请稍后再试。'); };
+ const requireAccountIdle = () => {
+  if (accountDialogOpen()) throw new Error('请先完成或关闭当前编辑窗口。');
+  if (accountWorkPending()) throw new Error('账户、凭据或登录记录操作尚未完成，请稍后再试。');
+ };
  const requireFRPReview = (accountId, instanceId, action, tokenLost = false) => {
   frpNeedsReview = true; frpReviewNotice = true; frpReviewGeneration++;
   frpReviewTarget = {accountId, instanceId, action, tokenLost}; frpReviewSnapshot = null;
@@ -33,6 +42,7 @@
    if (data.identity?.role !== 'admin') return '<section class="panel"><div class="panel-content">此页面仅供管理员使用。</div></section>';
    return `<header class="page-head"><div><p class="eyebrow">ACCESS / ACCOUNTS</p><h1>账户管理</h1><p>为本地账户分配角色和实例权限。</p></div><div class="actions"><button type="button" data-account="reload">刷新账户</button><button class="primary" type="button" data-account="new" disabled>＋ 新建账户</button></div></header>
     <section class="panel"><div class="panel-content"><p class="small-note">管理员拥有全部权限。删除实例或替换配置会撤销相关授权，请在操作后核对账户。账户配置独立保存，不包含在配置导出或加密备份中。</p><p class="error" data-account-write-warning role="alert" hidden></p><p class="error" data-account-revocation-warning role="alert" hidden></p><button type="button" data-account="revocation-ack" hidden>已知晓连接提示</button><div class="section-heading"><h2>账户分组</h2><button type="button" data-account="group-new" disabled>新建分组</button></div><p class="small-note">分组用于整理账户；可保存手动应用的权限模板。更改分组或模板不会自动修改账户权限，不提供套餐或流量配额。</p><div data-account-groups>正在读取分组…</div><div class="toolbar"><label>搜索用户名<input type="search" data-account-search placeholder="输入用户名" maxlength="32" disabled></label><label>账户状态<select data-account-filter disabled><option value="all">全部状态</option><option value="active">启用（含即将到期）</option><option value="expiring">7 天内到期</option><option value="expired">已到期</option><option value="disabled">已停用</option></select></label><label>所属分组<select data-account-group-filter disabled><option value="*">全部分组</option><option value="">未分组</option></select></label></div><p class="small-note" data-account-summary role="status"></p><p class="error" data-account-frp-warning role="status" hidden></p><button type="button" data-account="frp-reviewed" hidden>已核对，关闭提示</button><div data-account-list>正在读取账户…</div></div></section>
+    <section class="panel"><div class="panel-content"><div class="section-heading"><h2>frps 账户认证</h2><button type="button" data-account="managed-refresh">刷新配置</button></div><p class="small-note">这里只修改实例的配置草稿。保存后需在实例页面显式启动或重启才会应用；当前进程使用的认证模式无法从此处确认，请核对实例状态。重启前先校验配置结构，再停止旧进程；该校验不保证证书和私钥可读取、有效或匹配，也不保证客户端信任，启动仍可能失败。请核对运行状态和日志。</p><p class="small-note">受管账户认证仅支持内嵌 frps、启用 TLS 并配置服务端证书和私钥、关闭 TCP 多路复用，且仅支持非分组 TCP 代理。客户端需使用账户 ID 和该实例的账户令牌，在 <code>auth.additionalScopes</code> 中包含 <code>NewWorkConns</code>；服务端启用心跳认证时还须包含 <code>HeartBeats</code>。客户端还须配置 <code>transport.tcpMux=false</code> 并验证服务端证书。</p><p class="small-note">如保存结果未确认，刷新只能显示当时的草稿快照，旧请求可能仍在处理；若后续操作遇到版本冲突，请再次刷新核对。</p><p class="error" data-managed-notice role="status" hidden></p><div data-managed-list>正在读取配置草稿…</div></div></section>
     <section class="panel"><div class="panel-content"><div class="actions"><h2>登录记录</h2><button type="button" data-account="history">刷新记录</button><button type="button" class="danger" data-account="clear-history" disabled>清空记录</button></div><p class="small-note">来源为工作台收到连接的对端地址；通过 SSH 转发时可能显示本机地址。重复失败会限频记录。</p><div data-login-history>正在读取记录…</div></div></section>`;
   },
   mount(root, data) {
@@ -42,14 +52,100 @@
    const search = root.querySelector('[data-account-search]'), filter = root.querySelector('[data-account-filter]'), summary = root.querySelector('[data-account-summary]'), frpWarning = root.querySelector('[data-account-frp-warning]'), frpReviewed = root.querySelector('[data-account="frp-reviewed"]'), writeWarning = root.querySelector('[data-account-write-warning]');
    const revocationWarning = root.querySelector('[data-account-revocation-warning]'), revocationAck = root.querySelector('[data-account="revocation-ack"]');
    const groupNew = root.querySelector('[data-account="group-new"]'), groupList = root.querySelector('[data-account-groups]'), groupFilter = root.querySelector('[data-account-group-filter]');
+   const managedList = root.querySelector('[data-managed-list]'), managedStatus = root.querySelector('[data-managed-notice]'), managedRefresh = root.querySelector('[data-account="managed-refresh"]');
    const instances = Array.isArray(data.state?.instances) ? data.state.instances : [];
    const names = new Map(instances.map(item => [item.id, item.name]));
-   let model = null, accountSerial = 0, historySerial = 0, historySaved = false, historyUncertain = false, deleting = false, clearing = false, groupBusy = false;
+   let model = null, accountSerial = 0, historySerial = 0, historySaved = false, historyUncertain = false;
+   activeManagedView = {root,data};
    const current = () => K.epoch() === epoch && K.isCurrent('accounts', root) && K.state()?.identity?.role === 'admin';
    const ownAccount = user => !!data.identity?.account && String(data.identity.name || '').toLowerCase() === String(user.username || '').toLowerCase();
    const requireCurrent = () => {
     if (!current()) throw new Error('页面或会话已变化，请重新打开账户管理。');
     if (K.state()?.revision !== data.revision) throw new Error('实例配置已变化，请刷新后重试。');
+   };
+   const renderManaged = () => {
+    if (!current()) return;
+    const stale = K.state()?.revision !== data.revision, busy = accountDialogOpen() || accountWorkPending(), servers = instances.filter(item => item.kind === 'frps');
+    managedRefresh.disabled = managedPending || busy;
+    const notices = [managedNotice, stale ? '实例配置已变化，请刷新配置后核对。' : '', managedPending && !managedNotice ? '正在刷新配置，请稍候。' : '', busy && !managedNotice ? '请先完成账户、凭据或登录记录操作。' : ''].filter(Boolean);
+    managedStatus.hidden = !notices.length;
+    managedStatus.textContent = notices.join(' ');
+    managedList.innerHTML = servers.length ? `<div class="table-wrap"><table><thead><tr><th>本机 frps 实例</th><th>账户认证配置草稿</th><th>操作</th></tr></thead><tbody>${servers.map(instance => {
+     const valid = idOK(instance.id) && (instance.managedAccountLogin === undefined || typeof instance.managedAccountLogin === 'boolean');
+     const enabled = instance.managedAccountLogin === true;
+     return `<tr><td>${esc(instance.name)}<br><small>${esc(instance.id)}</small></td><td>${valid ? enabled ? '草稿已启用' : '草稿未启用' : '配置状态不可用'}<br><small>当前运行模式请核对实例状态。</small></td><td><button type="button" data-account="managed-toggle" data-id="${esc(instance.id)}" data-next="${enabled ? 'false' : 'true'}" ${!valid || managedPending || managedNeedsRefresh || stale || busy ? 'disabled' : ''}>${enabled ? '保存关闭草稿' : '保存启用草稿'}</button></td></tr>`;
+    }).join('')}</tbody></table></div>` : '<p class="small-note">当前没有本机 frps 实例。请先在实例页面创建服务端。</p>';
+   };
+   activeManagedRender = renderManaged;
+   const managedViewRetained = previousRoot => {
+    const view = activeManagedView;
+    return !!view && K.isCurrent('accounts',view.root) && (view.root === previousRoot || accountDialogOpen() || K.state()?.revision !== view.data.revision);
+   };
+   const finishManagedRefresh = previousRoot => {
+    if (managedViewRetained(previousRoot)) {
+     managedNeedsRefresh = true;
+     managedNotice = '页面仍保留旧草稿；请关闭编辑窗口后再次刷新配置。';
+     return false;
+    }
+    managedNeedsRefresh = false; managedNotice = '';
+    return true;
+   };
+   const dialog = document.querySelector('#dialog');
+   const onDialogClose = () => { if (current()) { if (K.state()?.revision !== data.revision) managedNeedsRefresh = true; renderManaged(); } };
+   dialog.addEventListener('close',onDialogClose);
+   unbindAccountDialog = () => dialog.removeEventListener('close',onDialogClose);
+   const refreshManaged = async () => {
+    if (managedPending) return;
+    requireAccountIdle();
+    const previousRoot = activeManagedView?.root;
+    managedPending = true; activeManagedRender?.();
+    try {
+     if (await K.refresh() !== true) return;
+     const refreshed = finishManagedRefresh(previousRoot);
+     if (K.epoch() === epoch) K.toast(refreshed ? '已刷新配置草稿；当前运行模式请核对实例状态。' : managedNotice);
+    } catch (error) {
+     if (K.epoch() === epoch) K.toast('刷新配置失败：' + error.message);
+    } finally { managedPending = false; activeManagedRender?.(); }
+   };
+   const saveManaged = async button => {
+    requireCurrent();
+    if (managedPending || managedNeedsRefresh) throw new Error('请等待操作完成或先刷新配置后核对。');
+    requireAccountIdle();
+    const id = button.dataset.id, nextText = button.dataset.next;
+    const instance = instances.find(item => item.id === id && item.kind === 'frps');
+    if (!instance || !idOK(id) || !['true','false'].includes(nextText) || (instance.managedAccountLogin !== undefined && typeof instance.managedAccountLogin !== 'boolean')) throw new Error('实例配置不可用，请刷新后核对。');
+    const next = nextText === 'true';
+    if (next === (instance.managedAccountLogin === true)) throw new Error('实例配置已变化，请刷新后核对。');
+    const change = next ? '启用' : '关闭';
+    const consequence = next ? '仅内嵌 frps 可使用此模式，需 TLS、服务端证书和私钥，且仅支持非分组 TCP 代理。客户端须使用账户凭据、验证服务端证书并关闭 TCP 多路复用。' : '关闭后新运行的实例将按其原有认证配置处理。';
+    if (!confirm(`将「${instance.name}」的账户认证配置草稿设为${change}？\n${consequence}\n保存不会改变正在运行的进程。请在实例页面显式启动或重启以应用；重启前仅校验配置结构，不保证证书和私钥可读取、有效或匹配，也不保证客户端信任。重启会中断连接且后续启动可能失败，请核对运行状态和日志。`)) return;
+    requireCurrent();
+    requireAccountIdle();
+    managedPending = true; managedNotice = '正在保存认证配置草稿…'; activeManagedRender?.();
+    try {
+     const result = await request('save',{revision:data.revision,kind:'instance',value:{id,managedAccountLogin:next}},30000);
+     if (result?.ok !== true || result.revision !== data.revision + 1) throw new Error('响应无法确认配置保存结果。');
+     managedNeedsRefresh = true;
+     managedNotice = '认证配置草稿已保存；请刷新配置核对，并在实例页面显式启动或重启后检查运行状态。';
+     if (K.epoch() === epoch) K.toast('认证配置草稿已保存；需显式启动或重启后才会应用。');
+     if (current()) {
+      try {
+       const previousRoot = activeManagedView?.root;
+       if (await K.refresh() === true && !finishManagedRefresh(previousRoot) && K.epoch() === epoch) K.toast(managedNotice);
+      } catch (_) {
+       managedNotice = '草稿已保存，但刷新配置失败；请刷新配置核对后再操作。';
+       if (K.epoch() === epoch) K.toast(managedNotice);
+      }
+     }
+    } catch (error) {
+     if (error.status === 408 || uncertain(error)) {
+      managedNeedsRefresh = true;
+      managedNotice = '保存结果未确认，请勿重复提交。刷新只是当时的草稿快照，旧请求可能仍在处理；核对后再决定操作，遇到版本冲突请再次刷新。';
+     } else if (error.status === 409) {
+      managedNeedsRefresh = true; managedNotice = '配置版本冲突，请刷新配置并核对后再操作。';
+     } else managedNotice = error.message;
+     if (K.epoch() === epoch) K.toast(managedNotice);
+    } finally { managedPending = false; activeManagedRender?.(); }
    };
    const writesBlocked = () => model?.accountWritesUncertain !== false;
    const writeBlockReason = () => model?.accountWritesUncertain === true ? '账户文件写入结果未确认，账户文件的所有写入已冻结；整个账户列表可能是旧的内存状态，已有工作台登录和 frp 转发可能继续。请安全停止并重启工作台，然后刷新并核对恢复后的账户状态。' : '无法确认账户文件的写入状态，账户修改已禁用；请刷新账户或更新工作台。';
@@ -163,6 +259,7 @@
    };
 
    const manageFRP = user => {
+    requireManagedIdle();
     requireCurrent();
     if (frpPending) throw new Error('另一个 frp 凭据操作仍在处理，请等待结果。');
     if (!model || groupBusy || deleting) throw new Error('请等待账户操作完成并刷新列表。');
@@ -212,7 +309,7 @@
      form.querySelector('[type="submit"]').textContent = actions.length ? '确认登记操作' : '关闭';
     };
     K.openDialog({
-     html:`<div data-frp-marker><h2>frp 凭据登记 · ${esc(user.username)}</h2><p class="error">目前仅登记数据，frp 账户认证尚未接入，当前不可使用；这些操作不能阻止新连接，也不会断开已有连接。请勿将登记状态当作当前访问控制。</p><p class="small-note">账户 ID：<code>${esc(user.id)}</code>。以下是后续客户端配置要求，目前仍不可用于认证：<code>user=${esc(user.id)}</code>、<code>auth.additionalScopes=["NewWorkConns"]</code>、<code>transport.tcpMux=false</code>，并须验证服务端证书。</p><p class="small-note">“已登记”只表示记录可按当前实例身份和数据密钥读取，不表示认证已启用。替换实例、导入或恢复配置后可能需要重新签发；每个账户最多登记 64 个实例。</p><p class="small-note">如果未收到或未保存一次性令牌，它将无法再次显示；请刷新并核对登记，已有记录时主动轮换，无记录时可发放。服务端登记状态不能判断明文是否收到。刷新只是当时的快照，旧请求可能仍在处理；新操作若发生版本冲突，请关闭窗口并刷新复核。</p><div data-frp-records>${dataOK ? table : ''}</div><p class="small-note" data-frp-reason role="status"></p><div data-frp-controls><div class="form-grid"><label>目标实例<select name="frpInstance">${options}</select></label><label>登记操作<select name="frpAction"></select></label></div><p class="small-note" data-frp-target></p><p class="small-note">发放或轮换后的明文只显示一次；关闭或离开页面后无法再次读取。停用会删除记录。</p></div><div data-frp-result hidden><h3>一次性令牌</h3><p class="small-note">请安全保存；窗口打开期间可以重复复制。关闭或离开页面会清除显示，但不会清除剪贴板；关闭后无法再次显示，若未保存请核对登记后主动轮换。这仍不启用 frp 账户认证。</p><p data-frp-result-info></p><label>令牌<input name="frpToken" type="text" readonly autocomplete="off" spellcheck="false"></label><button type="button" data-frp-copy>复制令牌</button><p class="small-note" data-frp-copy-status role="status"></p></div></div>`,
+     html:`<div data-frp-marker><h2>frp 凭据登记 · ${esc(user.username)}</h2><p class="small-note">凭据登记不会更改实例认证配置。请在账户页面设置对应 frps 的账户认证草稿，再显式启动或重启实例并核对运行状态；凭据是否可用还取决于账户状态与实际运行配置。</p><p class="small-note">账户 ID：<code>${esc(user.id)}</code>。客户端配置 <code>user=${esc(user.id)}</code>，并将本实例的账户令牌填入 <code>auth.token</code>；在 <code>auth.additionalScopes</code> 中包含 <code>NewWorkConns</code>，服务端启用心跳认证时还须包含 <code>HeartBeats</code>；配置 <code>transport.tcpMux=false</code> 并验证服务端证书。仅支持内嵌 frps 和非分组 TCP 代理。</p><p class="small-note">“已登记”只表示记录可按当前实例身份和数据密钥读取，不代表实例已应用账户认证配置。替换实例、导入或恢复配置后可能需要重新签发；每个账户最多登记 64 个实例。</p><p class="small-note">如果未收到或未保存一次性令牌，它将无法再次显示；请刷新并核对登记，已有记录时主动轮换，无记录时可发放。服务端登记状态不能判断明文是否收到。刷新只是当时的快照，旧请求可能仍在处理；新操作若发生版本冲突，请关闭窗口并刷新复核。</p><div data-frp-records>${dataOK ? table : ''}</div><p class="small-note" data-frp-reason role="status"></p><div data-frp-controls><div class="form-grid"><label>目标实例<select name="frpInstance">${options}</select></label><label>登记操作<select name="frpAction"></select></label></div><p class="small-note" data-frp-target></p><p class="small-note">发放或轮换后的明文只显示一次；关闭或离开页面后无法再次读取。停用会删除记录。</p></div><div data-frp-result hidden><h3>一次性令牌</h3><p class="small-note">请安全保存；窗口打开期间可以重复复制。关闭或离开页面会清除显示，但不会清除剪贴板；关闭后无法再次显示，若未保存请核对登记后主动轮换。令牌能否使用取决于账户状态和实例实际运行配置。</p><p data-frp-result-info></p><label>令牌<input name="frpToken" type="text" readonly autocomplete="off" spellcheck="false"></label><button type="button" data-frp-copy>复制令牌</button><p class="small-note" data-frp-copy-status role="status"></p></div></div>`,
      submitLabel:'确认登记操作',
      onReady(form) {
       marker = form.querySelector('[data-frp-marker]');
@@ -255,6 +352,7 @@
      async onSubmit(form) {
       if (frpPending) return false;
       if (displayed || invalidated || !dataOK || writesBlocked() || frpNeedsReview || !targetIDs.length || !form.elements.frpAction.value) return;
+      requireManagedIdle();
       requireCurrent();
       requireWritable();
       if (!formCurrent(form) || model !== source || model.revision !== revision) throw new Error('账户列表已变化，请关闭窗口并刷新后核对。');
@@ -263,10 +361,11 @@
       const label = {'frp-issue':'发放','frp-rotate':'轮换','frp-disable':'停用'}[action];
       const target = instance ? `${instance.name}（${instanceId}）` : instancesOK ? `已移除或非 frps 的实例 ${instanceId}` : `实例 ${instanceId}（当前实例列表不可用）`;
       const details = instance && action !== 'frp-disable' ? `\n实例身份绑定：${instance.binding}` : '';
-      if (!confirm(`为账户「${user.username}」${label} ${target} 的 frp 凭据登记？${details}${existing.length > 1 ? '\n该实例的全部重复记录都将被停用。' : ''}${action === 'frp-rotate' ? '\n轮换将替换旧记录，旧明文无法再次读取。' : ''}\n目前仅登记数据，认证尚未接入，不能阻止新连接，也不会断开已有连接。${action !== 'frp-disable' ? '\n明文只显示一次，请准备好安全保存。' : ''}`)) return false;
+      const impact = action === 'frp-issue' ? '凭据是否可用取决于账户状态及实例实际运行的认证配置。' : '运行中的受管账户认证实例可能断开相应连接；关闭未确认时服务端可能请求停止实例。';
+      if (!confirm(`为账户「${user.username}」${label} ${target} 的 frp 凭据登记？${details}${existing.length > 1 ? '\n该实例的全部重复记录都将被停用。' : ''}${action === 'frp-rotate' ? '\n轮换将替换旧记录，旧明文无法再次读取。' : ''}\n${impact}${action !== 'frp-disable' ? '\n明文只显示一次，请准备好安全保存。' : ''}`)) return false;
       const payload = {action,revision,id:user.id,instanceId};
       if (action !== 'frp-disable') { payload.configRevision = source.configRevision; payload.instanceBinding = instance.binding; }
-      frpPending = true; updateFRPWarning();
+      frpPending = true; updateFRPWarning(); activeManagedRender?.();
       let result = null, reloadAfterCompletion = false;
       try {
        result = await request('accounts',payload,30000);
@@ -292,7 +391,7 @@
         }
         form.elements.frpToken.value = result.token;
         form.querySelector('[type="submit"]').textContent = '关闭';
-       } else if (current()) { if (!revocation) K.toast('frp 凭据登记已停用；已有连接不会断开。'); }
+       } else if (current()) { if (!revocation) K.toast('frp 凭据登记已停用；请核对实例和连接状态。'); }
        else if (K.epoch() === epoch) { if (!revocation) K.toast('frp 凭据登记已停用；请刷新并核对状态。'); refreshActiveAccounts?.(); }
        if (current()) void loadAccounts();
        return action === 'frp-disable' ? undefined : false;
@@ -316,6 +415,7 @@
        if (result && typeof result === 'object' && 'token' in result) result.token = '';
        frpPending = false;
        activeFRPWarning?.();
+       activeManagedRender?.();
        if ((frpNeedsReview || invalidated) && formCurrent(form)) syncForm(form);
        if (reloadAfterCompletion && K.epoch() === epoch) refreshActiveAccounts?.();
       }
@@ -324,6 +424,7 @@
    };
 
    const editGroup = group => {
+    requireManagedIdle();
     requireCurrent();
     requireWritable();
     if (!model || groupBusy || deleting) throw new Error('请等待账户操作完成并刷新列表。');
@@ -333,6 +434,7 @@
      html:`<h2>${group ? '编辑账户分组' : '新建账户分组'}</h2><p class="small-note">分组本身不会改变账户权限。可从现有账户复制角色和本机授权作为模板；模板不会自动应用，也不包含远程授权、密码或到期时间。</p><div class="form-grid"><label>分组名称<input name="groupName" maxlength="128" required value="${esc(group?.name || '')}"></label><label>权限模板<select name="templateFrom"><option value="keep">${group?.template ? '保留现有模板' : '不设置模板'}</option>${group?.template ? '<option value="clear">删除现有模板</option>' : ''}${source.accounts.map(user => `<option value="${esc(user.id)}">复制 ${esc(user.username)} · ${esc(roles[user.role] || user.role)}</option>`).join('')}</select></label></div>`,
      submitLabel:'保存分组',
      async onSubmit(form) {
+      requireManagedIdle();
       requireCurrent();
       requireWritable();
       if (saveUncertain) throw new Error('上次保存结果未确认，请关闭窗口并刷新账户后核对。');
@@ -344,7 +446,7 @@
       if (sourceUser?.role === 'admin' && !confirm('该账户是管理员，复制的模板可授予全部管理权限。继续保存模板？')) return false;
       const payload = {action:'group-save',revision,id:group?.id || '',groupName};
       if (templateFrom !== 'keep') payload.templateFrom = templateFrom === 'clear' ? '' : templateFrom;
-      groupBusy = true; renderGroups(); renderList();
+      groupBusy = true; renderGroups(); renderList(); activeManagedRender?.();
       try {
        await request('accounts',payload,30000);
        if (current()) { K.toast('分组已保存。'); await loadAccounts(); }
@@ -354,12 +456,14 @@
       } finally {
        groupBusy = false;
        if (current() && model) { renderGroups(); renderList(); }
+       activeManagedRender?.();
       }
      }
     });
    };
 
    const editAccount = user => {
+    requireManagedIdle();
     requireCurrent();
     requireWritable();
     if (!model) throw new Error('请先读取账户列表。');
@@ -474,6 +578,7 @@
       } finally { reading = false; if (button.isConnected) button.disabled = false; }
      },
      async onSubmit(form) {
+      requireManagedIdle();
       requireCurrent();
       requireWritable();
       if (!formCurrent(form)) throw new Error('编辑窗口已变化，请重新打开。');
@@ -498,11 +603,14 @@
        instances:role === 'admin' ? [] : select('instance'),controlInstances:role === 'operator' ? select('controlInstance') : [],allowedActions:role === 'operator' ? select('action') : [],
        readPermissions:role === 'admin' ? null : {config:form.elements.viewConfig.checked,traffic:form.elements.viewTraffic.checked},allowLogs:role !== 'admin' && form.elements.allowLogs.checked,
        logInstances:role !== 'admin' && form.elements.allowLogs.checked ? select('logInstance') : [],remoteInstances:role === 'admin' ? [] : chosen.map(choice => ({...choice.grant,control:role === 'operator' && !!choice.grant.control}))};
+      requireManagedIdle();
       requireWritable();
       if (model !== source || model.revision !== revision) throw new Error('账户列表已变化，请重新打开编辑窗口。');
       let result;
+      accountSaving = true; activeManagedRender?.();
       try { result = await request('accounts',payload,30000); }
       catch (error) { if (uncertain(error)) { saveUncertain = true; if (current()) void loadAccounts(); throw new Error('保存结果未确认，请关闭窗口并刷新账户后核对，勿重复提交；若账户文件写入已冻结，请安全重启工作台。'); } throw error; }
+      finally { accountSaving = false; activeManagedRender?.(); }
       const revocation = recordRevocationWarning(result,`账户「${user?.username || payload.username}」的变更`);
       if (formCurrent(form)) { form.elements.password.value = ''; if (!revocation) K.toast('账户已保存。'); await loadAccounts(); }
      }
@@ -516,13 +624,14 @@
     const select = event.target.closest('[data-account-group]');
     if (!select || !root.contains(select)) return;
     try {
+     requireManagedIdle();
      requireCurrent();
      requireWritable();
      const source = model, user = source?.accounts.find(item => item.id === select.dataset.accountGroup), groupId = select.value;
      if (!user || !source || groupBusy || deleting) throw new Error('账户列表已变化或操作尚未结束，请刷新后重试。');
      if (groupId && !source.groups.some(group => group.id === groupId)) throw new Error('分组已变化，请刷新后重试。');
      if (groupId === (user.groupId || '')) return;
-     groupBusy = true; renderGroups(); renderList();
+     groupBusy = true; renderGroups(); renderList(); activeManagedRender?.();
      try {
       await request('accounts',{action:'group-assign',revision:source.revision,id:user.id,groupId},30000);
       if (current()) K.toast('账户分组已更新。');
@@ -531,6 +640,7 @@
      } finally {
       groupBusy = false;
       if (current()) await loadAccounts();
+      activeManagedRender?.();
      }
     } catch (error) {
      if (current()) { K.toast(error.message); renderList(); }
@@ -541,10 +651,13 @@
     if (!button || !root.contains(button) || button.disabled) return;
     const action = button.dataset.account;
     try {
+     if (['new','edit','delete','group-new','group-edit','group-delete','frp-tokens','revoke-sessions','clear-history'].includes(action)) requireManagedIdle();
      if (['new','edit','delete','group-new','group-edit','group-delete'].includes(action)) requireWritable();
      if (groupBusy && ['reload','new','edit','delete','frp-tokens','revoke-sessions','group-new','group-edit','group-delete'].includes(action)) throw new Error('账户分组操作尚未结束，请稍后再试。');
      if (action === 'reload') { await loadAccounts(); return; }
      if (action === 'history') { await loadHistory(); return; }
+     if (action === 'managed-refresh') { await refreshManaged(); return; }
+     if (action === 'managed-toggle') { await saveManaged(button); return; }
      if (action === 'revocation-ack') { revocationNotices = []; updateRevocationWarning(); return; }
      if (action === 'frp-reviewed') {
       if (frpPending) return;
@@ -572,7 +685,7 @@
       if (!group || deleting) throw new Error('分组已变化或账户操作尚未结束，请刷新。');
       const count = source.accounts.filter(user => user.groupId === group.id).length;
       if (!confirm(`删除分组「${group.name}」？${count} 个账户将变为未分组，角色和权限不变。`)) return;
-      groupBusy = true; renderGroups(); renderList();
+      groupBusy = true; renderGroups(); renderList(); activeManagedRender?.();
       try {
        await request('accounts',{action:'group-delete',revision:source.revision,id:group.id},30000);
        if (current()) K.toast('分组已删除。');
@@ -581,6 +694,7 @@
       } finally {
        groupBusy = false;
        if (current()) await loadAccounts();
+       activeManagedRender?.();
       }
       return;
      }
@@ -601,7 +715,7 @@
       if (!source || !user || deleting) throw new Error('账户已变化或操作尚未结束，请刷新后重试。');
       const self = ownAccount(user);
       if (!confirm(`撤销「${user.username}」现有的本机工作台会话？${self ? '\n当前浏览器也将退出登录。' : ''}\n不会禁用账户或更改密码，也不撤销 frp 连接及节点授权。已受理的操作可能继续，正在进行或之后的登录仍可能建立新会话。`)) return;
-      deleting = true; button.disabled = true;
+      deleting = true; button.disabled = true; activeManagedRender?.();
       try {
        const result = await request('accounts',{action:'revoke-sessions',revision:source.revision,id:user.id},30000);
        if (result?.ok !== true || result.revision !== source.revision) throw new Error('响应无法确认会话撤销结果。');
@@ -617,32 +731,39 @@
         K.toast(error.message);
         if (error.status === 409) await loadAccounts();
        }
-      } finally { deleting = false; if (button.isConnected) button.disabled = false; }
+      } finally { deleting = false; if (button.isConnected) button.disabled = false; activeManagedRender?.(); }
       return;
      }
      if (action === 'delete') {
       requireCurrent();
       const source = model, user = source?.accounts.find(item => item.id === button.dataset.id);
       if (!user || ownAccount(user)) throw new Error('不能删除当前账户，或账户已变化。');
-      if (deleting || !confirm(`删除账户「${user.username}」并撤销其工作台会话？\n当前不会断开已有 frp 连接。`)) return;
-      deleting = true; button.disabled = true;
+      if (deleting || !confirm(`删除账户「${user.username}」并撤销其工作台会话？\n此操作可能影响受管 frp 连接；连接关闭未确认时服务端可能请求停止实例。`)) return;
+      deleting = true; button.disabled = true; activeManagedRender?.();
       try { const result = await request('accounts',{action:'delete',revision:source.revision,id:user.id},30000); const revocation = recordRevocationWarning(result,`账户「${user.username}」的删除`); if (current()) { if (!revocation) K.toast('账户已删除。'); await loadAccounts(); } }
       catch (error) { if (current()) { K.toast(uncertain(error) ? '删除结果未确认，请刷新账户后核对。' : error.message); await loadAccounts(); } }
-      finally { deleting = false; if (button.isConnected) button.disabled = false; }
+      finally { deleting = false; if (button.isConnected) button.disabled = false; activeManagedRender?.(); }
       return;
      }
      if (action === 'clear-history') {
       if (!historySaved || clearing || !confirm('清空本机保存的登录记录？')) return;
-      clearing = true; clearButton.disabled = true;
+      clearing = true; clearButton.disabled = true; activeManagedRender?.();
       try { await request('login-history',{action:'clear'}); if (current()) { K.toast('登录记录已清空。'); await loadHistory(); } }
       catch (error) { if (current()) { historyUncertain = uncertain(error); K.toast(historyUncertain ? '清空结果未确认，请核对记录后重新打开页面。' : error.message); await loadHistory(); } }
-      finally { clearing = false; if (current()) clearButton.disabled = !historySaved || historyUncertain; }
+      finally { clearing = false; if (current()) clearButton.disabled = !historySaved || historyUncertain; activeManagedRender?.(); }
      }
     } catch (error) { if (current()) K.toast(error.message); }
    });
-   updateFRPWarning(); updateRevocationWarning();
+   updateFRPWarning(); updateRevocationWarning(); renderManaged();
    void loadAccounts(); void loadHistory();
   },
-  dispose() { disposeFRP?.(); activeFRPWarning = null; activeRevocationWarning = null; refreshActiveAccounts = null; }
+  hasUnsaved() { return accountDialogOpen() || accountWorkPending(); },
+  dispose() {
+   disposeFRP?.();
+   const dialog = document.querySelector('#dialog');
+   if (dialog?.open) dialog.close();
+   unbindAccountDialog?.(); unbindAccountDialog = null; activeManagedView = null;
+   activeFRPWarning = null; activeRevocationWarning = null; activeManagedRender = null; refreshActiveAccounts = null;
+  }
  });
 })();

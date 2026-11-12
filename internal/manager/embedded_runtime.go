@@ -15,6 +15,7 @@ import (
 	clienttraffic "github.com/fatedier/frp/client/traffic"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/util/xlog"
+	frpserver "github.com/fatedier/frp/server"
 )
 
 const embeddedTarget = "embedded-frp-v0.72.0/"
@@ -22,6 +23,11 @@ const embeddedTarget = "embedded-frp-v0.72.0/"
 // A panic or failed cleanup can leave shared resources in an unknown state.
 // Refuse to start another embedded service until the process is restarted.
 var embeddedCleanupUnknown atomic.Bool
+
+// Startup and readiness use the same boundary as publishing uncertain cleanup.
+// Already-ready runs keep their existing lifetime; in-flight starts are stopped.
+var embeddedStartMu sync.Mutex
+var embeddedStarting = make(map[*embeddedRun]struct{})
 
 type embeddedRuntime struct{}
 
@@ -141,7 +147,15 @@ func (b *embeddedRuntime) Start(target string, cfg RuntimeConfig, output io.Writ
 	// access and listener construction run asynchronously outside that lock.
 	cfg.Rendered.Env = append([]string(nil), cfg.Rendered.Env...)
 	ctx, cancel := context.WithCancel(context.Background())
-	run := &embeddedRun{cancel: cancel, ready: make(chan struct{}), exiting: make(chan struct{}), done: make(chan struct{})}
+	run := &embeddedRun{cancel: cancel, ready: make(chan struct{}), exiting: make(chan struct{}), done: make(chan struct{}), managedAccountLogin: cfg.ManagedAccountLogin}
+	embeddedStartMu.Lock()
+	if embeddedCleanupUnknown.Load() {
+		embeddedStartMu.Unlock()
+		cancel()
+		return nil, errors.New("内嵌核心清理状态未知，请重启工作台")
+	}
+	embeddedStarting[run] = struct{}{}
+	embeddedStartMu.Unlock()
 	go run.serve(ctx, target, cfg, sink, output)
 	return run, nil
 }
@@ -154,6 +168,8 @@ type embeddedRun struct {
 	err              error // published by closing done
 	exitOnce         sync.Once
 	cleanupUncertain atomic.Bool
+
+	managedAccountLogin bool
 
 	mu           sync.RWMutex
 	client       *embedded.Client
@@ -181,9 +197,12 @@ func (r *embeddedRun) serve(ctx context.Context, target string, cfg RuntimeConfi
 		<-logsDone
 		// A failed worker may have unregistered a resource before closing it.
 		// Keep Wait blocked when cleanup cannot be proved safe for replacement.
+		embeddedStartMu.Lock()
 		if !r.cleanupUncertain.Load() {
+			delete(embeddedStarting, r)
 			close(r.done)
 		}
+		embeddedStartMu.Unlock()
 	}()
 
 	config, err := parseEmbeddedConfig(ctx, target, cfg)
@@ -228,13 +247,22 @@ func (r *embeddedRun) markEngineExited() {
 	r.exitOnce.Do(func() { close(r.exiting) })
 }
 
-// A panic can leave instance resources in an unknown state. Stop only this
-// run; the shared guard also prevents new embedded runs until a restart.
+// A panic can leave instance resources in an unknown state. Stop this run and
+// in-flight starts; already-ready runs keep their existing lifetime.
 func (r *embeddedRun) markCleanupUncertain() {
+	embeddedStartMu.Lock()
 	r.cleanupUncertain.Store(true)
 	embeddedCleanupUnknown.Store(true)
+	starting := make([]*embeddedRun, 0, len(embeddedStarting))
+	for pending := range embeddedStarting {
+		starting = append(starting, pending)
+	}
+	embeddedStartMu.Unlock()
 	r.markEngineExited()
 	r.cancel()
+	for _, pending := range starting {
+		pending.cancel()
+	}
 }
 
 func (r *embeddedRun) CleanupUncertain() bool { return r.cleanupUncertain.Load() }
@@ -255,10 +283,12 @@ func (r *embeddedRun) observeEngine(exiting, done <-chan struct{}) {
 
 // Forward readiness only while this generation has not been cancelled or
 // begun to exit. Completion may occur without a readiness notification.
-func publishEmbeddedReady(ctx context.Context, ready, exiting, done <-chan struct{}, published chan<- struct{}) {
+func (r *embeddedRun) publishEmbeddedReady(ctx context.Context, ready, exiting, done <-chan struct{}) {
 	select {
 	case <-ready:
-		if ctx.Err() != nil {
+		embeddedStartMu.Lock()
+		defer embeddedStartMu.Unlock()
+		if ctx.Err() != nil || embeddedCleanupUnknown.Load() {
 			return
 		}
 		select {
@@ -267,7 +297,8 @@ func publishEmbeddedReady(ctx context.Context, ready, exiting, done <-chan struc
 		case <-done:
 			return
 		default:
-			close(published)
+			delete(embeddedStarting, r)
+			close(r.ready)
 		}
 	case <-ctx.Done():
 	case <-exiting:
@@ -282,6 +313,9 @@ func (r *embeddedRun) runServer(ctx context.Context, config *v1.ServerConfig, ac
 	options := embedded.ServerOptions{LogSink: sink, OnPanic: r.markCleanupUncertain}
 	if cfg.ManagedAccountLogin {
 		options.ManagedLogin = cfg.ManagedLoginProvider
+		options.OnManagedCleanupFailure = func(frpserver.ManagedIdentity) {
+			r.markCleanupUncertain()
+		}
 	}
 	if access != nil {
 		options.AllowControlConnection = access.permits
@@ -300,11 +334,15 @@ func (r *embeddedRun) runServer(ctx context.Context, config *v1.ServerConfig, ac
 			panic(value)
 		}
 	}()
+	if ctx.Err() != nil {
+		return nil
+	}
 	if err = server.Start(ctx); err != nil {
 		// A failed constructor may still own resources during rollback.
 		r.markEngineExited()
 		stopErr := server.Stop(context.Background())
-		if errors.Is(stopErr, embedded.ErrServerPanicked) {
+		if errors.Is(err, embedded.ErrServerPanicked) || errors.Is(stopErr, embedded.ErrServerPanicked) ||
+			errors.Is(err, frpserver.ErrManagedCleanupUncertain) || errors.Is(stopErr, frpserver.ErrManagedCleanupUncertain) {
 			r.markCleanupUncertain()
 			return errors.New("内嵌服务端异常退出，清理状态未知，请重启工作台")
 		}
@@ -314,15 +352,51 @@ func (r *embeddedRun) runServer(ctx context.Context, config *v1.ServerConfig, ac
 		return errors.New("内嵌服务端启动失败")
 	}
 	r.observeEngine(server.Exiting(), server.Done())
-	publishEmbeddedReady(ctx, server.Ready(), server.Exiting(), server.Done(), r.ready)
+	r.publishEmbeddedReady(ctx, server.Ready(), server.Exiting(), server.Done())
 	<-server.Done()
-	if err := server.Err(); errors.Is(err, embedded.ErrServerPanicked) {
+	if err := server.Err(); errors.Is(err, embedded.ErrServerPanicked) || errors.Is(err, frpserver.ErrManagedCleanupUncertain) {
 		r.markCleanupUncertain()
 		return errors.New("内嵌服务端异常退出，清理状态未知，请重启工作台")
 	} else if err != nil {
 		return errors.New("内嵌服务端意外退出")
 	}
 	return nil
+}
+
+func (r *embeddedRun) RevokeManagedCredential(ctx context.Context, identity frpserver.ManagedIdentity) error {
+	if r == nil || ctx == nil || !r.managedAccountLogin {
+		return errors.New("当前运行实例不支持账户凭据撤销")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if r.cleanupUncertain.Load() {
+		return errors.New("内嵌服务端清理状态未知，无法确认凭据撤销")
+	}
+	if !r.mu.TryRLock() {
+		return errors.New("内嵌服务端状态正忙，无法确认凭据撤销")
+	}
+	service := r.server
+	r.mu.RUnlock()
+	if service == nil {
+		// The handle is published before Server.Start. The caller must first
+		// invalidate the credential under the admission gate, so a future
+		// start cannot admit this identity after this observation.
+		if r.cleanupUncertain.Load() {
+			return errors.New("内嵌服务端清理状态未知，无法确认凭据撤销")
+		}
+		return ctx.Err()
+	}
+	if err := service.RevokeManagedCredential(ctx, identity); err != nil {
+		if errors.Is(err, frpserver.ErrManagedCleanupUncertain) {
+			r.markCleanupUncertain()
+		}
+		return err
+	}
+	if r.cleanupUncertain.Load() {
+		return errors.New("内嵌服务端清理状态未知，无法确认凭据撤销")
+	}
+	return ctx.Err()
 }
 
 func (r *embeddedRun) runClient(ctx context.Context, instanceID string, config *embedded.ClientConfig, sink *xlog.Sink) error {
@@ -366,6 +440,13 @@ func (r *embeddedRun) runClient(ctx context.Context, instanceID string, config *
 			panic(value)
 		}
 	}()
+	if ctx.Err() != nil {
+		if err := client.Shutdown(context.Background()); err != nil {
+			r.markCleanupUncertain()
+			return errors.New("内嵌客户端清理状态未知")
+		}
+		return nil
+	}
 	if err = client.Start(); err != nil {
 		r.markEngineExited()
 		if cleanupErr := client.Shutdown(context.Background()); cleanupErr != nil {
@@ -384,7 +465,7 @@ func (r *embeddedRun) runClient(ctx context.Context, instanceID string, config *
 	r.mu.Unlock()
 
 	r.observeEngine(client.Exiting(), client.Done())
-	publishEmbeddedReady(ctx, client.Ready(), client.Exiting(), client.Done(), r.ready)
+	r.publishEmbeddedReady(ctx, client.Ready(), client.Exiting(), client.Done())
 	select {
 	case <-ctx.Done():
 		_ = client.Shutdown(context.Background())

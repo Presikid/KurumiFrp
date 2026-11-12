@@ -19,6 +19,7 @@ type Instance struct {
 	HTTPSPort             int    `json:"httpsPort"`
 	Token                 string `json:"token,omitempty"`
 	HasToken              bool   `json:"hasToken,omitempty"`
+	ManagedAccountLogin   bool   `json:"managedAccountLogin,omitempty"`
 	AuthHeartbeats        bool   `json:"authHeartbeats,omitempty"`
 	AuthNewWorkConns      bool   `json:"authNewWorkConns,omitempty"`
 	AutoStart             bool   `json:"autoStart,omitempty"`
@@ -320,6 +321,9 @@ func validate(s State) error {
 		labels[i.Name] = true
 		if i.Kind != "frpc" && i.Kind != "frps" {
 			return fmt.Errorf("实例类型必须为 frpc 或 frps")
+		}
+		if i.ManagedAccountLogin && i.Kind != "frps" {
+			return fmt.Errorf("账户认证仅适用于服务端实例")
 		}
 		if !hostOK(i.Host) || !portOK(i.Port) {
 			return fmt.Errorf("实例地址或端口无效")

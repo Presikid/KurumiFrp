@@ -22,7 +22,7 @@ type RuntimeConfig struct {
 	// Embedded-only control-entry policy, copied with the instance snapshot.
 	ServerAccessMode string
 	ServerAccessList string
-	// Internal opt-in for account-token frps. The resolver must be bound to
+	// Internal opt-in for account-token frps. The provider must be bound to
 	// this instance and incarnation, return promptly, and never log tokens.
 	ManagedAccountLogin       bool
 	ManagedAccountIncarnation string
@@ -30,9 +30,6 @@ type RuntimeConfig struct {
 }
 
 func validateManagedRuntimeConfig(cfg RuntimeConfig) error {
-	if cfg.ManagedAccountLogin {
-		return fmt.Errorf("账户认证运行接线尚未完成")
-	}
 	if !cfg.ManagedAccountLogin {
 		if cfg.ManagedLoginProvider != nil || cfg.ManagedAccountIncarnation != "" {
 			return fmt.Errorf("未启用账户认证，不能提供账户认证配置")
@@ -46,15 +43,30 @@ func validateManagedRuntimeConfig(cfg RuntimeConfig) error {
 	return nil
 }
 
+// Caller holds App.mu. The auth lock keeps the write failure and a managed
+// start in the same order as the asynchronous stop snapshot.
+func (a *App) checkManagedAccountWritesLocked(cfg RuntimeConfig) error {
+	if !cfg.ManagedAccountLogin {
+		return nil
+	}
+	a.auth.mu.Lock()
+	uncertain := a.auth.accountsWriteUncertain
+	a.auth.mu.Unlock()
+	if uncertain {
+		return fmt.Errorf("账户文件写入状态未确认，请安全重启工作台后核对")
+	}
+	return nil
+}
+
 func (a *App) checkManagedAccountBackend(i Instance, cfg RuntimeConfig) error {
+	if cfg.InstanceID != i.ID || cfg.Kind != i.Kind || cfg.ManagedAccountLogin != i.ManagedAccountLogin {
+		return fmt.Errorf("账户认证配置与目标实例不匹配")
+	}
 	if err := validateManagedRuntimeConfig(cfg); err != nil {
 		return err
 	}
 	if !cfg.ManagedAccountLogin {
 		return nil
-	}
-	if cfg.InstanceID != i.ID || cfg.Kind != i.Kind {
-		return fmt.Errorf("账户认证配置与目标实例不匹配")
 	}
 	if _, ok := a.runtime.(*embeddedRuntime); !ok {
 		return fmt.Errorf("当前运行核心不支持账户认证，仅内嵌服务端可用")
@@ -141,6 +153,13 @@ func (a *App) checkSystemCATLSBackend(i Instance) error {
 type RuntimeInstance interface {
 	Wait() error
 	Stop(ctx context.Context) error
+}
+
+// RuntimeManagedCredentialRevoker revokes one account credential generation
+// from this run. Before calling it the owner must invalidate the identity
+// under the provider's admission gate, so a later login cannot recreate it.
+type RuntimeManagedCredentialRevoker interface {
+	RevokeManagedCredential(context.Context, server.ManagedIdentity) error
 }
 
 // RuntimeReadiness is optional. Ready closes after the engine enters its run

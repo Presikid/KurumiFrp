@@ -36,6 +36,9 @@ type App struct {
 	addr             string
 	auth             auth
 	procs            map[string]*process
+	// Protected by mu. A failed live revocation blocks this account/instance
+	// until the workbench restarts, rather than admitting a new credential.
+	accountFRPRevocations map[accountFRPRevocationKey]*accountFRPRevocation
 	traffic          map[string]*trafficSamples // protected by mu, keyed by instance and run ID
 	trafficDaily     *trafficDailyHistory
 	trafficBudget    *trafficBudgetStore
@@ -175,6 +178,7 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (res
 		return nil, fmt.Errorf("invalid access token file")
 	}
 	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, dataLock: dataLock, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountGroups: accountGroups, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordLegacy: adminPasswordLegacy, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	app.auth.onAccountsWriteUncertain = func() { go app.stopAccountFRPRuns() }
 	app.auth.oidcSettings, app.auth.oidcLoadErr = loadOIDCSettings(s.dir)
 	app.auth.oidcStartSlots = make(chan struct{}, 4)
 	if e = app.recoverSchedules(); e != nil {

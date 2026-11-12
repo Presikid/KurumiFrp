@@ -122,11 +122,27 @@ func (s *Store) render(id string, preview bool) (Rendered, error) {
 		// TOML field. A standalone frps ignores it; only our embedded runtime enforces it.
 		fmt.Fprintf(&b, "# KurumiFRP control-entry policy (embedded only): %s\n", policy.summary(i.ServerAccessMode))
 	}
-	v, e := secret(i.Token, "KURUMI_AUTH_TOML")
-	if e != nil {
-		return r, e
+	if i.ManagedAccountLogin {
+		// Account credentials are supplied only to the embedded runtime. A
+		// standalone frps cannot enforce them using this configuration alone.
+		fmt.Fprintln(&b, "# KurumiFRP account authentication requires the embedded runtime.")
+		fmt.Fprintln(&b, "# Do not run this configuration directly; it does not enforce account authentication.")
+		fmt.Fprintln(&b, "auth.method = \"token\"")
+		if preview {
+			// Previews can be downloaded. Deliberately invalid TOML prevents a
+			// standalone frps from starting with an empty shared token.
+			fmt.Fprintln(&b, "# 此预览不能用于独立 frps；账户认证仅由 KurumiFRP 内嵌核心提供。")
+			fmt.Fprintln(&b, "auth.token = <requires-KurumiFRP-embedded-runtime>")
+		} else {
+			fmt.Fprintln(&b, "auth.token = \"\"")
+		}
+	} else {
+		v, e := secret(i.Token, "KURUMI_AUTH_TOML")
+		if e != nil {
+			return r, e
+		}
+		fmt.Fprintf(&b, "auth.method = \"token\"\nauth.token = %s\n", v)
 	}
-	fmt.Fprintf(&b, "auth.method = \"token\"\nauth.token = %s\n", v)
 	for _, t := range s.DB.State.Tunnels {
 		if t.InstanceID != id || !t.Enabled {
 			continue
