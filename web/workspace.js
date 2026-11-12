@@ -1,5 +1,10 @@
 'use strict';
 
+const skinStylesheet = document.createElement('link');
+skinStylesheet.rel = 'stylesheet';
+skinStylesheet.href = '/theme-skins.css';
+document.head.appendChild(skinStylesheet);
+
 // Shared shell and request lifecycle for the new workspace pages.
 // ProtocolEditor uses the same escaping function when it renders form fields.
 const esc = (value = '') => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
@@ -11,6 +16,7 @@ window.Kurumi = (() => {
  let snapshot = null, page = 'overview', session = 0, request = null, root = null, activePage = null;
  let timer = null, toastTimer = null, dialogSpec = null, dialogBusy = false;
  let transfer = null, transferRequest = null;
+ let themeCatalogSession = -1, themeCatalogRequest = false;
  let channel = null, signal = '';
  const signalKey = 'kurumi-workspace-session';
  const transferKey = 'kurumi-workspace-transfer';
@@ -77,6 +83,7 @@ window.Kurumi = (() => {
   if ($('#dialog').open) $('#dialog').close();
   if ($('#diff-dialog').open) $('#diff-dialog').close();
   $('#content').replaceChildren(); $('#app').hidden = true; $('#login').hidden = false;
+  const picker = $('#skin-picker'); if (picker) picker.hidden = true;
   $('#login-form').elements.token.value = '';
  }
  function announce() {
@@ -165,6 +172,7 @@ window.Kurumi = (() => {
    snapshot = next;
    $('#login').hidden = true; $('#app').hidden = false;
    updateShell();
+   void updateThemePicker().catch(() => {});
    const changed = previous !== JSON.stringify(snapshot);
    const accessChanged = previousScope !== null && previousScope !== scope(snapshot);
    const identityChanged = previousIdentity !== null && previousIdentity !== JSON.stringify(snapshot.identity || null);
@@ -212,6 +220,67 @@ window.Kurumi = (() => {
   try { spec.onReady?.($('#editor')); }
   catch (error) { $('#dialog').close(); dialogSpec = null; throw error; }
  }
+ function savedSkin() {
+  try {
+   const value = localStorage.getItem('kurumi-skin') || '';
+   return value.length <= 32 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) ? value : '';
+  } catch (_) { return ''; }
+ }
+ function applySkin(id) {
+  if (id && id !== 'default') document.body.dataset.kurumiSkin = id;
+  else delete document.body.dataset.kurumiSkin;
+  try { if (id && id !== 'default') localStorage.setItem('kurumi-skin', id); else localStorage.removeItem('kurumi-skin'); } catch (_) {}
+ }
+ async function updateThemePicker() {
+  const active = document.body.dataset.kurumiSkin || savedSkin();
+  if ((themeCatalogSession === session && !active) || themeCatalogRequest || !snapshot) return;
+  const generation = session;
+  themeCatalogRequest = true;
+  try {
+   const result = await api('themes');
+   if (generation !== session || !snapshot || !Array.isArray(result.themes)) return;
+   themeCatalogSession = generation;
+   $('#skin-picker').hidden = result.themes.length === 0;
+   if (active && !result.themes.some(item => item.id === active && item.installed)) {
+    applySkin('default');
+    toast('当前主题不可用或素材缺失，已恢复默认主题。');
+   }
+  } finally { themeCatalogRequest = false; }
+ }
+ async function chooseSkin() {
+  const generation = session, result = await api('themes');
+  if (generation !== session || !snapshot || !Array.isArray(result.themes) || !result.themes.length) return;
+  const admin = snapshot.identity?.role === 'admin';
+  const themes = result.themes.filter(item => item && typeof item.id === 'string' && item.id.length <= 32 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item.id));
+  const current = themes.some(item => item.id === savedSkin() && item.installed) ? savedSkin() : 'default';
+  const options = [`<option value="default"${current === 'default' ? ' selected' : ''}>默认主题（随程序提供）</option>`];
+  for (const item of themes) {
+   const disabled = !admin && !item.installed;
+   const status = item.installed ? '已安装' : admin ? '选择后下载' : '需要管理员安装';
+   options.push(`<option value="${esc(item.id)}"${current === item.id ? ' selected' : ''}${disabled ? ' disabled' : ''}>${esc(item.name)} · ${status}</option>`);
+  }
+  openDialog({
+   html:`<h2>狂三主题</h2><p class="muted">主题只在选择时从 GitHub 下载；已安装的主题可离线使用，选择保存在当前浏览器。</p><div class="form-grid"><label>选择主题<select name="skin">${options.join('')}</select></label></div>`,
+   submitLabel:'应用主题',
+   async onSubmit(form) {
+    const id = form.elements.skin.value;
+    if (id !== 'default') {
+     const selected = themes.find(item => item.id === id);
+     if (!selected || (!selected.installed && !admin)) throw new Error('此主题尚不可用。');
+     if (!selected.installed) {
+      const submit = form.querySelector('[type="submit"]'), label = submit.textContent;
+      submit.textContent = '正在下载主题…';
+      try { await api('themes/install', {id}); }
+      catch (error) {
+       if (!error.status || error.status >= 500) throw new Error('主题安装结果尚未确认，请重新打开主题选择并检查。当前主题未更改。');
+       throw error;
+      } finally { submit.textContent = label; }
+     }
+    }
+    applySkin(id); toast('主题已切换。');
+   }
+  });
+ }
  function showDiff(value) {
   $('#diff-title').textContent = `${value.instanceName || '实例'} · 配置差异`;
   $('#diff-summary').textContent = `新增 ${value.addedCount || 0} 行 · 移除 ${value.removedCount || 0} 行${value.secretChanged ? ' · 认证凭据已变化' : ''}${value.orderChanged ? ' · 顺序变化' : ''}`;
@@ -256,6 +325,12 @@ window.Kurumi = (() => {
    }
   }));
   $('#refresh').addEventListener('click', () => { if (confirmDiscard()) void refresh(false, true).catch(error => toast(error.message)); });
+  applySkin(savedSkin());
+  const picker = document.createElement('button');
+  picker.id = 'skin-picker'; picker.type = 'button'; picker.className = 'icon-button'; picker.hidden = true;
+  picker.title = '选择狂三主题'; picker.setAttribute('aria-label', '选择狂三主题'); picker.textContent = '✦';
+  picker.addEventListener('click', () => { void chooseSkin().catch(error => toast(error.message)); });
+  $('#theme').before(picker);
   try { document.body.classList.toggle('light', localStorage.getItem('kurumi-theme') === 'light'); } catch (_) {}
   $('#theme').addEventListener('click', () => {
    document.body.classList.toggle('light');

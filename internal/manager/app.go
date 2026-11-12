@@ -31,23 +31,24 @@ type App struct {
 	// Protected by mu; changes when a valid instance operation is attempted.
 	nodeOperationVersions map[string]string
 
-	store            *Store
-	dataLock         *dataDirectoryLock
-	addr             string
-	auth             auth
-	procs            map[string]*process
+	store    *Store
+	dataLock *dataDirectoryLock
+	addr     string
+	auth     auth
+	procs    map[string]*process
 	// Protected by mu. A failed live revocation blocks this account/instance
 	// until the workbench restarts, rather than admitting a new credential.
 	accountFRPRevocations map[accountFRPRevocationKey]*accountFRPRevocation
-	traffic          map[string]*trafficSamples // protected by mu, keyed by instance and run ID
-	trafficDaily     *trafficDailyHistory
-	trafficBudget    *trafficBudgetStore
-	assets           http.Handler
-	webhooks         *webhookDispatcher
-	loginHistory     *loginHistory
-	firewall         *firewallManager
-	maintenance      *maintenanceMode
-	updateNotices    updateNoticeState
+	traffic               map[string]*trafficSamples // protected by mu, keyed by instance and run ID
+	trafficDaily          *trafficDailyHistory
+	trafficBudget         *trafficBudgetStore
+	assets                http.Handler
+	themes                *themeManager
+	webhooks              *webhookDispatcher
+	loginHistory          *loginHistory
+	firewall              *firewallManager
+	maintenance           *maintenanceMode
+	updateNotices         updateNoticeState
 
 	// Lifecycle reservations are protected by mu. Slow operations run without it.
 	operations          map[string]*runtimeOperation
@@ -177,7 +178,7 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (res
 	if len(token) != 64 {
 		return nil, fmt.Errorf("invalid access token file")
 	}
-	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, dataLock: dataLock, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountGroups: accountGroups, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordLegacy: adminPasswordLegacy, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
+	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, dataLock: dataLock, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountGroups: accountGroups, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordLegacy: adminPasswordLegacy, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), themes: newThemeManager(s.dir), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	app.auth.onAccountsWriteUncertain = func() { go app.stopAccountFRPRuns() }
 	app.auth.oidcSettings, app.auth.oidcLoadErr = loadOIDCSettings(s.dir)
 	app.auth.oidcStartSlots = make(chan struct{}, 4)
@@ -226,6 +227,7 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (res
 	app.agentReporter.gate.Unlock()
 	return app, nil
 }
+
 // SetDistribution configures the updater before the first HTTP request.
 // Later calls, including calls during shutdown, leave the existing updater intact.
 func (a *App) SetDistribution(distribution string) {
@@ -308,7 +310,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/api/login" && r.Method == "POST" {
 		var input struct {
 			Token    *string `json:"token"`
-			Username string `json:"username"`
+			Username string  `json:"username"`
 			Password *string `json:"password"`
 		}
 		if e := decode(w, r, &input); e != nil {
@@ -478,6 +480,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.healthAPI(w, r)
 			return
 		}
+		if r.URL.Path == "/api/themes" || r.URL.Path == "/api/themes/install" {
+			a.themesAPI(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/update/") {
 			a.updateAPI(w, r)
 			return
@@ -608,6 +614,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != "GET" && r.Method != "HEAD" {
 		w.WriteHeader(405)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/theme-assets/") {
+		a.serveThemeAsset(w, r)
 		return
 	}
 	a.assets.ServeHTTP(w, r)
@@ -752,10 +762,10 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		case "tunnel":
 			var edit struct {
 				Tunnel
-				ClearHTTPPassword bool            `json:"clearHTTPPassword,omitempty"`
-				ClearPluginPassword bool          `json:"clearPluginPassword,omitempty"`
-				RequestHeaders    json.RawMessage `json:"requestHeaders"`
-				ResponseHeaders   json.RawMessage `json:"responseHeaders"`
+				ClearHTTPPassword   bool            `json:"clearHTTPPassword,omitempty"`
+				ClearPluginPassword bool            `json:"clearPluginPassword,omitempty"`
+				RequestHeaders      json.RawMessage `json:"requestHeaders"`
+				ResponseHeaders     json.RawMessage `json:"responseHeaders"`
 			}
 			if err = decodeStrictJSON(req.Value, &edit); err != nil {
 				break
