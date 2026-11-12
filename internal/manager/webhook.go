@@ -27,6 +27,7 @@ type webhookConfig struct {
 	URL                 string `json:"url,omitempty"`
 	Format              string `json:"format,omitempty"`
 	OnStatus            bool   `json:"onStatus"`
+	StatusProblemsOnly  bool   `json:"statusProblemsOnly,omitempty"`
 	OnConfig            bool   `json:"onConfig"`
 	OnLoginLimit        bool   `json:"onLoginLimit,omitempty"`
 	OnUpdate            bool   `json:"onUpdate,omitempty"`
@@ -187,6 +188,7 @@ func (d *webhookDispatcher) configure(configs []webhookRuntimeConfig) {
 		if old != nil && old.target == next.target && old.signingSecret == next.signingSecret && old.templateRaw == next.templateRaw &&
 			old.config.Enabled == next.config.Enabled && old.config.Format == next.config.Format &&
 			old.config.OnStatus == next.config.OnStatus && old.config.OnConfig == next.config.OnConfig &&
+			old.config.StatusProblemsOnly == next.config.StatusProblemsOnly &&
 			old.config.OnLoginLimit == next.config.OnLoginLimit && old.config.OnUpdate == next.config.OnUpdate &&
 			old.config.JSONTemplateEnabled == next.config.JSONTemplateEnabled {
 			old.config = next.config // ciphertext may change during key migration
@@ -257,7 +259,9 @@ func (d *webhookDispatcher) emitUpdateAvailable(version string) bool {
 
 func (cfg webhookConfig) receives(event string) bool {
 	switch event {
-	case "instance.up", "instance.down", "instance.start_failed", "node.available", "node.unavailable":
+	case "instance.up", "node.available":
+		return cfg.OnStatus && !cfg.StatusProblemsOnly
+	case "instance.down", "instance.start_failed", "node.unavailable":
 		return cfg.OnStatus
 	case "config.saved":
 		return cfg.OnConfig
@@ -694,6 +698,7 @@ type webhookRequest struct {
 	Format              *string `json:"format"`
 	ClearURL            bool    `json:"clearURL"`
 	OnStatus            bool    `json:"onStatus"`
+	StatusProblemsOnly  *bool   `json:"statusProblemsOnly"`
 	OnConfig            bool    `json:"onConfig"`
 	OnLoginLimit        *bool   `json:"onLoginLimit"`
 	OnUpdate            *bool   `json:"onUpdate"`
@@ -714,6 +719,7 @@ func (a *App) webhookAPI(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusOK, map[string]any{
 			"revision": revision, "enabled": cfg.Enabled, "hasURL": cfg.URL != "", "hasSigningSecret": cfg.SigningSecret != "",
 			"format": cfg.Format, "onStatus": cfg.OnStatus, "onConfig": cfg.OnConfig,
+			"statusProblemsOnly": cfg.StatusProblemsOnly,
 			"onLoginLimit": cfg.OnLoginLimit, "onUpdate": cfg.OnUpdate,
 			"hasJSONTemplate": cfg.JSONTemplate != "", "jsonTemplateEnabled": cfg.JSONTemplateEnabled, "status": status,
 		})

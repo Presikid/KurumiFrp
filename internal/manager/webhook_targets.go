@@ -99,6 +99,7 @@ func (a *App) prepareWebhookConfig(previous webhookConfig, req webhookRequest) (
 	cfg := webhookConfig{
 		Enabled: req.Enabled, URL: previous.URL, Format: previous.Format,
 		OnStatus: req.OnStatus, OnConfig: req.OnConfig, OnLoginLimit: previous.OnLoginLimit, OnUpdate: previous.OnUpdate,
+		StatusProblemsOnly: previous.StatusProblemsOnly,
 		SigningSecret: previous.SigningSecret, JSONTemplate: previous.JSONTemplate, JSONTemplateEnabled: previous.JSONTemplateEnabled,
 	}
 	// Older clients may omit this field; keep the prior format in that case.
@@ -106,6 +107,9 @@ func (a *App) prepareWebhookConfig(previous webhookConfig, req webhookRequest) (
 		cfg.Format = *req.Format
 	}
 	// An older client cannot clear event choices it does not know about.
+	if req.StatusProblemsOnly != nil {
+		cfg.StatusProblemsOnly = *req.StatusProblemsOnly
+	}
 	if req.OnLoginLimit != nil {
 		cfg.OnLoginLimit = *req.OnLoginLimit
 	}
@@ -206,6 +210,7 @@ type webhookTargetRequest struct {
 	Format              *string `json:"format"`
 	ClearURL            bool    `json:"clearURL"`
 	OnStatus            *bool   `json:"onStatus"`
+	StatusProblemsOnly  *bool   `json:"statusProblemsOnly"`
 	OnConfig            *bool   `json:"onConfig"`
 	OnLoginLimit        *bool   `json:"onLoginLimit"`
 	OnUpdate            *bool   `json:"onUpdate"`
@@ -227,6 +232,7 @@ func (a *App) webhookTargetsAPI(w http.ResponseWriter, r *http.Request) {
 			HasURL              bool           `json:"hasURL"`
 			HasSigningSecret    bool           `json:"hasSigningSecret"`
 			OnStatus            bool           `json:"onStatus"`
+			StatusProblemsOnly  bool           `json:"statusProblemsOnly"`
 			OnConfig            bool           `json:"onConfig"`
 			OnLoginLimit        bool           `json:"onLoginLimit"`
 			OnUpdate            bool           `json:"onUpdate"`
@@ -240,6 +246,7 @@ func (a *App) webhookTargetsAPI(w http.ResponseWriter, r *http.Request) {
 				ID: id, Name: name, Enabled: cfg.Enabled, Format: cfg.Format,
 				HasURL: cfg.URL != "", HasSigningSecret: cfg.SigningSecret != "",
 				OnStatus: cfg.OnStatus, OnConfig: cfg.OnConfig, OnLoginLimit: cfg.OnLoginLimit, OnUpdate: cfg.OnUpdate,
+				StatusProblemsOnly: cfg.StatusProblemsOnly,
 				HasJSONTemplate: cfg.JSONTemplate != "", JSONTemplateEnabled: cfg.JSONTemplateEnabled, Status: a.webhooks.statusFor(id),
 			})
 		}
@@ -395,6 +402,7 @@ func (a *App) mutateWebhookTarget(req webhookTargetRequest) (uint64, int, error)
 			input := webhookRequest{
 				Enabled: *req.Enabled, URL: req.URL, Format: req.Format, ClearURL: req.ClearURL,
 				OnStatus: *req.OnStatus, OnConfig: *req.OnConfig, OnLoginLimit: req.OnLoginLimit, OnUpdate: req.OnUpdate,
+				StatusProblemsOnly: req.StatusProblemsOnly,
 				SigningSecret: req.SigningSecret, ClearSigningSecret: req.ClearSigningSecret,
 				JSONTemplate: req.JSONTemplate, ClearJSONTemplate: req.ClearJSONTemplate, JSONTemplateEnabled: req.JSONTemplateEnabled,
 			}
