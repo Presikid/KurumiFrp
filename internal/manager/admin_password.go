@@ -135,7 +135,7 @@ func prepareAdminPassword(dir string) (adminPasswordFile, []byte, bool, error) {
 		name := entry.Name()
 		// The launcher creates these before constructing the manager. A stale
 		// temporary init file may remain after a crash before the commit.
-		if name != "manager.lock" && name != "tmp" && !strings.HasPrefix(name, ".admin-password-init-") {
+		if name != "manager.lock" && name != dataDirectoryLockName && name != "tmp" && !strings.HasPrefix(name, ".admin-password-init-") {
 			return adminPasswordFile{}, nil, true, nil
 		}
 	}
