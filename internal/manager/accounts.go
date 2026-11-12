@@ -27,23 +27,24 @@ var accountNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$`)
 var accountIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 type localAccount struct {
-	gate            *sync.RWMutex `json:"-"`
-	ID              string        `json:"id"`
-	Username        string        `json:"username"`
-	Role            string        `json:"role"`
-	Enabled         bool          `json:"enabled"`
-	ExpiresAt       string        `json:"expiresAt,omitempty"`
-	GroupID         string        `json:"groupId,omitempty"`
-	Instances       []string      `json:"instances"`
-	ControlInstances *[]string     `json:"controlInstances,omitempty"`
-	AllowedActions  *[]string     `json:"allowedActions,omitempty"`
-	ReadPermissions *accountReadPermissions `json:"readPermissions,omitempty"`
-	AllowLogs       bool          `json:"allowLogs,omitempty"`
-	LogInstances    *[]string     `json:"logInstances,omitempty"`
-	RemoteInstances []remoteGrant `json:"remoteInstances,omitempty"`
-	FRPTokens       []accountFRPToken `json:"frpTokens,omitempty"`
-	Salt            string        `json:"salt"`
-	Hash            string        `json:"hash"`
+	gate             *sync.RWMutex           `json:"-"`
+	ID               string                  `json:"id"`
+	Username         string                  `json:"username"`
+	Role             string                  `json:"role"`
+	Enabled          bool                    `json:"enabled"`
+	ExpiresAt        string                  `json:"expiresAt,omitempty"`
+	GroupID          string                  `json:"groupId,omitempty"`
+	Instances        []string                `json:"instances"`
+	ControlInstances *[]string               `json:"controlInstances,omitempty"`
+	AllowedActions   *[]string               `json:"allowedActions,omitempty"`
+	ReadPermissions  *accountReadPermissions `json:"readPermissions,omitempty"`
+	AllowLogs        bool                    `json:"allowLogs,omitempty"`
+	LogInstances     *[]string               `json:"logInstances,omitempty"`
+	RemoteInstances  []remoteGrant           `json:"remoteInstances,omitempty"`
+	FRPTokens        []accountFRPToken       `json:"frpTokens,omitempty"`
+	FRPProxyLimit    *int                    `json:"frpProxyLimit,omitempty"`
+	Salt             string                  `json:"salt"`
+	Hash             string                  `json:"hash"`
 }
 
 type remoteGrant struct {
@@ -66,21 +67,23 @@ type accountFile struct {
 }
 
 type accountView struct {
-	ID               string   `json:"id"`
-	Username         string   `json:"username"`
-	Role             string   `json:"role"`
-	Enabled          bool     `json:"enabled"`
-	ExpiresAt        string   `json:"expiresAt"`
-	Expired          bool     `json:"expired"`
-	GroupID          string   `json:"groupId"`
-	Instances        []string `json:"instances"`
-	ControlInstances []string `json:"controlInstances"`
-	AllowedActions   []string `json:"allowedActions"`
+	ID               string                 `json:"id"`
+	Username         string                 `json:"username"`
+	Role             string                 `json:"role"`
+	Enabled          bool                   `json:"enabled"`
+	ExpiresAt        string                 `json:"expiresAt"`
+	Expired          bool                   `json:"expired"`
+	GroupID          string                 `json:"groupId"`
+	Instances        []string               `json:"instances"`
+	ControlInstances []string               `json:"controlInstances"`
+	AllowedActions   []string               `json:"allowedActions"`
 	ReadPermissions  accountReadPermissions `json:"readPermissions"`
-	AllowLogs        bool     `json:"allowLogs"`
-	LogInstances     []string `json:"logInstances"`
-	RemoteInstances  []remoteGrant `json:"remoteInstances"`
-	FRPTokens        []accountFRPTokenView `json:"frpTokens,omitempty"`
+	AllowLogs        bool                   `json:"allowLogs"`
+	LogInstances     []string               `json:"logInstances"`
+	RemoteInstances  []remoteGrant          `json:"remoteInstances"`
+	FRPTokens        []accountFRPTokenView  `json:"frpTokens,omitempty"`
+	FRPProxyLimit    *int                   `json:"frpProxyLimit"`
+	FRPProxyUsed     *int                   `json:"frpProxyUsed"`
 }
 
 type principalContextKey struct{}
@@ -116,6 +119,9 @@ func loadAccounts(dir string) ([]localAccount, []accountGroup, uint64, error) {
 	}
 	names, ids := map[string]bool{}, map[string]bool{}
 	for i, u := range file.Accounts {
+		if u.FRPProxyLimit != nil && (*u.FRPProxyLimit < 0 || *u.FRPProxyLimit > maxAccountFRPProxies) {
+			return nil, nil, 0, fmt.Errorf("账户的受管 TCP 代理上限无效；原文件已保留")
+		}
 		if normalized, err := normalizeAccountExpiry(u.ExpiresAt); err != nil || normalized != u.ExpiresAt {
 			return nil, nil, 0, fmt.Errorf("本地账户文件中的到期时间无效；原文件已保留")
 		}
@@ -502,9 +508,22 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		views := make([]accountView, 0, len(a.auth.accounts))
 		now := time.Now()
+		var proxySlots map[string]int
+		if a.auth.frpProxySlotsMu.TryLock() {
+			proxySlots = make(map[string]int, len(a.auth.frpProxySlots))
+			for id, count := range a.auth.frpProxySlots {
+				proxySlots[id] = count
+			}
+			a.auth.frpProxySlotsMu.Unlock()
+		}
 		for _, u := range a.auth.accounts {
 			expired := u.Enabled && u.ExpiresAt != "" && !u.activeAt(now)
-			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, ExpiresAt: u.ExpiresAt, Expired: expired, GroupID: u.GroupID, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowedActions: effectiveOperatorActions(u), ReadPermissions: effectiveReadPermissions(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...), FRPTokens: a.accountFRPTokenViewsLocked(u)})
+			var proxyUsed *int
+			if proxySlots != nil {
+				count := proxySlots[u.ID]
+				proxyUsed = &count
+			}
+			views = append(views, accountView{ID: u.ID, Username: u.Username, Role: u.Role, Enabled: u.Enabled, ExpiresAt: u.ExpiresAt, Expired: expired, GroupID: u.GroupID, Instances: append([]string{}, u.Instances...), ControlInstances: effectiveControlInstances(u), AllowedActions: effectiveOperatorActions(u), ReadPermissions: effectiveReadPermissions(u), AllowLogs: u.AllowLogs, LogInstances: effectiveLogInstances(u), RemoteInstances: append([]remoteGrant{}, u.RemoteInstances...), FRPTokens: a.accountFRPTokenViewsLocked(u), FRPProxyLimit: u.FRPProxyLimit, FRPProxyUsed: proxyUsed})
 		}
 		revision := a.auth.accountsRevision
 		writesUncertain := a.auth.accountsWriteUncertain
@@ -521,27 +540,29 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Action           string    `json:"action"`
-		Revision         uint64    `json:"revision"`
-		ID               string    `json:"id"`
-		Username         string    `json:"username"`
-		Role             string    `json:"role"`
-		Enabled          bool      `json:"enabled"`
-		ExpiresAt        *string   `json:"expiresAt"`
-		Instances        []string  `json:"instances"`
-		ControlInstances *[]string `json:"controlInstances"`
-		AllowedActions   *[]string `json:"allowedActions"`
+		Action           string                  `json:"action"`
+		Revision         uint64                  `json:"revision"`
+		ID               string                  `json:"id"`
+		Username         string                  `json:"username"`
+		Role             string                  `json:"role"`
+		Enabled          bool                    `json:"enabled"`
+		ExpiresAt        *string                 `json:"expiresAt"`
+		Instances        []string                `json:"instances"`
+		ControlInstances *[]string               `json:"controlInstances"`
+		AllowedActions   *[]string               `json:"allowedActions"`
 		ReadPermissions  *accountReadPermissions `json:"readPermissions"`
-		AllowLogs        *bool     `json:"allowLogs"`
-		LogInstances     *[]string `json:"logInstances"`
-		RemoteInstances  *[]remoteGrant `json:"remoteInstances"`
-		Password         string    `json:"password"`
-		GroupID          *string   `json:"groupId"`
-		GroupName        string    `json:"groupName"`
-		TemplateFrom     *string   `json:"templateFrom"`
-		InstanceID       string    `json:"instanceId"`
-		InstanceBinding  string    `json:"instanceBinding"`
-		ConfigRevision   *uint64   `json:"configRevision"`
+		AllowLogs        *bool                   `json:"allowLogs"`
+		LogInstances     *[]string               `json:"logInstances"`
+		RemoteInstances  *[]remoteGrant          `json:"remoteInstances"`
+		Password         string                  `json:"password"`
+		GroupID          *string                 `json:"groupId"`
+		GroupName        string                  `json:"groupName"`
+		TemplateFrom     *string                 `json:"templateFrom"`
+		InstanceID       string                  `json:"instanceId"`
+		InstanceBinding  string                  `json:"instanceBinding"`
+		ConfigRevision   *uint64                 `json:"configRevision"`
+		FRPProxyLimited  *bool                   `json:"frpProxyLimited"`
+		FRPProxyLimit    *int                    `json:"frpProxyLimit"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, 400, err)
@@ -553,6 +574,10 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Action == "frp-issue" || req.Action == "frp-rotate" || req.Action == "frp-disable" {
 		a.accountFRPTokenAPI(w, r, req.Action, req.Revision, req.ConfigRevision, req.ID, req.InstanceID, req.InstanceBinding)
+		return
+	}
+	if req.Action == "frp-proxy-limit" {
+		a.accountFRPProxyLimitAPI(w, r, req.Revision, req.ID, req.FRPProxyLimited, req.FRPProxyLimit)
 		return
 	}
 	if req.Action != "save" && req.Action != "delete" && req.Action != "revoke-sessions" {
@@ -740,6 +765,7 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 			// Older account editors omit group membership; preserve it when absent.
 			u.GroupID = users[index].GroupID
 			u.FRPTokens = append([]accountFRPToken(nil), users[index].FRPTokens...)
+			u.FRPProxyLimit = users[index].FRPProxyLimit
 		}
 		if req.GroupID != nil {
 			found := *req.GroupID == ""

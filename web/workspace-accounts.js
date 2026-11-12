@@ -196,14 +196,18 @@
     summary.textContent = `显示 ${visible.length} / ${model.accounts.length} 个账户。` + (hasTime ? ` 全部账户中有 ${expiring} 个已启用账户在 7 天内到期；状态截至 ${model.sampledAt}，请刷新查看最新结果。` : ' 服务端时间不可用，无法判断是否临近到期；请刷新账户。');
     if (!model.accounts.length) { list.innerHTML = '<p>尚未创建本地账户。管理员仍可使用主密码登录。</p>'; return; }
     if (!visible.length) { list.innerHTML = '<p>没有符合筛选条件的账户。</p>'; return; }
-    list.innerHTML = `<div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>分组</th><th>授权</th><th>操作</th></tr></thead><tbody>${visible.map(user => {
+    list.innerHTML = `<div class="table-wrap"><table><thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>分组</th><th>授权</th><th>受管 TCP 代理</th><th>操作</th></tr></thead><tbody>${visible.map(user => {
      const self = ownAccount(user), local = Array.isArray(user.instances) ? user.instances : [], remote = Array.isArray(user.remoteInstances) ? user.remoteInstances : [];
      const accountState = state(user), status = {disabled:'已停用',expired:'已到期',expiring:'7 天内到期',active:'启用'}[accountState];
      const grants = user.role === 'admin' ? '全部实例' : `${local.length ? local.map(id => esc(names.get(id) || `实例 ${id}`)).join('、') : '无本机实例'} · 远程 ${remote.length} 项`;
      const groupOptions = `<option value="">未分组</option>` + model.groups.map(group => `<option value="${esc(group.id)}" ${group.id === user.groupId ? 'selected' : ''}>${esc(group.name)}</option>`).join('');
      const revoke = `<button type="button" data-account="revoke-sessions" data-id="${esc(user.id)}">撤销工作台会话</button>`;
      const frp = `<button type="button" data-account="frp-tokens" data-id="${esc(user.id)}">frp 凭据登记</button>`;
-     return `<tr><td>${esc(user.username)}${self ? ' <span class="pill">当前账户</span>' : ''}</td><td>${esc(roles[user.role] || user.role)}</td><td><span class="pill ${accountState === 'expiring' || accountState === 'expired' ? 'warn' : ''}">${status}</span>${user.expiresAt ? `<br><small>到期 ${esc(user.expiresAt)} (UTC)</small>` : ''}</td><td><select data-account-group="${esc(user.id)}" aria-label="${esc(user.username)} 的分组" ${groupBusy || writesBlocked() ? 'disabled' : ''}>${groupOptions}</select></td><td>${grants}</td><td>${self ? `<div class="actions">${frp}${revoke}<span class="small-note">${writesBlocked() ? '暂不可修改账户' : '修改密码请使用“修改登录密码”'}</span></div>` : `<div class="actions"><button type="button" data-account="edit" data-id="${esc(user.id)}" ${writesBlocked() ? 'disabled' : ''}>编辑</button>${frp}${revoke}<button type="button" class="danger" data-account="delete" data-id="${esc(user.id)}" ${writesBlocked() ? 'disabled' : ''}>删除</button></div>`}</td></tr>`;
+     const limitOK = user.frpProxyLimit === null || (Number.isSafeInteger(user.frpProxyLimit) && user.frpProxyLimit >= 0 && user.frpProxyLimit <= 1000000);
+     const usedOK = Number.isSafeInteger(user.frpProxyUsed) && user.frpProxyUsed >= 0;
+     const proxyInfo = `${limitOK ? user.frpProxyLimit === null ? '上限：不限' : `上限：${user.frpProxyLimit}` : '上限不可用'}<br><small>已占用（含创建/清理中）：${usedOK ? user.frpProxyUsed : '暂不可用'}</small>`;
+     const proxyButton = `<button type="button" data-account="frp-proxy-limit" data-id="${esc(user.id)}" ${writesBlocked() || !limitOK ? 'disabled' : ''}>设置代理上限</button>`;
+     return `<tr><td>${esc(user.username)}${self ? ' <span class="pill">当前账户</span>' : ''}</td><td>${esc(roles[user.role] || user.role)}</td><td><span class="pill ${accountState === 'expiring' || accountState === 'expired' ? 'warn' : ''}">${status}</span>${user.expiresAt ? `<br><small>到期 ${esc(user.expiresAt)} (UTC)</small>` : ''}</td><td><select data-account-group="${esc(user.id)}" aria-label="${esc(user.username)} 的分组" ${groupBusy || writesBlocked() ? 'disabled' : ''}>${groupOptions}</select></td><td>${grants}</td><td>${proxyInfo}</td><td>${self ? `<div class="actions">${proxyButton}${frp}${revoke}<span class="small-note">${writesBlocked() ? '暂不可修改账户' : '修改密码请使用“修改登录密码”'}</span></div>` : `<div class="actions"><button type="button" data-account="edit" data-id="${esc(user.id)}" ${writesBlocked() ? 'disabled' : ''}>编辑</button>${proxyButton}${frp}${revoke}<button type="button" class="danger" data-account="delete" data-id="${esc(user.id)}" ${writesBlocked() ? 'disabled' : ''}>删除</button></div>`}</td></tr>`;
     }).join('')}</tbody></table></div>`;
    };
    const renderGroups = () => {
@@ -462,6 +466,37 @@
     });
    };
 
+   const editFRPProxyLimit = user => {
+    requireManagedIdle();
+    requireCurrent();
+    requireWritable();
+    if (!model || !accountIDOK(user?.id) || !(user.frpProxyLimit === null || (Number.isSafeInteger(user.frpProxyLimit) && user.frpProxyLimit >= 0 && user.frpProxyLimit <= 1000000))) throw new Error('账户代理上限不可用，请刷新后核对。');
+    const source = model, revision = source.revision;
+    let saveUncertain = false;
+    K.openDialog({
+     html:`<h2>受管 TCP 代理上限 · ${esc(user.username)}</h2><p class="small-note">同一账户跨本机受管 frps 的非分组 TCP 代理共用此上限；留空表示不限，填 0 表示不允许新增。在线下调不会关闭已获准的代理，创建或清理中的代理也占用名额。这不是 TCP 连接数、流量或计费。</p><label>同时存在的代理上限（0–1000000）<input name="proxyLimit" type="number" min="0" max="1000000" step="1" value="${user.frpProxyLimit === null ? '' : user.frpProxyLimit}" placeholder="留空表示不限"></label>`,
+     submitLabel:'保存代理上限',
+     async onSubmit(form) {
+      requireManagedIdle(); requireCurrent(); requireWritable();
+      if (saveUncertain) throw new Error('上次保存结果未确认，请关闭窗口并刷新账户后核对。');
+      if (model !== source || model.revision !== revision) throw new Error('账户列表已变化，请刷新后重试。');
+      const raw = form.elements.proxyLimit.value.trim();
+      if (raw && (!/^(0|[1-9][0-9]*)$/.test(raw) || Number(raw) > 1000000)) throw new Error('上限须为 0–1000000 的整数，留空表示不限。');
+      const payload = {action:'frp-proxy-limit', revision, id:user.id, frpProxyLimited:raw !== ''};
+      if (raw !== '') payload.frpProxyLimit = Number(raw);
+      accountSaving = true; activeManagedRender?.();
+      try {
+       const result = await request('accounts',payload,30000);
+       if (result?.ok !== true || result.revision !== revision + 1) throw new Error('响应无法确认代理上限的保存结果。');
+       if (current()) { K.toast('代理上限已保存；已有代理不受影响。'); await loadAccounts(); }
+      } catch (error) {
+       if (error.status === 408 || uncertain(error)) { saveUncertain = true; if (current()) void loadAccounts(); throw new Error('保存结果未确认，旧请求可能仍在处理；刷新只是当时的快照。请关闭窗口并核对，勿盲目重复提交；若后续版本冲突请再次刷新，若账户写入已冻结请安全重启工作台。'); }
+       throw error;
+      } finally { accountSaving = false; activeManagedRender?.(); }
+     }
+    });
+   };
+
    const editAccount = user => {
     requireManagedIdle();
     requireCurrent();
@@ -651,9 +686,9 @@
     if (!button || !root.contains(button) || button.disabled) return;
     const action = button.dataset.account;
     try {
-     if (['new','edit','delete','group-new','group-edit','group-delete','frp-tokens','revoke-sessions','clear-history'].includes(action)) requireManagedIdle();
-     if (['new','edit','delete','group-new','group-edit','group-delete'].includes(action)) requireWritable();
-     if (groupBusy && ['reload','new','edit','delete','frp-tokens','revoke-sessions','group-new','group-edit','group-delete'].includes(action)) throw new Error('账户分组操作尚未结束，请稍后再试。');
+     if (['new','edit','delete','group-new','group-edit','group-delete','frp-tokens','frp-proxy-limit','revoke-sessions','clear-history'].includes(action)) requireManagedIdle();
+     if (['new','edit','delete','group-new','group-edit','group-delete','frp-proxy-limit'].includes(action)) requireWritable();
+     if (groupBusy && ['reload','new','edit','delete','frp-tokens','frp-proxy-limit','revoke-sessions','group-new','group-edit','group-delete'].includes(action)) throw new Error('账户分组操作尚未结束，请稍后再试。');
      if (action === 'reload') { await loadAccounts(); return; }
      if (action === 'history') { await loadHistory(); return; }
      if (action === 'managed-refresh') { await refreshManaged(); return; }
@@ -708,6 +743,11 @@
       const user = model?.accounts.find(item => item.id === button.dataset.id);
       if (!user) throw new Error('账户已变化，请刷新。');
       manageFRP(user); return;
+     }
+     if (action === 'frp-proxy-limit') {
+      const user = model?.accounts.find(item => item.id === button.dataset.id);
+      if (!user) throw new Error('账户已变化，请刷新。');
+      editFRPProxyLimit(user); return;
      }
      if (action === 'revoke-sessions') {
       requireCurrent();

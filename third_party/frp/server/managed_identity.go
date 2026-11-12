@@ -38,12 +38,16 @@ type ManagedLoginProvider interface {
 	// the checked absolute expiry; a zero time means the account has no expiry.
 	// It may be called with frp lifecycle locks held and must not call into frp.
 	TryAuthorize(identity ManagedIdentity) (release func(), expiresAt time.Time, err error)
+	// TryReserveProxy rechecks the credential and atomically claims one
+	// account-wide TCP proxy slot. It must not wait for manager/account locks.
+	// The returned release is prompt, concurrency-safe and idempotent.
+	TryReserveProxy(identity ManagedIdentity) (release func(), err error)
 }
 
 type managedLogin struct {
-	identity  ManagedIdentity
-	verifier  auth.Verifier
-	key       []byte
+	identity ManagedIdentity
+	verifier auth.Verifier
+	key      []byte
 }
 
 func validManagedAccountID(id string) bool {

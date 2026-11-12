@@ -71,23 +71,23 @@ type ControlManager struct {
 	// controls indexed by run id
 	ctlsByRunID map[string]*controlEntry
 	// liveControls also includes replaced generations until their cleanup completes.
-	liveControls map[*Control]struct{}
-	managedStates map[ManagedIdentity]*managedIdentityState
+	liveControls            map[*Control]struct{}
+	managedStates           map[ManagedIdentity]*managedIdentityState
 	onManagedCleanupFailure func(ManagedIdentity)
-	drained      chan struct{}
-	registry     *registry.ClientRegistry
-	closed       bool
+	drained                 chan struct{}
+	registry                *registry.ClientRegistry
+	closed                  bool
 
 	mu sync.RWMutex
 }
 
 func NewControlManager(clientRegistry *registry.ClientRegistry) *ControlManager {
 	return &ControlManager{
-		ctlsByRunID:  make(map[string]*controlEntry),
-		liveControls: make(map[*Control]struct{}),
+		ctlsByRunID:   make(map[string]*controlEntry),
+		liveControls:  make(map[*Control]struct{}),
 		managedStates: make(map[ManagedIdentity]*managedIdentityState),
-		drained:      make(chan struct{}),
-		registry:     clientRegistry,
+		drained:       make(chan struct{}),
+		registry:      clientRegistry,
 	}
 }
 
@@ -490,18 +490,18 @@ const (
 
 type Control struct {
 	// session context
-	sessionCtx *SessionContext
-	managedScope *lifetime.Scope
+	sessionCtx      *SessionContext
+	managedScope    *lifetime.Scope
 	managedProxyCtx context.Context
-	managedState *managedIdentityState
+	managedState    *managedIdentityState
 	// Set during managed admission; read only under lifecycleMu.
-	managedExpiresAt time.Time
-	managedUncertain atomic.Bool
-	managedScopeStopOnce sync.Once
+	managedExpiresAt       time.Time
+	managedUncertain       atomic.Bool
+	managedScopeStopOnce   sync.Once
 	managedScopeStopFailed bool
-	managedStopOnce sync.Once
-	managedStopDone chan struct{}
-	managedStopErr error
+	managedStopOnce        sync.Once
+	managedStopDone        chan struct{}
+	managedStopErr         error
 
 	// other components can use this to communicate with client
 	msgTransporter transport.MessageTransporter
@@ -1050,6 +1050,9 @@ func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err 
 		pxyConf.GetBaseConfig().Transport.BandwidthLimitMode == types.BandwidthLimitModeServer {
 		return "", fmt.Errorf("account login does not support server-side bandwidth limits")
 	}
+	if ctl.managedScope != nil && (pxyConf.GetBaseConfig().Type != string(v1.ProxyTypeTCP) || pxyConf.GetBaseConfig().LoadBalancer.Group != "") {
+		return "", fmt.Errorf("account login supports ungrouped TCP proxies only")
+	}
 
 	// User info
 	userInfo := plugin.UserInfo{
@@ -1109,9 +1112,33 @@ func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err 
 		return
 	}
 
+	var releaseSlot func()
+	if ctl.managedScope != nil {
+		releaseSlot, err = ctl.reserveManagedProxy()
+		if err != nil {
+			return
+		}
+		if releaseSlot == nil {
+			return "", fmt.Errorf("account proxy admission returned no slot")
+		}
+	}
+	ownedByProxy, runReturned := false, false
+	defer func() {
+		// Managed TCP Run returns an error only before a listener is published.
+		// A panic or uncertain cleanup retains the slot conservatively.
+		if releaseSlot != nil && !ownedByProxy && runReturned && err != nil &&
+			!ctl.managedUncertain.Load() && !ctl.managedFailedLocked() {
+			releaseSlot()
+		}
+	}()
 	remoteAddr, err = pxy.Run()
+	runReturned = true
 	if err != nil {
 		return
+	}
+	if releaseSlot != nil {
+		pxy = &managedCountedProxy{Proxy: pxy, ctl: ctl, release: releaseSlot}
+		ownedByProxy = true
 	}
 	managedPublished := false
 	defer func() {

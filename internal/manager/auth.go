@@ -49,48 +49,52 @@ type auth struct {
 	// error. Freeze account-file writes until restart; readers must treat the
 	// current in-memory state as potentially different from disk.
 	accountsWriteUncertain bool
+	// Counts include managed TCP proxies being created or closed. The separate
+	// lock is never held while taking account, app, or frp lifecycle locks.
+	frpProxySlotsMu sync.Mutex
+	frpProxySlots   map[string]int
 	// Invoked under mu; the callback must return promptly and not take locks.
 	onAccountsWriteUncertain func()
-	oidcSettings      oidcSettings
-	oidcLoadErr       error
-	oidcFlows         map[string]oidcFlow
-	oidcStartSlots    chan struct{}
-	hashSlots         chan struct{}
-	adminPasswordPath       string
-	adminPassword           adminPasswordFile
-	adminPasswordData       []byte
-	adminPasswordLegacy     bool
-	adminPasswordGeneration uint64
-	adminPasswordErr        error
+	oidcSettings             oidcSettings
+	oidcLoadErr              error
+	oidcFlows                map[string]oidcFlow
+	oidcStartSlots           chan struct{}
+	hashSlots                chan struct{}
+	adminPasswordPath        string
+	adminPassword            adminPasswordFile
+	adminPasswordData        []byte
+	adminPasswordLegacy      bool
+	adminPasswordGeneration  uint64
+	adminPasswordErr         error
 }
 
 type authSession struct {
-	expires   time.Time
-	accountID string        // empty for a root browser session
-	gate      *sync.RWMutex // root sessions share rootGate; account sessions use the account gate
-	oidcRevision uint64     // zero for non-OIDC sessions
-	oidcRoleCap  string     // empty unless a provider-group policy restricted this session
+	expires      time.Time
+	accountID    string        // empty for a root browser session
+	gate         *sync.RWMutex // root sessions share rootGate; account sessions use the account gate
+	oidcRevision uint64        // zero for non-OIDC sessions
+	oidcRoleCap  string        // empty unless a provider-group policy restricted this session
 }
 
 type principal struct {
-	Name              string   `json:"name"`
-	Role              string   `json:"role"`
-	Account           bool     `json:"account"`
-	AllowLogs         bool     `json:"allowLogs,omitempty"`
-	OperableInstances []string `json:"operableInstances,omitempty"`
-	AllowedActions    []string `json:"allowedActions,omitempty"`
-	ViewConfig        bool     `json:"viewConfig,omitempty"`
-	ViewTraffic       bool     `json:"viewTraffic,omitempty"`
-	LogInstances      []string `json:"logInstances,omitempty"`
+	Name              string        `json:"name"`
+	Role              string        `json:"role"`
+	Account           bool          `json:"account"`
+	AllowLogs         bool          `json:"allowLogs,omitempty"`
+	OperableInstances []string      `json:"operableInstances,omitempty"`
+	AllowedActions    []string      `json:"allowedActions,omitempty"`
+	ViewConfig        bool          `json:"viewConfig,omitempty"`
+	ViewTraffic       bool          `json:"viewTraffic,omitempty"`
+	LogInstances      []string      `json:"logInstances,omitempty"`
 	RemoteInstances   []remoteGrant `json:"-"`
-	Instances         []string `json:"-"`
-	AccountID         string   `json:"-"`
-	AccountRevision   uint64   `json:"-"`
+	Instances         []string      `json:"-"`
+	AccountID         string        `json:"-"`
+	AccountRevision   uint64        `json:"-"`
 	gate              *sync.RWMutex
 }
 
-func (p principal) admin() bool { return p.Role == "admin" }
-func (p principal) canReadConfig() bool { return p.admin() || p.ViewConfig }
+func (p principal) admin() bool          { return p.Role == "admin" }
+func (p principal) canReadConfig() bool  { return p.admin() || p.ViewConfig }
 func (p principal) canReadTraffic() bool { return p.admin() || p.ViewTraffic }
 
 func (p principal) canPerformAction(action string) bool {
