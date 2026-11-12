@@ -29,6 +29,7 @@ type Instance struct {
 	ClientTransport       string `json:"clientTransport,omitempty"`
 	ClientBindIP          string `json:"clientBindIP,omitempty"`
 	ClientDialTimeout     int    `json:"clientDialTimeout,omitempty"`
+	UDPPacketSize         int    `json:"udpPacketSize,omitempty"`
 	TCPKeepalive          int    `json:"tcpKeepalive,omitempty"`
 	MuxKeepalive          int    `json:"muxKeepalive,omitempty"`
 	LoginFailExit         bool   `json:"loginFailExit,omitempty"`

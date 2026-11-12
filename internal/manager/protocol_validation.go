@@ -211,6 +211,9 @@ func validateProtocolInstance(i Instance) error {
 	if i.ClientDialTimeout < 0 || i.ClientDialTimeout > 3600 || (i.Kind != "frpc" && i.ClientDialTimeout != 0) {
 		return fmt.Errorf("客户端连接超时须为 0–3600 秒；0 使用默认值")
 	}
+	if i.UDPPacketSize < 0 || i.UDPPacketSize > 65535 {
+		return fmt.Errorf("UDP 数据报接收缓冲须为 0–65535 字节；0 使用默认 1500 字节")
+	}
 	if i.TCPKeepalive < -1 || i.TCPKeepalive > 86400 {
 		return fmt.Errorf("TCP 保活间隔须为 -1–86400 秒")
 	}

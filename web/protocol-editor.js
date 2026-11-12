@@ -26,6 +26,7 @@ const ProtocolEditor = (() => {
     <div class="client-field">${field('clientDialTimeout', '连接超时（秒，0 默认 10）', v.clientDialTimeout ?? 0, 'number', 'min="0" max="3600" step="1"')}</div>
     <div class="client-field">${field('clientPoolCount', '客户端预建工作连接数（0 默认 1）', v.clientPoolCount ?? 0, 'number', 'min="0" max="10000" step="1"')}</div>
     <div class="span-2">${check('transportMuxDisabled', '关闭客户端与服务端之间的 TCP 多路复用', v.transportMuxDisabled)}<small>两端设置必须一致；这不是规则中的 TCPMUX 协议。</small></div>
+    <div class="span-2">${field('udpPacketSize', 'UDP 数据报接收缓冲（字节，0 默认 1500）', v.udpPacketSize ?? 0, 'number', 'required min="0" max="65535" step="1"')}<small>用于 UDP 和 SUDP；相关客户端、服务端及访问端应设置一致。过小可能截断数据报。客户端按活动来源分配缓冲，队列中的数据报另占内存；高并发和大尺寸可能显著增加内存。此值不是实例内存上限或网络 MTU。保存后需重启实例。</small></div>
     <div>${field('tcpKeepalive', 'TCP 保活间隔（秒）', v.tcpKeepalive ?? 0, 'number', 'min="-1" max="86400" step="1"')}<small>0 使用默认 7200 秒，-1 关闭；客户端 KCP/QUIC 不使用此项。</small></div>
     <div>${field('muxKeepalive', '多路复用保活间隔（秒）', v.muxKeepalive ?? 0, 'number', 'min="0" max="3600" step="1"')}<small>0 使用默认 30 秒；需启用 TCP 多路复用。</small></div>
     <div class="client-field span-2">${check('loginFailExit', '首次登录失败时退出（关闭时持续重连）', v.loginFailExit)}</div>
@@ -309,7 +310,7 @@ const ProtocolEditor = (() => {
    if (kind === 'frpc' && f.clientTLSDisabled.checked && (certFile || keyFile || trustedCAFile || tlsServerName)) throw new Error('配置客户端证书、私钥、CA 或服务端名称时不能关闭 TLS。');
    if (kind === 'frps' && f.serverAllowPlaintext.checked && trustedCAFile) throw new Error('配置客户端证书 CA 时不能允许明文连接。');
    delete result.hasToken;
-   Object.assign(result, {name:val('name').trim(), kind, host:val('host').trim(), port:+val('port'), token:val('token'), autoStart:f.autoStart.checked, authHeartbeats:f.authHeartbeats.checked, authNewWorkConns:f.authNewWorkConns.checked,
+   Object.assign(result, {name:val('name').trim(), kind, host:val('host').trim(), port:+val('port'), token:val('token'), autoStart:f.autoStart.checked, authHeartbeats:f.authHeartbeats.checked, authNewWorkConns:f.authNewWorkConns.checked, udpPacketSize:+val('udpPacketSize'),
     tlsCertFile:certFile, tlsKeyFile:keyFile, tlsTrustedCAFile:trustedCAFile, clientTLSServerName:tlsServerName,
     httpPort:kind === 'frps' ? +val('httpPort') : 0, httpsPort:kind === 'frps' ? +val('httpsPort') : 0,
     user:kind === 'frpc' ? val('user').trim() : '', natHoleStunServer:kind === 'frpc' ? val('natHoleStunServer').trim() : '', dnsServer:kind === 'frpc' ? val('dnsServer').trim() : '', clientTransport:kind === 'frpc' ? val('clientTransport') : '', clientBindIP:kind === 'frpc' ? val('clientBindIP').trim() : '', loginFailExit:kind === 'frpc' && f.loginFailExit.checked, clientTLSDisabled:kind === 'frpc' && f.clientTLSDisabled.checked, clientTLSUseSystemCA:kind === 'frpc' && f.clientTLSUseSystemCA.checked, serverAllowPlaintext:kind === 'frps' && f.serverAllowPlaintext.checked, kcpBindPort:kind === 'frps' ? +val('kcpBindPort') : 0, quicBindPort:kind === 'frps' ? +val('quicBindPort') : 0,

@@ -473,6 +473,7 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 		return p, State{}
 	}
 	i := Instance{ID: randomHex(8), Name: req.Name, Kind: req.Kind}
+	i.UDPPacketSize = m.integer(root, "udpPacketSize", "", 0)
 	i.TLSCertFile = m.str(root, "transport.tls.certFile", "", "")
 	i.TLSKeyFile = m.str(root, "transport.tls.keyFile", "", "")
 	i.TLSTrustedCAFile = m.str(root, "transport.tls.trustedCaFile", "", "")
