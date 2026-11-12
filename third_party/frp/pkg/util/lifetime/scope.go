@@ -7,7 +7,9 @@ package lifetime
 import (
 	"context"
 	"io"
+	"net"
 	"sync"
+	"time"
 )
 
 type scopeKey struct{}
@@ -124,6 +126,7 @@ func Track(ctx context.Context, closer io.Closer) (release func(), ok bool) {
 	scope.mu.Lock()
 	if scope.stopping {
 		scope.mu.Unlock()
+		interruptConn(closer)
 		_ = closer.Close()
 		return func() {}, false
 	}
@@ -137,6 +140,14 @@ func Track(ctx context.Context, closer io.Closer) (release func(), ok bool) {
 	}, true
 }
 
+// Interrupting I/O is best effort; some connections cannot set deadlines, and
+// setting a deadline does not guarantee that every Close returns promptly.
+func interruptConn(closer io.Closer) {
+	if conn, ok := closer.(net.Conn); ok {
+		_ = conn.SetDeadline(time.Now())
+	}
+}
+
 func (s *Scope) Stop() {
 	s.stopOnce.Do(func() {
 		s.mu.Lock()
@@ -146,6 +157,9 @@ func (s *Scope) Stop() {
 			resources = append(resources, item)
 		}
 		s.mu.Unlock()
+		for _, item := range resources {
+			interruptConn(item.closer)
+		}
 		for _, item := range resources {
 			_ = item.closer.Close()
 		}
