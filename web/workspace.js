@@ -16,7 +16,7 @@ window.Kurumi = (() => {
  let snapshot = null, page = 'overview', session = 0, request = null, root = null, activePage = null;
  let timer = null, toastTimer = null, dialogSpec = null, dialogBusy = false;
  let transfer = null, transferRequest = null;
- let themeCatalogSession = -1, themeCatalogRequest = false;
+ let themeCatalogSession = -1, themeCatalogRequest = null;
  let channel = null, signal = '';
  const signalKey = 'kurumi-workspace-session';
  const transferKey = 'kurumi-workspace-transfer';
@@ -233,11 +233,12 @@ window.Kurumi = (() => {
  }
  async function updateThemePicker() {
   const active = document.body.dataset.kurumiSkin || savedSkin();
-  if ((themeCatalogSession === session && !active) || themeCatalogRequest || !snapshot) return;
+  if ((themeCatalogSession === session && !active) || themeCatalogRequest === session || !snapshot) return;
   const generation = session;
-  themeCatalogRequest = true;
+  themeCatalogRequest = generation;
+  const controller = new AbortController(), deadline = setTimeout(() => controller.abort(), 15000);
   try {
-   const result = await api('themes');
+   const result = await api('themes', undefined, {signal:controller.signal});
    if (generation !== session || !snapshot || !Array.isArray(result.themes)) return;
    themeCatalogSession = generation;
    $('#skin-picker').hidden = result.themes.length === 0;
@@ -245,14 +246,18 @@ window.Kurumi = (() => {
     applySkin('default');
     toast('当前主题不可用或素材缺失，已恢复默认主题。');
    }
-  } finally { themeCatalogRequest = false; }
+  } finally {
+   clearTimeout(deadline);
+   if (themeCatalogRequest === generation) themeCatalogRequest = null;
+  }
  }
  async function chooseSkin() {
   const generation = session, result = await api('themes');
   if (generation !== session || !snapshot || !Array.isArray(result.themes) || !result.themes.length) return;
   const admin = snapshot.identity?.role === 'admin';
   const themes = result.themes.filter(item => item && typeof item.id === 'string' && item.id.length <= 32 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item.id));
-  const current = themes.some(item => item.id === savedSkin() && item.installed) ? savedSkin() : 'default';
+  const active = document.body.dataset.kurumiSkin || 'default';
+  const current = themes.some(item => item.id === active && item.installed) ? active : 'default';
   const options = [`<option value="default"${current === 'default' ? ' selected' : ''}>默认主题（随程序提供）</option>`];
   for (const item of themes) {
    const disabled = !admin && !item.installed;
