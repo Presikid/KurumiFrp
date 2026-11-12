@@ -20,6 +20,8 @@ type tunnelBatchRequest struct {
 	BandwidthKB          int    `json:"bandwidthKB"`
 	BandwidthMode        string `json:"bandwidthMode,omitempty"`
 	ProxyProtocolVersion string `json:"proxyProtocolVersion,omitempty"`
+	UseEncryption        bool   `json:"useEncryption,omitempty"`
+	UseCompression       bool   `json:"useCompression,omitempty"`
 	Enabled              bool   `json:"enabled"`
 }
 
@@ -124,8 +126,8 @@ func (a *App) createTunnelBatch(req tunnelBatchRequest) (int, error) {
 	if req.ProxyProtocolVersion != "" && req.ProxyProtocolVersion != "v1" && req.ProxyProtocolVersion != "v2" {
 		return 0, fmt.Errorf("PROXY 协议版本仅支持 v1 或 v2")
 	}
-	if (req.Protocol == "udp" || req.Protocol == "tcp+udp") && req.ProxyProtocolVersion != "" {
-		return 0, fmt.Errorf("当前包含 UDP 规则的批量创建暂不支持 PROXY 协议")
+	if req.Protocol == "udp" && req.ProxyProtocolVersion != "" {
+		return 0, fmt.Errorf("UDP 规则不支持 PROXY 协议")
 	}
 	var protocols []string
 	switch req.Protocol {
@@ -175,11 +177,16 @@ func (a *App) createTunnelBatch(req tunnelBatchRequest) (int, error) {
 			if !namePattern.MatchString(generatedName) {
 				return 0, fmt.Errorf("生成的规则名称 %q 超过 64 位；请缩短名称前缀", generatedName)
 			}
+			proxyProtocolVersion := ""
+			if protocol == "tcp" {
+				proxyProtocolVersion = req.ProxyProtocolVersion
+			}
 			st.Tunnels = append(st.Tunnels, Tunnel{
 				ID: randomHex(8), InstanceID: req.InstanceID, Name: generatedName,
 				Type: protocol, LocalHost: req.LocalHost, LocalPort: localPort,
 				RemotePort: remotePort, Domains: []string{}, BandwidthKB: req.BandwidthKB, BandwidthMode: req.BandwidthMode,
-				ProxyProtocolVersion: req.ProxyProtocolVersion, Enabled: req.Enabled,
+				ProxyProtocolVersion: proxyProtocolVersion, UseEncryption: req.UseEncryption,
+				UseCompression: req.UseCompression, Enabled: req.Enabled,
 			})
 		}
 	}
