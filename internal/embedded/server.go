@@ -60,9 +60,12 @@ type ServerOptions struct {
 	// AllowControlConnection filters peers of frp's control listener only.
 	// It must be concurrent-safe, prompt, and must not panic.
 	AllowControlConnection func(net.Addr) bool
-	// ManagedLogin is an optional account-token login resolver. The owner must
-	// explicitly provide account data; existing controls are not revoked.
-	ManagedLogin server.ManagedLoginResolver
+	// ManagedLogin is the optional account-token provider for this generation.
+	// The owner must invalidate credentials before requesting their revocation.
+	ManagedLogin server.ManagedLoginProvider
+	// OnManagedCleanupFailure reports uncertain cleanup of an account identity.
+	// It must be concurrent-safe, return promptly, and not panic.
+	OnManagedCleanupFailure func(server.ManagedIdentity)
 	// OnPanic notifies the owner of a scoped worker or server Run panic. It
 	// must be concurrent-safe, return promptly, and not panic.
 	OnPanic func()
@@ -183,6 +186,7 @@ func (s *Server) Start(ctx context.Context) error {
 		TrafficRecorder:        s.options.TrafficRecorder,
 		AllowControlConnection: s.options.AllowControlConnection,
 		ManagedLogin:           s.options.ManagedLogin,
+		OnManagedCleanupFailure: s.options.OnManagedCleanupFailure,
 		OnWorkerPanic:          s.options.OnPanic,
 	})
 	if err != nil {
