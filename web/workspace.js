@@ -120,7 +120,7 @@ window.Kurumi = (() => {
  }
  function canViewOwnProxies() {
   const identity = snapshot?.identity;
-  return Boolean(identity?.account && identity?.passwordAccount && (identity.role === 'admin' || identity.viewConfig));
+  return identity?.account === true && identity?.passwordAccount === true;
  }
  function updateShell() {
   if (page === 'own-proxies' && !canViewOwnProxies()) {
@@ -430,21 +430,71 @@ window.Kurumi = (() => {
   const initialSession = session;
   void refresh().catch(error => { if (session === initialSession && error.status !== 401) $('#login-error').textContent = error.message; });
  }
+ function mountOwnProxyQuota(element) {
+  const status = element.querySelector('[data-own-quota-status]');
+  const button = element.querySelector('[data-own-quota-refresh]');
+  let pending = null, serial = 0, disposed = false, active = Promise.resolve();
+  async function refreshQuota() {
+   pending?.abort();
+   const requestSerial = ++serial, generation = session;
+   status.textContent = document.hidden ? '配额暂不可用。' : '正在读取配额…';
+   if (document.hidden) return;
+   const controller = new AbortController(); pending = controller;
+   const deadline = setTimeout(() => controller.abort(), 5000);
+   try {
+    const data = await api('me/managed-proxy-quota', undefined, {signal:controller.signal});
+    if (disposed || generation !== session || requestSerial !== serial || !element.isConnected) return;
+    const sampled = new Date(data?.sampledAt);
+    if (!Number.isSafeInteger(data?.used) || data.used < 0 ||
+        !(data.limit === null || (Number.isSafeInteger(data.limit) && data.limit >= 0 && data.limit <= 1000000)) ||
+        typeof data.sampledAt !== 'string' || !Number.isFinite(sampled.getTime())) throw new Error('配额暂不可用');
+    const limit = data.limit === null ? '不限' : data.limit === 0 ? '0（阻止新的代理占位）' : String(data.limit);
+    status.textContent = `截至 ${sampled.toLocaleString('zh-CN')}：占位 ${data.used}，上限 ${limit}。`;
+   } catch (_) {
+    if (!disposed && generation === session && requestSerial === serial && element.isConnected) status.textContent = '配额暂不可用。';
+   } finally {
+    clearTimeout(deadline);
+    if (pending === controller) pending = null;
+   }
+  }
+  const requestQuota = () => { active = refreshQuota(); return active; };
+  const onRefresh = () => { void requestQuota(); };
+  const onVisibility = () => {
+   if (document.hidden) { ++serial; pending?.abort(); pending = null; status.textContent = '配额暂不可用。'; }
+   else void requestQuota();
+  };
+  button.addEventListener('click', onRefresh);
+  document.addEventListener('visibilitychange', onVisibility);
+  void requestQuota();
+  return {
+   whenSettled: () => active,
+   dispose() {
+    disposed = true; ++serial; pending?.abort(); pending = null;
+    button.removeEventListener('click', onRefresh);
+    document.removeEventListener('visibilitychange', onVisibility); status.textContent = '配额暂不可用。';
+   }
+  };
+ }
  let ownProxiesCleanup = null;
  pages.set('own-proxies', {
   render(value) {
    const instances = (value.state?.instances || []).filter(item => item?.kind === 'frps' && /^[a-f0-9]{16}$/.test(item.id));
    const options = instances.map(item => `<option value="${esc(item.id)}">${esc(item.name || 'frps')}</option>`).join('');
-   return `<section class="panel"><div class="panel-content"><h2>我的代理</h2><p class="muted">显示采样窗口内在当前受管控制连接中观察到的名称。采样可能不完整，最多显示 256 项；返回时可能已不再登记，也不代表可以访问。</p><label>服务端实例 <select data-own-proxy-instance>${options}</select></label> <button type="button" data-own-proxy-refresh>重新采样</button><p data-own-proxy-status>采样不可用。</p><ul data-own-proxy-list></ul></div></section>`;
+   const canReadNames = value.identity?.role === 'admin' || value.identity?.viewConfig === true;
+   const namesPanel = canReadNames ? `<section class="panel"><div class="panel-content"><h2>我的代理</h2><p class="muted">显示采样窗口内在当前受管控制连接中观察到的名称。采样可能不完整，最多显示 256 项；返回时可能已不再登记，也不代表可以访问。</p><label>服务端实例 <select data-own-proxy-instance>${options}</select></label> <button type="button" data-own-proxy-refresh>重新采样</button><p data-own-proxy-status>采样不可用。</p><ul data-own-proxy-list></ul></div></section>` : '<p class="muted">当前账户未获配置详情授权，不能采样代理名称。</p>';
+   return `<section class="panel"><div class="panel-content"><h2>代理占位与上限</h2><p class="muted">这是本工作台所有内嵌受管 frps 的账户占位总数，包含创建或清理中的代理；它不是在线数、流量或账单。</p><button type="button" data-own-quota-refresh>刷新配额</button><p data-own-quota-status>配额暂不可用。</p></div></section>${namesPanel}`;
   },
   mount(element) {
+   const quota = mountOwnProxyQuota(element);
    const select = element.querySelector('[data-own-proxy-instance]');
    const button = element.querySelector('[data-own-proxy-refresh]');
    const status = element.querySelector('[data-own-proxy-status]');
    const list = element.querySelector('[data-own-proxy-list]');
+   if (!select || !button || !status || !list) { ownProxiesCleanup = () => quota.dispose(); return; }
    let pending = null, serial = 0, disposed = false;
    const clear = message => { list.replaceChildren(); status.textContent = message; };
    async function sample() {
+    if (disposed) return;
     pending?.abort();
     const requestSerial = ++serial, generation = session, id = select.value;
     clear(id ? '正在采样…' : '采样不可用。');
@@ -476,16 +526,17 @@ window.Kurumi = (() => {
    const onChange = () => { void sample(); };
    const onVisibility = () => {
     if (document.hidden) { ++serial; pending?.abort(); pending = null; clear('采样不可用。'); }
-    else void sample();
+    else void quota.whenSettled().then(() => { if (!disposed) void sample(); });
    };
    select.addEventListener('change', onChange); button.addEventListener('click', onChange);
    document.addEventListener('visibilitychange', onVisibility);
    ownProxiesCleanup = () => {
+    quota.dispose();
     disposed = true; ++serial; pending?.abort(); pending = null;
     select.removeEventListener('change', onChange); button.removeEventListener('click', onChange);
     document.removeEventListener('visibilitychange', onVisibility); clear('采样不可用。');
    };
-   void sample();
+   void quota.whenSettled().then(() => { if (!disposed) void sample(); });
   },
   dispose() { if (ownProxiesCleanup) ownProxiesCleanup(); ownProxiesCleanup = null; }
  });

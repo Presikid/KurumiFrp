@@ -352,8 +352,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		managedProxySample := r.Method == http.MethodGet && r.URL.Path == "/api/me/managed-proxies"
+		managedProxyQuota := r.Method == http.MethodGet && r.URL.Path == "/api/me/managed-proxy-quota"
+		managedProxyRead := managedProxySample || managedProxyQuota
 		selfSessionRevoke := r.Method == http.MethodPost && r.URL.Path == "/api/me/sessions/revoke-others"
-		if managedProxySample {
+		if managedProxyRead {
 			w.Header().Set("Cache-Control", "no-store")
 			if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
 				fail(w, http.StatusServiceUnavailable, fmt.Errorf("采样不可用"))
@@ -377,13 +379,13 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.auth.mu.Unlock()
 		} else if ungated {
 			p, ok = a.auth.identity(r)
-		} else if managedProxySample {
+		} else if managedProxyRead {
 			p, unlock, ok = a.auth.tryLockManagedProxyRequest(r)
 		} else {
 			p, unlock, ok = a.auth.lockRequest(r)
 		}
 		if !ok {
-			if managedProxySample {
+			if managedProxyRead {
 				fail(w, http.StatusServiceUnavailable, fmt.Errorf("采样不可用"))
 			} else {
 				fail(w, 401, fmt.Errorf("请先登录"))
@@ -404,6 +406,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r = withPrincipal(r, p)
+		if r.URL.Path == "/api/me/managed-proxy-quota" {
+			a.accountFRPProxyQuotaAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/me/sessions/revoke-others" {
 			a.revokeOtherSessionsAPI(w, r)
 			return
