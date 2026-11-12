@@ -24,7 +24,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.admin()
 		case "/api/nodes":
 			return p.admin() || p.Role == "operator" || p.Role == "viewer"
-		case "/api/state":
+		case "/api/state", "/api/themes":
 			return p.admin() || p.Role == "operator" || p.Role == "viewer"
 		case "/api/config", "/api/diff":
 			return p.canReadConfig() && (p.admin() || p.Role == "operator" || p.Role == "viewer")
@@ -51,7 +51,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.admin() || p.Role == "operator" || p.Role == "viewer"
 		case "/api/control", "/api/validate", "/api/nodes/control":
 			return p.admin() || p.Role == "operator"
-		case "/api/accounts", "/api/quit", "/api/browser-ticket", "/api/probe", "/api/health", "/api/webhook", "/api/backup/export", "/api/backup/import", "/api/update/install", "/api/import", "/api/import/toml", "/api/import/toml/preview", "/api/nodes", "/api/nodes/resolve", "/api/nodes/confirm", "/api/duplicate", "/api/tunnels/batch-enabled", "/api/tunnels/batch-delete", "/api/tunnels/batch", "/api/save", "/api/delete", "/api/restore", "/api/history-settings", "/api/traffic-budget":
+		case "/api/accounts", "/api/quit", "/api/browser-ticket", "/api/probe", "/api/health", "/api/webhook", "/api/backup/export", "/api/backup/import", "/api/update/install", "/api/themes/install", "/api/import", "/api/import/toml", "/api/import/toml/preview", "/api/nodes", "/api/nodes/resolve", "/api/nodes/confirm", "/api/duplicate", "/api/tunnels/batch-enabled", "/api/tunnels/batch-delete", "/api/tunnels/batch", "/api/save", "/api/delete", "/api/restore", "/api/history-settings", "/api/traffic-budget":
 			return p.admin()
 		}
 	}
