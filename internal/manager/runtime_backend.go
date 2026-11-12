@@ -30,6 +30,9 @@ type RuntimeConfig struct {
 }
 
 func validateManagedRuntimeConfig(cfg RuntimeConfig) error {
+	if cfg.ManagedAccountLogin {
+		return fmt.Errorf("账户认证运行接线尚未完成")
+	}
 	if !cfg.ManagedAccountLogin {
 		if cfg.ManagedLoginProvider != nil || cfg.ManagedAccountIncarnation != "" {
 			return fmt.Errorf("未启用账户认证，不能提供账户认证配置")
