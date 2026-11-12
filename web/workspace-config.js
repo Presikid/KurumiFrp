@@ -39,7 +39,13 @@
      const length = new TextEncoder().encode(password).length;
      if (length < 12 || length > 1024 || /[\x00-\x1f\x7f]/.test(password)) throw new Error('备份密码须为 12–1024 个 UTF-8 字节，且不能含控制字符。');
      if (password !== form.elements.confirm.value) throw new Error('两次输入的密码不一致。');
-     const result = await K.api('backup/export',{revision:data.revision,password,scope:scope.scope,snapshot:scope.snapshot});
+     const controller = new AbortController(), deadline = setTimeout(() => controller.abort(),120000);
+     let result;
+     try { result = await K.api('backup/export',{revision:data.revision,password,scope:scope.scope,snapshot:scope.snapshot},{signal:controller.signal}); }
+     catch (error) {
+      if (controller.signal.aborted) throw new Error('加密备份导出结果尚未确认，文件未下载；请核对后再决定是否重试。');
+      throw error;
+     } finally { clearTimeout(deadline); }
      if (!K.isCurrent('config',root) || K.state()?.revision !== data.revision) throw new Error('页面或草稿已变化，请重新导出。');
      K.download(`kurumi-${scope.scope}-encrypted.json`,JSON.stringify(result,null,2)); K.toast('加密备份已导出，请妥善保管密码。'); return;
     }
@@ -161,10 +167,26 @@
     if (K.state()?.revision !== model.revision) throw new Error('草稿已变化，请关闭窗口并刷新后重新读取通知目标。');
     const f = form.elements;
     const payload = {revision:model.revision,action:'save',id:item.id,name:f.targetName.value,enabled:f.enabled.checked,format:f.format.value,url:f.url.value,clearURL:f.clearURL.checked,signingSecret:f.signingSecret.value,clearSigningSecret:f.clearSigningSecret.checked,jsonTemplate:f.jsonTemplate.value,clearJSONTemplate:f.clearJSONTemplate.checked,jsonTemplateEnabled:f.jsonTemplateEnabled.checked,onStatus:f.onStatus.checked,statusProblemsOnly:f.statusProblemsOnly.checked,statusScope:f.statusScope.value,onConfig:f.onConfig.checked,onLoginLimit:f.onLoginLimit.checked,onUpdate:f.onUpdate.checked};
-    try { await K.api('webhooks',payload); }
-    catch (error) { await reload().catch(() => {}); throw new Error(`${error.message}。请重新读取并核对通知设置。`); }
-    try { await K.refresh(); K.toast('通知目标已保存。'); }
-    catch (_) { await reload().catch(() => {}); if (K.state()) K.toast('通知目标已保存，但刷新失败；请手动刷新并核对。'); }
+    const generation = K.epoch();
+    try { await withTimeout('webhooks',payload); }
+    catch (error) {
+     if (K.epoch() !== generation) return false;
+     await reload().catch(() => {});
+     if (K.epoch() !== generation) return false;
+     if (!error.status || error.status >= 500) throw new Error('保存结果未确认，请重新读取并核对通知设置后再决定是否重试。');
+     throw new Error(`${error.message}。请重新读取并核对通知设置。`);
+    }
+    if (K.epoch() !== generation) return false;
+    try {
+     await K.refresh();
+     if (K.epoch() !== generation) return false;
+     K.toast('通知目标已保存。');
+    } catch (_) {
+     if (K.epoch() !== generation) return false;
+     await reload().catch(() => {});
+     if (K.epoch() !== generation) return false;
+     if (K.state()) K.toast('通知目标已保存，但刷新失败；请手动刷新并核对。');
+    }
    }
   });
  }
@@ -211,13 +233,19 @@
    }
    async function loadWebhooks() {
     const box = root.querySelector('[data-webhooks]'); if (!box) return;
-    const sequence = ++webhookSerial; box.textContent = '正在读取…';
+    const sequence = ++webhookSerial, generation = K.epoch();
+    const controller = new AbortController(), deadline = setTimeout(() => controller.abort(),15000);
+    box.textContent = '正在读取…';
     try {
-     const result = await K.api('webhooks');
-     if (sequence !== webhookSerial || !K.isCurrent('config',root)) return;
+     const result = await K.api('webhooks',undefined,{signal:controller.signal});
+     if (generation !== K.epoch() || sequence !== webhookSerial || !K.isCurrent('config',root)) return;
      model = result;
      box.innerHTML = result.targets?.length ? `<div class="cards">${result.targets.map(target => `<article class="card"><div class="section-heading"><h3>${e(target.name)}</h3><span class="pill">${target.enabled ? '启用' : '停用'} · ${e(target.format || 'JSON')}</span></div><p class="small-note">成功 ${Number(target.status?.sent) || 0} · 失败 ${Number(target.status?.failed) || 0} · 丢弃 ${Number(target.status?.dropped) || 0}${target.status?.lastResult ? ' · 最近：'+e(target.status.lastResult) : ''}</p><div class="actions">${button('webhook-test','发送测试',`data-id="${e(target.id)}" ${target.hasURL ? '' : 'disabled title="请先保存通知地址"'}`)}${button('webhook-edit','编辑',`data-id="${e(target.id)}"`)}${button(target.enabled ? 'webhook-disable' : 'webhook-enable',target.enabled ? '停用' : '启用',`data-id="${e(target.id)}"`)}${button('webhook-delete','删除',`class="danger" data-id="${e(target.id)}"`)}</div></article>`).join('')}</div>` : '<p class="muted">尚未设置通知目标。</p>';
-    } catch (error) { if (sequence === webhookSerial && K.isCurrent('config',root)) { model = null; box.textContent = '读取失败：'+error.message; } }
+    } catch (error) {
+     if (generation === K.epoch() && sequence === webhookSerial && K.isCurrent('config',root)) {
+      model = null; box.textContent = controller.signal.aborted ? '读取通知目标超时，请刷新后重试。' : '读取失败：'+error.message;
+     }
+    } finally { clearTimeout(deadline); }
    }
    async function loadMaintenance() {
     const box = root.querySelector('[data-maintenance]'); if (!box) return;
