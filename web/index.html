@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="theme-color" content="#130d13">
+  <meta name="theme-color" content="#14171d">
   <title>KurumiFRP · 连接工作台</title>
   <link rel="stylesheet" href="/style.css">
   <script src="/protocols.js" defer></script>
@@ -22,78 +22,77 @@
 <body>
   <section id="login" class="login" aria-label="登录 KurumiFRP">
     <div class="login-art" aria-hidden="true">
-      <div class="login-art-caption"><span class="caption-rule"></span><span>THE MOMENT<br>OF CONNECTION</span><b>Ⅻ</b></div>
+      <div class="login-art-copy">
+        <span class="visual-label">KURUMIFRP / 连接管理</span>
+        <p>让每一次连接，<br>都有迹可循。</p>
+        <span class="visual-caption">集中查看配置与运行状态</span>
+      </div>
     </div>
-    <div class="login-shell">
-      <div class="login-brand brand-lockup">
-        <span class="brand-seal" aria-hidden="true"><span>Ⅻ</span></span>
-        <span class="brand-name">Kurumi<span>FRP</span><small>CONNECTION WORKSPACE</small></span>
+    <div class="login-panel">
+      <div class="login-top">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true">K</span>
+          <span class="brand-word">Kurumi<span>FRP</span><small>连接工作台</small></span>
+        </div>
+        <span class="login-top-label">WORKSPACE</span>
       </div>
       <div class="login-main">
-        <div class="login-introduction">
-          <div class="section-kicker"><span></span> YOUR CONNECTION WORKSPACE</div>
-          <h1>让连接，<br><em>如约而至。</em></h1>
-          <p>属于你的连接管理工作台。</p>
+        <div class="login-heading">
+          <span class="overline">WELCOME BACK</span>
+          <h1>登录工作台</h1>
+          <p>使用管理密码或本地账户登录。</p>
         </div>
-        <div class="login-card">
-          <div class="login-card-heading">
-            <div><span class="card-kicker">SIGN IN / 登录</span><h2>欢迎回来</h2></div>
-            <span class="login-card-mark" aria-hidden="true">✦</span>
-          </div>
-          <p class="login-description">使用管理密码或本地账户登录。</p>
-          <form id="login-form">
-            <label for="login-username">用户名 <span>管理员登录时留空</span></label>
-            <input id="login-username" name="username" autocomplete="username" maxlength="32" placeholder="本地账户用户名">
-            <label for="login-token">密码</label>
-            <input id="login-token" name="token" type="password" autocomplete="current-password" maxlength="1024" placeholder="输入密码">
-            <button class="primary login-submit" type="submit"><span>进入工作台</span><span aria-hidden="true">↗</span></button>
-            <p id="login-error" class="error" role="alert"></p>
-          </form>
-          <details class="login-help">
-            <summary>首次使用如何登录？ <span aria-hidden="true">＋</span></summary>
-            <p>全新数据目录的管理密码初始为空，用户名留空即可登录。旧版数据目录尚未设置管理密码时，使用原本机令牌作为密码：在终端运行 <code>kurumi --show-token</code>，使用自定义数据目录时加上相同的 <code>--data</code> 参数。登录后可修改密码。</p>
-          </details>
-        </div>
+        <form id="login-form" class="login-form">
+          <label for="login-username">用户名 <span>管理员登录时留空</span></label>
+          <input id="login-username" name="username" autocomplete="username" maxlength="32" placeholder="本地账户用户名">
+          <label for="login-token">密码</label>
+          <input id="login-token" name="token" type="password" autocomplete="current-password" maxlength="1024" placeholder="输入密码">
+          <button class="primary login-submit" type="submit"><span>进入工作台</span><span aria-hidden="true">→</span></button>
+          <p id="login-error" class="error" role="alert"></p>
+        </form>
+        <details class="login-help">
+          <summary><span>首次使用如何登录？</span><span class="help-icon" aria-hidden="true">＋</span></summary>
+          <p>全新数据目录的管理密码初始为空，用户名留空即可登录。旧版数据目录尚未设置管理密码时，使用原本机令牌作为密码：在终端运行 <code>kurumi --show-token</code>，使用自定义数据目录时加上相同的 <code>--data</code> 参数。登录后可修改密码。</p>
+        </details>
       </div>
-      <div class="login-footer"><span>LOCAL CONNECTION WORKSPACE</span><span>KURUMIFRP <i>✦</i></span></div>
+      <div class="login-footer"><span>KurumiFRP</span><span>连接与配置，一处管理</span></div>
     </div>
   </section>
 
   <div id="app" class="app-shell" hidden>
     <aside id="sidebar" class="sidebar" aria-label="工作台导航">
       <div class="sidebar-top">
-        <a href="#overview" class="brand brand-lockup" aria-label="KurumiFRP，返回总览">
-          <span class="brand-seal" aria-hidden="true"><span>Ⅻ</span></span>
-          <span class="brand-name">Kurumi<span>FRP</span><small>CONNECTION WORKSPACE</small></span>
+        <a href="#overview" class="brand-lockup brand" aria-label="KurumiFRP，返回总览">
+          <span class="brand-mark" aria-hidden="true">K</span>
+          <span class="brand-word">Kurumi<span>FRP</span><small>连接工作台</small></span>
         </a>
         <button id="menu-close" class="icon-button menu-close" type="button" aria-label="关闭导航">×</button>
       </div>
-      <div class="sidebar-rule"><span></span><b>Ⅻ</b><span></span></div>
       <nav id="nav" aria-label="页面导航">
         <div class="nav-group">
-          <p class="nav-label"><span>连接管理</span><small>CONNECT</small></p>
-          <button type="button" data-page="overview" class="active" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 5l8 6.5v7a1 1 0 0 1-1 1h-5v-5h-4v5H5a1 1 0 0 1-1-1z"/></svg><span>网络总览</span><i>01</i></button>
-          <button type="button" data-page="tunnels"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h13m-3-3 3 3-3 3M20 16H7m3-3-3 3 3 3"/></svg><span>规则管理</span><i>02</i></button>
-          <button type="button" data-page="instances"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="6" rx="1.5"/><rect x="4" y="13" width="16" height="6" rx="1.5"/><path d="M8 8h.01M8 16h.01M12 8h5M12 16h5"/></svg><span>运行实例</span><i>03</i></button>
-          <button type="button" data-page="nodes"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="m11 7-5 9m7-9 5 9M7 18h10"/></svg><span>节点管理</span><i>04</i></button>
+          <p class="nav-label">连接管理</p>
+          <button type="button" data-page="overview" class="active" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 5l8 6.5v7a1 1 0 0 1-1 1h-5v-5h-4v5H5a1 1 0 0 1-1-1z"/></svg><span>网络总览</span></button>
+          <button type="button" data-page="tunnels"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h13m-3-3 3 3-3 3M20 16H7m3-3-3 3 3 3"/></svg><span>规则管理</span></button>
+          <button type="button" data-page="instances"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="6" rx="1.5"/><rect x="4" y="13" width="16" height="6" rx="1.5"/><path d="M8 8h.01M8 16h.01M12 8h5M12 16h5"/></svg><span>运行实例</span></button>
+          <button type="button" data-page="nodes"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="m11 7-5 9m7-9 5 9M7 18h10"/></svg><span>节点管理</span></button>
           <button type="button" data-page="reported-nodes" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 15v4h16v-4M8 11l4-4 4 4M12 7v9"/></svg><span>主动上报</span></button>
-          <button type="button" data-page="firewall"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 2.4 7.8 7 10 4.6-2.2 7-5.6 7-10V6zM9 12h6"/></svg><span>端口访问控制</span><i>05</i></button>
-          <button type="button" data-page="health"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"/></svg><span>链路监测</span><i>06</i></button>
+          <button type="button" data-page="firewall"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 2.4 7.8 7 10 4.6-2.2 7-5.6 7-10V6zM9 12h6"/></svg><span>端口访问控制</span></button>
+          <button type="button" data-page="health"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"/></svg><span>链路监测</span></button>
         </div>
         <div class="nav-group">
-          <p class="nav-label"><span>工作台</span><small>WORKSPACE</small></p>
-          <button type="button" data-page="config"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h14"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="10" cy="18" r="2"/></svg><span>配置中心</span><i>07</i></button>
-          <button type="button" data-page="core"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 17v3h14v-3"/></svg><span>核心管理</span><i>08</i></button>
-          <button type="button" data-page="logs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h9l3 3v13H6zM14 4v4h4M9 12h6M9 16h6"/></svg><span>运行记录</span><i>09</i></button>
-          <button type="button" data-page="update"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 9a7 7 0 0 0-12-2L4 10m0-5v5h5m-4 5a7 7 0 0 0 12 2l3-3m0 5v-5h-5"/></svg><span>软件更新</span><i>10</i></button>
-          <button type="button" data-page="accounts"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 19c.6-3.1 3-5 6.5-5s5.9 1.9 6.5 5"/></svg><span>本地账户</span><i>11</i></button>
+          <p class="nav-label">工作台</p>
+          <button type="button" data-page="config"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h14"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="10" cy="18" r="2"/></svg><span>配置中心</span></button>
+          <button type="button" data-page="core"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 17v3h14v-3"/></svg><span>核心管理</span></button>
+          <button type="button" data-page="logs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h9l3 3v13H6zM14 4v4h4M9 12h6M9 16h6"/></svg><span>运行记录</span></button>
+          <button type="button" data-page="update"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 9a7 7 0 0 0-12-2L4 10m0-5v5h5m-4 5a7 7 0 0 0 12 2l3-3m0 5v-5h-5"/></svg><span>软件更新</span></button>
+          <button type="button" data-page="accounts"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 19c.6-3.1 3-5 6.5-5s5.9 1.9 6.5 5"/></svg><span>本地账户</span></button>
         </div>
       </nav>
       <div class="sidebar-bottom">
-        <div class="sidebar-note"><span class="sidebar-note-mark">✦</span><div><b>你的连接工作台</b><small>运行与配置集中管理</small></div></div>
+        <div class="sidebar-caption"><span class="sidebar-caption-dot" aria-hidden="true"></span><span>连接工作台<small>管理当前配置与实例</small></span></div>
         <div class="sidebar-actions">
           <button id="change-password" type="button" hidden>修改登录密码</button>
-          <button id="logout" type="button">退出登录 <span aria-hidden="true">↗</span></button>
+          <button id="logout" type="button">退出登录</button>
           <button id="quit-app" type="button">退出程序并停止实例</button>
         </div>
       </div>
@@ -103,22 +102,22 @@
       <header class="topbar">
         <div class="page-location">
           <button id="menu-toggle" class="icon-button menu-toggle" type="button" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg></button>
-          <div class="location-copy"><span class="location-prefix">KURUMIFRP <span>/</span></span><strong id="page-title">网络总览</strong></div>
+          <div class="location-copy"><span class="location-prefix">工作台</span><span class="location-separator" aria-hidden="true">/</span><strong id="page-title">网络总览</strong></div>
         </div>
         <div class="top-actions">
           <span id="revision" class="revision"></span>
+          <span class="top-divider" aria-hidden="true"></span>
           <button id="theme" class="icon-button" type="button" aria-label="切换深浅主题" title="切换深浅主题"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/><circle cx="12" cy="12" r="4"/></svg></button>
           <button id="refresh" class="icon-button" type="button" aria-label="刷新状态" title="刷新状态"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 9a7 7 0 0 0-12-2L4 10m0-5v5h5m-4 5a7 7 0 0 0 12 2l3-3m0 5v-5h-5"/></svg></button>
-          <span class="top-seal" aria-hidden="true">Ⅻ</span>
         </div>
       </header>
       <main id="content" class="workspace-content" tabindex="-1"></main>
-      <footer class="workspace-footer"><span><b>✦</b> KURUMIFRP <i>/</i> CONNECTION WORKSPACE</span><span id="sync-time"></span></footer>
+      <footer class="workspace-footer"><span>KurumiFRP <span aria-hidden="true">·</span> 连接工作台</span><span id="sync-time"></span></footer>
     </div>
   </div>
 
   <dialog id="dialog"><form id="editor"><div id="dialog-body"></div><div class="dialog-actions"><button id="cancel" type="button">取消</button><button type="submit" class="primary">保存草稿</button></div><p id="form-error" class="error" role="alert"></p></form></dialog>
-  <dialog id="diff-dialog" class="diff-dialog" aria-labelledby="diff-title"><div class="dialog-heading"><span class="card-kicker">CONFIGURATION / 差异</span><h2 id="diff-title">配置差异预览</h2></div><p id="diff-summary" class="muted"></p><pre id="diff-content"></pre><div class="dialog-actions"><button id="diff-close" type="button">关闭</button></div></dialog>
+  <dialog id="diff-dialog" class="diff-dialog" aria-labelledby="diff-title"><div class="dialog-heading"><span class="overline">配置管理</span><h2 id="diff-title">配置差异预览</h2></div><p id="diff-summary" class="muted"></p><pre id="diff-content"></pre><div class="dialog-actions"><button id="diff-close" type="button">关闭</button></div></dialog>
   <div id="transfer-notice" class="transfer-notice notice" role="status" hidden><span id="transfer-message"></span><button id="transfer-dismiss" type="button">知道了</button></div>
   <div id="toast" class="toast" role="status" hidden></div>
 </body>
