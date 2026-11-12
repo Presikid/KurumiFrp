@@ -549,9 +549,43 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 
 	if svr.webServer != nil {
 		svr.webServer.RouteRegister(svr.registerRouteHandlers)
+		svr.webServer.RouteRegister(svr.trackHTTPHandlers)
+	}
+	if svr.metricsServer != nil {
+		svr.metricsServer.RouteRegister(svr.trackHTTPHandlers)
 	}
 	ready = true
 	return svr, nil
+}
+
+// trackHTTPHandlers keeps requests in this service's scope until their handlers
+// return. Router middleware covers matched routes; the two fallback handlers
+// must be wrapped separately because gorilla/mux skips middleware for them.
+func (svr *Service) trackHTTPHandlers(helper *httppkg.RouterRegisterHelper) {
+	wrap := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			done, ok := lifetime.Enter(svr.workCtx)
+			if !ok {
+				http.Error(w, "server closing", http.StatusServiceUnavailable)
+				return
+			}
+			defer done()
+			next.ServeHTTP(w, r)
+		})
+	}
+	helper.Router.Use(wrap)
+	notFound := helper.Router.NotFoundHandler
+	if notFound == nil {
+		notFound = http.NotFoundHandler()
+	}
+	helper.Router.NotFoundHandler = wrap(notFound)
+	methodNotAllowed := helper.Router.MethodNotAllowedHandler
+	if methodNotAllowed == nil {
+		methodNotAllowed = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		})
+	}
+	helper.Router.MethodNotAllowedHandler = wrap(methodNotAllowed)
 }
 
 // metricsCollectors reports which collectors should be started for cfg. The
@@ -1417,18 +1451,18 @@ func (svr *Service) registerControl(
 		identity = managed.identity
 	}
 	ctl, err := NewControl(ctx, &SessionContext{
-		RC:             svr.rc,
-		ServerMetrics:  svr.metrics,
-		PxyManager:     svr.pxyManager,
-		PluginManager:  svr.pluginManager,
-		AuthVerifier:   authVerifier,
-		EncryptionKey:  encryptionKey,
-		Conn:           ctlConn,
-		Session:        session,
-		LoginMsg:       loginMsg,
-		ServerCfg:      svr.cfg,
-		WireProtocol:   wireProtocol,
-		UDPPacketCodec: udpPacketCodec,
+		RC:              svr.rc,
+		ServerMetrics:   svr.metrics,
+		PxyManager:      svr.pxyManager,
+		PluginManager:   svr.pluginManager,
+		AuthVerifier:    authVerifier,
+		EncryptionKey:   encryptionKey,
+		Conn:            ctlConn,
+		Session:         session,
+		LoginMsg:        loginMsg,
+		ServerCfg:       svr.cfg,
+		WireProtocol:    wireProtocol,
+		UDPPacketCodec:  udpPacketCodec,
 		managedIdentity: identity,
 		managedProvider: svr.managedLogin,
 	})
