@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+
+	"github.com/fatedier/frp/server"
 )
 
 // RuntimeConfig is an immutable snapshot for one instance and one launch.
@@ -24,18 +26,18 @@ type RuntimeConfig struct {
 	// this instance and incarnation, return promptly, and never log tokens.
 	ManagedAccountLogin       bool
 	ManagedAccountIncarnation string
-	ManagedLoginResolver      func(context.Context, string) (string, error)
+	ManagedLoginProvider      server.ManagedLoginProvider
 }
 
 func validateManagedRuntimeConfig(cfg RuntimeConfig) error {
 	if !cfg.ManagedAccountLogin {
-		if cfg.ManagedLoginResolver != nil || cfg.ManagedAccountIncarnation != "" {
+		if cfg.ManagedLoginProvider != nil || cfg.ManagedAccountIncarnation != "" {
 			return fmt.Errorf("未启用账户认证，不能提供账户认证配置")
 		}
 		return nil
 	}
 	if cfg.Kind != "frps" || !idPattern.MatchString(cfg.InstanceID) ||
-		!validLocalTrafficID(cfg.ManagedAccountIncarnation) || cfg.ManagedLoginResolver == nil {
+		!validLocalTrafficID(cfg.ManagedAccountIncarnation) || cfg.ManagedLoginProvider == nil {
 		return fmt.Errorf("账户认证需要有效的服务端实例、实例标识及令牌查询器")
 	}
 	return nil

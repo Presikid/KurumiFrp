@@ -281,7 +281,7 @@ func (r *embeddedRun) runServer(ctx context.Context, config *v1.ServerConfig, ac
 	}
 	options := embedded.ServerOptions{LogSink: sink, OnPanic: r.markCleanupUncertain}
 	if cfg.ManagedAccountLogin {
-		options.ManagedLogin = cfg.ManagedLoginResolver
+		options.ManagedLogin = cfg.ManagedLoginProvider
 	}
 	if access != nil {
 		options.AllowControlConnection = access.permits

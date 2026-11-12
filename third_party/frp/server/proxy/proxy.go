@@ -52,7 +52,8 @@ func RegisterProxyFactory(proxyConfType reflect.Type, factory func(*BaseProxy) P
 }
 
 type WorkConn struct {
-	conn *msg.Conn
+	conn    *msg.Conn
+	managed net.Conn
 }
 
 func NewWorkConn(conn *msg.Conn) *WorkConn {
@@ -63,11 +64,71 @@ func (c *WorkConn) Start(m *msg.StartWorkConn) (net.Conn, error) {
 	if err := c.conn.WriteMsg(m); err != nil {
 		return nil, err
 	}
+	if c.managed != nil {
+		return c.managed, nil
+	}
 	return c.conn, nil
 }
 
 func (c *WorkConn) Close() error {
+	if c.managed != nil {
+		return c.managed.Close()
+	}
 	return c.conn.Close()
+}
+
+// TrackManaged transfers a work connection to one managed control scope.
+func (c *WorkConn) TrackManaged(ctx context.Context, report func(error)) error {
+	if c.managed != nil || report == nil {
+		return errors.New("invalid managed work connection")
+	}
+	tracked, ok := trackManagedConn(ctx, c.conn, report)
+	if !ok {
+		return errors.New("managed control is closing")
+	}
+	c.managed = tracked
+	return nil
+}
+
+type managedCloseConn struct {
+	net.Conn
+	once sync.Once
+	err error
+	report func(error)
+}
+
+func (c *managedCloseConn) Close() error {
+	c.once.Do(func() {
+		defer func() {
+			if recover() != nil {
+				c.err = errors.New("managed connection close panicked")
+			}
+			if c.err != nil {
+				c.report(c.err)
+			}
+		}()
+		c.err = c.Conn.Close()
+	})
+	return c.err
+}
+
+type managedCloseReader interface{ CloseRead() error }
+type managedCloseWriter interface{ CloseWrite() error }
+
+func trackManagedConn(ctx context.Context, conn net.Conn, report func(error)) (net.Conn, bool) {
+	wrapped := &managedCloseConn{Conn: conn, report: report}
+	reader, canRead := conn.(managedCloseReader)
+	writer, canWrite := conn.(managedCloseWriter)
+	var owner net.Conn = wrapped
+	switch {
+	case canRead && canWrite:
+		owner = struct { *managedCloseConn; managedCloseReader; managedCloseWriter }{wrapped, reader, writer}
+	case canRead:
+		owner = struct { *managedCloseConn; managedCloseReader }{wrapped, reader}
+	case canWrite:
+		owner = struct { *managedCloseConn; managedCloseWriter }{wrapped, writer}
+	}
+	return lifetime.TrackConn(ctx, owner)
 }
 
 type GetWorkConnFn func() (*WorkConn, error)
@@ -94,6 +155,7 @@ type BaseProxy struct {
 	usedPortsNum   int
 	poolCount      int
 	getWorkConnFn  GetWorkConnFn
+	managedCloseError func(error)
 	serverCfg      *v1.ServerConfig
 	encryptionKey  []byte
 	limiter        *rate.Limiter
@@ -144,7 +206,13 @@ func (pxy *BaseProxy) Close() {
 	xl := xlog.FromContextSafe(pxy.ctx)
 	xl.Infof("proxy closing")
 	for _, l := range pxy.listeners {
-		l.Close()
+		if pxy.managedCloseError != nil {
+			if err := l.Close(); err != nil {
+				pxy.managedCloseError(err)
+			}
+		} else {
+			l.Close()
+		}
 	}
 }
 
@@ -268,7 +336,13 @@ func (pxy *BaseProxy) startCommonTCPListenersHandler() {
 				// Visitor connections can be admitted before their response is
 				// written. Keep this wait in the worker, not the accept loop.
 				response, _ := c.(interface{ WaitVisitorResponse(context.Context) bool })
-				tracked, ok := lifetime.TrackConn(pxy.ctx, c)
+				var tracked net.Conn
+				var ok bool
+				if pxy.managedCloseError != nil {
+					tracked, ok = trackManagedConn(pxy.ctx, c, pxy.managedCloseError)
+				} else {
+					tracked, ok = lifetime.TrackConn(pxy.ctx, c)
+				}
 				if !ok {
 					return
 				}
@@ -548,6 +622,7 @@ type Options struct {
 	ResourceController *controller.ResourceController
 	ServerMetrics      metrics.ServerMetrics
 	GetWorkConnFn      GetWorkConnFn
+	ManagedCloseError  func(error)
 	Configurer         v1.ProxyConfigurer
 	ServerCfg          *v1.ServerConfig
 	EncryptionKey      []byte
@@ -576,6 +651,7 @@ func NewProxy(ctx context.Context, options *Options) (pxy Proxy, err error) {
 		listeners:      make([]net.Listener, 0),
 		poolCount:      options.PoolCount,
 		getWorkConnFn:  options.GetWorkConnFn,
+		managedCloseError: options.ManagedCloseError,
 		serverCfg:      options.ServerCfg,
 		encryptionKey:  options.EncryptionKey,
 		limiter:        limiter,

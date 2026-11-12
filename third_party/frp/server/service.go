@@ -156,7 +156,7 @@ type Service struct {
 	trafficCounter *traffic.ServerCounter
 	// Optional instance-owned admission policy for frp control connections.
 	allowControlConnection func(net.Addr) bool
-	managedLogin           ManagedLoginResolver
+	managedLogin           ManagedLoginProvider
 	accessLogMu            sync.Mutex
 	accessLogAt            time.Time
 	accessLogSuppressed    uint64
@@ -213,10 +213,14 @@ type ServiceOptions struct {
 	// safe, prompt and non-panicking. It does not filter public proxy traffic.
 	AllowControlConnection func(net.Addr) bool
 	// ManagedLogin replaces shared-token authentication only when explicitly
-	// supplied. It affects new control logins and does not revoke existing work.
+	// supplied. Credential changes require the owner to invalidate the provider
+	// and revoke the old identity; finite account expiry also stops its controls.
 	// Clients must enable auth.additionalScopes = ["NewWorkConns"]; otherwise
 	// a control login can succeed while its work connections are rejected.
-	ManagedLogin ManagedLoginResolver
+	ManagedLogin ManagedLoginProvider
+	// OnManagedCleanupFailure is called asynchronously at most once per failed
+	// credential identity. It must return promptly, be concurrency-safe and not panic.
+	OnManagedCleanupFailure func(ManagedIdentity)
 	// OnWorkerPanic enables instance-scoped worker recovery and notification.
 	// It must be concurrent-safe, return promptly, and not panic. It receives no
 	// panic value and must cause the owning instance to stop.
@@ -310,6 +314,7 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 		exiting:           make(chan struct{}),
 		serveErrors:       make(chan serveResult, 1),
 	}
+	svr.ctlManager.onManagedCleanupFailure = options.OnManagedCleanupFailure
 	// The constructor owns each resource as soon as it is created. Roll back
 	// all of them if any subsequent step fails.
 	ready := false
@@ -758,9 +763,18 @@ func (svr *Service) CloseContext(ctx context.Context) error {
 	})
 	select {
 	case <-svr.closeDone:
+		if svr.managedLogin != nil {
+			return svr.ctlManager.managedCleanupError()
+		}
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("waiting for server shutdown; proxy ports may still be in use: %w", ctx.Err())
+		err := fmt.Errorf("waiting for server shutdown; proxy ports may still be in use: %w", ctx.Err())
+		if svr.managedLogin != nil {
+			if cleanupErr := svr.ctlManager.managedCleanupError(); cleanupErr != nil {
+				return errors.Join(err, cleanupErr)
+			}
+		}
+		return err
 	}
 }
 
@@ -1207,6 +1221,14 @@ func (svr *Service) handleListener(l net.Listener, internal, alreadyTLS, inspect
 			xl.Tracef("check TLS connection success, isTLS: %v custom: %v internal: %v", isTLS, custom, internal)
 			inspectTLS = inspectWSS && isTLS
 		}
+		if svr.managedLogin != nil {
+			secure, ok := c.(*tls.Conn)
+			if !ok {
+				_ = c.Close()
+				continue
+			}
+			c = &managedTLSConn{Conn: secure}
+		}
 
 		// Start a new goroutine to handle connection.
 		frpConn := c
@@ -1339,7 +1361,7 @@ func (svr *Service) registerControl(
 ) (*Control, error) {
 	if svr.managedLogin != nil {
 		if internal || managed == nil || managed.verifier == nil || len(managed.key) != 64 ||
-			managed.accountID != loginMsg.User || !managedTimestampOK(loginMsg.Timestamp) {
+			managed.identity.AccountID != loginMsg.User || !validManagedIdentity(managed.identity) || !managedTimestampOK(loginMsg.Timestamp) {
 			return nil, errors.New("verified account login is required")
 		}
 	} else if managed != nil {
@@ -1390,9 +1412,9 @@ func (svr *Service) registerControl(
 		return nil, err
 	}
 
-	accountID := ""
+	var identity ManagedIdentity
 	if managed != nil {
-		accountID = managed.accountID
+		identity = managed.identity
 	}
 	ctl, err := NewControl(ctx, &SessionContext{
 		RC:             svr.rc,
@@ -1407,7 +1429,8 @@ func (svr *Service) registerControl(
 		ServerCfg:      svr.cfg,
 		WireProtocol:   wireProtocol,
 		UDPPacketCodec: udpPacketCodec,
-		managedAccountID: accountID,
+		managedIdentity: identity,
+		managedProvider: svr.managedLogin,
 	})
 	if err != nil {
 		xl.Warnf("create new controller error: %v", err)
@@ -1480,7 +1503,7 @@ func (svr *Service) registerWorkConn(
 	if err == nil {
 		newMsg = &retContent.NewWorkConn
 		// Check auth.
-		if managedTransport && (ctl.sessionCtx.managedAccountID == "" || !managedTimestampOK(newMsg.Timestamp)) {
+		if managedTransport && (ctl.sessionCtx.managedIdentity.AccountID == "" || !managedTimestampOK(newMsg.Timestamp)) {
 			err = errors.New("account credentials are invalid")
 		} else {
 			err = ctl.sessionCtx.AuthVerifier.VerifyNewWorkConn(newMsg)
@@ -1493,7 +1516,20 @@ func (svr *Service) registerWorkConn(
 		}
 		return err
 	}
-	return svr.ctlManager.RegisterWorkConn(ctl, proxy.NewWorkConn(workConn))
+	work := proxy.NewWorkConn(workConn)
+	if managedTransport {
+		if ctl.managedScope == nil {
+			return errors.New("managed control is unavailable")
+		}
+		if err := work.TrackManaged(ctl.managedProxyCtx, ctl.noteManagedClose); err != nil {
+			return err
+		}
+	}
+	err = svr.ctlManager.RegisterWorkConn(ctl, work)
+	if err != nil && managedTransport {
+		_ = work.Close()
+	}
+	return err
 }
 
 func (svr *Service) RegisterVisitorConn(visitorConn net.Conn, newMsg *msg.NewVisitorConn, wireProtocol string) error {

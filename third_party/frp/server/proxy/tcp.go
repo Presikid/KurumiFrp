@@ -68,16 +68,46 @@ func (pxy *TCPProxy) Run() (remoteAddr string, err error) {
 		if err != nil {
 			return
 		}
+		managedReleased := false
 		defer func() {
-			if err != nil {
+			if err != nil && !managedReleased {
 				pxy.rc.TCPPortManager.Release(pxy.realBindPort)
 			}
 		}()
+		var managedListener net.Listener
+		if pxy.managedCloseError != nil {
+			defer func() {
+				if value := recover(); value != nil {
+					pxy.managedCloseError(fmt.Errorf("managed TCP proxy creation panicked"))
+					func() {
+						defer func() {
+							if recover() != nil {
+								pxy.managedCloseError(fmt.Errorf("managed listener rollback panicked"))
+							}
+						}()
+						if managedListener != nil {
+							pxy.managedCloseError(managedListener.Close())
+						}
+					}()
+					managedReleased = true
+					func() {
+						defer func() {
+							if recover() != nil {
+								pxy.managedCloseError(fmt.Errorf("managed port rollback panicked"))
+							}
+						}()
+						pxy.rc.TCPPortManager.Release(pxy.realBindPort)
+					}()
+					panic(value)
+				}
+			}()
+		}
 		listener, errRet := net.Listen("tcp", net.JoinHostPort(pxy.serverCfg.ProxyBindAddr, strconv.Itoa(pxy.realBindPort)))
 		if errRet != nil {
 			err = errRet
 			return
 		}
+		managedListener = listener
 		pxy.listeners = append(pxy.listeners, listener)
 		xl.Infof("tcp proxy listen port [%d]", pxy.cfg.RemotePort)
 	}

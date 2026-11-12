@@ -20,6 +20,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/fatedier/frp/pkg/auth"
 	"github.com/fatedier/frp/pkg/config"
+	"github.com/fatedier/frp/pkg/config/types"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	pkgerr "github.com/fatedier/frp/pkg/errors"
 	"github.com/fatedier/frp/pkg/msg"
@@ -70,6 +72,8 @@ type ControlManager struct {
 	ctlsByRunID map[string]*controlEntry
 	// liveControls also includes replaced generations until their cleanup completes.
 	liveControls map[*Control]struct{}
+	managedStates map[ManagedIdentity]*managedIdentityState
+	onManagedCleanupFailure func(ManagedIdentity)
 	drained      chan struct{}
 	registry     *registry.ClientRegistry
 	closed       bool
@@ -81,6 +85,7 @@ func NewControlManager(clientRegistry *registry.ClientRegistry) *ControlManager 
 	return &ControlManager{
 		ctlsByRunID:  make(map[string]*controlEntry),
 		liveControls: make(map[*Control]struct{}),
+		managedStates: make(map[ManagedIdentity]*managedIdentityState),
 		drained:      make(chan struct{}),
 		registry:     clientRegistry,
 	}
@@ -118,6 +123,9 @@ func (cm *ControlManager) lockCurrentRun(runID string, allowClosed bool) (*contr
 // Add makes ctl the pending current generation and records the predecessor
 // finalization barrier it must wait for before activation.
 func (cm *ControlManager) Add(ctl *Control) error {
+	if ctl.sessionCtx.managedProvider != nil {
+		return cm.addManaged(ctl)
+	}
 	for {
 		// Never wait for a run gate while holding cm.mu.
 		cm.mu.RLock()
@@ -142,7 +150,7 @@ func (cm *ControlManager) Add(ctl *Control) error {
 			}
 			continue
 		}
-		if old != nil && old.ctl.sessionCtx.managedAccountID != ctl.sessionCtx.managedAccountID {
+		if old != nil && old.ctl.sessionCtx.managedIdentity != ctl.sessionCtx.managedIdentity {
 			cm.mu.Unlock()
 			old.runMu.Unlock()
 			return fmt.Errorf("run id belongs to another account")
@@ -259,8 +267,20 @@ func (cm *ControlManager) completeLogin(ctl *Control, writeSuccess func() error)
 	if ctl.state != controlStatePending || !ctl.activated {
 		return false, nil
 	}
+	if ctl.managedFailedLocked() {
+		return false, ErrManagedCleanupUncertain
+	}
+	if ctl.managedExpiredLocked() {
+		return false, fmt.Errorf("account has expired")
+	}
 	if err := writeSuccess(); err != nil {
 		return false, err
+	}
+	if ctl.managedFailedLocked() {
+		return false, ErrManagedCleanupUncertain
+	}
+	if ctl.managedExpiredLocked() {
+		return false, fmt.Errorf("account has expired")
 	}
 	if !ctl.startLocked() {
 		return false, nil
@@ -346,6 +366,12 @@ func (cm *ControlManager) RegisterWorkConn(ctl *Control, conn *proxy.WorkConn) e
 	if ctl.state != controlStateRunning {
 		return fmt.Errorf("client control for run id [%s] is not running", ctl.runID)
 	}
+	if ctl.managedFailedLocked() {
+		return ErrManagedCleanupUncertain
+	}
+	if ctl.managedExpiredLocked() {
+		return fmt.Errorf("account has expired")
+	}
 
 	select {
 	case ctl.workConnCh <- conn:
@@ -363,11 +389,16 @@ func (cm *ControlManager) trackControl(ctl *Control) {
 	// Wait for that close as well before declaring this control drained.
 	_ = ctl.interruptReadAndClose()
 	cm.mu.Lock()
+	state := ctl.managedState
+	firstFailure := state != nil && ctl.managedUncertain.Load() && state.failed.CompareAndSwap(false, true)
 	delete(cm.liveControls, ctl)
 	if cm.closed && len(cm.liveControls) == 0 {
 		close(cm.drained)
 	}
 	cm.mu.Unlock()
+	if firstFailure {
+		state.notifyFailure()
+	}
 }
 
 // Close requests shutdown and waits up to the service shutdown timeout.
@@ -406,9 +437,13 @@ func (cm *ControlManager) CloseContext(ctx context.Context) error {
 	}
 	select {
 	case <-cm.drained:
-		return nil
+		return cm.managedCleanupError()
 	case <-ctx.Done():
-		return fmt.Errorf("waiting for server controls to close: %w", ctx.Err())
+		err := fmt.Errorf("waiting for server controls to close: %w", ctx.Err())
+		if cleanupErr := cm.managedCleanupError(); cleanupErr != nil {
+			return errors.Join(err, cleanupErr)
+		}
+		return err
 	}
 }
 
@@ -439,7 +474,8 @@ type SessionContext struct {
 	WireProtocol   string
 	UDPPacketCodec string
 	// Assigned only after the account token verifies its control login.
-	managedAccountID string
+	managedIdentity ManagedIdentity
+	managedProvider ManagedLoginProvider
 }
 
 type controlState uint8
@@ -455,6 +491,17 @@ const (
 type Control struct {
 	// session context
 	sessionCtx *SessionContext
+	managedScope *lifetime.Scope
+	managedProxyCtx context.Context
+	managedState *managedIdentityState
+	// Set during managed admission; read only under lifecycleMu.
+	managedExpiresAt time.Time
+	managedUncertain atomic.Bool
+	managedScopeStopOnce sync.Once
+	managedScopeStopFailed bool
+	managedStopOnce sync.Once
+	managedStopDone chan struct{}
+	managedStopErr error
 
 	// other components can use this to communicate with client
 	msgTransporter transport.MessageTransporter
@@ -536,6 +583,16 @@ func NewControl(ctx context.Context, sessionCtx *SessionContext) (*Control, erro
 		doneCh:        make(chan struct{}),
 		serverMetrics: serverMetrics,
 	}
+	if sessionCtx.managedProvider != nil {
+		ctl.managedStopDone = make(chan struct{})
+		ctl.managedScope = lifetime.NewWithPanicHandler(func() {
+			ctl.noteManagedClose(fmt.Errorf("managed proxy worker panicked"))
+			if !lifetime.ReportPanic(ctx) {
+				panic("managed proxy worker panicked")
+			}
+		})
+		ctl.managedProxyCtx = lifetime.WithScope(ctx, ctl.managedScope)
+	}
 	ctl.lastPing.Store(time.Now())
 
 	ctl.msgDispatcher = msg.NewDispatcherWithContext(ctx, sessionCtx.Conn)
@@ -557,6 +614,10 @@ func (ctl *Control) ID() ControlID {
 func (ctl *Control) admit(manager *ControlManager, id ControlID) error {
 	ctl.lifecycleMu.Lock()
 	defer ctl.lifecycleMu.Unlock()
+	return ctl.admitLocked(manager, id)
+}
+
+func (ctl *Control) admitLocked(manager *ControlManager, id ControlID) error {
 	if ctl.state != controlStateCreated {
 		return fmt.Errorf("control [%s] is not in created state", ctl.runID)
 	}
@@ -589,7 +650,7 @@ func (ctl *Control) Start() bool {
 }
 
 func (ctl *Control) startLocked() bool {
-	if ctl.state != controlStatePending || !ctl.activated {
+	if ctl.state != controlStatePending || !ctl.activated || ctl.managedFailedLocked() || ctl.managedExpiredLocked() {
 		return false
 	}
 	ctl.state = controlStateRunning
@@ -598,6 +659,16 @@ func (ctl *Control) startLocked() bool {
 		ctl.worker()
 	}()
 	return true
+}
+
+// The caller holds lifecycleMu. A zero value leaves shared mode unchanged.
+func (ctl *Control) managedExpiredLocked() bool {
+	return !ctl.managedExpiresAt.IsZero() && !time.Now().UTC().Before(ctl.managedExpiresAt)
+}
+
+// The state is immutable after admission; failure itself is published atomically.
+func (ctl *Control) managedFailedLocked() bool {
+	return ctl.managedState != nil && ctl.managedState.failed.Load()
 }
 
 func (ctl *Control) Close() error {
@@ -625,7 +696,10 @@ func (ctl *Control) Replaced(newCtl *Control) {
 func (ctl *Control) markReplaced() <-chan struct{} {
 	ctl.lifecycleMu.Lock()
 	defer ctl.lifecycleMu.Unlock()
+	return ctl.markReplacedLocked()
+}
 
+func (ctl *Control) markReplacedLocked() <-chan struct{} {
 	switch ctl.state {
 	case controlStateCreated:
 		ctl.state = controlStateClosing
@@ -648,6 +722,14 @@ func (ctl *Control) markReplaced() <-chan struct{} {
 
 func (ctl *Control) interruptReadAndClose() error {
 	ctl.interruptOnce.Do(func() {
+		if ctl.managedScope != nil {
+			defer func() {
+				if recover() != nil {
+					ctl.interruptErr = fmt.Errorf("managed control close panicked")
+				}
+				ctl.noteManagedClose(ctl.interruptErr)
+			}()
+		}
 		_ = ctl.sessionCtx.Conn.SetReadDeadline(time.Now())
 		if ctl.sessionCtx.Session != nil {
 			ctl.interruptErr = ctl.sessionCtx.Session.Close()
@@ -656,6 +738,15 @@ func (ctl *Control) interruptReadAndClose() error {
 		ctl.interruptErr = ctl.sessionCtx.Conn.Close()
 	})
 	return ctl.interruptErr
+}
+
+func (ctl *Control) noteManagedClose(err error) {
+	if err != nil && ctl.managedScope != nil {
+		if ctl.managedState != nil {
+			ctl.managedState.fail()
+		}
+		ctl.managedUncertain.Store(true)
+	}
 }
 
 func (ctl *Control) finishLocked() {
@@ -677,6 +768,7 @@ func (ctl *Control) GetWorkConn() (workConn *proxy.WorkConn, err error) {
 			acquired := workConn
 			workConn = nil
 			err = fmt.Errorf("work connection acquisition panicked; connection cleanup may be incomplete")
+			ctl.noteManagedClose(err)
 			if lifetime.ReportPanic(ctl.ctx) {
 				// This service's scope owns accepted connections and is stopping.
 				return
@@ -721,6 +813,19 @@ func (ctl *Control) GetWorkConn() (workConn *proxy.WorkConn, err error) {
 
 	// When we get a work connection from pool, replace it with a new one.
 	_ = ctl.msgDispatcher.Send(&msg.ReqWorkConn{})
+	if ctl.managedScope != nil {
+		// Recheck immediately before handing a pooled connection to the
+		// proxy. Never close a connection while holding lifecycleMu.
+		ctl.lifecycleMu.Lock()
+		allowed := ctl.state == controlStateRunning && !ctl.managedExpiredLocked() && !ctl.managedFailedLocked()
+		ctl.lifecycleMu.Unlock()
+		if !allowed {
+			err = fmt.Errorf("account session has expired or is closing")
+			ctl.noteManagedClose(workConn.Close())
+			workConn = nil
+			return
+		}
+	}
 	return
 }
 
@@ -781,6 +886,10 @@ func (ctl *Control) closeProxy(pxy proxy.Proxy) {
 }
 
 func (ctl *Control) worker() {
+	if ctl.managedScope != nil {
+		ctl.managedWorker()
+		return
+	}
 	xl := ctl.xl
 	ctl.serverMetrics.NewClient()
 
@@ -813,7 +922,6 @@ func (ctl *Control) worker() {
 	for _, pxy := range proxies {
 		ctl.closeProxy(pxy)
 	}
-
 	ctl.serverMetrics.CloseClient()
 	if ctl.manager != nil {
 		ctl.manager.Remove(ctl)
@@ -825,12 +933,12 @@ func (ctl *Control) worker() {
 }
 
 func (ctl *Control) registerMsgHandlers() {
-	ctl.msgDispatcher.RegisterHandler(&msg.NewProxy{}, ctl.handleNewProxy)
-	ctl.msgDispatcher.RegisterHandler(&msg.Ping{}, ctl.handlePing)
+	ctl.msgDispatcher.RegisterHandler(&msg.NewProxy{}, ctl.managedHandler(ctl.handleNewProxy))
+	ctl.msgDispatcher.RegisterHandler(&msg.Ping{}, ctl.managedHandler(ctl.handlePing))
 	ctl.msgDispatcher.RegisterHandler(&msg.NatHoleVisitor{}, func(m msg.Message) { lifetime.Go(ctl.ctx, func() { ctl.handleNatHoleVisitor(m) }) })
 	ctl.msgDispatcher.RegisterHandler(&msg.NatHoleClient{}, func(m msg.Message) { lifetime.Go(ctl.ctx, func() { ctl.handleNatHoleClient(m) }) })
 	ctl.msgDispatcher.RegisterHandler(&msg.NatHoleReport{}, func(m msg.Message) { lifetime.Go(ctl.ctx, func() { ctl.handleNatHoleReport(m) }) })
-	ctl.msgDispatcher.RegisterHandler(&msg.CloseProxy{}, ctl.handleCloseProxy)
+	ctl.msgDispatcher.RegisterHandler(&msg.CloseProxy{}, ctl.managedHandler(ctl.handleCloseProxy))
 }
 
 func (ctl *Control) handleNewProxy(m msg.Message) {
@@ -894,7 +1002,7 @@ func (ctl *Control) handlePing(m msg.Message) {
 }
 
 func (ctl *Control) handleNatHoleVisitor(m msg.Message) {
-	if ctl.sessionCtx.managedAccountID != "" {
+	if ctl.sessionCtx.managedIdentity.AccountID != "" {
 		return
 	}
 	inMsg := m.(*msg.NatHoleVisitor)
@@ -902,7 +1010,7 @@ func (ctl *Control) handleNatHoleVisitor(m msg.Message) {
 }
 
 func (ctl *Control) handleNatHoleClient(m msg.Message) {
-	if ctl.sessionCtx.managedAccountID != "" {
+	if ctl.sessionCtx.managedIdentity.AccountID != "" {
 		return
 	}
 	inMsg := m.(*msg.NatHoleClient)
@@ -910,7 +1018,7 @@ func (ctl *Control) handleNatHoleClient(m msg.Message) {
 }
 
 func (ctl *Control) handleNatHoleReport(m msg.Message) {
-	if ctl.sessionCtx.managedAccountID != "" {
+	if ctl.sessionCtx.managedIdentity.AccountID != "" {
 		return
 	}
 	inMsg := m.(*msg.NatHoleReport)
@@ -925,7 +1033,7 @@ func (ctl *Control) handleCloseProxy(m msg.Message) {
 }
 
 func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err error) {
-	if accountID := ctl.sessionCtx.managedAccountID; accountID != "" {
+	if accountID := ctl.sessionCtx.managedIdentity.AccountID; accountID != "" {
 		prefix := accountID + "."
 		if pxyMsg.ProxyType != string(v1.ProxyTypeTCP) || pxyMsg.Group != "" ||
 			!strings.HasPrefix(pxyMsg.ProxyName, prefix) || len(pxyMsg.ProxyName) == len(prefix) {
@@ -938,6 +1046,10 @@ func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err 
 	if err != nil {
 		return
 	}
+	if ctl.managedScope != nil && pxyConf.GetBaseConfig().Transport.BandwidthLimit.Bytes() > 0 &&
+		pxyConf.GetBaseConfig().Transport.BandwidthLimitMode == types.BandwidthLimitModeServer {
+		return "", fmt.Errorf("account login does not support server-side bandwidth limits")
+	}
 
 	// User info
 	userInfo := plugin.UserInfo{
@@ -948,7 +1060,13 @@ func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err 
 
 	// NewProxy will return an interface Proxy.
 	// In fact, it creates different proxies based on the proxy type. We just call run() here.
-	pxy, err := proxy.NewProxy(ctl.ctx, &proxy.Options{
+	proxyCtx := ctl.ctx
+	var managedCloseError func(error)
+	if ctl.managedScope != nil {
+		proxyCtx = ctl.managedProxyCtx
+		managedCloseError = ctl.noteManagedClose
+	}
+	pxy, err := proxy.NewProxy(proxyCtx, &proxy.Options{
 		UserInfo:           userInfo,
 		LoginMsg:           ctl.sessionCtx.LoginMsg,
 		PoolCount:          ctl.poolCount,
@@ -960,6 +1078,7 @@ func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err 
 		EncryptionKey:      ctl.sessionCtx.EncryptionKey,
 		WireProtocol:       ctl.sessionCtx.WireProtocol,
 		UDPPacketCodec:     ctl.sessionCtx.UDPPacketCodec,
+		ManagedCloseError:  managedCloseError,
 	})
 	if err != nil {
 		return remoteAddr, err
@@ -994,20 +1113,41 @@ func (ctl *Control) RegisterProxy(pxyMsg *msg.NewProxy) (remoteAddr string, err 
 	if err != nil {
 		return
 	}
+	managedPublished := false
 	defer func() {
 		if err != nil {
 			pxy.Close()
 		}
 	}()
+	if ctl.managedScope != nil {
+		defer func() {
+			if value := recover(); value != nil {
+				ctl.noteManagedClose(fmt.Errorf("managed proxy publication panicked"))
+				if !managedPublished && err == nil {
+					ctl.managedCleanupStep(func() { pxy.Close() })
+				}
+				panic(value)
+			}
+		}()
+	}
 
 	err = ctl.sessionCtx.PxyManager.Add(pxyMsg.ProxyName, pxy)
 	if err != nil {
 		return
 	}
 
-	ctl.mu.Lock()
-	ctl.proxies[pxy.GetName()] = pxy
-	ctl.mu.Unlock()
+	if ctl.managedScope != nil {
+		func() {
+			ctl.mu.Lock()
+			defer ctl.mu.Unlock()
+			ctl.proxies[pxy.GetName()] = pxy
+			managedPublished = true
+		}()
+	} else {
+		ctl.mu.Lock()
+		ctl.proxies[pxy.GetName()] = pxy
+		ctl.mu.Unlock()
+	}
 	return
 }
 
