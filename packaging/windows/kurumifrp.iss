@@ -16,7 +16,7 @@ AppPublisher=Presikid
 AppPublisherURL=https://github.com/Presikid/KurumiFrp
 DefaultDirName={commonpf}\KurumiFRP
 UsePreviousAppDir=yes
-UninstallLogMode=new
+UninstallLogMode=append
 SetupMutex=Global\KurumiFRPSetupMachine
 DefaultGroupName=KurumiFRP
 PrivilegesRequired=admin
@@ -51,6 +51,9 @@ english.FinishedLabelNoIcons=KurumiFRP was installed. Sign in to the account you
 chinesesimplified.FinishedLabel=KurumiFRP 已安装。请登录平时使用的 Windows 账户，通过开始菜单以普通权限手动打开 KurumiFRP。
 chinesesimplified.FinishedLabelNoIcons=KurumiFRP 已安装。请登录平时使用的 Windows 账户，以普通权限手动打开 KurumiFRP。
 
+english.ConfirmUninstall=Uninstall will stop all %1 workbenches and their connections, remove the application files, and retain account data. Continue?
+chinesesimplified.ConfirmUninstall=卸载将关闭所有账户的 %1 工作台及连接、移除程序文件，并保留账户数据。是否继续？
+
 [CustomMessages]
 english.ShortcutGroup=Shortcuts:
 english.StartupGroup=Startup:
@@ -83,8 +86,10 @@ english.ManualStart=Installation completed. Sign in to your usual Windows accoun
 chinesesimplified.ManualStart=安装完成。请登录平时使用的 Windows 账户，以普通权限手动打开 KurumiFRP。
 english.BundledMismatch=A legacy bundled core already exists for this application version. Install a newer version instead; the current installation was not changed.
 chinesesimplified.BundledMismatch=此软件版本已存在旧版预置核心。请安装更新的软件版本；现有安装未被修改。
-english.UninstallConfirm=Close the workbench and its connections for every account before uninstalling. Application files will be removed; account data will be retained. Continue?
-chinesesimplified.UninstallConfirm=卸载前请关闭所有账户的工作台及连接。卸载会移除程序文件，保留各账户的数据。是否继续？
+english.UninstallPrepareFailed=The uninstall maintenance program could not be started. Uninstallation was not started and account data was retained.
+chinesesimplified.UninstallPrepareFailed=无法启动卸载维护程序，卸载尚未开始，账户数据已保留。
+english.UninstallFinishFailed=The uninstall maintenance marker could not be cleared. Account data was retained.
+chinesesimplified.UninstallFinishFailed=无法清理卸载维护标记，账户数据已保留。
 
 [Tasks]
 Name: desktopicon; Description: "{cm:DesktopTask}"; GroupDescription: "{cm:ShortcutGroup}"
@@ -93,8 +98,8 @@ Name: autostart; Description: "{cm:AutostartTask}"; GroupDescription: "{cm:Start
 [Files]
 Source: "{#PayloadDir}\amd64\kurumi.exe"; DestName: "maintenance-amd64.exe"; Flags: dontcopy noencryption
 Source: "{#PayloadDir}\arm64\kurumi.exe"; DestName: "maintenance-arm64.exe"; Flags: dontcopy noencryption
-Source: "{#PayloadDir}\amd64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: not IsArm64
-Source: "{#PayloadDir}\arm64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: IsArm64
+Source: "{#PayloadDir}\amd64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete; Check: not IsArm64
+Source: "{#PayloadDir}\arm64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete; Check: IsArm64
 Source: "{#PayloadDir}\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "kurumi.ico"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -107,9 +112,12 @@ Name: "{commonstartup}\KurumiFRP"; Filename: "{app}\kurumi.exe"; WorkingDir: "{a
 [Code]
 var
   Helper: String;
+  UninstallStopped: Boolean;
 
 function GetFileAttributesW(lpFileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
+function CopyFileW(ExistingFile, NewFile: String; FailIfExists: Boolean): Boolean;
+  external 'CopyFileW@kernel32.dll stdcall';
 function GetDriveTypeW(Root: String): LongWord;
   external 'GetDriveTypeW@kernel32.dll stdcall';
 function QueryDosDeviceW(DeviceName, TargetPath: String; MaxLength: LongWord): LongWord;
@@ -248,8 +256,21 @@ begin
   if (CurStep = ssDone) and WizardSilent then Log(ExpandConstant('{cm:ManualStart}'));
 end;
 
-function InitializeUninstall(): Boolean;
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  Result := True;
-  if not UninstallSilent then Result := MsgBox(ExpandConstant('{cm:UninstallConfirm}'), mbConfirmation, MB_YESNO) = IDYES;
+  if CurUninstallStep <> usUninstall then Exit;
+  if not SafeTempVolume(ExpandConstant('{tmp}')) then
+    RaiseException(ExpandConstant('{cm:UnsafeTemp}'));
+  Helper := ExpandConstant('{tmp}\kurumi-uninstall-maintenance.exe');
+  if not CopyFileW(ExpandConstant('{app}\kurumi.exe'), Helper, True) then
+    RaiseException(ExpandConstant('{cm:UninstallPrepareFailed}'));
+  if not RunHelper('--native-maintenance stop') then
+    RaiseException(ExpandConstant('{cm:StopFailed}'));
+  UninstallStopped := True;
+end;
+
+procedure DeinitializeUninstall();
+begin
+  if UninstallStopped and not RunHelper('--native-maintenance finish-stop') then
+    SuppressibleMsgBox(ExpandConstant('{cm:UninstallFinishFailed}'), mbError, MB_OK, IDOK);
 end;
