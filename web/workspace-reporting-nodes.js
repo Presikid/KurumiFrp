@@ -15,7 +15,8 @@
     <section class="notice">此列表与“节点管理”中的拉取节点相互独立，仅管理员可见；不支持向本地账户授权，也不能远程控制。状态是收到报告的观察，不能证明业务可达。报告可能延迟，最近接收时间不是采集时间。</section>
     <section class="panel" data-issued hidden><div class="panel-content"><h2>请保存本次凭据</h2><p class="small-note" data-issued-label></p><p class="small-note">凭据只在本次显示，不会再次返回。请通过安全渠道交给对应设备；离开页面或丢失响应后需重新轮换。关闭页面不能撤销已提交的操作。</p><label>节点凭据<textarea data-credential readonly rows="2" spellcheck="false" autocomplete="off"></textarea></label><div class="actions"><button type="button" data-action="clear-credential">已保存，清除显示</button></div></div></section>
     <section class="panel"><div class="panel-content"><div class="section-heading"><div><h2>接收其他节点</h2><p>为每台设备单独登记和签发凭据，最多 32 个。</p></div><button type="button" data-action="reload">刷新列表</button></div>
-     <p class="small-note">状态以列表读取时为准，点击刷新可更新。近期收到报告表示接收端约 90 秒内收到过新报告；没有收到新报告后标记为近期无报告。工作台重启、轮换或撤销后，本进程中的报告摘要会清除。</p>
+     <p class="small-note">页面可见且没有操作时，约每 30 秒读取本机接收列表，也可手动刷新。展开摘要、选择文字或列表项保持焦点时会暂缓自动读取。近期收到报告表示接收端约 90 秒内收到过新报告；没有收到新报告后标记为近期无报告。工作台重启、轮换或撤销后，本进程中的报告摘要会清除。</p>
+     <p class="small-note" data-freshness role="status">尚未读取节点快照。</p>
      <form data-issue-form><div class="form-grid"><label>节点名称<input name="name" required maxlength="128" autocomplete="off" placeholder="用于区分设备的名称"><small>1–64 个字符；允许同名，节点 ID 才是身份。</small></label><div class="actions"><button class="primary" type="submit" data-issue>登记并签发凭据</button></div></div></form>
      <p class="small-note" data-message role="status"></p><div data-list>正在读取节点…</div></div></section>
     <section class="panel" data-out><div class="panel-content"><div class="section-heading"><div><h2>本机向控制端上报</h2><p>本机可向一个独立的控制端发送实例摘要。</p></div><button type="button" data-out-action="reload">刷新设置</button></div>
@@ -29,14 +30,24 @@
   mount(root, data) {
    if (data.identity?.role !== 'admin') return;
    const epoch = K.epoch(), requests = new Set();
-   const list = root.querySelector('[data-list]'), message = root.querySelector('[data-message]');
+   const list = root.querySelector('[data-list]'), message = root.querySelector('[data-message]'), freshness = root.querySelector('[data-freshness]');
    const form = root.querySelector('[data-issue-form]'), issue = root.querySelector('[data-issue]');
    const secretPanel = root.querySelector('[data-issued]'), secret = root.querySelector('[data-credential]');
    const current = () => K.epoch() === epoch && K.isCurrent('reported-nodes', root) && K.state()?.identity?.role === 'admin';
    let model = null, pending = false, loading = false, issued = false;
+   let automatic = null, automaticTimer = null, lastRead = null, readFailed = false;
    const uncertain = error => error.name === 'AbortError' || !error.status || error.status >= 500;
-   async function request(path, body) {
-    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20000);
+   function cancelAutomatic() {
+    if (automatic) { automatic.cancelled = true; automatic.controller.abort(); }
+   }
+   async function request(path, body, automaticController) {
+    if (!automaticController && automatic) {
+     const previous = automatic;
+     cancelAutomatic();
+     await previous.done;
+    }
+    if (!current()) throw new DOMException('页面已离开', 'AbortError');
+    const controller = automaticController || new AbortController(), timer = setTimeout(() => controller.abort(), 20000);
     requests.add(controller);
     try { return await K.api(path, body, {signal:controller.signal}); }
     finally { clearTimeout(timer); requests.delete(controller); }
@@ -45,7 +56,28 @@
     issue.disabled = pending || loading || !model || issued;
     form.elements.name.disabled = pending;
     root.querySelector('[data-action="reload"]').disabled = pending || loading;
-    list.querySelectorAll('button').forEach(button => { button.disabled = pending || loading || issued; });
+    list.querySelectorAll('button').forEach(button => { button.disabled = pending || loading || issued || !model; });
+   }
+   function showFreshness() {
+    // Do not replace text while the user may be selecting it.
+    if (window.getSelection()?.toString()) return;
+    let text;
+    if (!lastRead) {
+     text = readFailed ? '读取失败，尚无可显示的节点快照。请刷新重试。' : '尚未读取节点快照。';
+    } else {
+     const age = Date.now() - lastRead, stale = age < 0 || age >= 90000;
+     text = `本机列表最近读取：${new Date(lastRead).toLocaleString('zh-CN')}。` +
+      (readFailed ? '最近读取失败，当前列表可能过期，操作已停用。' : stale ? '列表已过期，请刷新核对。' : '这是读取时的快照。');
+    }
+    if (freshness.textContent !== text) freshness.textContent = text;
+   }
+   function validList(value) {
+    return Number.isSafeInteger(value?.revision) && value.revision >= 1 && Array.isArray(value.nodes) && !value.nodes.some(node => !node || !idOK(node.id) || typeof node.name !== 'string' || typeof node.state !== 'string');
+   }
+   function acceptList(value) {
+    if (!validList(value)) throw new Error('节点列表格式无效。');
+    model = value; lastRead = Date.now(); readFailed = false;
+    renderList(); showFreshness();
    }
    const time = value => value ? esc(value) : '尚无';
    function summary(node) {
@@ -65,14 +97,17 @@
    }
    async function load() {
     if (!current() || pending || loading) return;
-    loading = true; model = null; list.textContent = '正在读取节点…'; controls();
+    loading = true; model = null; lastRead = null; readFailed = false;
+    list.textContent = '正在读取节点…'; controls(); showFreshness();
     try {
      const value = await request('node-agents');
      if (!current()) return;
-     if (!Number.isSafeInteger(value?.revision) || value.revision < 1 || !Array.isArray(value.nodes) || value.nodes.some(node => !node || !idOK(node.id) || typeof node.name !== 'string' || typeof node.state !== 'string')) throw new Error('节点列表格式无效。');
-     model = value; renderList();
+     acceptList(value);
     } catch (error) {
-     if (current()) list.textContent = '读取节点失败：' + (error.name === 'AbortError' ? '请求超时，请刷新重试。' : error.message);
+     if (current()) {
+      readFailed = true; showFreshness();
+      list.textContent = '读取节点失败：' + (error.name === 'AbortError' ? '请求超时，请刷新重试。' : error.message);
+     }
     } finally { loading = false; if (current()) controls(); }
    }
    function showCredential(value) {
@@ -242,16 +277,63 @@
     if (action === 'disable' && item?.configured && confirm('停用本机主动上报？已经发出的报告无法撤回。')) { void changeOut('reporter-enable', {enabled:false}); return; }
     if (action === 'delete' && item?.configured && confirm('删除本机上报设置并停用上报？已经发出的报告无法撤回。')) void changeOut('reporter-delete');
    });
-   needsAttention = () => pending || issued || !!form.elements.name.value || outPending || editing;
+   function autoPaused() {
+    const active = document.activeElement;
+    const editingField = active && (form.contains(active) || outForm.contains(active)) && active.matches('input, textarea, select, [contenteditable="true"]');
+    return !current() || document.hidden || pending || loading || issued || outPending || outLoading || editing || !!candidate ||
+     !!form.elements.name.value || requests.size !== 0 || list.contains(active) || !!editingField ||
+     !!list.querySelector('details[open]') || !!document.querySelector('dialog[open]') || !!window.getSelection()?.toString();
+   }
+   function scheduleAutomatic(delay = 30000) {
+    clearTimeout(automaticTimer); automaticTimer = null;
+    if (!current() || document.hidden) return;
+    automaticTimer = setTimeout(() => {
+     automaticTimer = null; showFreshness();
+     if (automatic || autoPaused()) { scheduleAutomatic(); return; }
+     const task = {controller:new AbortController(), cancelled:false, done:null};
+     automatic = task;
+     task.done = (async () => {
+      try {
+       const value = await request('node-agents', undefined, task.controller);
+       if (!task.cancelled && !task.controller.signal.aborted && !autoPaused()) acceptList(value);
+      } catch (_) {
+       if (!task.cancelled && !autoPaused()) {
+        readFailed = true; model = null; controls(); showFreshness();
+       }
+      } finally {
+       if (automatic === task) automatic = null;
+       if (current()) { showFreshness(); scheduleAutomatic(); }
+      }
+     })();
+    }, delay);
+   }
+   const visibilityChanged = () => {
+    if (document.hidden) { clearTimeout(automaticTimer); automaticTimer = null; cancelAutomatic(); }
+    else if (current()) { showFreshness(); scheduleAutomatic(0); }
+   };
+   const selectionChanged = () => {
+    if (window.getSelection()?.toString()) cancelAutomatic();
+    else if (current()) showFreshness();
+   };
+   root.addEventListener('focusin', cancelAutomatic);
+   root.addEventListener('pointerdown', cancelAutomatic);
+   root.addEventListener('input', cancelAutomatic);
+   root.addEventListener('toggle', cancelAutomatic, true);
+   document.addEventListener('visibilitychange', visibilityChanged);
+   document.addEventListener('selectionchange', selectionChanged);
+   needsAttention = () => pending || issued || !!form.elements.name.value || outPending || editing || !!candidate;
    const beforeUnload = event => { if (needsAttention()) { event.preventDefault(); event.returnValue = ''; } };
    window.addEventListener('beforeunload', beforeUnload);
    cleanup = () => {
+    clearTimeout(automaticTimer); cancelAutomatic();
+    document.removeEventListener('visibilitychange', visibilityChanged);
+    document.removeEventListener('selectionchange', selectionChanged);
     requests.forEach(controller => controller.abort());
     window.removeEventListener('beforeunload', beforeUnload);
     secret.value = ''; form.elements.name.value = ''; outForm.elements.credential.value = '';
     needsAttention = () => false;
    };
-   void load(); void loadOut();
+   void load(); void loadOut(); scheduleAutomatic();
   },
   hasUnsaved() { return needsAttention(); },
   dispose() { const fn = cleanup; cleanup = null; if (fn) fn(); }
