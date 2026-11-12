@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -84,8 +85,15 @@ func ValidateRestrictedProxyConfigurer(cfg v1.ProxyConfigurer) error {
 	switch base.Plugin.Type {
 	case v1.PluginUnixDomainSocket:
 		opts, ok := base.Plugin.ClientPluginOptions.(*v1.UnixDomainSocketPluginOptions)
-		if !ok || opts == nil || !strings.HasPrefix(opts.UnixPath, "/") || len(opts.UnixPath) > 1024 || strings.ContainsAny(opts.UnixPath, "{}") || strings.IndexFunc(opts.UnixPath, unicode.IsControl) >= 0 || (base.HealthCheck.Type != "" && base.HealthCheck.Type != "tcp") {
+		if !ok || opts == nil || !strings.HasPrefix(opts.UnixPath, "/") || len(opts.UnixPath) > 1024 || strings.ContainsAny(opts.UnixPath, "{}") || strings.IndexFunc(opts.UnixPath, unicode.IsControl) >= 0 || (base.HealthCheck.Type != "" && base.HealthCheck.Type != "tcp" && base.HealthCheck.Type != "http") {
 			return errors.New("invalid isolated unix socket configuration")
+		}
+		if base.HealthCheck.Type == "http" {
+			path := base.HealthCheck.Path
+			u, err := url.ParseRequestURI(path)
+			if err != nil || len(path) > 512 || !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") || strings.Contains(path, "#") || u.IsAbs() || u.Host != "" || u.Fragment != "" {
+				return errors.New("invalid isolated unix socket health check path")
+			}
 		}
 	case v1.PluginSocks5:
 		// Empty mode defaults to client when the proxy config is completed.

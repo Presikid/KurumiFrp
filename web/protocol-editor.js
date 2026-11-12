@@ -131,7 +131,7 @@ const ProtocolEditor = (() => {
     <div class="bandwidth-field">${field('bandwidthKB', '带宽上限（KB/s，0 不限）', v.bandwidthKB ?? 0, 'number', 'min="0" max="10000000" step="1"')}</div>
     <div class="bandwidth-field"><label>限速位置<select name="bandwidthMode"><option value="client" ${(v.bandwidthMode || 'client') === 'client' ? 'selected' : ''}>客户端</option><option value="server" ${v.bandwidthMode === 'server' ? 'selected' : ''}>服务端</option></select></label></div>
     <div class="proxy-protocol-field span-2"><label>PROXY 协议<select name="proxyProtocolVersion"><option value="" ${!v.proxyProtocolVersion ? 'selected' : ''}>关闭</option><option value="v1" ${v.proxyProtocolVersion === 'v1' ? 'selected' : ''}>v1</option><option value="v2" ${v.proxyProtocolVersion === 'v2' ? 'selected' : ''}>v2</option></select></label><small>目标服务必须支持所选版本；frp 取得来源地址时会传递连接信息。</small></div>
-    <div class="unix-target-choice span-2"><label>本地目标类型<select name="targetKind"><option value="network" ${!v.unixSocketPath && v.pluginType !== 'socks5' ? 'selected' : ''}>TCP 地址和端口</option><option value="unix" ${v.unixSocketPath ? 'selected' : ''}>Unix 域套接字</option><option value="socks5" ${v.pluginType === 'socks5' ? 'selected' : ''}>SOCKS5 代理</option></select></label><small>Unix 和 SOCKS5 目标仅用于 TCP 规则；Unix 目标支持连接式代理健康检查。切换为 SOCKS5 会清除代理健康检查、PROXY 协议和本地诊断参数。</small></div>
+    <div class="unix-target-choice span-2"><label>本地目标类型<select name="targetKind"><option value="network" ${!v.unixSocketPath && v.pluginType !== 'socks5' ? 'selected' : ''}>TCP 地址和端口</option><option value="unix" ${v.unixSocketPath ? 'selected' : ''}>Unix 域套接字</option><option value="socks5" ${v.pluginType === 'socks5' ? 'selected' : ''}>SOCKS5 代理</option></select></label><small>Unix 和 SOCKS5 目标仅用于 TCP 规则；Unix 目标支持连接式和 HTTP 代理健康检查。切换为 SOCKS5 会清除代理健康检查、PROXY 协议和本地诊断参数。</small></div>
     <label class="network-target-field"><span class="local-host-label">本地目标地址</span><input name="localHost" type="text" value="${esc(v.localHost)}" required></label>
     <label class="network-target-field"><span class="local-port-label">本地目标端口</span><input name="localPort" type="number" value="${esc(v.localPort)}" required min="1" max="65535" step="1" ${lockedPort ? 'readonly' : ''}><small class="unbound-note" hidden>负数表示仅接收回退连接，不监听本地端口。</small>${lockedPort ? '<small>当前暂不支持更改此规则的回退监听端口。</small>' : ''}</label>
     <div class="unix-target-field span-2">${field('unixSocketPath', 'Unix 套接字绝对路径', v.unixSocketPath || '', 'text', 'maxlength="1024" placeholder="/run/service.sock"')}<small>需运行在支持 Unix 域套接字的平台，且工作台账户有访问该套接字的权限。</small></div>
@@ -146,7 +146,7 @@ const ProtocolEditor = (() => {
      <label>HTTP 检测方法<select name="probeMethod"><option value="" ${!v.probeMethod ? 'selected' : ''}>默认 · HEAD</option><option value="HEAD" ${v.probeMethod === 'HEAD' ? 'selected' : ''}>HEAD · 只检查响应头</option><option value="GET" ${v.probeMethod === 'GET' ? 'selected' : ''}>GET · 兼容只支持 GET 的接口</option></select></label>
      <p class="small-note span-2">仅用于 KurumiFRP 本地检测，不会写入 frp 配置；响应正文不会保存或显示。</p>
     </div>
-    <div class="health-check-field span-2"><label>代理自动健康检查<select name="healthCheckType"><option value="" ${!v.healthCheckType ? 'selected' : ''}>关闭</option><option value="tcp" ${v.healthCheckType === 'tcp' ? 'selected' : ''}>TCP 连接</option><option value="http" ${v.healthCheckType === 'http' ? 'selected' : ''}>HTTP 请求</option></select></label><small>失败达到设定次数后暂停代理，服务恢复后自动重新注册。</small><small class="health-unix-note" hidden>Unix 目标只检查能否连接套接字，不检查应用响应；不支持 HTTP 检查，请选择连接式检查或关闭。</small></div>
+    <div class="health-check-field span-2"><label>代理自动健康检查<select name="healthCheckType"><option value="" ${!v.healthCheckType ? 'selected' : ''}>关闭</option><option value="tcp" ${v.healthCheckType === 'tcp' ? 'selected' : ''}>TCP 连接</option><option value="http" ${v.healthCheckType === 'http' ? 'selected' : ''}>HTTP 请求</option></select></label><small>失败达到设定次数后暂停代理，服务恢复后自动重新注册。</small><small class="health-unix-note" hidden>Unix 连接检查只判断能否连接；HTTP 检查使用 GET 和 Host: localhost，仅直接返回 2xx 时正常，不跟随跳转。官方 frpc v0.72.0 不会对导出的 Unix 插件配置执行健康检查。</small></div>
     <div class="health-http-field span-2">${field('healthCheckPath', 'HTTP 健康检查路径', v.healthCheckPath || '/', 'text', 'maxlength="512" placeholder="/health"')}</div>
     <div class="health-check-options">${field('healthCheckTimeoutSeconds', '检查超时（秒，0 使用默认）', v.healthCheckTimeoutSeconds ?? 0, 'number', 'min="0" max="86400" step="1"')}</div>
     <div class="health-check-options">${field('healthCheckIntervalSeconds', '检查间隔（秒，0 使用默认）', v.healthCheckIntervalSeconds ?? 0, 'number', 'min="0" max="604800" step="1"')}</div>
@@ -254,12 +254,10 @@ const ProtocolEditor = (() => {
   visible(form, '.probe-field', ['http', 'https'].includes(type));
   visible(form, '.health-check-field', !visitor && !socksTarget);
   visible(form, '.health-check-options', !visitor && !socksTarget && f.healthCheckType.value !== '');
-  visible(form, '.health-http-field', !visitor && !unixTarget && !socksTarget && f.healthCheckType.value === 'http');
-  f.healthCheckPath.required = !visitor && !unixTarget && !socksTarget && f.healthCheckType.value === 'http';
-  const httpHealth = f.healthCheckType.querySelector('option[value="http"]');
-  httpHealth.disabled = unixTarget && f.healthCheckType.value !== 'http';
+  visible(form, '.health-http-field', !visitor && !socksTarget && f.healthCheckType.value === 'http');
+  f.healthCheckPath.required = !visitor && !socksTarget && f.healthCheckType.value === 'http';
   f.healthCheckType.querySelector('option[value="tcp"]').textContent = unixTarget ? 'Unix 套接字连接' : 'TCP 连接';
-  f.healthCheckType.setCustomValidity(unixTarget && f.healthCheckType.value === 'http' ? 'Unix 套接字不支持 HTTP 健康检查，请选择连接式检查或关闭。' : '');
+  f.healthCheckType.setCustomValidity('');
   form.querySelector('.health-unix-note').hidden = !unixTarget;
   visible(form, '.tcpmux-field', type === 'tcpmux');
   visible(form, '.http-credential-field', type === 'tcpmux' || (type === 'http' && f.httpAuthEnabled.checked));
@@ -335,7 +333,6 @@ const ProtocolEditor = (() => {
    bandwidthKB:visitor ? 0 : +val('bandwidthKB'), bandwidthMode:visitor ? '' : val('bandwidthMode'), proxyProtocolVersion:visitor || socksTarget || ['udp', 'sudp'].includes(type) ? '' : val('proxyProtocolVersion'), enabled:f.enabled.checked, useEncryption:f.useEncryption.checked, useCompression:f.useCompression.checked});
   if (editing.old?.pluginType === 'socks5' && !socksTarget) result.clearPluginPassword = true;
   const health = visitor || socksTarget ? '' : val('healthCheckType');
-  if (unixTarget && health !== '' && health !== 'tcp') throw new Error('Unix 套接字仅支持连接式健康检查。');
   Object.assign(result, {healthCheckType:health, healthCheckPath:health === 'http' ? val('healthCheckPath').trim() : '',
    healthCheckTimeoutSeconds:health ? +val('healthCheckTimeoutSeconds') : 0,
    healthCheckIntervalSeconds:health ? +val('healthCheckIntervalSeconds') : 0,
