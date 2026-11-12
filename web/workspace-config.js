@@ -104,13 +104,58 @@
   const snapshot = K.state();
   if (!Number.isSafeInteger(model.revision) || snapshot?.revision !== model.revision || !Array.isArray(snapshot.state?.instances)) throw new Error('配置或通知目标已变化，请刷新工作台并重新读取通知目标。');
   const scope = item.statusScope ?? '';
-  if (typeof scope !== 'string' || (scope && !['instances','nodes'].includes(scope) && !/^instance:[a-f0-9]{16}$/.test(scope))) throw new Error('状态通知范围无效，请重新读取通知目标。');
+  if (typeof scope !== 'string' || (scope && !['instances','nodes'].includes(scope) && !/^(?:instance|node):[a-f0-9]{16}$/.test(scope))) throw new Error('状态通知范围无效，请重新读取通知目标。');
   const scopeOptions = [['','全部实例和节点'],['instances','全部本机实例'],['nodes','全部节点'],...snapshot.state.instances.map(instance => ['instance:'+instance.id, instance.name+' · '+instance.kind])];
   if (scope.startsWith('instance:') && !scopeOptions.some(([value]) => value === scope)) scopeOptions.push([scope,'已不存在的实例（ID '+scope.slice(9)+'；不发送实例状态）']);
+  if (scope.startsWith('node:')) scopeOptions.push([scope,'已保存的节点（ID '+scope.slice(5)+'；等待读取）']);
   const checked = value => value ? 'checked' : '';
+  async function loadNodeScopes(form) {
+   const hint = form.querySelector('[data-node-scope-hint]'), select = form.elements.statusScope, epoch = K.epoch();
+   const current = () => K.epoch() === epoch && K.isCurrent('config',root) && hint?.isConnected && form.contains(hint) && document.querySelector('#dialog')?.open;
+   const unavailable = message => {
+    if (scope.startsWith('node:')) {
+     const saved = [...select.options].find(option => option.value === scope);
+     if (saved) saved.textContent = '已保存的节点（ID '+scope.slice(5)+'；列表未确认）';
+    }
+    hint.textContent = message;
+   };
+   let timer;
+   try {
+    const controller = new AbortController();
+    timer = setTimeout(() => controller.abort(),15000);
+    const result = await K.api('nodes',undefined,{signal:controller.signal});
+    if (!current()) return;
+    if (result?.revision !== model.revision || K.state()?.revision !== model.revision) {
+     unavailable('节点配置已变化；请关闭窗口并刷新。已选范围保留。');
+     return;
+    }
+    if (!Array.isArray(result.nodes) || result.nodes.length > 32) throw new Error('节点列表无效');
+    const ids = new Set();
+    for (const node of result.nodes) {
+     if (!node || typeof node.id !== 'string' || !/^[a-f0-9]{16}$/.test(node.id) || ids.has(node.id) || typeof node.name !== 'string' || typeof node.monitorEnabled !== 'boolean') throw new Error('节点列表无效');
+     ids.add(node.id);
+    }
+    const selected = select.value;
+    for (const node of result.nodes) {
+     const value = 'node:'+node.id;
+     let option = [...select.options].find(item => item.value === value);
+     if (!option) { option = document.createElement('option'); option.value = value; select.append(option); }
+     option.textContent = node.name + (node.monitorEnabled ? ' · 节点' : ' · 节点（未启用后台检查）');
+    }
+    if (scope.startsWith('node:') && !ids.has(scope.slice(5))) {
+     const saved = [...select.options].find(option => option.value === scope);
+     if (saved) saved.textContent = '已不存在的节点（ID '+scope.slice(5)+'；不发送节点状态）';
+    }
+    select.value = selected;
+    hint.textContent = result.nodes.length ? '只有启用后台检查的节点会产生状态通知。' : '没有远程节点；原有选择仍会保留。';
+   } catch (_) {
+    if (current()) unavailable('节点列表暂不可读取；已选范围保留，仍可修改其他设置。');
+   } finally { if (timer) clearTimeout(timer); }
+  }
   K.openDialog({
-   html:`<h2>${target ? '编辑' : '新增'}通知目标</h2><p class="muted">仅支持公网 HTTPS。地址、签名密钥和模板保存后不回显。</p><div class="form-grid"><label>名称<input name="targetName" maxlength="80" required value="${e(item.name)}" ${item.id === 'legacy' ? 'readonly' : ''}></label><label>消息格式<select name="format">${[['','通用 JSON'],['discord','Discord'],['slack','Slack'],['ntfy','ntfy'],['telegram','Telegram'],['gotify','Gotify']].map(([value,label]) => `<option value="${e(value)}" ${value === item.format ? 'selected' : ''}>${e(label)}</option>`).join('')}</select></label><label class="form-check span-2"><input type="checkbox" name="enabled" ${checked(item.enabled)}>启用通知</label><label class="span-2">HTTPS 地址${item.hasURL ? '（留空保留）' : ''}<input type="password" name="url" maxlength="1024" autocomplete="new-password"></label><label class="form-check span-2"><input type="checkbox" name="clearURL">清除地址</label><label class="span-2">HMAC 签名密钥${item.hasSigningSecret ? '（留空保留）' : ''}<input type="password" name="signingSecret" maxlength="1024" autocomplete="new-password"></label><label class="form-check span-2"><input type="checkbox" name="clearSigningSecret">清除签名密钥</label><label class="form-check span-2"><input type="checkbox" name="jsonTemplateEnabled" ${checked(item.jsonTemplateEnabled)}>使用自定义 JSON 模板（仅通用 JSON）</label><label class="span-2">JSON 模板${item.hasJSONTemplate ? '（留空保留）' : ''}<textarea name="jsonTemplate" rows="5" maxlength="8192" spellcheck="false"></textarea></label><label class="form-check span-2"><input type="checkbox" name="clearJSONTemplate">清除模板</label><label class="form-check"><input type="checkbox" name="onStatus" ${checked(item.onStatus)}>实例和节点状态</label><label class="span-2">状态通知对象<select name="statusScope">${scopeOptions.map(([value,label]) => `<option value="${e(value)}" ${value === scope ? 'selected' : ''}>${e(label)}</option>`).join('')}</select><small>只影响状态通知；选择单个实例时不发送节点状态。</small></label><label class="form-check span-2"><input type="checkbox" name="statusProblemsOnly" ${checked(item.statusProblemsOnly)}>状态通知仅发送：实例退出（包括主动停止）、启动失败、节点不可用</label><p class="small-note span-2">实例退出通知可能早于清理完成；节点不可用不一定代表节点离线。</p><label class="form-check"><input type="checkbox" name="onConfig" ${checked(item.onConfig)}>草稿变更</label><label class="form-check"><input type="checkbox" name="onLoginLimit" ${checked(item.onLoginLimit)}>登录限流</label><label class="form-check"><input type="checkbox" name="onUpdate" ${checked(item.onUpdate)}>软件更新</label></div><p class="small-note">模板可用变量：{{event}}、{{at}}、{{instanceId}}、{{nodeId}}、{{kind}}、{{revision}}、{{sourceIp}}、{{version}}。通知结果仅表示目标接受请求。</p>`,
+   html:`<h2>${target ? '编辑' : '新增'}通知目标</h2><p class="muted">仅支持公网 HTTPS。地址、签名密钥和模板保存后不回显。</p><div class="form-grid"><label>名称<input name="targetName" maxlength="80" required value="${e(item.name)}" ${item.id === 'legacy' ? 'readonly' : ''}></label><label>消息格式<select name="format">${[['','通用 JSON'],['discord','Discord'],['slack','Slack'],['ntfy','ntfy'],['telegram','Telegram'],['gotify','Gotify']].map(([value,label]) => `<option value="${e(value)}" ${value === item.format ? 'selected' : ''}>${e(label)}</option>`).join('')}</select></label><label class="form-check span-2"><input type="checkbox" name="enabled" ${checked(item.enabled)}>启用通知</label><label class="span-2">HTTPS 地址${item.hasURL ? '（留空保留）' : ''}<input type="password" name="url" maxlength="1024" autocomplete="new-password"></label><label class="form-check span-2"><input type="checkbox" name="clearURL">清除地址</label><label class="span-2">HMAC 签名密钥${item.hasSigningSecret ? '（留空保留）' : ''}<input type="password" name="signingSecret" maxlength="1024" autocomplete="new-password"></label><label class="form-check span-2"><input type="checkbox" name="clearSigningSecret">清除签名密钥</label><label class="form-check span-2"><input type="checkbox" name="jsonTemplateEnabled" ${checked(item.jsonTemplateEnabled)}>使用自定义 JSON 模板（仅通用 JSON）</label><label class="span-2">JSON 模板${item.hasJSONTemplate ? '（留空保留）' : ''}<textarea name="jsonTemplate" rows="5" maxlength="8192" spellcheck="false"></textarea></label><label class="form-check span-2"><input type="checkbox" name="clearJSONTemplate">清除模板</label><label class="form-check"><input type="checkbox" name="onStatus" ${checked(item.onStatus)}>实例和节点状态</label><label class="span-2">状态通知对象<select name="statusScope">${scopeOptions.map(([value,label]) => `<option value="${e(value)}" ${value === scope ? 'selected' : ''}>${e(label)}</option>`).join('')}</select><small>只影响状态通知；选择单个实例或节点时，不发送其他对象的状态。</small><small data-node-scope-hint role="status">正在读取本机节点列表…</small></label><label class="form-check span-2"><input type="checkbox" name="statusProblemsOnly" ${checked(item.statusProblemsOnly)}>状态通知仅发送：实例退出（包括主动停止）、启动失败、节点不可用</label><p class="small-note span-2">实例退出通知可能早于清理完成；节点不可用不一定代表节点离线。</p><label class="form-check"><input type="checkbox" name="onConfig" ${checked(item.onConfig)}>草稿变更</label><label class="form-check"><input type="checkbox" name="onLoginLimit" ${checked(item.onLoginLimit)}>登录限流</label><label class="form-check"><input type="checkbox" name="onUpdate" ${checked(item.onUpdate)}>软件更新</label></div><p class="small-note">模板可用变量：{{event}}、{{at}}、{{instanceId}}、{{nodeId}}、{{kind}}、{{revision}}、{{sourceIp}}、{{version}}。通知结果仅表示目标接受请求。</p>`,
    submitLabel:'保存通知目标',
+   onReady(form) { void loadNodeScopes(form); },
    async onSubmit(form) {
     if (!K.isCurrent('config',root)) throw new Error('页面已变化，请重新读取通知目标。');
     if (K.state()?.revision !== model.revision) throw new Error('草稿已变化，请关闭窗口并刷新后重新读取通知目标。');
