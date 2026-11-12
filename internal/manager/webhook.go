@@ -28,6 +28,7 @@ type webhookConfig struct {
 	Format              string `json:"format,omitempty"`
 	OnStatus            bool   `json:"onStatus"`
 	StatusProblemsOnly  bool   `json:"statusProblemsOnly,omitempty"`
+	StatusScope         string `json:"statusScope,omitempty"`
 	OnConfig            bool   `json:"onConfig"`
 	OnLoginLimit        bool   `json:"onLoginLimit,omitempty"`
 	OnUpdate            bool   `json:"onUpdate,omitempty"`
@@ -38,6 +39,15 @@ type webhookConfig struct {
 
 func (cfg webhookConfig) hasEvents() bool {
 	return cfg.OnStatus || cfg.OnConfig || cfg.OnLoginLimit || cfg.OnUpdate
+}
+
+func validWebhookStatusScope(scope string) bool {
+	switch scope {
+	case "", "instances", "nodes":
+		return true
+	default:
+		return strings.HasPrefix(scope, "instance:") && idPattern.MatchString(strings.TrimPrefix(scope, "instance:"))
+	}
 }
 
 // An empty format preserves the original structured JSON payload.
@@ -78,6 +88,9 @@ func validateStoredWebhook(s *Store, cfg *webhookConfig) error {
 	}
 	if !validWebhookFormat(cfg.Format) {
 		return fmt.Errorf("invalid webhook format")
+	}
+	if !validWebhookStatusScope(cfg.StatusScope) {
+		return fmt.Errorf("invalid webhook status scope")
 	}
 	if cfg.URL != "" {
 		plain, err := s.decrypt(cfg.URL)
@@ -189,6 +202,7 @@ func (d *webhookDispatcher) configure(configs []webhookRuntimeConfig) {
 			old.config.Enabled == next.config.Enabled && old.config.Format == next.config.Format &&
 			old.config.OnStatus == next.config.OnStatus && old.config.OnConfig == next.config.OnConfig &&
 			old.config.StatusProblemsOnly == next.config.StatusProblemsOnly &&
+			old.config.StatusScope == next.config.StatusScope &&
 			old.config.OnLoginLimit == next.config.OnLoginLimit && old.config.OnUpdate == next.config.OnUpdate &&
 			old.config.JSONTemplateEnabled == next.config.JSONTemplateEnabled {
 			old.config = next.config // ciphertext may change during key migration
@@ -274,6 +288,25 @@ func (cfg webhookConfig) receives(event string) bool {
 	}
 }
 
+// Object scope applies only to status events. Other event classes keep their
+// individual subscriptions regardless of this setting.
+func (cfg webhookConfig) receivesFor(event webhookEvent) bool {
+	if !cfg.receives(event.Event) {
+		return false
+	}
+	switch event.Event {
+	case "instance.up", "instance.down", "instance.start_failed":
+		if cfg.StatusScope == "" || cfg.StatusScope == "instances" {
+			return true
+		}
+		return cfg.StatusScope == "instance:"+event.InstanceID && idPattern.MatchString(event.InstanceID)
+	case "node.available", "node.unavailable":
+		return cfg.StatusScope == "" || cfg.StatusScope == "nodes"
+	default:
+		return true
+	}
+}
+
 // The return value reports that at least one enabled target was considered,
 // including a bounded-queue drop. It does not imply delivery.
 func (d *webhookDispatcher) enqueue(event webhookEvent) bool {
@@ -285,7 +318,7 @@ func (d *webhookDispatcher) enqueue(event webhookEvent) bool {
 	recipients := make([]webhookRecipient, 0, len(d.order))
 	for _, id := range d.order {
 		target := d.targets[id]
-		if target != nil && target.config.Enabled && target.target != "" && target.config.receives(event.Event) {
+		if target != nil && target.config.Enabled && target.target != "" && target.config.receivesFor(event) {
 			recipients = append(recipients, webhookRecipient{id: id, generation: target.generation})
 		}
 	}
@@ -699,6 +732,7 @@ type webhookRequest struct {
 	ClearURL            bool    `json:"clearURL"`
 	OnStatus            bool    `json:"onStatus"`
 	StatusProblemsOnly  *bool   `json:"statusProblemsOnly"`
+	StatusScope         *string `json:"statusScope"`
 	OnConfig            bool    `json:"onConfig"`
 	OnLoginLimit        *bool   `json:"onLoginLimit"`
 	OnUpdate            *bool   `json:"onUpdate"`
@@ -719,7 +753,7 @@ func (a *App) webhookAPI(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusOK, map[string]any{
 			"revision": revision, "enabled": cfg.Enabled, "hasURL": cfg.URL != "", "hasSigningSecret": cfg.SigningSecret != "",
 			"format": cfg.Format, "onStatus": cfg.OnStatus, "onConfig": cfg.OnConfig,
-			"statusProblemsOnly": cfg.StatusProblemsOnly,
+			"statusProblemsOnly": cfg.StatusProblemsOnly, "statusScope": cfg.StatusScope,
 			"onLoginLimit": cfg.OnLoginLimit, "onUpdate": cfg.OnUpdate,
 			"hasJSONTemplate": cfg.JSONTemplate != "", "jsonTemplateEnabled": cfg.JSONTemplateEnabled, "status": status,
 		})

@@ -99,7 +99,7 @@ func (a *App) prepareWebhookConfig(previous webhookConfig, req webhookRequest) (
 	cfg := webhookConfig{
 		Enabled: req.Enabled, URL: previous.URL, Format: previous.Format,
 		OnStatus: req.OnStatus, OnConfig: req.OnConfig, OnLoginLimit: previous.OnLoginLimit, OnUpdate: previous.OnUpdate,
-		StatusProblemsOnly: previous.StatusProblemsOnly,
+		StatusProblemsOnly: previous.StatusProblemsOnly, StatusScope: previous.StatusScope,
 		SigningSecret: previous.SigningSecret, JSONTemplate: previous.JSONTemplate, JSONTemplateEnabled: previous.JSONTemplateEnabled,
 	}
 	// Older clients may omit this field; keep the prior format in that case.
@@ -109,6 +109,9 @@ func (a *App) prepareWebhookConfig(previous webhookConfig, req webhookRequest) (
 	// An older client cannot clear event choices it does not know about.
 	if req.StatusProblemsOnly != nil {
 		cfg.StatusProblemsOnly = *req.StatusProblemsOnly
+	}
+	if req.StatusScope != nil {
+		cfg.StatusScope = *req.StatusScope
 	}
 	if req.OnLoginLimit != nil {
 		cfg.OnLoginLimit = *req.OnLoginLimit
@@ -121,6 +124,9 @@ func (a *App) prepareWebhookConfig(previous webhookConfig, req webhookRequest) (
 	}
 	if !validWebhookFormat(cfg.Format) {
 		return webhookConfig{}, fmt.Errorf("通知格式无效")
+	}
+	if !validWebhookStatusScope(cfg.StatusScope) {
+		return webhookConfig{}, fmt.Errorf("状态通知对象范围无效")
 	}
 	if req.ClearURL {
 		cfg.URL = ""
@@ -211,6 +217,7 @@ type webhookTargetRequest struct {
 	ClearURL            bool    `json:"clearURL"`
 	OnStatus            *bool   `json:"onStatus"`
 	StatusProblemsOnly  *bool   `json:"statusProblemsOnly"`
+	StatusScope         *string `json:"statusScope"`
 	OnConfig            *bool   `json:"onConfig"`
 	OnLoginLimit        *bool   `json:"onLoginLimit"`
 	OnUpdate            *bool   `json:"onUpdate"`
@@ -233,6 +240,7 @@ func (a *App) webhookTargetsAPI(w http.ResponseWriter, r *http.Request) {
 			HasSigningSecret    bool           `json:"hasSigningSecret"`
 			OnStatus            bool           `json:"onStatus"`
 			StatusProblemsOnly  bool           `json:"statusProblemsOnly"`
+			StatusScope         string         `json:"statusScope"`
 			OnConfig            bool           `json:"onConfig"`
 			OnLoginLimit        bool           `json:"onLoginLimit"`
 			OnUpdate            bool           `json:"onUpdate"`
@@ -246,7 +254,7 @@ func (a *App) webhookTargetsAPI(w http.ResponseWriter, r *http.Request) {
 				ID: id, Name: name, Enabled: cfg.Enabled, Format: cfg.Format,
 				HasURL: cfg.URL != "", HasSigningSecret: cfg.SigningSecret != "",
 				OnStatus: cfg.OnStatus, OnConfig: cfg.OnConfig, OnLoginLimit: cfg.OnLoginLimit, OnUpdate: cfg.OnUpdate,
-				StatusProblemsOnly: cfg.StatusProblemsOnly,
+				StatusProblemsOnly: cfg.StatusProblemsOnly, StatusScope: cfg.StatusScope,
 				HasJSONTemplate: cfg.JSONTemplate != "", JSONTemplateEnabled: cfg.JSONTemplateEnabled, Status: a.webhooks.statusFor(id),
 			})
 		}
@@ -402,7 +410,7 @@ func (a *App) mutateWebhookTarget(req webhookTargetRequest) (uint64, int, error)
 			input := webhookRequest{
 				Enabled: *req.Enabled, URL: req.URL, Format: req.Format, ClearURL: req.ClearURL,
 				OnStatus: *req.OnStatus, OnConfig: *req.OnConfig, OnLoginLimit: req.OnLoginLimit, OnUpdate: req.OnUpdate,
-				StatusProblemsOnly: req.StatusProblemsOnly,
+				StatusProblemsOnly: req.StatusProblemsOnly, StatusScope: req.StatusScope,
 				SigningSecret: req.SigningSecret, ClearSigningSecret: req.ClearSigningSecret,
 				JSONTemplate: req.JSONTemplate, ClearJSONTemplate: req.ClearJSONTemplate, JSONTemplateEnabled: req.JSONTemplateEnabled,
 			}
