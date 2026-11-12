@@ -12,6 +12,8 @@
 
 当前账户认证仅适用于内嵌 frps 的直接 TCP/TLS 连接与非分组 TCP 代理，须强制 TLS 并配置服务端证书和私钥；不支持 KCP、QUIC、WebSocket、访客、HTTP/HTTPS 虚拟主机或服务端插件。该模式会关闭 TCP 多路复用；客户端须验证服务端证书，配置 `user` 为账户 ID、`auth.token` 为一次性保存的机器令牌、`transport.tcpMux = false`，并在 `auth.additionalScopes` 中包含 `NewWorkConns`。若服务端启用了心跳认证，客户端还须加入 `HeartBeats`。客户端代理名称使用 frp 的账户用户名前缀。独立 frps 不提供这套账户校验；受管配置预览刻意不能直接用于独立 frps。
 
+本地密码账户可采样本人已授权的受管服务端代理名称；结果可能不完整，也不代表代理当前仍在线或可达。
+
 管理员可通过 `GET /api/accounts` 获取账户 `revision`、`configRevision` 和当前 `frpInstances`（每项含 `id`、`name`、不含秘密的 `binding`），核对目标后向 `POST /api/accounts` 提交账户 `revision`、目标账户 `id`、本机 frps 的 `instanceId` 和 `action`：`frp-issue` 为没有记录的实例签发，`frp-rotate` 替换已有记录，`frp-disable` 删除已有登记。签发和轮换还须提交刚核对的 `configRevision` 与对应 `instanceBinding`；实例配置或身份变化时返回冲突，须重新核对。停用旧记录不要求实例仍存在。成功返回新的账户 `revision` 和当前 `configRevision`；只有签发和轮换的成功响应包含一次性 `token` 及不含密文的 `credential` 状态，请安全保存令牌。账户对象可包含 `frpTokens`，只列出实例 ID、凭据 ID、版本及状态，不返回令牌或密文。`registered` 仅表示记录能按当前实例身份及数据密钥读取，`needs-reissue` 表示应停用或重新签发；两种状态均不代表 frp 认证已启用。每账户最多登记 64 个实例，已删除实例的旧记录可以停用以释放名额。
 
 凭据与本机 frps 实例的当前 incarnation 绑定；删除后重建、导入或恢复配置会使旧记录需要重新签发。导入还可能更换数据密钥，使旧密文不可读取；旧凭据不可用不会导致普通账户长期无法登录，并发账户写入期间正在验证的登录可能需要重试。令牌只以数据目录密钥加密保存在 `accounts.json`，不会复制到权限模板、配置导出或备份。每次签发或轮换产生新的凭据 ID，旧版工作台可能不认识新增字段；回退前请妥善保管账户数据。

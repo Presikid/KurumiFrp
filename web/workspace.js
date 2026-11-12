@@ -11,7 +11,7 @@ const esc = (value = '') => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'
 
 window.Kurumi = (() => {
  const pages = new Map();
- const names = {overview:'总览', tunnels:'规则', instances:'实例', nodes:'节点', 'reported-nodes':'主动上报', firewall:'访问控制', health:'链路诊断', config:'配置', core:'运行核心', logs:'日志', update:'软件更新', accounts:'账户'};
+ const names = {overview:'总览', tunnels:'规则', instances:'实例', nodes:'节点', 'reported-nodes':'主动上报', firewall:'访问控制', health:'链路诊断', config:'配置', core:'运行核心', logs:'日志', update:'软件更新', accounts:'账户', 'own-proxies':'我的代理'};
  const $ = selector => document.querySelector(selector);
  let snapshot = null, page = 'overview', session = 0, request = null, root = null, activePage = null;
  let timer = null, toastTimer = null, dialogSpec = null, dialogBusy = false;
@@ -118,7 +118,15 @@ window.Kurumi = (() => {
   }
   return result;
  }
+ function canViewOwnProxies() {
+  const identity = snapshot?.identity;
+  return Boolean(identity?.account && identity?.passwordAccount && (identity.role === 'admin' || identity.viewConfig));
+ }
  function updateShell() {
+  if (page === 'own-proxies' && !canViewOwnProxies()) {
+   page = 'overview';
+   if (location.hash === '#own-proxies') history.replaceState(null, '', location.pathname + location.search + '#overview');
+  }
   $('#revision').textContent = `草稿 r${snapshot.revision}`;
   $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
   $('#page-title').textContent = names[page] || page;
@@ -129,13 +137,14 @@ window.Kurumi = (() => {
    button.classList.toggle('active', selected);
    if (selected) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current');
    button.hidden = !admin && ['reported-nodes','firewall','health','update','accounts'].includes(button.dataset.page);
+   if (button.dataset.page === 'own-proxies') button.hidden = !canViewOwnProxies();
   });
   $('#quit-app').hidden = !admin; $('#change-password').hidden = false;
  }
  function render() {
   if (!snapshot) return;
-  const component = pages.get(page);
   dispose(); updateShell();
+  const component = pages.get(page);
   const content = $('#content');
   root = document.createElement('div'); root.className = 'workspace-page';
   content.replaceChildren(root);
@@ -295,6 +304,10 @@ window.Kurumi = (() => {
  }
  function bind() {
   persistTransfer();
+  const ownProxiesButton = document.createElement('button');
+  ownProxiesButton.type = 'button'; ownProxiesButton.dataset.page = 'own-proxies';
+  ownProxiesButton.textContent = '我的代理'; ownProxiesButton.hidden = true;
+  $('#nav').appendChild(ownProxiesButton);
   $('#transfer-dismiss').addEventListener('click', () => { if (!transferRequest) { transfer = null; persistTransfer(); } });
   $('#login-form').elements.token.required = false;
   $('#login-form').addEventListener('submit', async event => {
@@ -393,6 +406,65 @@ window.Kurumi = (() => {
   const initialSession = session;
   void refresh().catch(error => { if (session === initialSession && error.status !== 401) $('#login-error').textContent = error.message; });
  }
+ let ownProxiesCleanup = null;
+ pages.set('own-proxies', {
+  render(value) {
+   const instances = (value.state?.instances || []).filter(item => item?.kind === 'frps' && /^[a-f0-9]{16}$/.test(item.id));
+   const options = instances.map(item => `<option value="${esc(item.id)}">${esc(item.name || 'frps')}</option>`).join('');
+   return `<section class="panel"><div class="panel-content"><h2>我的代理</h2><p class="muted">显示采样窗口内在当前受管控制连接中观察到的名称。采样可能不完整，最多显示 256 项；返回时可能已不再登记，也不代表可以访问。</p><label>服务端实例 <select data-own-proxy-instance>${options}</select></label> <button type="button" data-own-proxy-refresh>重新采样</button><p data-own-proxy-status>采样不可用。</p><ul data-own-proxy-list></ul></div></section>`;
+  },
+  mount(element) {
+   const select = element.querySelector('[data-own-proxy-instance]');
+   const button = element.querySelector('[data-own-proxy-refresh]');
+   const status = element.querySelector('[data-own-proxy-status]');
+   const list = element.querySelector('[data-own-proxy-list]');
+   let pending = null, serial = 0, disposed = false;
+   const clear = message => { list.replaceChildren(); status.textContent = message; };
+   async function sample() {
+    pending?.abort();
+    const requestSerial = ++serial, generation = session, id = select.value;
+    clear(id ? '正在采样…' : '采样不可用。');
+    if (!id || document.hidden) return;
+    const controller = new AbortController(); pending = controller;
+    const deadline = setTimeout(() => controller.abort(), 5000);
+    try {
+     const data = await api(`me/managed-proxies?id=${encodeURIComponent(id)}`, undefined, {signal:controller.signal});
+     if (disposed || generation !== session || requestSerial !== serial || !element.isConnected || select.value !== id) return;
+     const start = new Date(data?.startedAt), end = new Date(data?.sampledAt);
+     if (!Array.isArray(data?.names) || data.names.length > 256 || data.mayBeIncomplete !== true ||
+         data.names.some(name => typeof name !== 'string' || !name || name.length > 1024) ||
+         !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start > end) throw new Error('采样不可用');
+     status.textContent = `采样窗口：${start.toLocaleString('zh-CN')} 至 ${end.toLocaleString('zh-CN')}。结果可能不完整。`;
+     if (!data.names.length) {
+      const item = document.createElement('li'); item.textContent = '本次未采样到条目。'; list.appendChild(item);
+     } else {
+      for (const name of data.names) {
+       const item = document.createElement('li'); item.textContent = `${name} · 采样时已登记`; list.appendChild(item);
+      }
+     }
+    } catch (_) {
+     if (!disposed && generation === session && requestSerial === serial && element.isConnected) clear('采样不可用。');
+    } finally {
+     clearTimeout(deadline);
+     if (pending === controller) pending = null;
+    }
+   }
+   const onChange = () => { void sample(); };
+   const onVisibility = () => {
+    if (document.hidden) { ++serial; pending?.abort(); pending = null; clear('采样不可用。'); }
+    else void sample();
+   };
+   select.addEventListener('change', onChange); button.addEventListener('click', onChange);
+   document.addEventListener('visibilitychange', onVisibility);
+   ownProxiesCleanup = () => {
+    disposed = true; ++serial; pending?.abort(); pending = null;
+    select.removeEventListener('change', onChange); button.removeEventListener('click', onChange);
+    document.removeEventListener('visibilitychange', onVisibility); clear('采样不可用。');
+   };
+   void sample();
+  },
+  dispose() { if (ownProxiesCleanup) ownProxiesCleanup(); ownProxiesCleanup = null; }
+ });
  document.addEventListener('DOMContentLoaded', bind, {once:true});
  return {register:(name, component) => pages.set(name, component), api, refresh, navigate, toast, esc, download, openDialog, closeDialog, showDiff, endCurrentSession:() => { showLogin(); announce(); }, transfer:transfers, state:() => snapshot, epoch:() => session, isCurrent:(target, element) => page === target && !!snapshot && element?.isConnected && $('#content').contains(element)};
 })();

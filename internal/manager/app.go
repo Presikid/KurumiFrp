@@ -351,6 +351,14 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
+		managedProxySample := r.Method == http.MethodGet && r.URL.Path == "/api/me/managed-proxies"
+		if managedProxySample {
+			w.Header().Set("Cache-Control", "no-store")
+			if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+				fail(w, http.StatusServiceUnavailable, fmt.Errorf("采样不可用"))
+				return
+			}
+		}
 		var p principal
 		var ok bool
 		var unlock func()
@@ -359,11 +367,17 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ungated := (r.Method == http.MethodPost && (r.URL.Path == "/api/accounts" || r.URL.Path == "/api/password" || r.URL.Path == "/api/logout")) || (r.Method == http.MethodGet && r.URL.Path == "/api/logs/stream")
 		if ungated {
 			p, ok = a.auth.identity(r)
+		} else if managedProxySample {
+			p, unlock, ok = a.auth.tryLockManagedProxyRequest(r)
 		} else {
 			p, unlock, ok = a.auth.lockRequest(r)
 		}
 		if !ok {
-			fail(w, 401, fmt.Errorf("请先登录"))
+			if managedProxySample {
+				fail(w, http.StatusServiceUnavailable, fmt.Errorf("采样不可用"))
+			} else {
+				fail(w, 401, fmt.Errorf("请先登录"))
+			}
 			return
 		}
 		if unlock != nil {
@@ -380,6 +394,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r = withPrincipal(r, p)
+		if r.URL.Path == "/api/me/managed-proxies" {
+			a.accountManagedProxySnapshotAPI(w, r)
+			return
+		}
 		if r.URL.Path == "/api/node-agents" {
 			a.inboundAgentAPI(w, r)
 			return

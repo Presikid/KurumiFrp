@@ -18,6 +18,9 @@ func routeAllowed(p principal, r *http.Request) bool {
 	}
 	if r.Method == http.MethodGet {
 		switch r.URL.Path {
+		case "/api/me/managed-proxies":
+			return p.Account && p.PasswordAccount && p.AccountID != "" && p.gate != nil && p.canReadConfig() &&
+				(p.Role == "admin" || p.Role == "operator" || p.Role == "viewer")
 		case "/api/login-history", "/api/logs/history", "/api/firewall", "/api/firewall/seen", "/api/oidc/config":
 			return p.admin()
 		case "/api/webhooks":

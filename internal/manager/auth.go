@@ -69,17 +69,19 @@ type auth struct {
 }
 
 type authSession struct {
-	expires      time.Time
-	accountID    string        // empty for a root browser session
-	gate         *sync.RWMutex // root sessions share rootGate; account sessions use the account gate
-	oidcRevision uint64        // zero for non-OIDC sessions
-	oidcRoleCap  string        // empty unless a provider-group policy restricted this session
+	expires         time.Time
+	accountID       string        // empty for a root browser session
+	gate            *sync.RWMutex // root sessions share rootGate; account sessions use the account gate
+	oidcRevision    uint64        // zero for non-OIDC sessions
+	oidcRoleCap     string        // empty unless a provider-group policy restricted this session
+	passwordAccount bool          // set only after a local account password login succeeds
 }
 
 type principal struct {
 	Name              string        `json:"name"`
 	Role              string        `json:"role"`
 	Account           bool          `json:"account"`
+	PasswordAccount   bool          `json:"passwordAccount,omitempty"`
 	AllowLogs         bool          `json:"allowLogs,omitempty"`
 	OperableInstances []string      `json:"operableInstances,omitempty"`
 	AllowedActions    []string      `json:"allowedActions,omitempty"`
@@ -91,6 +93,8 @@ type principal struct {
 	AccountID         string        `json:"-"`
 	AccountRevision   uint64        `json:"-"`
 	gate              *sync.RWMutex
+	sessionExpires    time.Time
+	accountExpires    time.Time
 }
 
 func (p principal) admin() bool          { return p.Role == "admin" }
@@ -245,7 +249,11 @@ func (a *auth) identityLocked(r *http.Request) (principal, bool) {
 			}
 			logs := effectiveLogInstances(account)
 			read := effectiveReadPermissions(account)
-			return principal{Name: account.Username, Role: account.Role, Account: true, AllowLogs: account.AllowLogs && len(logs) != 0, Instances: append([]string(nil), account.Instances...), OperableInstances: effectiveControlInstances(account), AllowedActions: effectiveOperatorActions(account), ViewConfig: read.Config, ViewTraffic: read.Traffic, LogInstances: logs, RemoteInstances: append([]remoteGrant(nil), account.RemoteInstances...), AccountID: account.ID, AccountRevision: a.accountsRevision, gate: account.gate}, true
+			var accountExpires time.Time
+			if account.ExpiresAt != "" {
+				accountExpires, _ = time.Parse(time.RFC3339, account.ExpiresAt)
+			}
+			return principal{Name: account.Username, Role: account.Role, Account: true, PasswordAccount: session.passwordAccount && session.oidcRevision == 0, AllowLogs: account.AllowLogs && len(logs) != 0, Instances: append([]string(nil), account.Instances...), OperableInstances: effectiveControlInstances(account), AllowedActions: effectiveOperatorActions(account), ViewConfig: read.Config, ViewTraffic: read.Traffic, LogInstances: logs, RemoteInstances: append([]remoteGrant(nil), account.RemoteInstances...), AccountID: account.ID, AccountRevision: a.accountsRevision, gate: account.gate, sessionExpires: session.expires, accountExpires: accountExpires}, true
 		}
 	}
 	delete(a.sessions, c.Value)
