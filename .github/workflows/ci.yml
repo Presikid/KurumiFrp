@@ -82,9 +82,7 @@ jobs:
         run: go build -o kurumi ./cmd/kurumi
   release:
     needs: [package, source-macos]
-    # Embedded-runtime release is intentionally gated until the documented
-    # platform, lifecycle and recovery acceptance has been completed.
-    if: ${{ false }}
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
