@@ -234,6 +234,9 @@ func validateProtocolInstance(i Instance) error {
 	if i.Kind != "frps" && (i.ServerAccessMode != "" || i.ServerAccessList != "") {
 		return fmt.Errorf("控制入口来源限制仅适用于服务端")
 	}
+	if i.Kind != "frps" && i.ServerBriefErrors {
+		return fmt.Errorf("隐藏客户端错误详情仅适用于服务端")
+	}
 	if _, err := parseControlAccess(i.ServerAccessMode, i.ServerAccessList); err != nil {
 		return err
 	}
