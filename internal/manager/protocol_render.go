@@ -71,6 +71,9 @@ func renderProtocolInstance(b *strings.Builder, i Instance) error {
 		}
 		return nil
 	}
+	if i.ServerBriefErrors {
+		fmt.Fprintln(b, "detailedErrorsToClient = false")
+	}
 	if i.TCPKeepalive != 0 {
 		fmt.Fprintf(b, "transport.tcpKeepalive = %d\n", i.TCPKeepalive)
 	}

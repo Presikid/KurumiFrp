@@ -478,6 +478,7 @@ func (a *App) prepareTOML(req tomlImportRequest) (tomlImportPreview, State) {
 	i.TLSKeyFile = m.str(root, "transport.tls.keyFile", "", "")
 	i.TLSTrustedCAFile = m.str(root, "transport.tls.trustedCaFile", "", "")
 	if req.Kind == "frps" {
+		i.ServerBriefErrors = !m.boolean(root, "detailedErrorsToClient", "", true)
 		i.Host = m.str(root, "bindAddr", "", "0.0.0.0")
 		if i.Host == "" {
 			i.Host = "0.0.0.0"

@@ -40,6 +40,7 @@ type Instance struct {
 	TLSTrustedCAFile      string `json:"tlsTrustedCAFile,omitempty"`
 	ClientTLSServerName   string `json:"clientTLSServerName,omitempty"`
 	ServerAllowPlaintext  bool   `json:"serverAllowPlaintext,omitempty"`
+	ServerBriefErrors     bool   `json:"serverBriefErrors,omitempty"`
 	KCPBindPort           int    `json:"kcpBindPort,omitempty"`
 	QUICBindPort          int    `json:"quicBindPort,omitempty"`
 	TCPMuxHTTPConnectPort int    `json:"tcpmuxHTTPConnectPort,omitempty"`
