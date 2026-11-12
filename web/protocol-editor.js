@@ -190,12 +190,14 @@ const ProtocolEditor = (() => {
     <label>协议<select name="protocol"><option value="tcp+udp">TCP+UDP · 成对创建</option><option value="tcp">TCP</option><option value="udp">UDP</option></select></label>
     ${field('bandwidthKB', '每条规则的带宽上限（KB/s，0 不限）', 0, 'number', 'required min="0" max="10000000" step="1"')}
     <label>限速位置<select name="bandwidthMode"><option value="client">客户端</option><option value="server">服务端</option></select></label>
-    <div class="batch-proxy-protocol-field"><label>PROXY 协议<select name="proxyProtocolVersion"><option value="">关闭</option><option value="v1">v1</option><option value="v2">v2</option></select></label><small>目标服务必须支持所选版本；当前仅用于 TCP 规则。</small></div>
+    <div class="batch-proxy-protocol-field"><label>PROXY 协议<select name="proxyProtocolVersion"><option value="">关闭</option><option value="v1">v1</option><option value="v2">v2</option></select></label><small>仅应用于 TCP 规则，UDP 规则不使用；TCP 目标服务必须支持所选版本。</small></div>
     ${field('localHost', '本地目标地址', '127.0.0.1', 'text', 'required')}
     <label>本地端口列表<input name="localPorts" type="text" required maxlength="4096" placeholder="例如 8000-8002,8010"></label>
     <label class="span-2">远端端口列表<input name="remotePorts" type="text" required maxlength="4096" placeholder="例如 6000-6002,6010，或填 0 动态分配"></label>
     <p class="small-note span-2">端口可用逗号和范围，固定端口按顺序一一对应。多端口名称加本地端口后缀，TCP+UDP 再加 -tcp / -udp。规则总数最多 512 条。</p>
     <p class="small-note span-2">远端 0 只支持单协议，由服务端为每条规则分配端口；TCP+UDP 成对创建须使用固定端口。草稿检查无法确认远端端口可用。</p>
+    <div>${check('useEncryption', '为所有生成的规则启用传输加密', false)}</div>
+    <div>${check('useCompression', '为所有生成的规则启用传输压缩', false)}</div>
     <label class="form-check span-2"><input name="enabled" type="checkbox" checked>期望启用这些规则</label>
    </div>`;
  }
@@ -203,7 +205,8 @@ const ProtocolEditor = (() => {
  function batchValue(form) {
   const f = form.elements, val = name => f[name].value;
   return {name:val('name').trim(), instanceId:val('instanceId'), protocol:val('protocol'), localHost:val('localHost').trim(),
-   localPorts:val('localPorts').trim(), remotePorts:val('remotePorts').trim(), bandwidthKB:+val('bandwidthKB'), bandwidthMode:val('bandwidthMode'), proxyProtocolVersion:val('protocol') === 'tcp' ? val('proxyProtocolVersion') : '', enabled:f.enabled.checked};
+   localPorts:val('localPorts').trim(), remotePorts:val('remotePorts').trim(), bandwidthKB:+val('bandwidthKB'), bandwidthMode:val('bandwidthMode'), proxyProtocolVersion:['tcp','tcp+udp'].includes(val('protocol')) ? val('proxyProtocolVersion') : '',
+   useEncryption:f.useEncryption.checked, useCompression:f.useCompression.checked, enabled:f.enabled.checked};
  }
 
  function visible(form, selector, show) {
@@ -216,7 +219,7 @@ const ProtocolEditor = (() => {
  function update(form, editing, tunnels) {
   const f = form.elements;
   if (editing.kind === 'tunnel-batch') {
-   visible(form, '.batch-proxy-protocol-field', f.protocol.value === 'tcp');
+   visible(form, '.batch-proxy-protocol-field', ['tcp','tcp+udp'].includes(f.protocol.value));
    return;
   }
   if (editing.kind === 'instance') {
