@@ -46,7 +46,8 @@ func validWebhookStatusScope(scope string) bool {
 	case "", "instances", "nodes":
 		return true
 	default:
-		return strings.HasPrefix(scope, "instance:") && idPattern.MatchString(strings.TrimPrefix(scope, "instance:"))
+		kind, id, ok := strings.Cut(scope, ":")
+		return ok && (kind == "instance" || kind == "node") && idPattern.MatchString(id)
 	}
 }
 
@@ -301,7 +302,10 @@ func (cfg webhookConfig) receivesFor(event webhookEvent) bool {
 		}
 		return cfg.StatusScope == "instance:"+event.InstanceID && idPattern.MatchString(event.InstanceID)
 	case "node.available", "node.unavailable":
-		return cfg.StatusScope == "" || cfg.StatusScope == "nodes"
+		if cfg.StatusScope == "" || cfg.StatusScope == "nodes" {
+			return true
+		}
+		return cfg.StatusScope == "node:"+event.NodeID && idPattern.MatchString(event.NodeID)
 	default:
 		return true
 	}
