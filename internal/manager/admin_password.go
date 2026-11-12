@@ -9,14 +9,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 	"unicode/utf8"
 )
 
 // The administrator password is independent of account files and the local
-// maintenance token. A missing file in an existing data directory means that
-// the existing token is its initial password, not that the password is empty.
+// maintenance token. A missing password file initializes an empty password.
 type adminPasswordFile struct {
 	Version int    `json:"version"`
 	Salt    string `json:"salt"`
@@ -106,61 +104,45 @@ func createAdminPasswordFile(path string, data []byte) (bool, error) {
 	return true, syncMigrationDir(dir)
 }
 
-// Run before newStore creates state.json, so an interrupted first startup
-// cannot be mistaken for an upgrade after the default was chosen.
-func prepareAdminPassword(dir string) (adminPasswordFile, []byte, bool, error) {
+// Initialize the default before the store starts, while holding the data lock.
+func prepareAdminPassword(dir string) (adminPasswordFile, []byte, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return adminPasswordFile{}, nil, false, err
+		return adminPasswordFile{}, nil, err
 	}
 	if err = os.MkdirAll(abs, 0700); err != nil {
-		return adminPasswordFile{}, nil, false, err
+		return adminPasswordFile{}, nil, err
 	}
 	if st, err := os.Lstat(abs); err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
-		return adminPasswordFile{}, nil, false, fmt.Errorf("unsafe data directory")
+		return adminPasswordFile{}, nil, fmt.Errorf("unsafe data directory")
 	}
 	path := filepath.Join(abs, "admin-password.json")
 	file, data, err := readAdminPassword(path)
 	if err == nil {
-		return file, data, false, nil
+		return file, data, nil
 	}
 	if !os.IsNotExist(err) {
-		return adminPasswordFile{}, nil, false, err
-	}
-	entries, err := os.ReadDir(abs)
-	if err != nil {
-		return adminPasswordFile{}, nil, false, err
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		// The launcher creates these before constructing the manager. A stale
-		// temporary init file may remain after a crash before the commit.
-		if name != "manager.lock" && name != "tmp" && !strings.HasPrefix(name, ".admin-password-init-") {
-			return adminPasswordFile{}, nil, true, nil
-		}
+		return adminPasswordFile{}, nil, err
 	}
 	file, err = newAdminPassword("")
 	if err != nil {
-		return adminPasswordFile{}, nil, false, err
+		return adminPasswordFile{}, nil, err
 	}
 	data, err = json.MarshalIndent(file, "", "  ")
 	if err != nil {
-		return adminPasswordFile{}, nil, false, err
+		return adminPasswordFile{}, nil, err
 	}
 	_, err = createAdminPasswordFile(path, data)
 	if os.IsExist(err) {
 		file, data, err = readAdminPassword(path)
 	}
 	if err != nil {
-		return adminPasswordFile{}, nil, false, fmt.Errorf("无法初始化主密码，已有文件已保留: %w", err)
+		return adminPasswordFile{}, nil, fmt.Errorf("无法初始化主密码，已有文件已保留: %w", err)
 	}
-	return file, data, false, nil
+	return file, data, nil
 }
 
-func verifyAdminPassword(file adminPasswordFile, legacy bool, token, password string) (bool, error) {
-	if legacy {
-		return subtle.ConstantTimeCompare([]byte(password), []byte(token)) == 1, nil
-	}
+func verifyAdminPassword(file adminPasswordFile, password string) (bool, error) {
 	salt, err := base64.RawStdEncoding.DecodeString(file.Salt)
 	if err != nil {
 		return false, err
@@ -182,7 +164,7 @@ func (a *auth) loginAdminPassword(r *http.Request, password string) (string, boo
 		return "", true, fmt.Errorf("密码不正确")
 	}
 	a.mu.Lock()
-	file, legacy, generation, loadErr := a.adminPassword, a.adminPasswordLegacy, a.adminPasswordGeneration, a.adminPasswordErr
+	file, generation, loadErr := a.adminPassword, a.adminPasswordGeneration, a.adminPasswordErr
 	a.mu.Unlock()
 	if loadErr != nil {
 		return "", false, fmt.Errorf("主密码文件无法安全确认，请重启并核对原文件")
@@ -190,7 +172,7 @@ func (a *auth) loginAdminPassword(r *http.Request, password string) (string, boo
 	if !a.acquireHash() {
 		return "", false, fmt.Errorf("登录繁忙，请稍后再试")
 	}
-	valid, err := verifyAdminPassword(file, legacy, a.token, password)
+	valid, err := verifyAdminPassword(file, password)
 	a.releaseHash()
 	if err != nil || !valid {
 		return "", true, fmt.Errorf("密码不正确")
@@ -226,7 +208,7 @@ func (a *App) adminPasswordAPI(w http.ResponseWriter, r *http.Request, p princip
 		return
 	}
 	a.auth.mu.Lock()
-	original, legacy, generation, loadErr := a.auth.adminPassword, a.auth.adminPasswordLegacy, a.auth.adminPasswordGeneration, a.auth.adminPasswordErr
+	original, generation, loadErr := a.auth.adminPassword, a.auth.adminPasswordGeneration, a.auth.adminPasswordErr
 	a.auth.mu.Unlock()
 	if loadErr != nil {
 		fail(w, http.StatusConflict, fmt.Errorf("主密码文件无法安全确认，请重启并核对原文件"))
@@ -236,7 +218,7 @@ func (a *App) adminPasswordAPI(w http.ResponseWriter, r *http.Request, p princip
 		fail(w, http.StatusTooManyRequests, fmt.Errorf("密码操作繁忙，请稍后再试"))
 		return
 	}
-	valid, err := verifyAdminPassword(original, legacy, a.auth.token, *req.Old)
+	valid, err := verifyAdminPassword(original, *req.Old)
 	if err != nil || !valid {
 		a.auth.releaseHash()
 		failed = true
@@ -270,28 +252,16 @@ func (a *App) adminPasswordAPI(w http.ResponseWriter, r *http.Request, p princip
 	}
 	path := a.auth.adminPasswordPath
 	committed := false
-	credentialUncertain := false
-	if legacy {
-		committed, err = createAdminPasswordFile(path, data)
-		if err != nil && !committed {
-			// Another writer may have created a password file while the legacy
-			// token was in use. An inaccessible path is equally uncertain.
-			_, statErr := os.Lstat(path)
-			credentialUncertain = !os.IsNotExist(statErr)
-		}
-	} else {
-		var matches bool
-		matches, err = privateFileMatches(path, a.auth.adminPasswordData)
-		credentialUncertain = err != nil || !matches
-		if err == nil && !matches {
-			err = fmt.Errorf("主密码文件已变化，原文件已保留")
-		}
-		if err == nil {
-			_, err = writeIfChanged(path, data)
-			committed = err == nil
-			if committed {
-				err = syncMigrationDir(filepath.Dir(path))
-			}
+	matches, err := privateFileMatches(path, a.auth.adminPasswordData)
+	credentialUncertain := err != nil || !matches
+	if err == nil && !matches {
+		err = fmt.Errorf("主密码文件已变化，原文件已保留")
+	}
+	if err == nil {
+		_, err = writeIfChanged(path, data)
+		committed = err == nil
+		if committed {
+			err = syncMigrationDir(filepath.Dir(path))
 		}
 	}
 	if committed || credentialUncertain {
@@ -304,7 +274,7 @@ func (a *App) adminPasswordAPI(w http.ResponseWriter, r *http.Request, p princip
 			}
 			a.auth.adminPasswordErr = readErr
 			if readErr == nil {
-				a.auth.adminPassword, a.auth.adminPasswordData, a.auth.adminPasswordLegacy = stored, storedData, false
+				a.auth.adminPassword, a.auth.adminPasswordData = stored, storedData
 			}
 		} else {
 			a.auth.adminPasswordErr = fmt.Errorf("主密码文件状态无法安全确认")
