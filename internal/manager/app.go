@@ -46,6 +46,7 @@ type App struct {
 	themes                *themeManager
 	webhooks              *webhookDispatcher
 	loginHistory          *loginHistory
+	logHistory            *logHistory
 	firewall              *firewallManager
 	maintenance           *maintenanceMode
 	updateNotices         updateNoticeState
@@ -188,6 +189,7 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (res
 	// No initialization below this point may release the lock on failure:
 	// background resources can already have been created or started.
 	resourcesStarted = true
+	app.logHistory = newLogHistory(s.dir)
 	app.trafficDaily = loadTrafficDaily(s.dir, s.DB.State, s.DB.LocalTrafficIDs)
 	// An unreadable registration file disables only inbound reporting and is
 	// retained for repair; it must never be silently replaced.
@@ -562,6 +564,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.URL.Path == "/api/state" && r.Method == "GET" {
 			a.handleState(w, r)
+			return
+		}
+		if r.URL.Path == "/api/logs/history" {
+			a.logHistoryAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/logs" || r.URL.Path == "/api/logs/stream" {
