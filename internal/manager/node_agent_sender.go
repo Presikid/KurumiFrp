@@ -47,6 +47,7 @@ type outboundAgentSender struct {
 	pending []byte
 	pendingSince time.Time
 	interval time.Duration
+	allowTransitions bool
 }
 
 type outboundAgentSessionResponse struct {
@@ -55,6 +56,7 @@ type outboundAgentSessionResponse struct {
 	Session string `json:"session"`
 	NextSequence string `json:"nextSequence"`
 	IntervalSeconds int `json:"intervalSeconds"`
+	allowTransitions bool
 }
 
 type outboundAgentReportResponse struct {
@@ -151,12 +153,16 @@ func (s *outboundAgentSender) post(parent context.Context, path string, body []b
 	if err != nil || len(data) > outboundAgentResponseLimit || decodeStrictJSON(data, result) != nil {
 		return errOutboundAgentTemporary
 	}
+	if reply, ok := result.(*outboundAgentSessionResponse); ok && path == "/api/node-agent/session" {
+		reply.allowTransitions = response.Header.Get(nodeAgentStateCapabilityHeader) == nodeAgentTransitionCapability
+	}
 	return nil
 }
 
 // A new session invalidates the previous session even when its reply is lost.
 func (s *outboundAgentSender) openSession(ctx context.Context) error {
 	s.session, s.nextSequence, s.pending, s.pendingSince = "", 0, nil, time.Time{}
+	s.allowTransitions = false
 	var reply outboundAgentSessionResponse
 	if err := s.post(ctx, "/api/node-agent/session", []byte(`{"protocol":1}`), &reply); err != nil {
 		return err
@@ -169,7 +175,7 @@ func (s *outboundAgentSender) openSession(ctx context.Context) error {
 	if reply.Protocol != 1 || !nodeTokenPattern.MatchString(reply.Session) || !ok || sequence != 1 || !validInterval {
 		return errOutboundAgentTemporary
 	}
-	s.session, s.nextSequence, s.interval = reply.Session, sequence, interval
+	s.session, s.nextSequence, s.interval, s.allowTransitions = reply.Session, sequence, interval, reply.allowTransitions
 	return nil
 }
 
@@ -182,7 +188,7 @@ func (s *outboundAgentSender) prepareReport(summary nodeSummary) error {
 	if s.pending != nil {
 		return fmt.Errorf("上次节点上报尚未确认")
 	}
-	if !validNodeSummary(summary) {
+	if !validNodeSummaryWithTransitions(summary, s.allowTransitions) {
 		return fmt.Errorf("节点摘要暂不可用")
 	}
 	for _, instance := range summary.Instances {
