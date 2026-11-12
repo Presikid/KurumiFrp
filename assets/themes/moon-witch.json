@@ -1,0 +1,200 @@
+{
+  "id": "moon-witch",
+  "atlas": "moon-witch.png",
+  "width": 2560,
+  "height": 2560,
+  "size": 8443539,
+  "sha256": "cce2ac451eab800ec080deef1b5932a9da7c9d70ca8f68dad34856777e6b6ed5",
+  "parts": {
+    "overview": [
+      0,
+      0,
+      1536,
+      1024
+    ],
+    "overview-mobile": [
+      0,
+      0,
+      1536,
+      1024
+    ],
+    "login-desktop": [
+      1536,
+      0,
+      2560,
+      1536
+    ],
+    "login-mobile": [
+      1536,
+      0,
+      2560,
+      1536
+    ],
+    "empty-search": [
+      0,
+      1536,
+      1024,
+      2560
+    ],
+    "empty-welcome": [
+      1024,
+      1536,
+      2048,
+      2560
+    ]
+  },
+  "source_paths": "repository-relative",
+  "coordinates": "left/top inclusive; right/bottom exclusive",
+  "output_color": {
+    "mode": "RGBA",
+    "bit_depth": 8,
+    "png_color_type": 6,
+    "color_profile_chunks": []
+  },
+  "pixel_handling": "Full source rectangles copied without resampling or alpha compositing; RGB receives opaque alpha 255; all RGBA channel values, including hidden RGB under alpha zero, retained.",
+  "metadata": "Source files contain caBX chunks recorded by SHA-256 and length below; they are not copied to the combined atlas. No source has gAMA, cHRM, iCCP, or sRGB chunks.",
+  "encoding": {
+    "library": "Pillow",
+    "version": "11.2.1",
+    "zlib_version": "1.3.1",
+    "png_compress_level": 6,
+    "optimize": false
+  },
+  "sources": [
+    {
+      "role": [
+        "overview",
+        "overview-mobile"
+      ],
+      "path": "assets/material/dual/KM18-home-clock-v01.png",
+      "crop": [
+        0,
+        0,
+        1536,
+        1024
+      ],
+      "atlas_rect": [
+        0,
+        0,
+        1536,
+        1024
+      ],
+      "size_bytes": 2546034,
+      "sha256": "e837a59acd9745969cd02c76ca7fc8307949d65862f8da06f5f01e4b171a768d",
+      "width": 1536,
+      "height": 1024,
+      "bit_depth": 8,
+      "mode": "RGB",
+      "png_color_type": 2,
+      "auxiliary_chunks": [
+        {
+          "type": "caBX",
+          "length": 23650,
+          "sha256": "9cbf4a9fce1fe290f3910cc8b4dfcfca20712d50cb52337d80e1ebe73cda2730",
+          "copied_to_atlas": false
+        }
+      ]
+    },
+    {
+      "role": [
+        "login-desktop",
+        "login-mobile"
+      ],
+      "path": "assets/material/dual/KM18-expression-portrait-v01.png",
+      "crop": [
+        0,
+        0,
+        1024,
+        1536
+      ],
+      "atlas_rect": [
+        1536,
+        0,
+        2560,
+        1536
+      ],
+      "size_bytes": 2285121,
+      "sha256": "bdc6978c97d962eaf9263e072f2bb78f9210b897feeaddb56bf0789072b4503b",
+      "width": 1024,
+      "height": 1536,
+      "bit_depth": 8,
+      "mode": "RGB",
+      "png_color_type": 2,
+      "auxiliary_chunks": [
+        {
+          "type": "caBX",
+          "length": 23650,
+          "sha256": "c27f9bc55e3d5d7371ad6052bb4ffe167499d6769b84abad1cb24f8e74697daf",
+          "copied_to_atlas": false
+        }
+      ]
+    },
+    {
+      "role": [
+        "empty-search"
+      ],
+      "path": "assets/material/dual/KM18-empty-search-v01.png",
+      "crop": [
+        0,
+        0,
+        1024,
+        1024
+      ],
+      "atlas_rect": [
+        0,
+        1536,
+        1024,
+        2560
+      ],
+      "size_bytes": 1556222,
+      "sha256": "ce232f6d86a6b7bcf9ce986d3c605d1262258b44b72524f1adf946a775020198",
+      "width": 1024,
+      "height": 1024,
+      "bit_depth": 8,
+      "mode": "RGBA",
+      "png_color_type": 6,
+      "auxiliary_chunks": [
+        {
+          "type": "caBX",
+          "length": 23650,
+          "sha256": "cf513578281b306260eb95a892e9097352a7889fc537d743fb6dffcff72231a2",
+          "copied_to_atlas": false
+        }
+      ]
+    },
+    {
+      "role": [
+        "empty-welcome"
+      ],
+      "path": "assets/material/dual/KM18-status-welcome-v01.png",
+      "crop": [
+        0,
+        0,
+        1024,
+        1024
+      ],
+      "atlas_rect": [
+        1024,
+        1536,
+        2048,
+        2560
+      ],
+      "size_bytes": 1505410,
+      "sha256": "d2cced11f1bf38758e89485514b6bf2dc08d12d2766b6239d1afa2f8bd8e59d9",
+      "width": 1024,
+      "height": 1024,
+      "bit_depth": 8,
+      "mode": "RGBA",
+      "png_color_type": 6,
+      "auxiliary_chunks": [
+        {
+          "type": "caBX",
+          "length": 23650,
+          "sha256": "3668bdfd2acc229e323557945cc7ec8c0f457a0fb861415e06dfd988c6c0b0f2",
+          "copied_to_atlas": false
+        }
+      ]
+    }
+  ],
+  "source_repository": "Presikid/KurumiFrp"
+}
