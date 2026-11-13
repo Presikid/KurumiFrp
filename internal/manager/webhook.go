@@ -269,7 +269,8 @@ func (d *webhookDispatcher) emitUpdateAvailable(version string) bool {
 	if d == nil || !webhookVersionPattern.MatchString(version) {
 		return false
 	}
-	return d.enqueue(webhookEvent{Event: "update.available", At: now(), Version: version})
+	_, queued := d.enqueueWithStatus(webhookEvent{Event: "update.available", At: now(), Version: version})
+	return queued
 }
 
 func (cfg webhookConfig) receives(event string) bool {
@@ -314,10 +315,16 @@ func (cfg webhookConfig) receivesFor(event webhookEvent) bool {
 // The return value reports that at least one enabled target was considered,
 // including a bounded-queue drop. It does not imply delivery.
 func (d *webhookDispatcher) enqueue(event webhookEvent) bool {
+	considered, _ := d.enqueueWithStatus(event)
+	return considered
+}
+
+// Return whether recipients were considered and whether the event was queued.
+func (d *webhookDispatcher) enqueueWithStatus(event webhookEvent) (bool, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.ctx.Err() != nil {
-		return false
+		return false, false
 	}
 	recipients := make([]webhookRecipient, 0, len(d.order))
 	for _, id := range d.order {
@@ -327,16 +334,17 @@ func (d *webhookDispatcher) enqueue(event webhookEvent) bool {
 		}
 	}
 	if len(recipients) == 0 {
-		return false
+		return false, false
 	}
 	select {
 	case d.queue <- queuedWebhook{event: event, recipients: recipients}:
+		return true, true
 	default:
 		for _, recipient := range recipients {
 			d.targets[recipient.id].dropped++
 		}
+		return true, false
 	}
-	return true
 }
 
 func (d *webhookDispatcher) run() {
