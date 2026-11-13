@@ -241,6 +241,10 @@ func (a *auth) identityLocked(r *http.Request) (principal, bool) {
 	if session.accountID == "" {
 		return principal{Name: "本机管理员", Role: "admin", gate: session.gate}, true
 	}
+	// Account permissions may no longer match the file after a failed write.
+	if a.accountsWriteUncertain {
+		return principal{}, false
+	}
 	for _, account := range a.accounts {
 		if account.ID == session.accountID && account.activeAt(time.Now()) {
 			if session.oidcRoleCap != "" && oidcRoleRank(session.oidcRoleCap) < oidcRoleRank(account.Role) {
@@ -458,6 +462,9 @@ func (a *auth) login(r *http.Request, token *string, username string, password *
 // hold at most four sessions, and full capacity evicts an account session so
 // that the local administrator retains a recovery path.
 func (a *auth) newSessionLocked(r *http.Request, accountID string, now time.Time) (string, error) {
+	if accountID != "" && a.accountsWriteUncertain {
+		return "", a.accountWriteFailure()
+	}
 	for sid, session := range a.sessions {
 		if !now.Before(session.expires) {
 			delete(a.sessions, sid)
