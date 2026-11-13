@@ -90,18 +90,22 @@
   if (localControlReviewing.has(id) || localControlInFlight.has(id)) throw new Error('操作仍在处理，请等待结果后再核对。');
   const before = localControlNotice(id);
   if (!before) return;
-  const generation = K.epoch(); localControlReviewing.add(id); notifyLocalControl();
+  const generation = K.epoch(), identityVersion = localControlIdentityVersion; localControlReviewing.add(id); notifyLocalControl();
   try {
    const refreshed = await K.refresh();
+   if (generation !== K.epoch() || identityVersion !== localControlIdentityVersion) return;
    const state = K.state(), instance = state?.state?.instances?.find(item => item.id === id);
-   if (!refreshed || generation !== K.epoch() || !instance) throw new Error('无法确认实例当前状态，请重新登录或刷新后核对。');
+   if (!refreshed || !instance) throw new Error('无法确认实例当前状态，请重新登录或刷新后核对。');
    if (!['start','stop','restart'].some(action => can(state,id,action))) throw new Error('当前账户没有此实例的操作权限。');
    const after = localControlNotice(id);
    if (!after || after.raw !== before.raw || localControlInFlight.has(id)) throw new Error('操作记录已变化，请重新核对。');
    const runtime = runtimeFor(state,id);
    if (!confirm(`「${instance.name}」当前状态：${stateLabel(runtime)}。\n刷新只能显示当前状态，不能保证先前请求已经结束。${after.volatile ? '\n提示仅保存在本页面，其他标签页不共享；关闭或重新加载页面后会丢失。' : ''}\n请先独立核对目标和请求状态；确认已核对并解除提示？`)) return;
+   if (generation !== K.epoch() || identityVersion !== localControlIdentityVersion) return;
    if (!clearLocalControl(id,before.raw)) throw new Error('操作记录已变化或无法清除，请重新核对。');
    notifyLocalControl(); K.toast('已解除核对提示。');
+  } catch (error) {
+   if (generation === K.epoch() && identityVersion === localControlIdentityVersion) throw error;
   } finally { localControlReviewing.delete(id); notifyLocalControl(); }
  }
  const requireRevision = data => {
