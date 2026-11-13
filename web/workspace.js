@@ -89,14 +89,13 @@ window.Kurumi = (() => {
   return wasBusy;
  }
  function showLogin(message = '') {
-  const wasAuthenticated = !!snapshot;
   ++session; stopTimer(); dispose(); snapshot = null; request = null;
   closeMenu(); const wasBusy = invalidateDialog();
   if ($('#diff-dialog').open) $('#diff-dialog').close();
   $('#content').replaceChildren(); $('#app').hidden = true; $('#login').hidden = false;
   const picker = $('#skin-picker'); if (picker) picker.hidden = true;
   $('#login-form').elements.token.value = '';
-  if (message || wasBusy || wasAuthenticated) $('#login-error').textContent = [message, wasBusy ? '此前提交的操作可能仍在处理，重新登录后请先核对。' : ''].filter(Boolean).join(' ');
+  if (message || wasBusy) $('#login-error').textContent = [message, wasBusy ? '此前提交的操作可能仍在处理，重新登录后请先核对。' : ''].filter(Boolean).join(' ');
  }
  function announce() {
   signal = `${Date.now()}:${Math.random()}`;
