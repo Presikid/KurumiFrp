@@ -9,4 +9,4 @@
 
 控制面板无账户和用户名，使用一个密码。
 
-本次通过 GitHub Actions 构建和打包；未在本机运行 KurumiFRP、安装器或测试，也未进行实际浏览器、协议和安装验收。Windows 安装包未签名；macOS 仅编译源码，不提供安装包。
+本次通过 GitHub Actions 构建和打包；未在本机运行 KurumiFRP、安装器或测试，也未进行实际浏览器、协议和安装验收。Windows 安装包未签名；macOS 仅编译 ARM64 源码，不提供安装包。
