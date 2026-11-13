@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -26,7 +27,7 @@ func main() {
 		log.Fatal(e)
 	}
 }
-func run() error {
+func run() (resultErr error) {
 	defaultData, defaultListen, pathErr := defaultPaths()
 	if pathErr != nil {
 		return pathErr
@@ -180,6 +181,7 @@ func run() error {
 		if err := app.Close(); err != nil {
 			cleanShutdown = false
 			log.Printf("Shutdown incomplete; retained manager.lock: %v", err)
+			resultErr = errors.Join(resultErr, fmt.Errorf("shutdown incomplete; retained manager.lock: %w", err))
 		}
 	}()
 	listener, e := net.Listen("tcp", *addr)
