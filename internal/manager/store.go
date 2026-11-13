@@ -651,7 +651,7 @@ func (s *Store) commit(st State, summary string) error {
 	return s.commitRestoring(st, summary, false)
 }
 
-func (s *Store) commitRestoring(st State, summary string, restoring bool) error {
+func (s *Store) validateStateChange(st State) error {
 	if e := validate(st); e != nil {
 		return e
 	}
@@ -660,7 +660,11 @@ func (s *Store) commitRestoring(st State, summary string, restoring bool) error 
 			return e
 		}
 	}
-	if e := validateVisitorListeners(s.DB.State, st); e != nil {
+	return validateVisitorListeners(s.DB.State, st)
+}
+
+func (s *Store) commitRestoring(st State, summary string, restoring bool) error {
+	if e := s.validateStateChange(st); e != nil {
 		return e
 	}
 	if s.beforeCommit != nil {

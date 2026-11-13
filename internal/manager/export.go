@@ -9,6 +9,10 @@ import (
 	"strconv"
 )
 
+func stateWriteAfterGrantRevocationError(operation string, err error) error {
+	return fmt.Errorf("%s未完成或配置保存状态未确认；相关非管理员账户及分组模板的实例授权（如有）已先行撤销，请核对配置和授权：%w", operation, err)
+}
+
 // Bound and consume slow uploads before waiting on other accounts' gates.
 func bufferMutationBody(w http.ResponseWriter, r *http.Request, limit int64) (*http.Request, error) {
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
@@ -266,14 +270,14 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 	// Authorizations must not attach to different imported instances reusing
 	// old IDs. This write precedes the state replacement and fails closed.
 	if err = a.clearInstanceGrantsLocked(""); err != nil {
-		fail(w, 500, fmt.Errorf("无法撤销原实例授权"))
+		fail(w, 500, fmt.Errorf("无法撤销原实例授权：%w", err))
 		return
 	}
 	previousKey := a.store.key
 	a.store.key = key
 	if err = a.store.write(db); err != nil {
 		a.store.key = previousKey
-		fail(w, 500, err)
+		fail(w, 500, stateWriteAfterGrantRevocationError("导入", err))
 		return
 	}
 	a.store.DB = db

@@ -1013,11 +1013,18 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 			err = fmt.Errorf("对象不存在")
 		} else {
 			if req.Kind == "instance" {
+				next := a.store.DB
+				if err = incrementRevision(&next); err != nil {
+					break
+				}
 				if err = a.clearInstanceGrantsLocked(req.ID); err != nil {
 					break
 				}
 			}
 			err = a.store.commit(st, "删除 "+req.Kind+" 草稿")
+			if err != nil && req.Kind == "instance" {
+				err = stateWriteAfterGrantRevocationError("删除", err)
+			}
 			if err == nil && req.Kind == "instance" {
 				delete(a.procs, req.ID)
 				delete(a.traffic, req.ID)
@@ -1036,12 +1043,22 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		err = fmt.Errorf("历史版本不存在")
 		for _, h := range a.store.DB.History {
 			if h.Revision == req.Target {
+				st := h.State.clone()
+				if err = a.store.validateStateChange(st); err != nil {
+					break
+				}
+				next := a.store.DB
+				if err = incrementRevision(&next); err != nil {
+					break
+				}
 				if err = a.clearInstanceGrantsLocked(""); err != nil {
 					break
 				}
-				err = a.store.commitRestoring(h.State.clone(), fmt.Sprintf("恢复草稿版本 %d", h.Revision), true)
+				err = a.store.commitRestoring(st, fmt.Sprintf("恢复草稿版本 %d", h.Revision), true)
 				if err == nil {
 					a.discardStoppedRuntimeLocked()
+				} else {
+					err = stateWriteAfterGrantRevocationError("恢复", err)
 				}
 				break
 			}
