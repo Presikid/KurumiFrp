@@ -260,6 +260,16 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 		}
 	}
 	xl := xlog.NewWithSink(options.LogSink)
+	logListenerFailure := func(kind string, detail error) {
+		if options.LogSink == nil {
+			return
+		}
+		if detail == nil {
+			xl.Errorf("frps %s listener initialization failed", kind)
+			return
+		}
+		xl.Errorf("frps %s listener failed: %v", kind, detail)
+	}
 	tlsConfig, err := transport.NewServerTLSConfig(
 		cfg.Transport.TLS.CertFile,
 		cfg.Transport.TLS.KeyFile,
@@ -341,6 +351,7 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 		address := net.JoinHostPort(cfg.ProxyBindAddr, strconv.Itoa(cfg.TCPMuxHTTPConnectPort))
 		l, err = net.Listen("tcp", address)
 		if err != nil {
+			logListenerFailure("TCPMux", err)
 			return nil, fmt.Errorf("create server listener error, %v", err)
 		}
 
@@ -383,9 +394,7 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 	address := net.JoinHostPort(cfg.BindAddr, strconv.Itoa(cfg.BindPort))
 	ln, err := net.Listen("tcp", address)
 	if err != nil {
-		if options.LogSink != nil {
-			xl.Errorf("frps TCP listener failed: %v", err)
-		}
+		logListenerFailure("TCP", err)
 		return nil, fmt.Errorf("create server listener error, %v", err)
 	}
 
@@ -402,6 +411,7 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 		address := net.JoinHostPort(cfg.BindAddr, strconv.Itoa(cfg.KCPBindPort))
 		svr.kcpListener, err = netpkg.ListenKcpWithContext(svr.workCtx, address)
 		if err != nil {
+			logListenerFailure("KCP UDP", err)
 			return nil, fmt.Errorf("listen on kcp udp address %s error: %v", address, err)
 		}
 		xl.Infof("frps kcp listen on udp %s", address)
@@ -417,6 +427,8 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 			KeepAlivePeriod:    time.Duration(cfg.Transport.QUIC.KeepalivePeriod) * time.Second,
 		})
 		if err != nil {
+			// QUIC errors may contain TLS or configuration details; do not log them.
+			logListenerFailure("QUIC", nil)
 			return nil, fmt.Errorf("listen on quic udp address %s error: %v", address, err)
 		}
 		xl.Infof("frps quic listen on %s", address)
@@ -481,6 +493,7 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 		} else {
 			l, err = net.Listen("tcp", address)
 			if err != nil {
+				logListenerFailure("HTTP", err)
 				return nil, fmt.Errorf("create vhost http listener error, %v", err)
 			}
 		}
@@ -499,6 +512,7 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 			address := net.JoinHostPort(cfg.ProxyBindAddr, strconv.Itoa(cfg.VhostHTTPSPort))
 			l, err = net.Listen("tcp", address)
 			if err != nil {
+				logListenerFailure("HTTPS", err)
 				return nil, fmt.Errorf("create server listener error, %v", err)
 			}
 			xl.Infof("https service listen on %s", address)
