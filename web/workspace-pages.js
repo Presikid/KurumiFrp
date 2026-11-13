@@ -18,6 +18,8 @@
  const localControlPrefix = 'kurumi-local-control-v1:';
  const localControlInFlight = new Set(), localControlReviewing = new Set();
  const localControlMemory = new Map(), localControlDismissed = new Map();
+ let localControlIdentityVersion = 0;
+ window.addEventListener('kurumi-workspace-identity-invalidated', () => { localControlIdentityVersion++; });
  const controlLabels = {start:'启动', stop:'停止', restart:'重启'};
  const notifyLocalControl = () => window.dispatchEvent(new Event('kurumi-local-control-change'));
  function localControlNotice(id) {
@@ -29,7 +31,7 @@
   let record;
   try { record = JSON.parse(raw); } catch (_) { record = null; }
   return {raw, phase:record?.phase === 'pending' ? 'pending' : 'uncertain', action:Object.hasOwn(controlLabels,record?.action) ? controlLabels[record.action] : '启停',
-   volatile:!!memory && stored !== memory.raw, error:memory?.errorEpoch === K.epoch() ? memory.error : ''};
+   volatile:!!memory && stored !== memory.raw, error:memory?.errorEpoch === K.epoch() && memory?.errorIdentityVersion === localControlIdentityVersion ? memory.error : ''};
  }
  function beginLocalControl(id,action) {
   if (localControlInFlight.has(id) || localControlNotice(id)) { notifyLocalControl(); throw new Error('此实例有操作正在处理或结果未确认，请先核对并解除提示。'); }
@@ -41,12 +43,22 @@
   } catch (_) { /* Keep the page-local record when storage is unavailable. */ }
   localControlInFlight.add(id); notifyLocalControl(); return raw;
  }
+ function matchesLocalControl(id,expected) {
+  if (localControlMemory.get(id)?.raw !== expected) return false;
+  try {
+   const current = localStorage.getItem(localControlPrefix + id);
+   return current === null || current === expected;
+  } catch (_) { return true; }
+ }
  function clearLocalControl(id,expected) {
   const memory = localControlMemory.get(id), key = localControlPrefix + id;
   if (memory && memory.raw !== expected) return false;
   let current, readable = false;
   try { current = localStorage.getItem(key); readable = true; } catch (_) {}
-  if (!memory && readable && current !== null && current !== expected) return false;
+  if (readable && current !== null && current !== expected) {
+   if (memory?.raw === expected) localControlMemory.delete(id);
+   return false;
+  }
   if (readable && current === expected) {
    try {
     localStorage.removeItem(key);
@@ -57,9 +69,9 @@
   if (memory) localControlMemory.delete(id);
   return true;
  }
- function markLocalControlUncertain(id,expected,error,epoch) {
+ function markLocalControlUncertain(id,expected,error,epoch,identityVersion) {
   const memory = localControlMemory.get(id);
-  if (memory?.raw === expected && error.status) { memory.error = error.message; memory.errorEpoch = epoch; }
+  if (memory?.raw === expected && error.status) { memory.error = error.message; memory.errorEpoch = epoch; memory.errorIdentityVersion = identityVersion; }
   // A pending record without an active request is shown as uncertain, including after reload.
  }
  function paintLocalControls(root) {
@@ -68,7 +80,7 @@
    const box = card.querySelector('[data-local-control-notice]'), text = card.querySelector('[data-local-control-text]'), acknowledge = card.querySelector('[data-action="ack-local-control"]');
    box.hidden = !notice && !inFlight;
    const volatile = notice?.volatile ? '提示仅保存在本页面，其他标签页不共享；关闭或重新加载页面后会丢失。' : '';
-   if (inFlight) text.textContent = `实例操作正在等待结果；请勿重复提交。${volatile}`;
+   if (inFlight) text.textContent = `实例操作或状态刷新正在处理；请勿重复提交。${volatile}`;
    else if (notice) text.textContent = `${notice.error ? `服务端返回：${notice.error}。` : ''}上次${notice.action}结果尚未确认。请刷新并独立核对实际状态及先前请求是否仍在处理。${volatile}${acknowledge ? '' : '请联系有操作权限的账户核对并解除。'}`;
    if (acknowledge) { acknowledge.hidden = !notice || inFlight; acknowledge.disabled = localControlReviewing.has(id); }
    card.querySelectorAll('[data-action="start"], [data-action="stop"], [data-action="restart"]').forEach(element => { element.disabled = !!notice || inFlight; });
@@ -118,10 +130,10 @@
   root.addEventListener('click', async event => {
    const target = event.target.closest('[data-action]');
    if (!target || !root.contains(target) || target.disabled) return;
-   const epoch = K.epoch();
+   const epoch = K.epoch(), identityVersion = localControlIdentityVersion;
    target.disabled = true;
    try { await handler(target.dataset.action, target.dataset.id || '', target); }
-   catch (error) { if (K.epoch() === epoch) K.toast(error.message); }
+   catch (error) { if (K.epoch() === epoch && (!['start','stop','restart'].includes(target.dataset.action) || identityVersion === localControlIdentityVersion)) K.toast(error.message); }
    finally {
     if (K.epoch() === epoch && target.isConnected) target.disabled = ['start','stop','restart'].includes(target.dataset.action) && (localControlInFlight.has(target.dataset.id) || !!localControlNotice(target.dataset.id));
    }
@@ -210,11 +222,12 @@
      K.toast(`草稿已保存（r${savedRevision}）；配置或实例运行状态已变化，未提交重启。`);
      return;
     }
+    const controlIdentityVersion = localControlIdentityVersion;
     try {
      const outcome = await control('restart', value.instanceId, fresh, {confirmed:true, expectedRunId:runtime.runId});
-     if (K.epoch() === epoch && K.state()) K.toast(`草稿已保存（r${savedRevision}），重启已受理；${outcome?.needsReview ? '核对记录未能清除，请到实例页面核对并解除提示。' : '请核对实例运行状态。'}`);
+     if (K.epoch() === epoch && controlIdentityVersion === localControlIdentityVersion && K.state()) K.toast(`草稿已保存（r${savedRevision}），重启已受理；${outcome?.needsReview ? '核对记录未能清除，请到实例页面核对并解除提示。' : '请核对实例运行状态。'}`);
     } catch (error) {
-     if (K.epoch() === epoch && K.state()) K.toast(`草稿已保存（r${savedRevision}）；重启未完成或结果未确认：${error.message}`);
+     if (K.epoch() === epoch && controlIdentityVersion === localControlIdentityVersion && K.state()) K.toast(`草稿已保存（r${savedRevision}）；重启未完成或结果未确认：${error.message}`);
     }
    }
   });
@@ -266,7 +279,7 @@
   });
  }
  async function control(action, id, data, options = {}) {
-  const epoch = K.epoch();
+  const epoch = K.epoch(), identityVersion = localControlIdentityVersion;
   requireRevision(data);
   const instance = data.state.instances.find(item => item.id === id);
   if (!instance || !can(data, id, action)) throw new Error('实例不存在或没有操作权限。');
@@ -283,6 +296,7 @@
   if (action === 'stop' && !options.confirmed && !confirm(`停止「${instance.name}」并中断连接？${pause}`)) return;
   if (action === 'start' && pause && !confirm(`启动「${instance.name}」？${pause}`)) return;
   requireSession(epoch);
+  if (identityVersion !== localControlIdentityVersion) throw new Error('账户权限已变化，请刷新后重试。');
   if (action === 'validate') {
    try { await K.api('validate',{revision:data.revision,id}); requireSession(epoch); K.toast('配置校验通过；这不代表网络连通。'); }
    finally { if (K.epoch() === epoch) await K.refresh().catch(() => {}); requireSession(epoch); }
@@ -291,27 +305,41 @@
   requireRevision(data);
   const controller = new AbortController(), record = beginLocalControl(id,action);
   const deadline = setTimeout(() => controller.abort(),60000);
+  let delegated = false, refreshed = false;
   try {
-   const result = await K.api('control',{revision:data.revision,id,action,...(options.expectedRunId ? {expectedRunId:options.expectedRunId} : {})},{signal:controller.signal});
+   try {
+    const result = await K.api('control',{revision:data.revision,id,action,...(options.expectedRunId ? {expectedRunId:options.expectedRunId} : {})},{signal:controller.signal});
+    requireSession(epoch);
+    if (result?.ok !== true) throw new Error('服务端响应无法确认操作结果。');
+   } catch (error) {
+    if ([401,403,404,405].includes(error.status) && K.epoch() === epoch && identityVersion === localControlIdentityVersion) {
+     if (!clearLocalControl(id,record)) throw new Error(`${error.message}；操作记录已变化或无法清除，请先核对。`);
+     throw error;
+    }
+    markLocalControlUncertain(id,record,error,epoch,identityVersion);
+    const volatile = localControlNotice(id)?.volatile ? '提示仅保存在本页面，其他标签页不共享；关闭或重新加载页面后会丢失。' : '';
+    throw new Error(`${error.status ? `服务端返回：${error.message}。` : ''}实例操作结果尚未确认，请刷新并独立核对实际状态及请求是否仍在处理，再解除提示。${volatile}`);
+   } finally {
+    clearTimeout(deadline);
+    if (!options.deferRefresh && K.epoch() === epoch && identityVersion === localControlIdentityVersion) {
+     try { refreshed = await K.refresh(); } catch (_) {}
+    }
+   }
    requireSession(epoch);
-   if (result?.ok !== true) throw new Error('服务端响应无法确认操作结果。');
-   const needsReview = !clearLocalControl(id,record);
-   if (!options.quiet) {
-    if (needsReview) K.toast('实例操作已受理，但核对记录未能清除；请刷新并核对后解除提示。');
+   if (options.deferRefresh) {
+    delegated = true;
+    return {needsReview:identityVersion !== localControlIdentityVersion || !matchesLocalControl(id,record), record, identityVersion};
+   }
+   const current = K.state();
+   const sameIdentity = identityVersion === localControlIdentityVersion && !!current?.state?.instances?.some(item => item.id === id) && can(current,id,action);
+   const needsReview = !refreshed || !sameIdentity || !clearLocalControl(id,record);
+   if (!options.quiet && identityVersion === localControlIdentityVersion && current) {
+    if (needsReview) K.toast('实例操作已受理，但状态或核对记录尚未确认；请刷新并核对后解除提示。');
     else K.toast('实例操作已受理，请核对运行状态。');
    }
    return {needsReview};
-  } catch (error) {
-   if ([401,403,404,405].includes(error.status)) {
-    if (!clearLocalControl(id,record)) throw new Error(`${error.message}；操作记录已变化或无法清除，请先核对。`);
-    throw error;
-   }
-   markLocalControlUncertain(id,record,error,epoch);
-   const volatile = localControlNotice(id)?.volatile ? '提示仅保存在本页面，其他标签页不共享；关闭或重新加载页面后会丢失。' : '';
-   throw new Error(`${error.status ? `服务端返回：${error.message}。` : ''}实例操作结果尚未确认，请刷新并独立核对实际状态及请求是否仍在处理，再解除提示。${volatile}`);
   } finally {
-   clearTimeout(deadline); localControlInFlight.delete(id); notifyLocalControl();
-   if (!options.deferRefresh && K.epoch() === epoch) await K.refresh().catch(() => {});
+   if (!delegated) { localControlInFlight.delete(id); notifyLocalControl(); }
    requireSession(epoch);
   }
  }
@@ -564,37 +592,52 @@
       const rows = new Map([...form.querySelectorAll('[data-batch-stop-id]')].map(row => [row.dataset.batchStopId,row.querySelector('[data-batch-stop-result]')]));
       const progress = form.querySelector('[data-batch-stop-progress]');
       const currentDialog = () => K.epoch() === epoch && !!progress?.isConnected && form.contains(progress) && !!form.closest('dialog')?.open;
-      let stopped = false, processed = 0;
-      for (const target of targets) {
-       const output = rows.get(target.id);
-       if (stopped) { if (output) output.textContent = '未执行：前一项需要核对'; continue; }
-       const current = K.state(), item = current?.state?.instances?.find(value => value.id === target.id), runtime = item ? runtimeFor(current,target.id) : null;
-       if (K.epoch() !== epoch || !K.isCurrent('instances',root) || !current || !admin(current) || current.revision !== revision || !item || runtime.state !== 'running' || runtime.runId !== target.runId) {
-        if (output) output.textContent = '未执行：账户、草稿或运行代次已变化';
-        stopped = true;
-        continue;
+      let stopped = false, processed = 0, refreshed = false;
+      const receipts = [];
+      try {
+       for (const target of targets) {
+        const output = rows.get(target.id);
+        if (stopped) { if (output) output.textContent = '未执行：前一项需要核对'; continue; }
+        const current = K.state(), item = current?.state?.instances?.find(value => value.id === target.id), runtime = item ? runtimeFor(current,target.id) : null;
+        if (K.epoch() !== epoch || !K.isCurrent('instances',root) || !current || !admin(current) || current.revision !== revision || !item || runtime.state !== 'running' || runtime.runId !== target.runId) {
+         if (output) output.textContent = '未执行：账户、草稿或运行代次已变化';
+         stopped = true;
+         continue;
+        }
+        if (output) output.textContent = '正在停止…';
+        if (progress) progress.textContent = `正在处理 ${processed + 1} / ${targets.length}。`;
+        try {
+         const outcome = await control('stop',target.id,current,{confirmed:true,expectedRunId:target.runId,deferRefresh:true,quiet:true});
+         receipts.push({id:target.id, record:outcome.record, identityVersion:outcome.identityVersion, needsReview:outcome.needsReview});
+         if (!currentDialog()) return false;
+         if (output) output.textContent = outcome.needsReview ? '已受理，但核对记录已变化，请核对' : '停止已受理，请刷新核对状态';
+         if (outcome.needsReview) stopped = true;
+        } catch (error) {
+         if (!currentDialog()) return false;
+         if (output) output.textContent = `未完成：${error.message}`;
+         stopped = true;
+        }
+        processed++;
        }
-       if (output) output.textContent = '正在停止…';
-       if (progress) progress.textContent = `正在处理 ${processed + 1} / ${targets.length}。`;
-       try {
-        const outcome = await control('stop',target.id,current,{confirmed:true,expectedRunId:target.runId,deferRefresh:true,quiet:true});
-        if (!currentDialog()) return false;
-        if (output) output.textContent = outcome.needsReview ? '已受理，但核对提示未能清除' : '停止已受理，请刷新核对状态';
-        if (outcome.needsReview) stopped = true;
-       } catch (error) {
-        if (!currentDialog()) return false;
-        if (output) output.textContent = `未完成：${error.message}`;
-        stopped = true;
+       if (!currentDialog()) return false;
+       if (progress) progress.textContent = stopped ? '已中断后续操作；请核对每项结果。' : '操作已逐项受理；请核对实例状态。';
+       form.querySelector('[type="submit"]').textContent = '关闭';
+       if (K.epoch() === epoch && K.isCurrent('instances',root)) {
+        try { refreshed = await K.refresh(); } catch (_) { if (currentDialog()) progress.textContent += ' 状态刷新失败，请手动刷新。'; }
        }
-       processed++;
+       return false;
+      } finally {
+       const current = K.state(), sameSession = refreshed && K.epoch() === epoch && !!current && admin(current);
+       for (const receipt of receipts) {
+        const mayClear = sameSession && !receipt.needsReview && receipt.identityVersion === localControlIdentityVersion && current.state.instances.some(item => item.id === receipt.id);
+        if (mayClear && !clearLocalControl(receipt.id,receipt.record) && currentDialog()) {
+         const output = rows.get(receipt.id);
+         if (output) output.textContent = '已受理，但核对记录已变化，请核对';
+        }
+        localControlInFlight.delete(receipt.id);
+       }
+       if (receipts.length) notifyLocalControl();
       }
-      if (!currentDialog()) return false;
-      if (progress) progress.textContent = stopped ? '已中断后续操作；请核对每项结果。' : '操作已逐项受理；请核对实例状态。';
-      form.querySelector('[type="submit"]').textContent = '关闭';
-      if (K.epoch() === epoch && K.isCurrent('instances',root)) {
-       try { await K.refresh(); } catch (_) { if (progress) progress.textContent += ' 状态刷新失败，请手动刷新。'; }
-      }
-      return false;
      }
     });
     return;
