@@ -71,7 +71,7 @@ func (a *App) pollLogHistory(w http.ResponseWriter, r *http.Request, id string) 
 	defer cancel()
 	result, err := a.logHistory.request(ctx, "read", id, binding)
 	if err != nil {
-		fail(w, http.StatusServiceUnavailable, fmt.Errorf("日志历史无法读取，请稍后重试或联系管理员"))
+		fail(w, http.StatusServiceUnavailable, fmt.Errorf("日志历史暂时无法读取，请稍后重试；如持续失败，请检查本机日志存储"))
 		return
 	}
 	a.mu.Lock()

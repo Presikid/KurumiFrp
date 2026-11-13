@@ -171,7 +171,7 @@ func (a *App) pauseScheduleForManualLocked(id string) error {
 	if !ok || !plan.Enabled || plan.Paused {
 		return nil
 	}
-	plan = pauseSchedule(plan, "手动操作已暂停计划，请由管理员重新启用")
+	plan = pauseSchedule(plan, "手动操作已暂停计划，请检查后重新启用")
 	if err := a.writeScheduleLocked(id, &plan, false); err != nil {
 		return fmt.Errorf("无法保存计划暂停状态，未执行手动操作")
 	}
