@@ -383,6 +383,9 @@ func NewServiceWithOptions(cfg *v1.ServerConfig, options ServiceOptions) (result
 	address := net.JoinHostPort(cfg.BindAddr, strconv.Itoa(cfg.BindPort))
 	ln, err := net.Listen("tcp", address)
 	if err != nil {
+		if options.LogSink != nil {
+			xl.Errorf("frps TCP listener failed: %v", err)
+		}
 		return nil, fmt.Errorf("create server listener error, %v", err)
 	}
 
