@@ -72,20 +72,45 @@ func localConnectionRefused(err error) bool {
 		(runtime.GOOS == "windows" && errors.Is(opErr.Err, wsaeconnrefused))
 }
 
+// Local state belongs to individual profiles; never read an unbounded file
+// while running elevated maintenance across all profiles.
+func readMaintenanceLocalFile(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("invalid local manager state file")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("local manager state file is too large")
+	}
+	return data, nil
+}
+
 func localRequestBefore(dir, method, endpoint string, deadline time.Time) error {
 	for _, name := range []string{"access.token", "listen.addr"} {
 		if err := plainPath(filepath.Join(dir, name)); err != nil {
 			return localStateError(err)
 		}
 	}
-	token, err := os.ReadFile(filepath.Join(dir, "access.token"))
+	token, err := readMaintenanceLocalFile(filepath.Join(dir, "access.token"), 64)
 	if err != nil {
 		return localStateError(err)
 	}
 	if !hashPattern.Match(token) {
 		return fmt.Errorf("invalid local management token")
 	}
-	address, err := os.ReadFile(filepath.Join(dir, "listen.addr"))
+	address, err := readMaintenanceLocalFile(filepath.Join(dir, "listen.addr"), 4096)
 	if err != nil {
 		return localStateError(err)
 	}
