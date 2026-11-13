@@ -542,7 +542,11 @@
    paint();
    bindButtons(root, async (action,id) => {
    if (action === 'ack-local-control') return acknowledgeLocalControl(id);
-   if (['start','stop','restart','validate'].includes(action)) return control(action,id,data);
+   if (['start','stop','restart','validate'].includes(action)) {
+    const runtime = runtimeFor(data,id), guard = ['stop','restart'].includes(action) && runtime.state === 'running';
+    if (guard && !runtime.runId) throw new Error('实例运行代次不可用，请刷新后再试。');
+    return control(action,id,data,guard ? {expectedRunId:runtime.runId} : {});
+   }
    if (action === 'batch-stop-visible') {
     requireRevision(data);
     if (!admin(data)) throw new Error('只有管理员可以批量停止实例。');
