@@ -88,8 +88,8 @@
      validRevision(data);
      const instance = result.instance || {}, lines = [];
      if (instance.kind) {
-      lines.push(`实例：${instance.name} · ${instance.kind}`, `地址：${instance.host}:${instance.port}`, `规则：${(result.tunnels || []).length} 条`);
-      for (const rule of result.tunnels || []) lines.push(`${rule.name} · ${rule.type} · ${rule.enabled ? '启用' : '停用'} · ${rule.localHost || rule.unixSocketPath || ''}:${rule.localPort || ''}`);
+      lines.push(`实例：${instance.name} · ${instance.kind}`, `地址：${Protocols.hostPort(instance.host,instance.port)}`, `规则：${(result.tunnels || []).length} 条`);
+      for (const rule of result.tunnels || []) lines.push(`${rule.name} · ${rule.type} · ${rule.enabled ? '启用' : '停用'} · ${Protocols.endpoint(rule)}`);
      }
      if (result.issues?.length) lines.push('', '以下问题阻止导入：', ...result.issues.map(issue => `${issue.path}：${issue.message}`));
      if (result.canImport) { preview = {...payload,previewHash:result.previewHash}; form.querySelector('[data-toml-submit]').disabled = false; lines.push('', '可作为新草稿导入。'); }
