@@ -13,6 +13,9 @@ window.Kurumi = (() => {
  const pages = new Map();
  const names = {overview:'总览', tunnels:'规则', instances:'实例', nodes:'节点', 'reported-nodes':'主动上报', firewall:'访问控制', health:'链路诊断', config:'配置', core:'运行核心', logs:'日志', update:'软件更新', accounts:'账户', 'own-proxies':'我的代理'};
  const $ = selector => document.querySelector(selector);
+ const accountWriteFreezeHint = error => error?.status >= 500 && typeof error.message === 'string' && error.message.startsWith('账户配置保存状态未确认')
+  ? '账户文件写入结果未确认，后续账户写入已冻结；已有受管 FRP 转发可能仍在运行。请联系管理员确认工作台完全停止后再启动，并核对账户配置。'
+  : '';
  let snapshot = null, page = 'overview', session = 0, request = null, root = null, activePage = null;
  let timer = null, toastTimer = null, dialogSpec = null, dialogBusy = false, dialogOperation = 0;
  let transfer = null, transferRequest = null;
@@ -373,7 +376,7 @@ window.Kurumi = (() => {
     catch (error) {
      if (generation !== session || operation !== dialogOperation) return false;
      if (error.status === 409 || !error.status || error.status >= 500) {
-      showLogin('密码状态或保存结果尚未确认，请重新登录后核对。'); announce(); return;
+      showLogin(accountWriteFreezeHint(error) || '密码状态或保存结果尚未确认，请重新登录后核对。'); announce(); return;
      }
      throw error;
     }
@@ -590,5 +593,5 @@ window.Kurumi = (() => {
   dispose() { if (ownProxiesCleanup) ownProxiesCleanup(); ownProxiesCleanup = null; }
  });
  document.addEventListener('DOMContentLoaded', bind, {once:true});
- return {register:(name, component) => pages.set(name, component), api, refresh, navigate, toast, esc, download, openDialog, closeDialog, showDiff, endCurrentSession:() => { showLogin(); announce(); }, transfer:transfers, state:() => snapshot, epoch:() => session, isCurrent:(target, element) => page === target && !!snapshot && element?.isConnected && $('#content').contains(element)};
+ return {register:(name, component) => pages.set(name, component), api, refresh, navigate, toast, esc, download, openDialog, closeDialog, showDiff, endCurrentSession:() => { showLogin(); announce(); }, transfer:transfers, accountWriteFreezeHint, state:() => snapshot, epoch:() => session, isCurrent:(target, element) => page === target && !!snapshot && element?.isConnected && $('#content').contains(element)};
 })();
