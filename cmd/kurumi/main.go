@@ -180,8 +180,9 @@ func run() (resultErr error) {
 	defer func() {
 		if err := app.Close(); err != nil {
 			cleanShutdown = false
-			log.Printf("Shutdown incomplete; retained manager.lock: %v", err)
-			resultErr = errors.Join(resultErr, fmt.Errorf("shutdown incomplete; retained manager.lock: %w", err))
+			err = fmt.Errorf("工作台未能完全关闭，已保留 manager.lock；请核对工作台和托管连接状态：%w", err)
+			log.Print(err)
+			resultErr = errors.Join(resultErr, err)
 		}
 	}()
 	listener, e := net.Listen("tcp", *addr)
