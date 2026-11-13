@@ -253,7 +253,12 @@ setup_state() {
 start_workbench() {
  if systemd_active; then
   systemctl daemon-reload
-  systemctl enable --now kurumifrp-updater.path
+  updater_load_state=$(systemctl show -p LoadState kurumifrp-updater.path) || return $?
+  if [ "$updater_load_state" = "LoadState=masked" ]; then
+   echo 'Updater path is masked; skipping its activation.'
+  else
+   systemctl enable --now kurumifrp-updater.path
+  fi
   if command -v deb-systemd-helper >/dev/null 2>&1; then
    deb-systemd-helper unmask "$UNIT" >/dev/null || true
    if deb-systemd-helper --quiet was-enabled "$UNIT"; then deb-systemd-helper enable "$UNIT" >/dev/null; fi
