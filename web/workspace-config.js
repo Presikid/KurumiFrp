@@ -373,7 +373,7 @@
     const text = matched.join('\n'), follow = output.scrollHeight-output.scrollTop-output.clientHeight < 36;
     if (output.textContent !== text) { output.textContent = text; if (follow) output.scrollTop = output.scrollHeight; }
     painted = text;
-    if (isHistory()) status.textContent = !historyStatus ? (picker.value ? '正在读取日志历史…' : '没有可查看日志的实例。') : `本机历史（可能不完整） · ${historyStatus.enabled ? '记录已启用' : '已停用记录，已有历史保留'} · 显示 ${matched.length} / ${lines.length} 行${historyStatus.available === false ? ' · 存储状态异常，请联系管理员' : ''}`;
+    if (isHistory()) status.textContent = !historyStatus ? (picker.value ? '正在读取日志历史…' : '没有可查看日志的实例。') : `本机历史（可能不完整） · ${historyStatus.enabled ? '记录已启用' : '已停用记录，已有历史保留'} · 显示 ${matched.length} / ${lines.length} 行${historyStatus.available === false ? ' · 存储状态异常，请检查本机日志存储' : ''}`;
     else status.textContent = pausedStale ? '实例运行代次已变化，日志已清空；请刷新或继续更新。' : `${paused ? '已暂停更新' : stream?.ready ? '实时更新' : '轮询更新'} · 显示 ${matched.length} / ${lines.length} 行${runId ? '' : ' · 实例尚无运行输出'}`;
    }
    function checkPausedRun() {
