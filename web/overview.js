@@ -233,6 +233,9 @@ const Overview = (() => {
   const instances = snapshot.state.instances;
   const tunnels = snapshot.state.tunnels;
   const events = snapshot.events || [];
+  const isAdmin = snapshot.identity?.role === 'admin';
+  const canReadConfig = isAdmin || snapshot.identity?.viewConfig === true;
+  const canReadEvents = isAdmin;
   const embedded = snapshot.runtimeBackend === 'embedded';
   const runtimeReady = snapshot.runtimeAvailable?.frpc && snapshot.runtimeAvailable?.frps;
   const coreRows = `<div class="check-row"><span>${embedded?'内置核心':'运行后端'}</span><span class="pill ${runtimeReady?'good':'warn'}">${runtimeReady?'可用':'暂不可用'}</span></div>`;
@@ -244,16 +247,17 @@ const Overview = (() => {
   const pending = instances.filter(instance => snapshot.runtime[instance.id]?.pending).length;
   const enabled = tunnels.filter(tunnel => tunnel.enabled).length;
   const metrics = [
-   [instances.length, '本机实例', `${running} 个实例运行中`],
-   [running, '实例运行中', '不代表链路已经连通'],
-   [tunnels.length, '草稿规则', `${enabled} 条期望启用，不等于已注册`],
-   [pending, '实例配置待应用', '保存草稿不会改变当前运行配置']
+   [instances.length, isAdmin ? '本机实例' : '可查看实例', `${running} 个${isAdmin ? '实例' : '可查看实例'}运行中`],
+   [running, isAdmin ? '实例运行中' : '可查看实例运行中', '不代表链路已经连通'],
+   [canReadConfig ? tunnels.length : '—', isAdmin ? '草稿规则' : '可查看草稿规则', canReadConfig ? `${enabled} 条期望启用，不等于已注册` : '未获配置详情授权'],
+   [canReadConfig ? pending : '—', isAdmin ? '实例配置待应用' : '可查看实例待应用', canReadConfig ? '保存草稿不会改变当前运行配置' : '未获配置详情授权']
   ];
   const instanceRows = instances.slice(0, 5).map(instance => {
    const runtime = snapshot.runtime[instance.id] || {state:'stopped'};
    const rules = tunnels.filter(tunnel => tunnel.instanceId === instance.id);
    const id = escape(instance.id);
-   return `<article class="overview-instance"><div class="overview-instance-main"><div><strong>${escape(instance.name)}</strong><span class="type-icon">${escape(instance.kind.toUpperCase())}</span></div><small>草稿地址 ${escape(instance.host)}:${escape(instance.port)} · ${rules.length} 条草稿规则</small>${instance.kind === 'frpc' ? `<small data-registration-count="${id}">${escape(instanceRegistrationText(instance))}</small>` : ''}${runtime.exit ? `<small class="overview-exit">${escape(runtime.exit)}</small>` : ''}</div><div class="overview-instance-side"><div class="overview-badges">${badge(instance.id)}</div><div class="actions"><button data-action="logs" data-id="${id}">日志</button>${['starting','running','stopping'].includes(runtime.state) ? `<button data-action="stop" data-id="${id}">停止</button>` : `<button data-action="start" data-id="${id}">启动</button>`}</div></div></article>`;
+   const configDetails = canReadConfig ? `<small>草稿地址 ${escape(instance.host)}:${escape(instance.port)} · ${rules.length} 条草稿规则</small>` : '<small>配置详情未授权</small>';
+   return `<article class="overview-instance"><div class="overview-instance-main"><div><strong>${escape(instance.name)}</strong><span class="type-icon">${escape(instance.kind.toUpperCase())}</span></div>${configDetails}${instance.kind === 'frpc' ? `<small data-registration-count="${id}">${escape(instanceRegistrationText(instance))}</small>` : ''}${runtime.exit ? `<small class="overview-exit">${escape(runtime.exit)}</small>` : ''}</div><div class="overview-instance-side"><div class="overview-badges">${badge(instance.id)}</div><div class="actions"><button data-action="logs" data-id="${id}">日志</button>${['starting','running','stopping'].includes(runtime.state) ? `<button data-action="stop" data-id="${id}">停止</button>` : `<button data-action="start" data-id="${id}">启动</button>`}</div></div></article>`;
   }).join('');
   const eventRows = events.slice(-6).reverse().map(event => `<li><span class="overview-event-dot" aria-hidden="true"></span><div><p>${escape(event.message)}</p><time>${escape(sampleTime(event.at))}</time></div></li>`).join('');
   const trafficOptions = instances.map(instance => `<option value="${escape(instance.id)}" ${instance.id === trafficInstance ? 'selected' : ''}>${escape(instance.name)} · ${escape(instance.kind)}</option>`).join('');
@@ -261,11 +265,11 @@ const Overview = (() => {
   return header('网络总览', '查看本机实例、草稿规则和最近配置事件。', '<div class="overview-head-actions"><button data-action="new-tunnel">＋ 新建规则</button><button class="primary" data-action="new-instance">＋ 新建实例</button></div>') +
    `<section class="hero overview-hero"><div><p class="eyebrow">KURUMI / CONNECTION WORKSPACE</p><h2>每一条连接，都有迹可循。</h2><p>查看实例运行情况，确认规则状态，再决定何时应用配置。</p></div><div class="hero-graphic" aria-hidden="true"><span class="hero-stamp">KURUMI<br>FRP</span></div></section>` +
    `<section class="metrics overview-metrics" aria-label="状态摘要">${metrics.map(([value, label, note]) => `<div class="metric"><span class="label">${label}</span><strong>${value}</strong><small>${note}</small></div>`).join('')}</section>` +
-   `<div class="overview-grid"><section class="panel overview-instances"><div class="panel-title"><div><h3>运行实例</h3><small>实例状态 · 草稿地址与规则</small></div><button class="quiet" data-go="instances">全部实例 →</button></div>${instances.length ? `<div class="overview-instance-list">${instanceRows}</div>${instances.length > 5 ? `<p class="overview-more">显示前 5 个，共 ${instances.length} 个实例。</p>` : ''}` : '<div class="overview-empty"><strong>还没有运行实例</strong><p>先创建一个客户端或服务端实例。</p><button data-action="new-instance">＋ 新建实例</button></div>'}</section>
+   `<div class="overview-grid"><section class="panel overview-instances"><div class="panel-title"><div><h3>${isAdmin ? '运行实例' : '可查看实例'}</h3><small>${canReadConfig ? '实例状态 · 草稿地址与规则' : '实例状态 · 配置详情未授权'}</small></div><button class="quiet" data-go="instances">全部实例 →</button></div>${instances.length ? `<div class="overview-instance-list">${instanceRows}</div>${instances.length > 5 ? `<p class="overview-more">显示前 5 个，共 ${instances.length} 个${isAdmin ? '实例' : '可查看实例'}。</p>` : ''}` : isAdmin ? '<div class="overview-empty"><strong>还没有运行实例</strong><p>先创建一个客户端或服务端实例。</p><button data-action="new-instance">＋ 新建实例</button></div>' : '<div class="overview-empty"><strong>暂无可查看实例</strong><p>请联系管理员分配实例查看权限。</p></div>'}</section>
    <section class="panel overview-traffic"><div class="panel-title"><div><h3>实例流量</h3><small>按实例查看</small></div><span class="pill">每实例</span></div><div class="overview-traffic-body"><label for="overview-traffic-instance">选择实例</label><select id="overview-traffic-instance" ${instances.length ? '' : 'disabled'}>${trafficOptions || '<option value="">暂无实例</option>'}</select><div id="overview-traffic-chart">${selectedInstance()?.kind === 'frps' ? serverTrafficView() : clientTrafficView()}</div><div id="overview-traffic-history">${historyView()}</div></div></section></div>` +
-   `<section class="panel overview-rules"><div class="panel-title"><div><h3>连接规则</h3><small>草稿配置 · ${tunnels.length > 5 ? `显示前 5 条，共 ${tunnels.length} 条` : `共 ${tunnels.length} 条`}</small></div><button class="quiet" data-go="tunnels">全部规则 →</button></div>${tunnelTable(tunnels.slice(0, 5))}</section>` +
+   `<section class="panel overview-rules"><div class="panel-title"><div><h3>${isAdmin ? '连接规则' : '可查看连接规则'}</h3><small>${canReadConfig ? `${isAdmin ? '草稿配置' : '可查看草稿'} · ${tunnels.length > 5 ? `显示前 5 条，共 ${tunnels.length} 条` : `共 ${tunnels.length} 条`}` : '配置详情未授权'}</small></div>${canReadConfig ? '<button class="quiet" data-go="tunnels">全部规则 →</button>' : ''}</div>${canReadConfig ? (isAdmin || tunnels.length ? tunnelTable(tunnels.slice(0, 5)) : '<div class="overview-empty"><strong>暂无可查看的规则</strong><p>当前获授权的实例没有可查看的规则。</p></div>') : '<div class="overview-empty"><strong>配置详情未授权</strong><p>请联系管理员授予配置详情查看权限。</p></div>'}</section>` +
    `<section class="panel"><div class="panel-title"><h3>环境与边界</h3><span class="pill accent">LOCAL</span></div><div class="panel-content">${coreRows}<div class="check-row"><span>配置保存</span><span class="pill good">本地持久化</span></div><div class="check-row"><span>远端节点</span><span class="pill">授权后查看与启停</span></div><p class="small-note blank">配置文件包含密钥，请妥善保管。${coreNote}</p></div></section>` +
-   `<section class="panel overview-events"><div class="panel-title"><div><h3>最近事件</h3><small>仅显示配置变更记录，进程输出请查看日志</small></div><button class="quiet" data-go="logs">运行记录 →</button></div>${eventRows ? `<ol class="overview-event-list">${eventRows}</ol>` : '<div class="overview-empty"><strong>暂无配置事件</strong><p>保存配置后，最近的变更会显示在这里。</p></div>'}</section>`;
+   `<section class="panel overview-events"><div class="panel-title"><div><h3>最近事件</h3><small>${canReadEvents ? '仅显示配置变更记录，进程输出请查看日志' : '仅管理员可查看配置事件'}</small></div><button class="quiet" data-go="logs">运行记录 →</button></div>${!canReadEvents ? '<div class="overview-empty"><strong>仅管理员可查看配置事件</strong></div>' : eventRows ? `<ol class="overview-event-list">${eventRows}</ol>` : '<div class="overview-empty"><strong>暂无配置事件</strong><p>保存配置后，最近的变更会显示在这里。</p></div>'}</section>`;
  }
 
  document.querySelector('#content').addEventListener('change', event => {
