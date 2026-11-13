@@ -80,8 +80,10 @@ english.UnsafeTemp=Setup needs its temporary directory on a local volume with pe
 chinesesimplified.UnsafeTemp=安装程序的临时目录必须位于支持持久 ACL 的本地卷，路径不能包含链接。未迁移或删除原数据。
 english.StopFailed=The running workbench could not be stopped safely. Existing data was retained.
 chinesesimplified.StopFailed=无法安全停止正在运行的工作台。现有数据已保留。
-english.InitFailed=Installation receipt could not be initialized. Setup.exe was retained.
-chinesesimplified.InitFailed=无法初始化安装记录，安装程序已保留。
+english.InitFailed=Program files may have been updated, but workbench initialization did not complete. Check the installation and original data; do not delete the maintenance marker to force startup.
+chinesesimplified.InitFailed=程序文件可能已更新，但工作台初始化未完成。请核对安装状态和原有数据；不要删除维护标记强行启动。
+english.InitFailedHeading=KurumiFRP setup incomplete
+chinesesimplified.InitFailedHeading=KurumiFRP 安装未完成
 english.ManualStart=Installation completed. Sign in to your usual Windows account and open KurumiFRP without administrator privileges.
 chinesesimplified.ManualStart=安装完成。请登录平时使用的 Windows 账户，以普通权限手动打开 KurumiFRP。
 english.BundledMismatch=A legacy bundled core already exists for this application version. Install a newer version instead; the current installation was not changed.
@@ -112,6 +114,7 @@ Name: "{commonstartup}\KurumiFRP"; Filename: "{app}\kurumi.exe"; WorkingDir: "{a
 [Code]
 var
   Helper: String;
+  InstallInitFailed: Boolean;
   UninstallStopped: Boolean;
   UninstallFinishFailed: Boolean;
 
@@ -252,9 +255,30 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then begin
+    InstallInitFailed := True;
     if not RunHelper('--native-maintenance init') then RaiseException(ExpandConstant('{cm:InitFailed}'));
+    InstallInitFailed := False;
   end;
-  if (CurStep = ssDone) and WizardSilent then Log(ExpandConstant('{cm:ManualStart}'));
+  if (CurStep = ssDone) and WizardSilent and not InstallInitFailed then Log(ExpandConstant('{cm:ManualStart}'));
+end;
+
+function GetCustomSetupExitCode: Integer;
+begin
+  Result := 0;
+  if InstallInitFailed then Result := 100;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+var Delta: Integer;
+begin
+  if (CurPageID = wpFinished) and InstallInitFailed then begin
+    WizardForm.FinishedHeadingLabel.Caption := ExpandConstant('{cm:InitFailedHeading}');
+    WizardForm.FinishedLabel.Caption := ExpandConstant('{cm:InitFailed}');
+    Delta := WizardForm.AdjustLabelHeight(WizardForm.FinishedLabel);
+    WizardForm.IncTopDecHeight(WizardForm.RunList, Delta);
+    WizardForm.YesRadio.Top := WizardForm.YesRadio.Top + Delta;
+    WizardForm.NoRadio.Top := WizardForm.NoRadio.Top + Delta;
+  end;
 end;
 
 procedure FinishUninstallMaintenance();
