@@ -215,12 +215,42 @@ def main():
             list(pool.map(exchange_http, range(320)))
         print("PASS: 320 concurrent TCP sessions, 128 UDP clients, 320 HTTP requests")
 
-        for number in range(5):
-            old_run = control(client, "restart")
-            wait_until("frpc restart", lambda: (status if (status := running(client)) and status.get("runId") != old_run else None))
-            wait_until("TCP after restart", ready_tcp)
-            wait_until("HTTP after restart", lambda: (exchange_http(f"restart-{number}"), True)[1])
-        print("PASS: 5 client restarts with recovered TCP and HTTP traffic")
+        stop_load = threading.Event()
+        load_counts = [0, 0]
+        load_lock = threading.Lock()
+
+        def continuous_load(worker):
+            while not stop_load.is_set():
+                try:
+                    exchange_tcp(f"continuous-{worker}")
+                    outcome = 0
+                except (OSError, AssertionError):
+                    # In-flight connections may be interrupted by an explicit restart.
+                    outcome = 1
+                with load_lock:
+                    load_counts[outcome] += 1
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            workers = [pool.submit(continuous_load, number) for number in range(8)]
+            try:
+                for number in range(5):
+                    old_run = control(client, "restart")
+                    wait_until("frpc restart", lambda: (status if (status := running(client)) and status.get("runId") != old_run else None))
+                    wait_until("TCP after client restart", ready_tcp, timeout=90)
+                    wait_until("HTTP after client restart", lambda: (exchange_http(f"client-{number}"), True)[1], timeout=90)
+                for number in range(3):
+                    old_run = control(server, "restart")
+                    wait_until("frps restart", lambda: (status if (status := running(server)) and status.get("runId") != old_run else None))
+                    wait_until("TCP after server restart", ready_tcp, timeout=90)
+                    wait_until("UDP after server restart", lambda: exchange_udp(f"server-{number}"), timeout=90)
+                    wait_until("HTTP after server restart", lambda: (exchange_http(f"server-{number}"), True)[1], timeout=90)
+            finally:
+                stop_load.set()
+                for worker in workers:
+                    worker.result()
+        if load_counts[0] == 0:
+            raise AssertionError("no continuous TCP request succeeded during restart coverage")
+        print(f"PASS: 5 client and 3 server restarts with recovered traffic; concurrent successes={load_counts[0]}, interrupted={load_counts[1]}")
         control(client, "stop")
         control(server, "stop")
         request("quit", {})
@@ -229,6 +259,7 @@ def main():
             raise AssertionError(f"manager exited with {proc.returncode}")
         print("PASS: clean shutdown of the manager and embedded frp instances")
     finally:
+        failed = sys.exc_info()[0] is not None
         if proc is not None and proc.poll() is None:
             proc.terminate()
             try:
@@ -239,7 +270,7 @@ def main():
         log.flush()
         log.seek(0)
         contents = log.read()
-        if proc is not None and proc.returncode != 0:
+        if proc is not None and (failed or proc.returncode != 0):
             print("--- runner-only manager log ---", file=sys.stderr)
             print(contents[-24000:], file=sys.stderr)
         log.close()
