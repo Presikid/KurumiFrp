@@ -48,7 +48,6 @@ type App struct {
 	loginHistory          *loginHistory
 	logHistory            *logHistory
 	firewall              *firewallManager
-	maintenance           *maintenanceMode
 	updateNotices         updateNoticeState
 
 	// Lifecycle reservations are protected by mu. Slow operations run without it.
@@ -140,8 +139,6 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (res
 		return nil, fmt.Errorf("invalid access token file")
 	}
 	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, dataLock: dataLock, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), themes: newThemeManager(s.dir), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
-	app.auth.oidcSettings, app.auth.oidcLoadErr = loadOIDCSettings(s.dir)
-	app.auth.oidcStartSlots = make(chan struct{}, 4)
 	if e = app.recoverSchedules(); e != nil {
 		return nil, e
 	}
@@ -155,7 +152,6 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (res
 	app.agentReceiver, _ = newInboundAgentRegistry(s)
 	app.trafficBudget = loadTrafficBudgets(s.dir)
 	app.firewall = loadFirewall(s.dir)
-	app.maintenance = loadMaintenanceMode(s.dir)
 	s.beforeCommit = func(before, after State) error {
 		for id, op := range app.operations {
 			if op.scheduled && scheduleDraftChanged(before, after, id) {
@@ -312,19 +308,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(w, 403, fmt.Errorf("没有此操作的权限"))
 			return
 		}
-		if !p.admin() && r.Method == http.MethodPost &&
-			(r.URL.Path == "/api/control" || r.URL.Path == "/api/nodes/control") &&
-			(a.maintenance == nil || a.maintenance.restrictsControls()) {
-			fail(w, http.StatusForbidden, fmt.Errorf("维护模式开启或状态未知，受限账户暂不能操作实例"))
-			return
-		}
 		r = withPrincipal(r, p)
 		if r.URL.Path == "/api/node-agents" {
 			a.inboundAgentAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/maintenance" {
-			a.maintenanceAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/firewall" {
