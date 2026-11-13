@@ -253,8 +253,11 @@ func (a *App) adminPasswordAPI(w http.ResponseWriter, r *http.Request, p princip
 		fail(w, http.StatusInternalServerError, fmt.Errorf("无法保存主密码"))
 		return
 	}
-	// Wait for all admitted root-session requests before revoking sessions.
-	a.auth.rootGate.Lock()
+	// Do not wait behind an admitted long-running request.
+	if !a.auth.rootGate.TryLock() {
+		fail(w, http.StatusTooManyRequests, fmt.Errorf("其他操作正在进行，本次密码修改未提交，请稍后重试"))
+		return
+	}
 	defer a.auth.rootGate.Unlock()
 	a.auth.mu.Lock()
 	defer a.auth.mu.Unlock()
