@@ -46,23 +46,23 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 
 [Messages]
-english.FinishedLabel=KurumiFRP was installed. Sign in to the account you normally use and open KurumiFRP from the Start menu without administrator privileges.
-english.FinishedLabelNoIcons=KurumiFRP was installed. Sign in to the account you normally use and open KurumiFRP without administrator privileges.
+english.FinishedLabel=KurumiFRP was installed. Sign in to the Windows user account you normally use and open KurumiFRP from the Start menu without administrator privileges.
+english.FinishedLabelNoIcons=KurumiFRP was installed. Sign in to the Windows user account you normally use and open KurumiFRP without administrator privileges.
 chinesesimplified.FinishedLabel=KurumiFRP 已安装。请登录平时使用的 Windows 账户，通过开始菜单以普通权限手动打开 KurumiFRP。
 chinesesimplified.FinishedLabelNoIcons=KurumiFRP 已安装。请登录平时使用的 Windows 账户，以普通权限手动打开 KurumiFRP。
 
-english.ConfirmUninstall=Uninstall will stop all %1 workbenches and their connections, remove the application files, and retain account data. To continue using the retained data, reinstall to the original installation directory, then use the same Windows account as before. Continue?
-chinesesimplified.ConfirmUninstall=卸载将关闭所有账户的 %1 工作台及连接、移除程序文件，并保留账户数据。如需继续使用保留的数据，重装时请选择原安装目录，之后使用原 Windows 账户。是否继续？
+english.ConfirmUninstall=Uninstall will stop the %1 workbenches and connections of all Windows users, remove the application files, and retain workbench data. To continue using the retained data, reinstall to the original installation directory, then use the same Windows user account as before. Continue?
+chinesesimplified.ConfirmUninstall=卸载将关闭各 Windows 用户的 %1 工作台及连接、移除程序文件，并保留工作台数据。如需继续使用保留的数据，重装时请选择原安装目录，之后使用原 Windows 用户账户。是否继续？
 
 [CustomMessages]
 english.ShortcutGroup=Shortcuts:
 english.StartupGroup=Startup:
 english.DesktopTask=Create a desktop shortcut
-english.AutostartTask=Start a private workbench when each user signs in
+english.AutostartTask=Start a private workbench when each Windows user signs in
 chinesesimplified.ShortcutGroup=快捷方式：
 chinesesimplified.StartupGroup=启动选项：
 chinesesimplified.DesktopTask=创建桌面快捷方式
-chinesesimplified.AutostartTask=用户登录时启动各自的工作台
+chinesesimplified.AutostartTask=Windows 用户登录时启动各自的工作台
 
 english.LegacyInstall=A legacy per-user installation is present. Back up its data and cores and remove it before installing the machine-wide edition. No legacy data was changed.
 chinesesimplified.LegacyInstall=检测到旧版用户级安装。请先备份配置与核心并卸载旧版，再安装当前版本。旧数据未被修改。
@@ -86,10 +86,10 @@ english.ManualStart=Installation completed. Sign in to your usual Windows accoun
 chinesesimplified.ManualStart=安装完成。请登录平时使用的 Windows 账户，以普通权限手动打开 KurumiFRP。
 english.BundledMismatch=A legacy bundled core already exists for this application version. Install a newer version instead; the current installation was not changed.
 chinesesimplified.BundledMismatch=此软件版本已存在旧版预置核心。请安装更新的软件版本；现有安装未被修改。
-english.UninstallPrepareFailed=The uninstall maintenance program could not be started. Uninstallation was not started and account data was retained.
-chinesesimplified.UninstallPrepareFailed=无法启动卸载维护程序，卸载尚未开始，账户数据已保留。
-english.UninstallFinishFailed=The uninstall maintenance marker could not be cleared. Account data was retained.
-chinesesimplified.UninstallFinishFailed=无法清理卸载维护标记，账户数据已保留。
+english.UninstallPrepareFailed=The uninstall maintenance program could not be started. Uninstallation was not started and workbench data was retained.
+chinesesimplified.UninstallPrepareFailed=无法启动卸载维护程序，卸载尚未开始，工作台数据已保留。
+english.UninstallFinishFailed=The uninstall maintenance marker could not be cleared. Workbench data was retained.
+chinesesimplified.UninstallFinishFailed=无法清理卸载维护标记，工作台数据已保留。
 
 [Tasks]
 Name: desktopicon; Description: "{cm:DesktopTask}"; GroupDescription: "{cm:ShortcutGroup}"
