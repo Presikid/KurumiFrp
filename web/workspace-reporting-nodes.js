@@ -12,7 +12,7 @@
   render(data) {
    if (data.identity?.role !== 'admin') return '<section class="panel"><div class="panel-content">此页面仅供管理员使用。</div></section>';
    return `<header class="page-head"><div><p class="eyebrow">NODES / REPORTING</p><h1>主动上报</h1><p>接收其他设备的节点摘要，或将本机摘要上报给控制端。</p></div></header>
-    <section class="notice">此列表与“节点管理”中的拉取节点相互独立，仅管理员可见；不支持向本地账户授权，也不能远程控制。状态是收到报告的观察，不能证明业务可达。报告可能延迟，最近接收时间不是采集时间。</section>
+    <section class="notice">此列表与“节点管理”中的拉取节点相互独立，不支持远程控制。状态是收到报告的观察，不能证明业务可达。报告可能延迟，最近接收时间不是采集时间。</section>
     <section class="panel" data-issued hidden><div class="panel-content"><h2>请保存本次凭据</h2><p class="small-note" data-issued-label></p><p class="small-note">凭据只在本次显示，不会再次返回。请通过安全渠道交给对应设备；离开页面或丢失响应后需重新轮换。关闭页面不能撤销已提交的操作。</p><label>节点凭据<textarea data-credential readonly rows="2" spellcheck="false" autocomplete="off"></textarea></label><div class="actions"><button type="button" data-action="clear-credential">已保存，清除显示</button></div></div></section>
     <section class="panel"><div class="panel-content"><div class="section-heading"><div><h2>接收其他节点</h2><p>为每台设备单独登记和签发凭据，最多 32 个。</p></div><button type="button" data-action="reload">刷新列表</button></div>
      <p class="small-note">页面可见且没有操作时，约每 30 秒读取本机接收列表，也可手动刷新。展开摘要、选择文字或列表项保持焦点时会暂缓自动读取。近期收到报告表示接收端约 90 秒内收到过新报告；没有收到新报告后标记为近期无报告。工作台重启、轮换或撤销后，本进程中的报告摘要会清除。</p>

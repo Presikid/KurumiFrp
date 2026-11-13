@@ -16,7 +16,6 @@
   <script src="/workspace-pages.js" defer></script>
   <script src="/workspace-config.js" defer></script>
   <script src="/workspace-admin.js" defer></script>
-  <script src="/workspace-accounts.js" defer></script>
   <script src="/workspace-update.js" defer></script>
 </head>
 <body>
@@ -40,19 +39,17 @@
         <div class="login-heading">
           <span class="overline">WELCOME BACK</span>
           <h1>登录工作台</h1>
-          <p>使用管理密码或本地账户登录。</p>
+          <p>输入工作台访问密码。</p>
         </div>
         <form id="login-form" class="login-form">
-          <label for="login-username">用户名 <span>管理员登录时留空</span></label>
-          <input id="login-username" name="username" autocomplete="username" maxlength="32" placeholder="本地账户用户名">
-          <label for="login-token">密码</label>
-          <input id="login-token" name="token" type="password" autocomplete="current-password" maxlength="1024" placeholder="输入密码">
+          <label for="login-password">密码</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" maxlength="1024" placeholder="输入密码">
           <button class="primary login-submit" type="submit"><span>进入工作台</span><span aria-hidden="true">→</span></button>
           <p id="login-error" class="error" role="alert"></p>
         </form>
         <details class="login-help">
           <summary><span>首次使用如何登录？</span><span class="help-icon" aria-hidden="true">＋</span></summary>
-          <p>全新数据目录的管理密码初始为空，用户名留空即可登录。旧版数据目录尚未设置管理密码时，使用原本机令牌作为密码：在终端运行 <code>kurumi --show-token</code>，使用自定义数据目录时加上相同的 <code>--data</code> 参数。登录后可修改密码。</p>
+          <p>全新数据目录的访问密码初始为空，直接点击进入即可。已有密码不会更改；登录后可修改密码。</p>
         </details>
       </div>
       <div class="login-footer"><span>KurumiFRP</span><span>连接与配置，一处管理</span></div>
@@ -85,7 +82,6 @@
           <button type="button" data-page="core"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 17v3h14v-3"/></svg><span>核心管理</span></button>
           <button type="button" data-page="logs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h9l3 3v13H6zM14 4v4h4M9 12h6M9 16h6"/></svg><span>运行记录</span></button>
           <button type="button" data-page="update"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 9a7 7 0 0 0-12-2L4 10m0-5v5h5m-4 5a7 7 0 0 0 12 2l3-3m0 5v-5h-5"/></svg><span>软件更新</span></button>
-          <button type="button" data-page="accounts"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5.5 19c.6-3.1 3-5 6.5-5s5.9 1.9 6.5 5"/></svg><span>本地账户</span></button>
         </div>
       </nav>
       <div class="sidebar-bottom">

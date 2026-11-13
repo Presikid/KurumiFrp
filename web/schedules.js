@@ -11,7 +11,7 @@ window.KurumiSchedules = (() => {
   const offset = plan?.offsetMinutes ?? -new Date().getTimezoneOffset();
   const events = plan?.events || [];
   return `<h2>定时计划 · ${esc(instance.name)}</h2>
-   <p class="small-note">计划是工作台级设置，仅管理员可修改；创建者账户之后被降权或删除，不会自动撤销计划。</p>
+   <p class="small-note">计划是工作台级设置；更改会保存为实例的定时配置。</p>
    <p class="small-note">按固定 UTC 偏移的每周事件执行，不随夏令时自动调整。工作台重启后从后续事件继续，离线期间错过的事件不会补发；时钟回拨不会重复执行已记录的时间。</p>
    <p class="small-note">启用后可能按计划停止当前运行实例。手动启停或重启（包括远程操作）会暂停计划；相关配置变更、执行失败及结果未知时也会暂停，请检查后由管理员重新启用。接受启动请求不代表网络连接成功。</p>
    <p class="small-note">保存计划不会立即改变实例，事件从下一分钟开始生效。启用的计划即使暂停也优先于“工作台启动时自动恢复”；关闭或删除计划后，原有自动恢复设置重新生效。默认偏移取自当前浏览器。</p>

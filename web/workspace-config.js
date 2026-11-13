@@ -30,7 +30,7 @@
   K.openDialog({
    html: mode === 'export'
     ? '<h2>导出加密备份</h2><p class="muted">备份密码须为 12–1024 个 UTF-8 字节，不含控制字符；密码不会保存，请将密码和文件分开保管。</p><div class="form-grid"><label>备份密码<input name="password" type="password" maxlength="1024" required autocomplete="new-password"></label><label>确认密码<input name="confirm" type="password" maxlength="1024" required autocomplete="new-password"></label></div>'
-    : '<h2>恢复加密备份</h2><p class="muted">请先停止全部托管实例。恢复会替换配置、定时计划、历史快照和草稿事件记录，并撤销现有非管理员账户的本机实例授权。导入的计划将暂停；节点授权和通知设置保留在本机。</p><div class="form-grid"><label class="span-2">备份文件<input type="file" name="file" accept=".json,application/json" required></label><label class="span-2">备份密码<input name="password" type="password" required maxlength="1024" autocomplete="current-password"></label><label class="form-check span-2"><input type="checkbox" name="confirmRestore" required>确认恢复备份并接受上述影响</label></div>',
+    : '<h2>恢复加密备份</h2><p class="muted">请先停止全部托管实例。恢复会替换配置、定时计划、历史快照和草稿事件记录，并撤销现有非管理员账户的本机实例授权。FRP 认证配置（包括共享令牌）也会恢复，请核对客户端。导入的计划将暂停；节点授权和通知设置保留在本机。</p><div class="form-grid"><label class="span-2">备份文件<input type="file" name="file" accept=".json,application/json" required></label><label class="span-2">备份密码<input name="password" type="password" required maxlength="1024" autocomplete="current-password"></label><label class="form-check span-2"><input type="checkbox" name="confirmRestore" required>确认恢复备份并接受上述影响</label></div>',
    submitLabel:mode === 'export' ? '导出加密备份' : '验证并恢复',
    async onSubmit(form) {
     validRevision(data);
@@ -205,7 +205,6 @@
     `<div class="two-column">${preview}<section class="panel"><div class="panel-content"><h2>历史快照</h2><div class="toolbar"><label>保留数量（0–100）<input data-history-limit type="number" min="0" max="100" step="1" value="${Number(data.historyLimit)}"></label>${button('history-limit','保存数量')}</div><p class="small-note">减少数量会立即删除最早的快照。恢复前须停止全部实例，保留的计划会暂停。</p>${histories}</div></section></div>
     <div class="two-column"><section class="panel"><div class="panel-content"><h2>导出与备份</h2><label>导出范围<select data-scope><option value="all">当前配置和全部快照</option><option value="config">仅当前配置</option><option value="snapshots">全部历史快照</option><option value="snapshot">指定快照</option></select></label><label data-snapshot-label hidden>选择快照<select data-snapshot>${history.map(item => `<option value="${item.revision}">r${item.revision} · ${e(item.summary)}</option>`).join('')}</select></label><p class="small-note">普通导出包含数据密钥，请妥善保管；加密备份由单独密码保护。</p><div class="actions">${button('export-config','导出配置')}${button('backup-export','导出加密备份')}</div></div></section>
     <section class="panel"><div class="panel-content"><h2>导入与恢复</h2><p class="small-note">普通配置导入和加密备份恢复会替换当前配置，操作前须停止全部实例。TOML 导入则追加新实例草稿。</p><label>配置文件<input data-import-file type="file" accept=".json,application/json"></label><div class="actions">${button('import-config','导入配置')}${button('backup-import','恢复加密备份')}${button('import-toml','导入 frp TOML')}</div></div></section></div>
-    <section class="panel"><div class="panel-content"><div class="section-heading"><div><h2>维护模式：限制受限账户启停</h2><p class="small-note">开启后，非管理员不能通过本工作台启动、停止或重启本机和远程实例，也不能预览远程控制；读取状态、配置校验和退出登录仍可使用。管理员可继续操作并关闭此模式。</p><p class="small-note">已有隧道、已受理请求、定时计划、自动启动及目标的独立远程控制授权不受影响。设置只保存在本机，不包含在导出或备份中。</p></div><div class="actions">${button('maintenance-refresh','刷新状态')}</div></div><div data-maintenance>正在读取…</div></div></section>
     <section class="panel"><div class="panel-content"><div class="section-heading"><div><h2>Webhook 通知</h2><p class="small-note">通知目标只保存在本机，事件不包含凭据或日志。发送测试使用已保存的设置，停用的目标也可发送；自定义模板应包含 {{event}} 以便接收方识别测试。</p></div><div class="actions">${button('webhook-refresh','刷新')}${button('webhook-new','新增目标')}</div></div><div data-webhooks>正在读取…</div></div></section>`;
   },
   mount(root,data) {
@@ -213,7 +212,6 @@
    if (!picker || !output) return;
    const epoch = K.epoch(), sameSession = () => K.epoch() === epoch;
    let previewSerial = 0, model = null, webhookSerial = 0;
-   let maintenance = null, maintenanceSerial = 0, maintenanceBusy = false;
    async function saveConfig(path,payload,message) {
     try { await K.api(path,payload); }
     catch (error) {
@@ -258,26 +256,8 @@
      }
     } finally { clearTimeout(deadline); }
    }
-   async function loadMaintenance() {
-    if (!sameSession()) return;
-    const box = root.querySelector('[data-maintenance]'); if (!box) return;
-    const sequence = ++maintenanceSerial; box.textContent = '正在读取…';
-    try {
-     const result = await K.api('maintenance');
-     if (sequence !== maintenanceSerial || !K.isCurrent('config',root)) return;
-     if (typeof result?.enabled !== 'boolean' || typeof result?.available !== 'boolean') throw new Error('维护状态格式无效。');
-     maintenance = result;
-     if (!result.available) {
-      box.textContent = '维护设置无法读取，原文件已保留；受限账户的实例操作暂不可用，管理员仍可操作。请检查本机 maintenance.json 后刷新。';
-      return;
-     }
-     box.innerHTML = `<p>当前状态：<strong>${result.enabled ? '已开启' : '已关闭'}</strong></p>${button('maintenance-toggle',result.enabled ? '关闭维护模式' : '开启维护模式')}`;
-    } catch (error) {
-     if (sequence === maintenanceSerial && K.isCurrent('config',root)) { maintenance = null; box.textContent = '读取失败：'+error.message; }
-    }
-   }
    picker.addEventListener('change',loadPreview); void loadPreview();
-   if (admin(data)) { void loadWebhooks(); void loadMaintenance(); }
+   if (admin(data)) void loadWebhooks();
    const scope = root.querySelector('[data-scope]'); if (scope) scope.addEventListener('change',() => { root.querySelector('[data-snapshot-label]').hidden = scope.value !== 'snapshot'; });
    root.addEventListener('click',async event => {
     const target = event.target.closest('[data-action]'); if (!target || target.disabled) return;
@@ -297,7 +277,7 @@
       await saveConfig('history-settings',{revision:data.revision,historyLimit:limit},'快照保留数量已更新。'); return;
      }
      if (action === 'restore') {
-      validRevision(data); if (!confirm('恢复此历史草稿？请先停止全部实例；当前计划会暂停。')) return;
+      validRevision(data); if (!confirm('恢复此历史草稿？FRP 认证配置（包括共享令牌）也会恢复，请核对客户端。请先停止全部实例；当前计划会暂停。')) return;
       await saveConfig('restore',{revision:data.revision,target:Number(target.dataset.revision)},'历史草稿已恢复。'); return;
      }
      if (action === 'export-config') {
@@ -313,7 +293,7 @@
       validRevision(data); const blocked = K.transfer.blocked(); if (blocked) throw new Error(blocked);
       const file = root.querySelector('[data-import-file]').files[0];
       if (!file) throw new Error('请选择配置文件。');
-      if (!confirm('导入会替换当前配置、定时计划、历史快照和草稿事件记录，并撤销现有非管理员账户的本机实例授权。导入的计划将暂停；节点授权和通知设置保留在本机。请先停止全部托管实例。继续？')) return;
+      if (!confirm('导入会替换当前配置、定时计划、历史快照和草稿事件记录，并撤销现有非管理员账户的本机实例授权。FRP 认证配置（包括共享令牌）也会恢复，请核对客户端。导入的计划将暂停；节点授权和通知设置保留在本机。请先停止全部托管实例。继续？')) return;
       const value = await readJSON(file,128*1024*1024);
       if (!K.isCurrent('config',root)) throw new Error('页面已变化，请重新操作。'); validRevision(data);
       const operation = K.transfer.begin('import');
@@ -322,28 +302,6 @@
        if (error.status === 400 || error.status === 409) { K.transfer.finish(operation,'rejected'); throw error; }
        K.transfer.finish(operation,'uncertain',error.message); throw new Error('导入结果尚未确认，请先核对当前配置。');
       }
-      return;
-     }
-     if (action === 'maintenance-refresh') {
-      if (maintenanceBusy) throw new Error('维护设置正在保存，请稍候。');
-      await loadMaintenance(); return;
-     }
-     if (action === 'maintenance-toggle') {
-      if (maintenanceBusy || !maintenance?.available) throw new Error('请先读取并核对维护状态。');
-      const expected = maintenance.enabled, enabled = !expected;
-      const message = enabled
-       ? '开启维护模式？受限账户将不能通过本工作台启停或重启本机和远程实例。已有隧道、计划任务、自动启动和已受理操作不受影响，管理员仍可操作。'
-       : '关闭维护模式？受限账户可继续按已有授权操作实例。';
-      if (!confirm(message)) return;
-      maintenanceBusy = true; ++maintenanceSerial;
-      try {
-       const result = await K.api('maintenance',{expected,enabled});
-       if (typeof result?.enabled !== 'boolean' || result.available !== true || result.enabled !== enabled) throw new Error('服务端响应无法确认维护状态。');
-       if (K.isCurrent('config',root)) { await loadMaintenance(); if (sameSession()) K.toast(enabled ? '维护模式已开启。' : '维护模式已关闭。'); }
-      } catch (error) {
-       await loadMaintenance();
-       throw new Error(error.status === 409 ? '维护状态已变化，请核对后重新操作。' : '操作结果未确认，请刷新并核对维护状态。');
-      } finally { maintenanceBusy = false; }
       return;
      }
      if (action === 'webhook-refresh') { await loadWebhooks(); return; }

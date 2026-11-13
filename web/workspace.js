@@ -11,11 +11,8 @@ const esc = (value = '') => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'
 
 window.Kurumi = (() => {
  const pages = new Map();
- const names = {overview:'总览', tunnels:'规则', instances:'实例', nodes:'节点', 'reported-nodes':'主动上报', firewall:'访问控制', health:'链路诊断', config:'配置', core:'运行核心', logs:'日志', update:'软件更新', accounts:'账户', 'own-proxies':'我的代理'};
+ const names = {overview:'总览', tunnels:'规则', instances:'实例', nodes:'节点', 'reported-nodes':'主动上报', firewall:'访问控制', health:'链路诊断', config:'配置', core:'运行核心', logs:'日志', update:'软件更新'};
  const $ = selector => document.querySelector(selector);
- const accountWriteFreezeHint = error => error?.status >= 500 && typeof error.message === 'string' && error.message.startsWith('账户配置保存状态未确认')
-  ? '账户文件写入结果未确认，后续账户写入已冻结；已有受管 FRP 转发可能仍在运行。请联系管理员确认工作台完全停止后再启动，并核对账户配置。'
-  : '';
  let snapshot = null, page = 'overview', session = 0, request = null, root = null, activePage = null;
  let timer = null, toastTimer = null, dialogSpec = null, dialogBusy = false, dialogOperation = 0;
  let transfer = null, transferRequest = null;
@@ -96,7 +93,7 @@ window.Kurumi = (() => {
   if ($('#diff-dialog').open) $('#diff-dialog').close();
   $('#content').replaceChildren(); $('#app').hidden = true; $('#login').hidden = false;
   const picker = $('#skin-picker'); if (picker) picker.hidden = true;
-  $('#login-form').elements.token.value = '';
+  $('#login-form').elements.password.value = '';
   if (message || wasBusy) $('#login-error').textContent = [message, wasBusy ? '此前提交的操作可能仍在处理，重新登录后请先核对。' : ''].filter(Boolean).join(' ');
  }
  function announce() {
@@ -131,15 +128,7 @@ window.Kurumi = (() => {
   }
   return result;
  }
- function canViewOwnProxies() {
-  const identity = snapshot?.identity;
-  return identity?.account === true && identity?.passwordAccount === true;
- }
  function updateShell() {
-  if (page === 'own-proxies' && !canViewOwnProxies()) {
-   page = 'overview';
-   if (location.hash === '#own-proxies') history.replaceState(null, '', location.pathname + location.search + '#overview');
-  }
   $('#revision').textContent = `草稿 r${snapshot.revision}`;
   $('#sync-time').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
   $('#page-title').textContent = names[page] || page;
@@ -149,12 +138,9 @@ window.Kurumi = (() => {
    const selected = button.dataset.page === page;
    button.classList.toggle('active', selected);
    if (selected) button.setAttribute('aria-current','page'); else button.removeAttribute('aria-current');
-   button.hidden = !admin && ['reported-nodes','firewall','health','update','accounts'].includes(button.dataset.page);
-   if (button.dataset.page === 'own-proxies') button.hidden = !canViewOwnProxies();
+   button.hidden = !admin && ['reported-nodes','firewall','health','update'].includes(button.dataset.page);
   });
   $('#quit-app').hidden = !admin; $('#change-password').hidden = false;
-  const otherSessions = $('#revoke-other-sessions');
-  if (otherSessions) otherSessions.hidden = !snapshot.identity?.account || !snapshot.identity?.passwordAccount;
  }
  function render() {
   if (!snapshot) return;
@@ -346,21 +332,17 @@ window.Kurumi = (() => {
  }
  function bind() {
   persistTransfer();
-  const ownProxiesButton = document.createElement('button');
-  ownProxiesButton.type = 'button'; ownProxiesButton.dataset.page = 'own-proxies';
-  ownProxiesButton.textContent = '我的代理'; ownProxiesButton.hidden = true;
-  $('#nav').appendChild(ownProxiesButton);
   $('#transfer-dismiss').addEventListener('click', () => { if (!transferRequest) { transfer = null; persistTransfer(); } });
-  $('#login-form').elements.token.required = false;
+  $('#login-form').elements.password.required = false;
   $('#login-form').addEventListener('submit', async event => {
    event.preventDefault(); const form = event.currentTarget, button = form.querySelector('[type="submit"]');
    button.disabled = true; $('#login-error').textContent = '';
    // Invalidate an initial state request that may still be returning 401.
    ++session; request = null;
    try {
-    const username = form.elements.username.value.trim(), password = form.elements.token.value;
-    await api('login', username ? {username, password} : {password});
-    form.elements.token.value = ''; ++session; announce(); await refresh();
+    const password = form.elements.password.value;
+    await api('login', {password});
+    form.elements.password.value = ''; ++session; announce(); await refresh();
    } catch (error) { $('#login-error').textContent = error.message; }
    finally { button.disabled = false; }
   });
@@ -370,7 +352,7 @@ window.Kurumi = (() => {
    try { await api('quit', {}); showLogin('程序已退出。'); } catch (error) { toast(error.message); }
   });
   $('#change-password').addEventListener('click', () => openDialog({
-   html:'<h2>修改登录密码</h2><p class="muted">修改后需要重新登录。主密码可以为空；本地账户密码须符合账户要求。</p><div class="form-grid"><label>当前密码<input name="old" type="password" autocomplete="current-password"></label><label>新密码<input name="new" type="password" autocomplete="new-password"></label><label>再次输入新密码<input name="confirm" type="password" autocomplete="new-password"></label></div>',
+   html:'<h2>修改登录密码</h2><p class="muted">修改后需要重新登录。访问密码可以为空。</p><div class="form-grid"><label>当前密码<input name="old" type="password" autocomplete="current-password"></label><label>新密码<input name="new" type="password" autocomplete="new-password"></label><label>再次输入新密码<input name="confirm" type="password" autocomplete="new-password"></label></div>',
    submitLabel:'更新密码',
    async onSubmit(form) {
     if (form.elements.new.value !== form.elements.confirm.value) throw new Error('两次输入的新密码不一致。');
@@ -379,7 +361,7 @@ window.Kurumi = (() => {
     catch (error) {
      if (generation !== session || operation !== dialogOperation) return false;
      if (error.status === 409 || !error.status || error.status >= 500) {
-      showLogin(accountWriteFreezeHint(error) || '密码状态或保存结果尚未确认，请重新登录后核对。'); announce(); return;
+      showLogin('密码状态或保存结果尚未确认，请重新登录后核对。'); announce(); return;
      }
      throw error;
     }
@@ -389,28 +371,6 @@ window.Kurumi = (() => {
     showLogin('密码已更新，请重新登录。'); announce();
    }
   }));
-  const otherSessions = document.createElement('button');
-  otherSessions.type = 'button'; otherSessions.id = 'revoke-other-sessions';
-  otherSessions.textContent = '结束其他会话'; otherSessions.hidden = true;
-  $('#change-password').after(otherSessions);
-  otherSessions.addEventListener('click', async () => {
-   if (!confirm('结束此账户当时存在的其他工作台会话？当前会话及共享该会话的标签页会保留。正在进行或之后的登录仍可能建立新会话，frp 连接不受影响。')) return;
-   const generation = session, controller = new AbortController();
-   const deadline = setTimeout(() => controller.abort(), 15000);
-   otherSessions.disabled = true;
-   try {
-    const result = await api('me/sessions/revoke-others', {}, {signal:controller.signal});
-    if (generation !== session) return;
-    if (result?.ok !== true) throw new Error('会话操作结果尚未确认');
-    toast('已结束当时存在的其他会话；之后的登录仍可建立新会话。');
-   } catch (error) {
-    if (generation !== session) return;
-    if ([400, 403, 409].includes(error.status)) toast(error.message);
-    else toast('会话操作结果尚未确认；旧请求可能仍在处理，请先核对再决定是否重试。');
-   } finally {
-    clearTimeout(deadline); otherSessions.disabled = false;
-   }
-  });
   $('#refresh').addEventListener('click', () => { if (confirmDiscard()) void refresh(false, true).catch(error => toast(error.message)); });
   applySkin(savedSkin());
   const picker = document.createElement('button');
@@ -481,120 +441,10 @@ window.Kurumi = (() => {
   });
   const hash = location.hash.slice(1);
   if (pages.has(hash)) page = hash;
-  else if (hash.startsWith('launch=')) history.replaceState(null, '', location.pathname + location.search + '#overview');
+  else if (hash.startsWith('launch=') || ['accounts','own-proxies'].includes(hash)) history.replaceState(null, '', location.pathname + location.search + '#overview');
   const initialSession = session;
   void refresh().catch(error => { if (session === initialSession && error.status !== 401) $('#login-error').textContent = error.message; });
  }
- function mountOwnProxyQuota(element) {
-  const status = element.querySelector('[data-own-quota-status]');
-  const button = element.querySelector('[data-own-quota-refresh]');
-  let pending = null, serial = 0, disposed = false, active = Promise.resolve();
-  async function refreshQuota() {
-   pending?.abort();
-   const requestSerial = ++serial, generation = session;
-   status.textContent = document.hidden ? '配额暂不可用。' : '正在读取配额…';
-   if (document.hidden) return;
-   const controller = new AbortController(); pending = controller;
-   const deadline = setTimeout(() => controller.abort(), 5000);
-   try {
-    const data = await api('me/managed-proxy-quota', undefined, {signal:controller.signal});
-    if (disposed || generation !== session || requestSerial !== serial || !element.isConnected) return;
-    const sampled = new Date(data?.sampledAt);
-    if (!Number.isSafeInteger(data?.used) || data.used < 0 ||
-        !(data.limit === null || (Number.isSafeInteger(data.limit) && data.limit >= 0 && data.limit <= 1000000)) ||
-        typeof data.sampledAt !== 'string' || !Number.isFinite(sampled.getTime())) throw new Error('配额暂不可用');
-    const limit = data.limit === null ? '不限' : data.limit === 0 ? '0（阻止新的代理占位）' : String(data.limit);
-    status.textContent = `截至 ${sampled.toLocaleString('zh-CN')}：占位 ${data.used}，上限 ${limit}。`;
-   } catch (_) {
-    if (!disposed && generation === session && requestSerial === serial && element.isConnected) status.textContent = '配额暂不可用。';
-   } finally {
-    clearTimeout(deadline);
-    if (pending === controller) pending = null;
-   }
-  }
-  const requestQuota = () => { active = refreshQuota(); return active; };
-  const onRefresh = () => { void requestQuota(); };
-  const onVisibility = () => {
-   if (document.hidden) { ++serial; pending?.abort(); pending = null; status.textContent = '配额暂不可用。'; }
-   else void requestQuota();
-  };
-  button.addEventListener('click', onRefresh);
-  document.addEventListener('visibilitychange', onVisibility);
-  void requestQuota();
-  return {
-   whenSettled: () => active,
-   dispose() {
-    disposed = true; ++serial; pending?.abort(); pending = null;
-    button.removeEventListener('click', onRefresh);
-    document.removeEventListener('visibilitychange', onVisibility); status.textContent = '配额暂不可用。';
-   }
-  };
- }
- let ownProxiesCleanup = null;
- pages.set('own-proxies', {
-  render(value) {
-   const instances = (value.state?.instances || []).filter(item => item?.kind === 'frps' && /^[a-f0-9]{16}$/.test(item.id));
-   const options = instances.map(item => `<option value="${esc(item.id)}">${esc(item.name || 'frps')}</option>`).join('');
-   const canReadNames = value.identity?.role === 'admin' || value.identity?.viewConfig === true;
-   const namesPanel = canReadNames ? `<section class="panel"><div class="panel-content"><h2>我的代理</h2><p class="muted">显示采样窗口内在当前受管控制连接中观察到的名称。采样可能不完整，最多显示 256 项；返回时可能已不再登记，也不代表可以访问。</p><label>服务端实例 <select data-own-proxy-instance>${options}</select></label> <button type="button" data-own-proxy-refresh>重新采样</button><p data-own-proxy-status>采样不可用。</p><ul data-own-proxy-list></ul></div></section>` : '<p class="muted">当前账户未获配置详情授权，不能采样代理名称。</p>';
-   return `<section class="panel"><div class="panel-content"><h2>代理占位与上限</h2><p class="muted">这是本工作台所有内嵌受管 frps 的账户占位总数，包含创建或清理中的代理；它不是在线数、流量或账单。</p><button type="button" data-own-quota-refresh>刷新配额</button><p data-own-quota-status>配额暂不可用。</p></div></section>${namesPanel}`;
-  },
-  mount(element) {
-   const quota = mountOwnProxyQuota(element);
-   const select = element.querySelector('[data-own-proxy-instance]');
-   const button = element.querySelector('[data-own-proxy-refresh]');
-   const status = element.querySelector('[data-own-proxy-status]');
-   const list = element.querySelector('[data-own-proxy-list]');
-   if (!select || !button || !status || !list) { ownProxiesCleanup = () => quota.dispose(); return; }
-   let pending = null, serial = 0, disposed = false;
-   const clear = message => { list.replaceChildren(); status.textContent = message; };
-   async function sample() {
-    if (disposed) return;
-    pending?.abort();
-    const requestSerial = ++serial, generation = session, id = select.value;
-    clear(id ? '正在采样…' : '采样不可用。');
-    if (!id || document.hidden) return;
-    const controller = new AbortController(); pending = controller;
-    const deadline = setTimeout(() => controller.abort(), 5000);
-    try {
-     const data = await api(`me/managed-proxies?id=${encodeURIComponent(id)}`, undefined, {signal:controller.signal});
-     if (disposed || generation !== session || requestSerial !== serial || !element.isConnected || select.value !== id) return;
-     const start = new Date(data?.startedAt), end = new Date(data?.sampledAt);
-     if (!Array.isArray(data?.names) || data.names.length > 256 || data.mayBeIncomplete !== true ||
-         data.names.some(name => typeof name !== 'string' || !name || name.length > 1024) ||
-         !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start > end) throw new Error('采样不可用');
-     status.textContent = `采样窗口：${start.toLocaleString('zh-CN')} 至 ${end.toLocaleString('zh-CN')}。结果可能不完整。`;
-     if (!data.names.length) {
-      const item = document.createElement('li'); item.textContent = '本次未采样到条目。'; list.appendChild(item);
-     } else {
-      for (const name of data.names) {
-       const item = document.createElement('li'); item.textContent = `${name} · 采样时已登记`; list.appendChild(item);
-      }
-     }
-    } catch (_) {
-     if (!disposed && generation === session && requestSerial === serial && element.isConnected) clear('采样不可用。');
-    } finally {
-     clearTimeout(deadline);
-     if (pending === controller) pending = null;
-    }
-   }
-   const onChange = () => { void sample(); };
-   const onVisibility = () => {
-    if (document.hidden) { ++serial; pending?.abort(); pending = null; clear('采样不可用。'); }
-    else void quota.whenSettled().then(() => { if (!disposed) void sample(); });
-   };
-   select.addEventListener('change', onChange); button.addEventListener('click', onChange);
-   document.addEventListener('visibilitychange', onVisibility);
-   ownProxiesCleanup = () => {
-    quota.dispose();
-    disposed = true; ++serial; pending?.abort(); pending = null;
-    select.removeEventListener('change', onChange); button.removeEventListener('click', onChange);
-    document.removeEventListener('visibilitychange', onVisibility); clear('采样不可用。');
-   };
-   void quota.whenSettled().then(() => { if (!disposed) void sample(); });
-  },
-  dispose() { if (ownProxiesCleanup) ownProxiesCleanup(); ownProxiesCleanup = null; }
- });
  document.addEventListener('DOMContentLoaded', bind, {once:true});
- return {register:(name, component) => pages.set(name, component), api, refresh, navigate, toast, esc, download, openDialog, closeDialog, showDiff, endCurrentSession:() => { showLogin(); announce(); }, transfer:transfers, accountWriteFreezeHint, state:() => snapshot, epoch:() => session, isCurrent:(target, element) => page === target && !!snapshot && element?.isConnected && $('#content').contains(element)};
+ return {register:(name, component) => pages.set(name, component), api, refresh, navigate, toast, esc, download, openDialog, closeDialog, showDiff, transfer:transfers, state:() => snapshot, epoch:() => session, isCurrent:(target, element) => page === target && !!snapshot && element?.isConnected && $('#content').contains(element)};
 })();
