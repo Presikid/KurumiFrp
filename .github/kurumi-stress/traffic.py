@@ -52,6 +52,10 @@ class ThreadedUDP(socketserver.ThreadingUDPServer):
     daemon_threads = True
 
 
+class ThreadedUnix(socketserver.ThreadingUnixStreamServer):
+    daemon_threads = True
+
+
 class HTTPHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         body = ("kurumi-loopback:" + self.path).encode()
@@ -88,17 +92,18 @@ def main():
         ThreadedTCP(("127.0.0.1", 0), EchoTCP),
         ThreadedUDP(("127.0.0.1", 0), EchoUDP),
         http.server.ThreadingHTTPServer(("127.0.0.1", 0), HTTPHandler),
+        ThreadedUnix(os.path.join(temp.name, "echo.sock"), EchoTCP),
     ]
     for server in servers:
         threading.Thread(target=server.serve_forever, daemon=True).start()
-    reserved = {server.server_address[1] for server in servers}
+    reserved = {server.server_address[1] for server in servers if isinstance(server.server_address, tuple)}
     ports = []
-    while len(ports) < 5:
+    while len(ports) < 7:
         port = free_port()
         if port not in reserved:
             ports.append(port)
             reserved.add(port)
-    manager_port, server_port, proxy_tcp, proxy_udp, proxy_http = ports
+    manager_port, server_port, proxy_tcp, proxy_udp, proxy_http, proxy_unix, proxy_socks = ports
     base = f"http://127.0.0.1:{manager_port}"
     cookie = ""
     proc = None
@@ -146,8 +151,8 @@ def main():
         runtime = state()["runtime"][item["id"]]
         return runtime if runtime["state"] == "running" else None
 
-    def exchange_tcp(seed):
-        with socket.create_connection(("127.0.0.1", proxy_tcp), timeout=10) as sock:
+    def exchange_tcp(seed, port=proxy_tcp):
+        with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
             sock.settimeout(10)
             for iteration in range(8):
                 payload = hashlib.sha256(f"{seed}:{iteration}".encode()).digest() * (1 + iteration * 17)
@@ -160,6 +165,46 @@ def main():
                     received.extend(block)
                 if received != payload:
                     raise AssertionError("TCP proxy changed the payload")
+
+    def exchange_socks(seed, password=b"ci-socks-password"):
+        def receive(sock, length):
+            data = bytearray()
+            while len(data) < length:
+                chunk = sock.recv(length - len(data))
+                if not chunk:
+                    raise ConnectionResetError("SOCKS5 response ended early")
+                data.extend(chunk)
+            return bytes(data)
+
+        user = b"ci-socks-user"
+        with socket.create_connection(("127.0.0.1", proxy_socks), timeout=10) as sock:
+            sock.settimeout(10)
+            sock.sendall(b"\x05\x01\x02")
+            if receive(sock, 2) != b"\x05\x02":
+                raise AssertionError("SOCKS5 did not require username/password authentication")
+            sock.sendall(b"\x01" + bytes([len(user)]) + user + bytes([len(password)]) + password)
+            result = receive(sock, 2)
+            if password != b"ci-socks-password":
+                if result[0] != 1 or result[1] == 0:
+                    raise AssertionError("SOCKS5 accepted an incorrect password")
+                return True
+            if result != b"\x01\x00":
+                raise AssertionError("SOCKS5 rejected the configured credentials")
+            sock.sendall(b"\x05\x01\x00\x01" + socket.inet_aton("127.0.0.1") + servers[0].server_address[1].to_bytes(2, "big"))
+            reply = receive(sock, 4)
+            if reply[:2] != b"\x05\x00":
+                raise AssertionError(f"SOCKS5 connect failed: {reply!r}")
+            length = {1: 4, 4: 16}.get(reply[3])
+            if reply[3] == 3:
+                length = receive(sock, 1)[0]
+            if length is None:
+                raise AssertionError("SOCKS5 returned an invalid address type")
+            receive(sock, length + 2)
+            payload = hashlib.sha256(f"socks:{seed}".encode()).digest() * 32
+            sock.sendall(payload)
+            if receive(sock, len(payload)) != payload:
+                raise AssertionError("SOCKS5 proxy changed the payload")
+            return True
 
     def exchange_udp(seed):
         payload = hashlib.sha256(f"udp:{seed}".encode()).digest() * 4
@@ -196,11 +241,13 @@ def main():
         server = save("instance", {"name": "CI server", "kind": "frps", "host": "127.0.0.1", "port": server_port, "httpPort": proxy_http, "proxyBindAddr": "127.0.0.1", "token": "isolated-ci-token"})
         client = save("instance", {"name": "CI client", "kind": "frpc", "host": "127.0.0.1", "port": server_port, "token": "isolated-ci-token"})
         for rule in [
-            {"name": "ci-tcp", "type": "tcp", "localPort": servers[0].server_address[1], "remotePort": proxy_tcp},
-            {"name": "ci-udp", "type": "udp", "localPort": servers[1].server_address[1], "remotePort": proxy_udp},
-            {"name": "ci-http", "type": "http", "localPort": servers[2].server_address[1], "domains": ["kurumi.test"]},
+            {"name": "ci-tcp", "type": "tcp", "localHost": "127.0.0.1", "localPort": servers[0].server_address[1], "remotePort": proxy_tcp},
+            {"name": "ci-udp", "type": "udp", "localHost": "127.0.0.1", "localPort": servers[1].server_address[1], "remotePort": proxy_udp},
+            {"name": "ci-http", "type": "http", "localHost": "127.0.0.1", "localPort": servers[2].server_address[1], "domains": ["kurumi.test"]},
+            {"name": "ci-unix", "type": "tcp", "unixSocketPath": servers[3].server_address, "remotePort": proxy_unix},
+            {"name": "ci-socks", "type": "tcp", "pluginType": "socks5", "pluginUser": "ci-socks-user", "pluginPassword": "ci-socks-password", "remotePort": proxy_socks},
         ]:
-            save("tunnel", {**rule, "instanceId": client["id"], "localHost": "127.0.0.1", "enabled": True})
+            save("tunnel", {**rule, "instanceId": client["id"], "enabled": True})
         control(server, "start")
         wait_until("frps", lambda: running(server))
         control(client, "start")
@@ -213,11 +260,16 @@ def main():
         wait_until("TCP proxy", ready_tcp)
         wait_until("UDP proxy", lambda: exchange_udp("ready"))
         wait_until("HTTP proxy", lambda: (exchange_http("ready"), True)[1])
+        wait_until("Unix socket proxy", lambda: (exchange_tcp("unix-ready", proxy_unix), True)[1])
+        wait_until("SOCKS5 proxy", lambda: exchange_socks("ready"))
+        exchange_socks("wrong-password", b"invalid-password")
         with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
             list(pool.map(exchange_tcp, range(320)))
             list(pool.map(exchange_udp, range(128)))
             list(pool.map(exchange_http, range(320)))
-        print("PASS: 320 concurrent TCP sessions, 128 UDP clients, 320 HTTP requests")
+            list(pool.map(lambda n: exchange_tcp(f"unix-{n}", proxy_unix), range(128)))
+            list(pool.map(exchange_socks, range(128)))
+        print("PASS: 320 TCP sessions, 128 UDP clients, 320 HTTP requests, 128 Unix socket and 128 authenticated SOCKS5 sessions")
 
         stop_load = threading.Event()
         load_counts = [0, 0]
@@ -249,6 +301,8 @@ def main():
                     wait_until("TCP after server restart", ready_tcp, timeout=90)
                     wait_until("UDP after server restart", lambda: exchange_udp(f"server-{number}"), timeout=90)
                     wait_until("HTTP after server restart", lambda: (exchange_http(f"server-{number}"), True)[1], timeout=90)
+                    wait_until("Unix socket after server restart", lambda: (exchange_tcp("unix-restart", proxy_unix), True)[1], timeout=90)
+                    wait_until("SOCKS5 after server restart", lambda: exchange_socks("restart"), timeout=90)
             finally:
                 stop_load.set()
                 for worker in workers:
