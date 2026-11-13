@@ -426,20 +426,24 @@
     return `<p class="small-note">速率曲线 · 接收（粉） / 发送（金） · 上限 ${rate(max)}</p><svg viewBox="0 0 400 100" preserveAspectRatio="none" width="100%" height="150" role="img" aria-label="本次运行的接收与发送速率；缺失采样不连线">${paths('received','#e99ca8')}${paths('sent','#d9b17c')}</svg><p class="small-note">${e(new Date(first).toLocaleString('zh-CN'))} — ${e(new Date(last).toLocaleString('zh-CN'))}</p>`;
    }
    async function loadTraffic() {
-    if (!picker) return;
-    const id = picker.value, item = data.state.instances.find(value => value.id === id), sequence = ++serial;
-    if (!item) return; K.selectedInstance = id; history = null; budget = null;
+    if (!picker || !K.isCurrent('overview',root)) return;
+    const snapshot = K.state(), id = picker.value, item = snapshot?.state?.instances?.find(value => value.id === id), displayed = data.state.instances.find(value => value.id === id), sequence = ++serial;
     const output = root.querySelector('[data-traffic-output]'), historyOutput = root.querySelector('[data-traffic-history]'), budgetOutput = root.querySelector('[data-traffic-budget]');
+    history = null; budget = null;
+    if (!item || !displayed || item.kind !== displayed.kind || item.name !== displayed.name) { output.textContent = '实例信息已变化，请刷新页面。'; historyOutput.textContent = ''; budgetOutput.textContent = '实例信息已变化，请刷新页面。'; return; }
+    K.selectedInstance = id;
     output.textContent = '正在读取…'; historyOutput.textContent = ''; budgetOutput.textContent = '正在读取月度提醒…';
-    const query = '?id=' + encodeURIComponent(id), runId = runtimeFor(data,id).runId || '';
+    const query = '?id=' + encodeURIComponent(id), runId = runtimeFor(snapshot,id).runId || '';
     const [current, detail, daily, reminder] = await Promise.allSettled([
      K.api((item.kind === 'frps' ? 'server-traffic' : 'traffic')+query),
-     item.kind === 'frpc' && (admin(data) || data.identity?.viewConfig) ? K.api('client-traffic'+query) : Promise.resolve(null),
+     item.kind === 'frpc' && (admin(snapshot) || snapshot.identity?.viewConfig) ? K.api('client-traffic'+query) : Promise.resolve(null),
      K.api('traffic-history'+query),
      K.api('traffic-budget'+query)
     ]);
     if (!K.isCurrent('overview',root) || sequence !== serial || picker.value !== id) return;
-    if ((runtimeFor(K.state(),id).runId || '') !== runId) { output.textContent = '实例运行代次已变化，请刷新流量。'; budgetOutput.textContent = '实例状态已变化，请刷新月度提醒。'; return; }
+    const latest = K.state(), latestItem = latest?.state?.instances?.find(value => value.id === id);
+    if (!latestItem || latestItem.kind !== item.kind || latestItem.name !== item.name || latest.revision !== snapshot.revision) { output.textContent = '实例或草稿已变化，请刷新页面后核对。'; budgetOutput.textContent = '实例或草稿已变化，请刷新页面后核对。'; return; }
+    if ((runtimeFor(latest,id).runId || '') !== runId) { output.textContent = '实例运行代次已变化，请刷新流量。'; budgetOutput.textContent = '实例状态已变化，请刷新月度提醒。'; return; }
     if (current.status !== 'fulfilled') output.textContent = '读取当前流量失败：'+current.reason.message;
     else {
      const value = item.kind === 'frps' ? current.value : current.value.instances?.[id];
