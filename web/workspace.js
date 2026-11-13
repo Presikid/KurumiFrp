@@ -86,6 +86,7 @@ window.Kurumi = (() => {
   return wasBusy;
  }
  function showLogin(message = '') {
+  const wasInWorkspace = !$('#app').hidden;
   ++session;
   window.dispatchEvent(new Event('kurumi-workspace-identity-invalidated'));
   stopTimer(); dispose(); snapshot = null; request = null;
@@ -94,7 +95,7 @@ window.Kurumi = (() => {
   $('#content').replaceChildren(); $('#app').hidden = true; $('#login').hidden = false;
   const picker = $('#skin-picker'); if (picker) picker.hidden = true;
   $('#login-form').elements.password.value = '';
-  if (message || wasBusy) $('#login-error').textContent = [message, wasBusy ? '此前提交的操作可能仍在处理，重新登录后请先核对。' : ''].filter(Boolean).join(' ');
+  if (message || wasBusy || wasInWorkspace) $('#login-error').textContent = [message, wasBusy ? '此前提交的操作可能仍在处理，重新登录后请先核对。' : ''].filter(Boolean).join(' ');
  }
  function announce() {
   signal = `${Date.now()}:${Math.random()}`;
