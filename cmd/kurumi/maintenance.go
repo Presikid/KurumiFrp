@@ -4,6 +4,7 @@ package main
 // PIDs, follow redirects or scan Downloads for files that happen to share a name.
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,8 +16,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Presikid/KurumiFrp/internal/version"
@@ -25,6 +28,7 @@ import (
 const productID = "io.github.Presikid.KurumiFrp"
 
 var hashPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+var errLocalStateNotReady = errors.New("local manager state files are not ready")
 
 func plainPath(path string) error {
 	abs, err := filepath.Abs(path)
@@ -47,21 +51,43 @@ func plainPath(path string) error {
 }
 
 func localRequest(dir, method, endpoint string) error {
+	return localRequestBefore(dir, method, endpoint, time.Time{})
+}
+
+func localStateError(err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: %w", errLocalStateNotReady, err)
+	}
+	return err
+}
+
+func localConnectionRefused(err error) bool {
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) || opErr.Op != "dial" {
+		return false
+	}
+	// Go's Windows ECONNREFUSED is not the Winsock error returned by connect.
+	const wsaeconnrefused = syscall.Errno(10061)
+	return errors.Is(opErr.Err, syscall.ECONNREFUSED) ||
+		(runtime.GOOS == "windows" && errors.Is(opErr.Err, wsaeconnrefused))
+}
+
+func localRequestBefore(dir, method, endpoint string, deadline time.Time) error {
 	for _, name := range []string{"access.token", "listen.addr"} {
 		if err := plainPath(filepath.Join(dir, name)); err != nil {
-			return err
+			return localStateError(err)
 		}
 	}
 	token, err := os.ReadFile(filepath.Join(dir, "access.token"))
 	if err != nil {
-		return err
+		return localStateError(err)
 	}
 	if !hashPattern.Match(token) {
 		return fmt.Errorf("invalid local management token")
 	}
 	address, err := os.ReadFile(filepath.Join(dir, "listen.addr"))
 	if err != nil {
-		return err
+		return localStateError(err)
 	}
 	addr := strings.TrimSpace(string(address))
 	host, port, err := net.SplitHostPort(addr)
@@ -75,11 +101,16 @@ func localRequest(dir, method, endpoint string) error {
 	if err != nil {
 		return err
 	}
+	if !deadline.IsZero() {
+		ctx, cancel := context.WithDeadline(req.Context(), deadline)
+		defer cancel()
+		req = req.WithContext(ctx)
+	}
 	req.Header.Set("Authorization", "Bearer "+string(token))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("local manager is not reachable")
+		return fmt.Errorf("local manager is not reachable: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
@@ -113,6 +144,33 @@ func checkRunning(dir string, timeout time.Duration) error {
 	}
 }
 
+func managerLockPresent(lock string) (bool, error) {
+	if err := plainPath(lock); err != nil {
+		if !os.IsNotExist(err) {
+			return false, err
+		}
+		parent := filepath.Dir(lock)
+		if parentErr := plainPath(parent); parentErr != nil {
+			return false, parentErr
+		}
+		parentInfo, parentErr := os.Lstat(parent)
+		if parentErr != nil {
+			return false, parentErr
+		}
+		if !parentInfo.IsDir() {
+			return false, fmt.Errorf("invalid manager lock directory")
+		}
+		if _, statErr := os.Lstat(lock); os.IsNotExist(statErr) {
+			return false, nil
+		} else if statErr != nil {
+			return false, statErr
+		}
+		// The lock reappeared after plainPath; do not trust that earlier check.
+		return false, err
+	}
+	return true, nil
+}
+
 func stopExisting(dir string, timeout time.Duration) error {
 	lock := filepath.Join(dir, "manager.lock")
 	if _, err := os.Lstat(lock); os.IsNotExist(err) {
@@ -120,23 +178,66 @@ func stopExisting(dir string, timeout time.Duration) error {
 	} else if err != nil {
 		return err
 	}
-	if err := plainPath(lock); err != nil {
+	present, err := managerLockPresent(lock)
+	if err != nil {
 		return err
 	}
-	if err := localRequest(dir, "POST", "/api/quit"); err != nil {
-		return fmt.Errorf("shutdown not confirmed; files retained (do not delete a stale lock without checking owned frp processes): %w", err)
+	if !present {
+		return nil
 	}
 	until := time.Now().Add(timeout)
+	unconfirmed := func(err error) error {
+		return fmt.Errorf("shutdown not confirmed; files retained (do not delete a stale lock without checking owned frp processes): %w", err)
+	}
+	var lastErr error
+	for {
+		if lastErr != nil {
+			present, err := managerLockPresent(lock)
+			if err != nil {
+				return unconfirmed(err)
+			}
+			if !present {
+				return nil
+			}
+		}
+		remaining := time.Until(until)
+		if remaining <= 0 {
+			if lastErr != nil {
+				return unconfirmed(lastErr)
+			}
+			return fmt.Errorf("shutdown timed out; installation retained")
+		}
+		lastErr = localRequestBefore(dir, "POST", "/api/quit", until)
+		if lastErr == nil {
+			break
+		}
+		if !errors.Is(lastErr, errLocalStateNotReady) && !localConnectionRefused(lastErr) {
+			return unconfirmed(lastErr)
+		}
+		// A refused connection sent no request. A missing token or address
+		// may likewise mean startup is still in progress. Never remove the lock.
+		remaining = time.Until(until)
+		if remaining > 0 {
+			if remaining > 100*time.Millisecond {
+				remaining = 100 * time.Millisecond
+			}
+			time.Sleep(remaining)
+		}
+	}
 	for {
 		if _, err := os.Lstat(lock); os.IsNotExist(err) {
 			return nil
 		} else if err != nil {
 			return err
 		}
-		if time.Now().After(until) {
+		remaining := time.Until(until)
+		if remaining <= 0 {
 			return fmt.Errorf("shutdown timed out; installation retained")
 		}
-		time.Sleep(100 * time.Millisecond)
+		if remaining > 100*time.Millisecond {
+			remaining = 100 * time.Millisecond
+		}
+		time.Sleep(remaining)
 	}
 }
 
