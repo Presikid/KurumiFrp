@@ -264,8 +264,11 @@ def main():
             {"name": "ci-http", "type": "http", "localHost": "127.0.0.1", "localPort": servers[2].server_address[1], "domains": ["kurumi.test"]},
             {"name": "ci-unix", "type": "tcp", "unixSocketPath": servers[3].server_address, "remotePort": proxy_unix},
             {"name": "ci-socks", "type": "tcp", "pluginType": "socks5", "pluginUser": "ci-socks-user", "pluginPassword": "ci-socks-password", "remotePort": proxy_socks},
+            {"name": "ci-dynamic", "type": "tcp", "localHost": "127.0.0.1", "localPort": servers[0].server_address[1], "remotePort": 0},
         ]:
-            save("tunnel", {**rule, "instanceId": client["id"], "enabled": True})
+            saved = save("tunnel", {**rule, "instanceId": client["id"], "enabled": True})
+            if rule["name"] == "ci-dynamic":
+                dynamic_rule = saved
         control(server, "start")
         wait_until("frps", lambda: running(server))
         control(client, "start")
@@ -275,11 +278,24 @@ def main():
             exchange_tcp("ready")
             return True
 
+        def ready_dynamic():
+            registration = request("registration")["tunnels"].get(dynamic_rule["id"], {})
+            current_run = state()["runtime"][client["id"]].get("runId")
+            address = registration.get("remoteAddr", "")
+            if registration.get("state") != "registered" or registration.get("runId") != current_run or not address:
+                return False
+            port = int(address.rsplit(":", 1)[-1])
+            if not 1 <= port <= 65535:
+                return False
+            exchange_tcp("dynamic", port)
+            return port
+
         wait_until("TCP proxy", ready_tcp)
         wait_until("UDP proxy", lambda: exchange_udp("ready"))
         wait_until("HTTP proxy", lambda: (exchange_http("ready"), True)[1])
         wait_until("Unix socket proxy", lambda: (exchange_tcp("unix-ready", proxy_unix), True)[1])
         wait_until("SOCKS5 proxy", lambda: exchange_socks("ready"))
+        wait_until("dynamically allocated TCP proxy", ready_dynamic)
         exchange_socks("wrong-password", b"invalid-password")
         with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
             list(pool.map(direct_unix, range(128)))
@@ -288,7 +304,7 @@ def main():
             list(pool.map(exchange_http, range(320)))
             list(pool.map(lambda n: exchange_tcp(f"unix-{n}", proxy_unix), range(128)))
             list(pool.map(exchange_socks, range(128)))
-        print("PASS: 128 direct Unix controls, 320 TCP sessions, 128 UDP clients, 320 HTTP requests, 128 Unix and 128 authenticated SOCKS5 sessions")
+        print("PASS: dynamic port, 128 direct Unix controls, 320 TCP sessions, 128 UDP clients, 320 HTTP requests, 128 Unix and 128 authenticated SOCKS5 sessions")
 
         # Compare direct and proxied behavior against the same small accept
         # queue. This is diagnostic: an overloaded target can reject either.
@@ -345,6 +361,7 @@ def main():
                     wait_until("frpc restart", lambda: (status if (status := running(client)) and status.get("runId") != old_run else None))
                     wait_until("TCP after client restart", ready_tcp, timeout=90)
                     wait_until("HTTP after client restart", lambda: (exchange_http(f"client-{number}"), True)[1], timeout=90)
+                    wait_until("dynamic port after client restart", ready_dynamic, timeout=90)
                 for number in range(3):
                     old_run = control(server, "restart")
                     wait_until("frps restart", lambda: (status if (status := running(server)) and status.get("runId") != old_run else None))
@@ -353,6 +370,7 @@ def main():
                     wait_until("HTTP after server restart", lambda: (exchange_http(f"server-{number}"), True)[1], timeout=90)
                     wait_until("Unix socket after server restart", lambda: (exchange_tcp("unix-restart", proxy_unix), True)[1], timeout=90)
                     wait_until("SOCKS5 after server restart", lambda: exchange_socks("restart"), timeout=90)
+                    wait_until("dynamic port after server restart", ready_dynamic, timeout=90)
             finally:
                 stop_load.set()
                 for worker in workers:
