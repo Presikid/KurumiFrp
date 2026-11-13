@@ -363,7 +363,10 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			cookieRequest.Header.Del("Authorization")
 			cookiePrincipal, cookieValid := a.auth.identity(cookieRequest)
 			if cookieValid && cookiePrincipal.gate != nil {
-				cookiePrincipal.gate.Lock()
+				if !cookiePrincipal.gate.TryLock() {
+					fail(w, http.StatusTooManyRequests, fmt.Errorf("其他操作正在进行，本次未退出，请稍后重试"))
+					return
+				}
 				defer cookiePrincipal.gate.Unlock()
 				current, valid := a.auth.identity(cookieRequest)
 				if !valid || current.gate != cookiePrincipal.gate {
