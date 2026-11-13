@@ -155,12 +155,14 @@ func PerformSystemUpdate() error {
 	if e != nil {
 		return e
 	}
+	// The download deadline must not terminate an in-progress package transaction.
+	cancel()
 	var cmd *exec.Cmd
 	if distribution == "linux-deb" {
-		cmd = exec.CommandContext(ctx, "apt-get", "-y", "install", path)
+		cmd = exec.Command("apt-get", "-y", "install", path)
 		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
 	} else {
-		cmd = exec.CommandContext(ctx, "dnf", "-y", "install", path)
+		cmd = exec.Command("dnf", "-y", "install", path)
 	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
