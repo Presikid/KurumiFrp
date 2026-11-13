@@ -125,6 +125,214 @@ async function login(page) {
   await page.locator('#login-form button[type="submit"]').click();
   await page.locator('#app').waitFor({ state: 'visible', timeout: 15000 });
 }
+
+async function checkLargeRuleFilters(page, clientId) {
+  await navigate(page, 'tunnels');
+  for (const [name, protocol, range] of [
+    ['mass_tcp', 'tcp', '30000-30095'], ['mass_udp', 'udp', '32000-32095']
+  ]) {
+    await page.locator('[data-action="batch-create"]').click();
+    const form = page.locator('#editor');
+    await form.locator('[name="name"]').fill(name);
+    await form.locator('[name="instanceId"]').selectOption(clientId);
+    await form.locator('[name="protocol"]').selectOption(protocol);
+    await form.locator('[name="localPorts"]').fill(range);
+    await form.locator('[name="remotePorts"]').fill('0');
+    await form.locator('[name="enabled"]').uncheck();
+    const response = page.waitForResponse(r => r.url().endsWith('/api/tunnels/batch') && r.request().method() === 'POST');
+    await form.locator('button[type="submit"]').click();
+    const result = await response;
+    assert.equal(result.status(), 200, 'bulk rule creation failed');
+    assert.equal((await result.json()).created, 96);
+    await page.locator('#dialog').waitFor({ state: 'hidden' });
+  }
+  assert.equal(await page.locator('[data-rule]').count(), 195);
+  const filter = page.locator('[data-filter]');
+  const selection = page.locator('[data-selection-count]');
+  await filter.fill('mass_tcp-');
+  assert.equal(await page.locator('[data-rule]:visible').count(), 96);
+  await page.locator('[data-select-visible]').check();
+  assert.equal(await selection.textContent(), '已选 96 条（筛选外 0 条）');
+  await filter.fill('mass_udp-');
+  assert.equal(await page.locator('[data-rule]:visible').count(), 96);
+  assert.equal(await selection.textContent(), '已选 96 条（筛选外 96 条）');
+  await page.locator('[data-select-visible]').check();
+  assert.equal(await selection.textContent(), '已选 192 条（筛选外 96 条）');
+  await page.locator('[data-selection-action="visible"]').click();
+  assert.equal(await selection.textContent(), '已选 96 条（筛选外 0 条）');
+  await page.locator('[data-protocol]').selectOption('tcp');
+  assert.equal(await page.locator('[data-rule]:visible').count(), 0);
+  assert.equal(await page.locator('[data-filter-empty]').isVisible(), true);
+  assert.equal(await selection.textContent(), '已选 96 条（筛选外 96 条）');
+  await page.locator('[data-selection-action="clear"]').click();
+  assert.equal(await selection.textContent(), '已选 0 条（筛选外 0 条）');
+  await filter.fill('mass_tcp-30042');
+  assert.equal(await page.locator('[data-rule]:visible').count(), 1);
+  assert.equal(await page.locator('[data-rule]:visible h2').textContent(), 'mass_tcp-30042');
+  await page.locator('[data-protocol]').selectOption('');
+  await filter.fill('');
+  assert.equal(await page.locator('[data-rule]:visible').count(), 195);
+  console.log('192-rule bulk creation, filtering and selection checks passed');
+}
+
+async function checkConcurrentEdits(context, page, other, configure, serverId, clientId, origin) {
+  const third = await context.newPage();
+  configure(third);
+  try {
+    await third.goto(origin, { waitUntil: 'domcontentloaded' });
+    await third.locator('#app').waitFor({ state: 'visible' });
+    const tabs = [page, other, third];
+    for (const tab of tabs) await navigate(tab, 'instances');
+    for (let round = 0; round < 4; round++) {
+      await Promise.all(tabs.map(tab => refresh(tab)));
+      const before = await state(page);
+      const serverBefore = before.state.instances.find(item => item.id === serverId).name;
+      const clientBefore = before.state.instances.find(item => item.id === clientId).name;
+      const names = [`race-server-${round}-a`, `race-server-${round}-b`, `race-client-${round}`];
+      for (let i = 0; i < tabs.length; i++) {
+        await card(tabs[i], i === 2 ? clientId : serverId).locator('[data-action="edit-instance"]').click();
+        await tabs[i].locator('#editor [name="name"]').fill(names[i]);
+      }
+      const gate = deferred(), allCaptured = deferred();
+      let captured = 0;
+      const handler = async route => {
+        if (++captured === tabs.length) allCaptured.resolve();
+        await gate.promise;
+        await route.continue();
+      };
+      for (const tab of tabs) await tab.route('**/api/save', handler, { times: 1 });
+      const responses = Promise.all(tabs.map(tab => tab.waitForResponse(r => r.url().endsWith('/api/save') && r.request().method() === 'POST')));
+      void responses.catch(() => {});
+      try {
+        await Promise.all(tabs.map(tab => tab.locator('#editor button[type="submit"]').click()));
+        await Promise.race([allCaptured.promise, sleep(15000).then(() => { throw new Error('Not all concurrent saves were captured'); })]);
+        gate.resolve();
+        const results = await responses;
+        assert.deepEqual(results.map(r => r.status()).sort((a, b) => a - b), [200, 409, 409], 'concurrent revisions were not serialized as expected');
+        const winner = results.findIndex(r => r.status() === 200);
+        for (let i = 0; i < tabs.length; i++) {
+          if (i === winner) await tabs[i].locator('#dialog').waitFor({ state: 'hidden' });
+          else {
+            await tabs[i].waitForFunction(() => !!document.querySelector('#form-error').textContent.trim());
+            await tabs[i].locator('#cancel').click();
+          }
+        }
+        const after = await state(page);
+        assert.equal(after.revision, before.revision + 1, 'more than one concurrent save was committed');
+        assert.equal(after.state.instances.find(item => item.id === serverId).name, winner === 2 ? serverBefore : names[winner]);
+        assert.equal(after.state.instances.find(item => item.id === clientId).name, winner === 2 ? names[2] : clientBefore);
+      } finally {
+        gate.resolve();
+        for (const tab of tabs) await tab.unroute('**/api/save', handler);
+      }
+    }
+    console.log('Four rounds of three-tab simultaneous edits passed');
+  } finally {
+    await third.close();
+  }
+}
+
+async function checkTrafficRaces(page, other, clientId, serverId) {
+  await navigate(other, 'instances');
+  await refresh(other);
+  let response = other.waitForResponse(r => r.url().endsWith('/api/control') && r.request().method() === 'POST');
+  await card(other, clientId).locator('[data-action="start"]').click();
+  assert.equal((await response).status(), 200);
+  await waitRuntime(other, clientId, 'running');
+  await refresh(other);
+  const oldRun = (await state(other)).runtime[clientId].runId;
+  assert.ok(oldRun);
+
+  await page.evaluate(() => window.Kurumi.refresh(false, true));
+  await navigate(page, 'overview');
+  const picker = page.locator('[data-traffic-instance]');
+  await picker.selectOption(serverId);
+  const matchTraffic = url => url.pathname === '/api/traffic' && url.searchParams.get('id') === clientId;
+  const captured = deferred(), gate = deferred();
+  const handler = async route => {
+    try {
+      const original = await route.fetch();
+      const body = await original.json();
+      captured.resolve({ status: original.status(), runId: body.instances?.[clientId]?.runId });
+      await gate.promise;
+      await route.fulfill({ response: original });
+    } catch (error) { captured.reject(error); }
+  };
+  await page.route(matchTraffic, handler, { times: 1 });
+  try {
+    await picker.selectOption(clientId);
+    const old = await Promise.race([captured.promise, sleep(15000).then(() => { throw new Error('Old traffic response was not captured'); })]);
+    assert.equal(old.status, 200);
+    assert.equal(old.runId, oldRun, 'captured traffic did not belong to the original run');
+    await picker.focus();
+    const root = await page.locator('#content .workspace-page').elementHandle();
+    response = other.waitForResponse(r => r.url().endsWith('/api/control') && r.request().method() === 'POST');
+    await card(other, clientId).locator('[data-action="restart"]').click();
+    assert.equal((await response).status(), 200);
+    await waitRuntime(other, clientId, 'running', oldRun);
+    const newRun = (await state(other)).runtime[clientId].runId;
+    await page.waitForFunction(async ({ id, run }) => {
+      await window.Kurumi.refresh(true);
+      return window.Kurumi.state()?.runtime?.[id]?.runId === run;
+    }, { id: clientId, run: newRun }, { timeout: 15000, polling: 300 });
+    assert.equal(await root.evaluate(element => element.isConnected), true, 'overview root changed before the delayed response');
+    const delayed = page.waitForResponse(r => new URL(r.url()).pathname === '/api/traffic' && r.request().method() === 'GET');
+    gate.resolve();
+    await delayed;
+    await page.waitForFunction(() => document.querySelector('[data-traffic-output]')?.textContent.includes('实例运行代次已变化'));
+    response = page.waitForResponse(r => new URL(r.url()).pathname === '/api/traffic' && r.request().method() === 'GET');
+    await page.locator('[data-action="traffic-refresh"]').click();
+    assert.equal((await response).status(), 200);
+    await page.waitForFunction(() => {
+      const output = document.querySelector('[data-traffic-output]')?.textContent || '';
+      return output && !output.includes('正在读取') && !output.includes('代次已变化') && !output.includes('读取当前流量失败');
+    });
+    const currentRun = await page.evaluate(async id => {
+      const result = await fetch('/api/traffic?id=' + encodeURIComponent(id), { cache: 'no-store' });
+      return result.ok ? (await result.json()).instances?.[id]?.runId : null;
+    }, clientId);
+    assert.equal(currentRun, newRun, 'new traffic data must refer to the new run');
+  } finally {
+    gate.resolve();
+    await page.unroute(matchTraffic, handler);
+  }
+  // Hold one real client response, mark it, switch to the server, then release it.
+  const switchCaptured = deferred(), switchGate = deferred();
+  const switchHandler = async route => {
+    try {
+      const original = await route.fetch();
+      const body = await original.json();
+      if (!body.instances?.[clientId]) throw new Error('Missing client traffic in switch test');
+      body.instances[clientId].available = false;
+      body.instances[clientId].reason = 'SYNTHETIC_OLD_CLIENT_TRAFFIC';
+      switchCaptured.resolve(original.status());
+      await switchGate.promise;
+      await route.fulfill({ response: original, json: body });
+    } catch (error) { switchCaptured.reject(error); }
+  };
+  await page.route(matchTraffic, switchHandler, { times: 1 });
+  try {
+    await page.locator('[data-action="traffic-refresh"]').click();
+    const status = await Promise.race([switchCaptured.promise, sleep(15000).then(() => { throw new Error('Switch traffic response was not captured'); })]);
+    assert.equal(status, 200);
+    await picker.selectOption(serverId);
+    await page.waitForFunction(() => {
+      const output = document.querySelector('[data-traffic-output]')?.textContent || '';
+      return output && !output.includes('正在读取');
+    });
+    const delayed = page.waitForResponse(r => new URL(r.url()).pathname === '/api/traffic' && r.request().method() === 'GET');
+    switchGate.resolve();
+    await delayed;
+    await sleep(200);
+    assert.equal(await picker.inputValue(), serverId);
+    assert.equal((await page.locator('[data-traffic-output]').textContent()).includes('SYNTHETIC_OLD_CLIENT_TRAFFIC'), false, 'old client traffic overwrote the selected server');
+  } finally {
+    switchGate.resolve();
+    await page.unroute(matchTraffic, switchHandler);
+  }
+  console.log('Delayed traffic responses across restart and instance switch passed');
+}
+
 async function main() {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'kurumi-browser-'));
   await fs.chmod(temp, 0o700);
@@ -317,8 +525,11 @@ async function main() {
       await page.locator('[data-instance-search]').fill('');
       await refresh(page);
     }
-    assert.deepEqual(failures, []);
     console.log('Cross-session delayed response and repeated navigation checks passed');
+    await checkLargeRuleFilters(page, clientId);
+    await checkConcurrentEdits(context, page, other, configure, serverId, clientId, origin);
+    await checkTrafficRaces(page, other, clientId, serverId);
+    assert.deepEqual(failures, []);
   } finally {
     lateRelease?.resolve();
     if (browser) await browser.close().catch(() => {});
@@ -333,4 +544,5 @@ async function main() {
 }
 
 main().catch(error => { console.error(error.stack || String(error)); process.exitCode = 1; });
+
 
