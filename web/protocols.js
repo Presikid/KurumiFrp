@@ -12,12 +12,16 @@ const Protocols = Object.freeze({
   if (this.supportsUnbound(t.type) && t.localPort < 0) return '此 Visitor 仅接收回退连接';
   return '';
  },
+ hostPort(host, port) {
+  const value = String(host ?? '');
+  const displayHost = value.includes(':') && !(value.startsWith('[') && value.endsWith(']')) ? `[${value}]` : value;
+  return `${displayHost || '（地址未设置）'}:${port === '' || port == null ? '（端口未设置）' : port}`;
+ },
  endpoint(t) {
   if (t.pluginType === 'socks5') return 'SOCKS5 代理';
   if (t.unixSocketPath) return 'Unix: ' + t.unixSocketPath;
   if (this.supportsUnbound(t.type) && t.localPort < 0) return '仅接收回退连接';
-  const host = String(t.localHost || '');
-  return (host.includes(':') ? `[${host}]` : host) + ':' + t.localPort;
+  return this.hostPort(t.localHost, t.localPort);
  },
  remote(t) {
   if (this.isVisitor(t.type)) return (t.serverUser ? t.serverUser + ' / ' : '') + (t.serverName || '');

@@ -549,7 +549,7 @@
     const plan = data.schedules?.[item.id];
     const mayAcknowledge = ['start','stop','restart'].some(action => can(data,item.id,action));
     return `<article class="card" data-local-instance="${e(item.id)}"><div class="section-heading"><div><span class="eyebrow">${e(item.kind)}</span><h2>${e(item.name)}</h2></div><div>${status(runtime)}</div></div>
-     ${details ? `<p><span class="muted">地址</span> <code>${e(item.host)}:${e(item.port)}</code></p><p><span class="muted">规则</span> ${data.state.tunnels.filter(rule => rule.instanceId === item.id).length} 条 · <span class="muted">定时计划</span> ${!plan ? '未设置' : !plan.enabled ? '已关闭' : plan.paused ? '已暂停' : '已启用'}</p>` : ''}
+     ${details ? `<p><span class="muted">地址</span> <code>${e(Protocols.hostPort(item.host,item.port))}</code></p><p><span class="muted">规则</span> ${data.state.tunnels.filter(rule => rule.instanceId === item.id).length} 条 · <span class="muted">定时计划</span> ${!plan ? '未设置' : !plan.enabled ? '已关闭' : plan.paused ? '已暂停' : '已启用'}</p>` : ''}
      ${runtime.exit ? `<p class="notice">${e(runtime.exit)}</p>` : ''}${plan?.reason ? `<p class="small-note">${e(plan.reason)}</p>` : ''}
      <div class="notice" role="status" data-local-control-notice hidden><span data-local-control-text></span>${mayAcknowledge ? button('ack-local-control','刷新核对并解除',item.id) : ''}</div>
      <div class="actions">${controls}${logs ? button('logs','日志',item.id) : ''}${details ? button('config','配置',item.id) : ''}${admin(data) || data.identity?.viewTraffic ? button('traffic','流量',item.id) : ''}${admin(data) ? button('health','诊断',item.id) : ''}</div>
