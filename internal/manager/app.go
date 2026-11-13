@@ -127,45 +127,6 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (res
 	if e != nil {
 		return nil, e
 	}
-	// A damaged account file disables accounts and account mutations, but the
-	// existing local administrator must still be able to start the workbench.
-	accounts, accountGroups, accountsRevision, accountLoadErr := loadAccounts(s.dir)
-	if accountLoadErr == nil {
-		for _, account := range accounts {
-			for _, id := range account.Instances {
-				if _, exists := s.DB.State.Instance(id); !exists {
-					accountLoadErr = fmt.Errorf("账户授权引用了不存在的实例")
-					accounts, accountGroups, accountsRevision = nil, nil, 0
-					break
-				}
-			}
-			if accountLoadErr != nil {
-				break
-			}
-		}
-	}
-	if accountLoadErr == nil {
-		for _, group := range accountGroups {
-			if group.Template == nil {
-				continue
-			}
-			for _, grants := range [][]string{group.Template.Instances, group.Template.ControlInstances, group.Template.LogInstances} {
-				for _, id := range grants {
-					if _, exists := s.DB.State.Instance(id); !exists {
-						accountLoadErr = fmt.Errorf("账户分组模板授权引用了不存在的实例")
-						break
-					}
-				}
-				if accountLoadErr != nil {
-					break
-				}
-			}
-			if accountLoadErr != nil {
-				accounts, accountGroups, accountsRevision = nil, nil, 0
-				break
-			}
-		}
-	}
 	tokenPath := filepath.Join(s.dir, "access.token")
 	token, e := privateFile(tokenPath)
 	if os.IsNotExist(e) {
@@ -178,8 +139,7 @@ func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (res
 	if len(token) != 64 {
 		return nil, fmt.Errorf("invalid access token file")
 	}
-	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, dataLock: dataLock, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, accounts: accounts, accountGroups: accountGroups, accountsRevision: accountsRevision, accountLoadErr: accountLoadErr, accountPath: filepath.Join(s.dir, "accounts.json"), hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), themes: newThemeManager(s.dir), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
-	app.auth.onAccountsWriteUncertain = func() { go app.stopAccountFRPRuns() }
+	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, dataLock: dataLock, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), themes: newThemeManager(s.dir), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
 	app.auth.oidcSettings, app.auth.oidcLoadErr = loadOIDCSettings(s.dir)
 	app.auth.oidcStartSlots = make(chan struct{}, 4)
 	if e = app.recoverSchedules(); e != nil {
@@ -556,18 +516,6 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/import" {
 			a.importConfigAPI(w, r)
 			return
-		}
-		// Do not create IDs while an unreadable account file could contain old
-		// grants for them. Instance replacement and deletion have the same
-		// protection in lockStateReplacement.
-		if r.URL.Path == "/api/save" || r.URL.Path == "/api/duplicate" || r.URL.Path == "/api/import/toml" {
-			a.auth.mu.Lock()
-			unavailable := a.auth.accountLoadErr != nil
-			a.auth.mu.Unlock()
-			if unavailable {
-				fail(w, http.StatusServiceUnavailable, fmt.Errorf("账户文件无法读取，修复前不能新增或修改实例"))
-				return
-			}
 		}
 		if r.URL.Path == "/api/delete" || r.URL.Path == "/api/restore" {
 			buffered, err := bufferMutationBody(w, r, 1<<20)
@@ -954,18 +902,9 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 		if !found {
 			err = fmt.Errorf("对象不存在")
 		} else {
-			if req.Kind == "instance" {
-				next := a.store.DB
-				if err = incrementRevision(&next); err != nil {
-					break
-				}
-				if err = a.clearInstanceGrantsLocked(req.ID); err != nil {
-					break
-				}
-			}
 			err = a.store.commit(st, "删除 "+req.Kind+" 草稿")
 			if err != nil && req.Kind == "instance" {
-				err = stateWriteAfterGrantRevocationError("删除", err)
+				err = stateWriteOutcomeError("删除", err)
 			}
 			if err == nil && req.Kind == "instance" {
 				delete(a.procs, req.ID)
@@ -989,18 +928,11 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				if err = a.store.validateStateChange(st); err != nil {
 					break
 				}
-				next := a.store.DB
-				if err = incrementRevision(&next); err != nil {
-					break
-				}
-				if err = a.clearInstanceGrantsLocked(""); err != nil {
-					break
-				}
 				err = a.store.commitRestoring(st, fmt.Sprintf("恢复草稿版本 %d", h.Revision), true)
 				if err == nil {
 					a.discardStoppedRuntimeLocked()
 				} else {
-					err = stateWriteAfterGrantRevocationError("恢复", err)
+					err = stateWriteOutcomeError("恢复", err)
 				}
 				break
 			}

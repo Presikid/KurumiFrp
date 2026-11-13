@@ -30,7 +30,7 @@
   K.openDialog({
    html: mode === 'export'
     ? '<h2>导出加密备份</h2><p class="muted">备份密码须为 12–1024 个 UTF-8 字节，不含控制字符；密码不会保存，请将密码和文件分开保管。</p><div class="form-grid"><label>备份密码<input name="password" type="password" maxlength="1024" required autocomplete="new-password"></label><label>确认密码<input name="confirm" type="password" maxlength="1024" required autocomplete="new-password"></label></div>'
-    : '<h2>恢复加密备份</h2><p class="muted">请先停止全部托管实例。恢复会替换配置、定时计划、历史快照和草稿事件记录，并撤销现有非管理员账户的本机实例授权。FRP 认证配置（包括共享令牌）也会恢复，请核对客户端。导入的计划将暂停；节点授权和通知设置保留在本机。</p><div class="form-grid"><label class="span-2">备份文件<input type="file" name="file" accept=".json,application/json" required></label><label class="span-2">备份密码<input name="password" type="password" required maxlength="1024" autocomplete="current-password"></label><label class="form-check span-2"><input type="checkbox" name="confirmRestore" required>确认恢复备份并接受上述影响</label></div>',
+    : '<h2>恢复加密备份</h2><p class="muted">请先停止全部托管实例。恢复会替换配置、定时计划、历史快照和草稿事件记录。FRP 认证配置（包括共享令牌）也会恢复，请核对客户端。导入的计划将暂停；节点授权和通知设置保留在本机。</p><div class="form-grid"><label class="span-2">备份文件<input type="file" name="file" accept=".json,application/json" required></label><label class="span-2">备份密码<input name="password" type="password" required maxlength="1024" autocomplete="current-password"></label><label class="form-check span-2"><input type="checkbox" name="confirmRestore" required>确认恢复备份并接受上述影响</label></div>',
    submitLabel:mode === 'export' ? '导出加密备份' : '验证并恢复',
    async onSubmit(form) {
     validRevision(data);
@@ -293,7 +293,7 @@
       validRevision(data); const blocked = K.transfer.blocked(); if (blocked) throw new Error(blocked);
       const file = root.querySelector('[data-import-file]').files[0];
       if (!file) throw new Error('请选择配置文件。');
-      if (!confirm('导入会替换当前配置、定时计划、历史快照和草稿事件记录，并撤销现有非管理员账户的本机实例授权。FRP 认证配置（包括共享令牌）也会恢复，请核对客户端。导入的计划将暂停；节点授权和通知设置保留在本机。请先停止全部托管实例。继续？')) return;
+      if (!confirm('导入会替换当前配置、定时计划、历史快照和草稿事件记录。FRP 认证配置（包括共享令牌）也会恢复，请核对客户端。导入的计划将暂停；节点授权和通知设置保留在本机。请先停止全部托管实例。继续？')) return;
       const value = await readJSON(file,128*1024*1024);
       if (!K.isCurrent('config',root)) throw new Error('页面已变化，请重新操作。'); validRevision(data);
       const operation = K.transfer.begin('import');
