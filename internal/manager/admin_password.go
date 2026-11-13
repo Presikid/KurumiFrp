@@ -13,6 +13,23 @@ import (
 	"unicode/utf8"
 )
 
+const adminPasswordIterations = 600000
+
+func (a *auth) acquireHash() bool {
+	select {
+	case a.hashSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *auth) releaseHash() { <-a.hashSlots }
+
+func passwordHash(password string, salt []byte) ([]byte, error) {
+	return pbkdf2SHA256([]byte(password), salt, adminPasswordIterations, 32)
+}
+
 // The administrator password is independent of account files and the local
 // maintenance token. A missing password file initializes an empty password.
 type adminPasswordFile struct {
@@ -182,7 +199,7 @@ func (a *auth) loginAdminPassword(r *http.Request, password string) (string, boo
 	if a.adminPasswordErr != nil || a.adminPasswordGeneration != generation {
 		return "", false, fmt.Errorf("密码状态已变化，请重试")
 	}
-	sid, err := a.newSessionLocked(r, "", time.Now())
+	sid, err := a.newSessionLocked(r, time.Now())
 	return sid, false, err
 }
 
@@ -280,10 +297,8 @@ func (a *App) adminPasswordAPI(w http.ResponseWriter, r *http.Request, p princip
 			a.auth.adminPasswordErr = fmt.Errorf("主密码文件状态无法安全确认")
 		}
 		a.auth.adminPasswordGeneration++
-		for sid, session := range a.auth.sessions {
-			if session.accountID == "" {
-				delete(a.auth.sessions, sid)
-			}
+		for sid := range a.auth.sessions {
+			delete(a.auth.sessions, sid)
 		}
 	}
 	if a.auth.adminPasswordErr != nil {

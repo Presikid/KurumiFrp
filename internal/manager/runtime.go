@@ -36,9 +36,6 @@ type process struct {
 	appliedDigest       string
 	appliedSecretDigest string
 
-	// Immutable after publication; empty for runs without account login.
-	managedAccountIncarnation string
-
 	// Set before publication for an in-process client and kept for this run.
 	registrationReader      ProxyRegistrationReader
 	readiness               RuntimeReadiness
@@ -465,16 +462,6 @@ func (a *App) startPreparedConfigWithSource(i Instance, cfg RuntimeConfig, targe
 	if err := a.checkManagedAccountBackend(i, cfg); err != nil {
 		return err
 	}
-	if cfg.ManagedAccountLogin {
-		// App.mu is held, so a failed account write cannot miss a newly
-		// published managed run while its stop callback takes a snapshot.
-		if err := a.checkManagedAccountWritesLocked(cfg); err != nil {
-			return err
-		}
-		if a.store.DB.LocalTrafficIDs[i.ID] != cfg.ManagedAccountIncarnation {
-			return fmt.Errorf("服务端实例或实例标识已变化，请重新校验")
-		}
-	}
 	if err := a.checkTrafficBudgetStartLocked(i); err != nil {
 		return err
 	}
@@ -493,7 +480,7 @@ func (a *App) startPreparedConfigWithSource(i Instance, cfg RuntimeConfig, targe
 	r := cfg.Rendered
 	config := cloneRuntimeConfig(cfg)
 	config.RunID = randomHex(8)
-	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), appliedConfig: r.Text, appliedDigest: r.Digest, appliedSecretDigest: r.SecretDigest, managedAccountIncarnation: cfg.ManagedAccountIncarnation, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
+	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), appliedConfig: r.Text, appliedDigest: r.Digest, appliedSecretDigest: r.SecretDigest, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
 	if binding := nodeInstanceBinding(a.store.DB.LocalTrafficIDs[i.ID]); a.logHistory != nil && binding != "" {
 		history, instanceID, runID := a.logHistory, i.ID, config.RunID
 		p.logs.history = func(line string) { history.enqueue(instanceID, binding, runID, line) }
