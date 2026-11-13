@@ -9,8 +9,9 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: kurumi-${{ github.ref }}
-  cancel-in-progress: true
+  group: kurumi-v2-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
 jobs:
   package:
     strategy:
