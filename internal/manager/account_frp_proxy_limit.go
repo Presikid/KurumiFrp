@@ -79,6 +79,9 @@ func (a *App) accountFRPProxyLimitAPI(w http.ResponseWriter, r *http.Request, re
 		if !current.admin() {
 			return http.StatusForbidden, 0, fmt.Errorf("没有此操作的权限")
 		}
+		if a.auth.accountsWriteUncertain {
+			return http.StatusServiceUnavailable, 0, a.auth.accountWriteFailure()
+		}
 		if revision != a.auth.accountsRevision {
 			return http.StatusConflict, 0, fmt.Errorf("账户已发生变化，请刷新后重试")
 		}

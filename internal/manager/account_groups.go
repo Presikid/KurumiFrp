@@ -140,6 +140,9 @@ func (a *App) accountGroupAction(w http.ResponseWriter, r *http.Request, action 
 		if !current.admin() {
 			return http.StatusForbidden, fmt.Errorf("仅管理员可管理账户分组")
 		}
+		if a.auth.accountsWriteUncertain {
+			return http.StatusServiceUnavailable, a.auth.accountWriteFailure()
+		}
 		if revision != a.auth.accountsRevision {
 			return http.StatusConflict, fmt.Errorf("账户或分组已发生变化，请刷新后重试")
 		}
@@ -264,6 +267,9 @@ func (a *App) accountGroupAction(w http.ResponseWriter, r *http.Request, action 
 			return http.StatusBadRequest, fmt.Errorf("未知分组操作")
 		}
 		if err := a.auth.writeAccountsAndGroups(users, groups); err != nil {
+			if a.auth.accountsWriteUncertain {
+				return http.StatusInternalServerError, a.auth.accountWriteFailure()
+			}
 			return http.StatusInternalServerError, fmt.Errorf("无法保存账户分组")
 		}
 		return http.StatusOK, nil

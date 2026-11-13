@@ -309,7 +309,7 @@ func (a *auth) writeAccounts(accounts []localAccount) error {
 // Caller holds auth.mu. Avoid telling users to retry against uncertain state.
 func (a *auth) accountWriteFailure() error {
 	if a.accountsWriteUncertain {
-		return fmt.Errorf("账户配置保存状态未确认；已有受管 FRP 连接可能仍在运行，请管理员确认后安全重启工作台并核对")
+		return fmt.Errorf("账户配置保存状态未确认；已有受管 FRP 转发可能仍在运行，请联系管理员确认工作台完全停止后再重启并核对账户配置")
 	}
 	return fmt.Errorf("无法保存账户配置")
 }
@@ -317,7 +317,7 @@ func (a *auth) accountWriteFailure() error {
 // Caller holds auth.mu. Accounts and groups are one atomic file and revision.
 func (a *auth) writeAccountsAndGroups(accounts []localAccount, groups []accountGroup) error {
 	if a.accountsWriteUncertain {
-		return fmt.Errorf("账户文件写入状态未确认，请安全重启工作台后核对")
+		return a.accountWriteFailure()
 	}
 	if a.accountsRevision >= maxJSONRevision {
 		return fmt.Errorf("账户版本已达到上限")
@@ -337,7 +337,7 @@ func (a *auth) writeAccountsAndGroups(accounts []localAccount, groups []accountG
 		if a.onAccountsWriteUncertain != nil {
 			a.onAccountsWriteUncertain()
 		}
-		return err
+		return a.accountWriteFailure()
 	}
 	a.accounts = accounts
 	a.accountGroups = cloneAccountGroups(groups)
@@ -360,7 +360,7 @@ func (a *App) clearInstanceGrantsLocked(instanceID string) error {
 	a.auth.mu.Lock()
 	defer a.auth.mu.Unlock()
 	if a.auth.accountsWriteUncertain {
-		return fmt.Errorf("账户文件写入状态未确认，请安全重启工作台后核对")
+		return a.auth.accountWriteFailure()
 	}
 	users := append([]localAccount(nil), a.auth.accounts...)
 	groups := cloneAccountGroups(a.auth.accountGroups)
@@ -702,6 +702,10 @@ func (a *App) accountsAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if !current.admin() {
 		fail(w, http.StatusForbidden, fmt.Errorf("没有此操作的权限"))
+		return
+	}
+	if req.Action != "revoke-sessions" && a.auth.accountsWriteUncertain {
+		fail(w, http.StatusServiceUnavailable, a.auth.accountWriteFailure())
 		return
 	}
 	if req.Revision != a.auth.accountsRevision {
