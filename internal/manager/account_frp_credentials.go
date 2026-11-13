@@ -145,7 +145,7 @@ func (a *App) changeAccountFRPToken(r *http.Request, action string, revision uin
 		return nil, http.StatusServiceUnavailable, fmt.Errorf("账户状态不可用")
 	}
 	if a.auth.accountsWriteUncertain {
-		return nil, http.StatusServiceUnavailable, fmt.Errorf("账户文件写入状态未确认，请安全重启工作台后核对")
+		return nil, http.StatusServiceUnavailable, a.auth.accountWriteFailure()
 	}
 	if a.accountFRPRevocations[accountFRPRevocationKey{accountID, instanceID}] != nil {
 		return nil, http.StatusConflict, fmt.Errorf("该账户的旧连接尚未确认关闭，请安全重启工作台后核对")
@@ -256,7 +256,7 @@ func (a *App) changeAccountFRPToken(r *http.Request, action string, revision uin
 	}
 	users[index].FRPTokens = entries
 	if err := a.auth.writeAccounts(users); err != nil {
-		return nil, http.StatusInternalServerError, fmt.Errorf("保存结果未确认，请安全停止并重启工作台后核对")
+		return nil, http.StatusInternalServerError, a.auth.accountWriteFailure()
 	}
 	a.publishAccountFRPRevocationLocked(pending)
 	*revocation = pending

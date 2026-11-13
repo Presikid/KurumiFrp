@@ -50,10 +50,9 @@ func (a *App) checkManagedAccountWritesLocked(cfg RuntimeConfig) error {
 		return nil
 	}
 	a.auth.mu.Lock()
-	uncertain := a.auth.accountsWriteUncertain
-	a.auth.mu.Unlock()
-	if uncertain {
-		return fmt.Errorf("账户文件写入状态未确认，请安全重启工作台后核对")
+	defer a.auth.mu.Unlock()
+	if a.auth.accountsWriteUncertain {
+		return a.auth.accountWriteFailure()
 	}
 	return nil
 }
