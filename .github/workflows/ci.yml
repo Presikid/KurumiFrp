@@ -139,13 +139,19 @@ jobs:
           tag="v$version"
           tag_refs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" --jq '.[] | .ref')" || { echo '::error::Tag lookup failed; publication stopped.'; exit 1; }
           if grep -Fxq "refs/tags/$tag" <<< "$tag_refs"; then
-            echo "::error::Tag $tag already exists; resolve it manually."
-            exit 1
-          fi
-          # Atomically create the tag at this run's commit; never move an existing tag.
-          if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$tag" -f "sha=$GITHUB_SHA" >/dev/null; then
-            echo "::error::Could not create tag $tag at $GITHUB_SHA; publication stopped."
-            exit 1
+            # A cancelled run may have created this lightweight tag already.
+            tag_commit="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq 'select(.object.type == "commit") | .object.sha')" || { echo '::error::Tag target lookup failed; publication stopped.'; exit 1; }
+            if [ "$tag_commit" != "$GITHUB_SHA" ]; then
+              echo "::error::Tag $tag is not a lightweight tag at $GITHUB_SHA; resolve it manually."
+              exit 1
+            fi
+            echo "Reusing tag $tag at $GITHUB_SHA."
+          else
+            # Atomically create the tag at this run's commit; never move an existing tag.
+            if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$tag" -f "sha=$GITHUB_SHA" >/dev/null; then
+              echo "::error::Could not create tag $tag at $GITHUB_SHA; publication stopped."
+              exit 1
+            fi
           fi
           gh release create "$tag" dist-native/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "KurumiFrp $version" --notes-file "docs/RELEASE_$version.md" --prerelease
 
