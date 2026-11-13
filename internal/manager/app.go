@@ -36,9 +36,6 @@ type App struct {
 	addr     string
 	auth     auth
 	procs    map[string]*process
-	// Protected by mu. A failed live revocation blocks this account/instance
-	// until the workbench restarts, rather than admitting a new credential.
-	accountFRPRevocations map[accountFRPRevocationKey]*accountFRPRevocation
 	traffic               map[string]*trafficSamples // protected by mu, keyed by instance and run ID
 	trafficDaily          *trafficDailyHistory
 	trafficBudget         *trafficBudgetStore

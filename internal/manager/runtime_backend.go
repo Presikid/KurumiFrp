@@ -39,20 +39,6 @@ func validateManagedRuntimeConfig(cfg RuntimeConfig) error {
 	return nil
 }
 
-// Caller holds App.mu. The auth lock keeps the write failure and a managed
-// start in the same order as the asynchronous stop snapshot.
-func (a *App) checkManagedAccountWritesLocked(cfg RuntimeConfig) error {
-	if !cfg.ManagedAccountLogin {
-		return nil
-	}
-	a.auth.mu.Lock()
-	defer a.auth.mu.Unlock()
-	if a.auth.accountsWriteUncertain {
-		return a.auth.accountWriteFailure()
-	}
-	return nil
-}
-
 func (a *App) checkManagedAccountBackend(i Instance, cfg RuntimeConfig) error {
 	if cfg.InstanceID != i.ID || cfg.Kind != i.Kind || cfg.ManagedAccountLogin != i.ManagedAccountLogin {
 		return fmt.Errorf("账户认证配置与目标实例不匹配")

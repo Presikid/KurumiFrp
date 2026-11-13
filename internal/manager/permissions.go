@@ -1,6 +1,20 @@
 package manager
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+)
+
+type principalContextKey struct{}
+
+func requestPrincipal(r *http.Request) principal {
+	p, _ := r.Context().Value(principalContextKey{}).(principal)
+	return p
+}
+
+func withPrincipal(r *http.Request, p principal) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), principalContextKey{}, p))
+}
 
 // Every API method has an explicit policy. Unknown methods and future routes
 // are denied for all identities until they are deliberately added here.

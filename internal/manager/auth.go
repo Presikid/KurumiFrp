@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 )
 
 type attempt struct {
@@ -40,21 +39,6 @@ type auth struct {
 	onLoginLimit      func(string)
 	sessions          map[string]authSession
 	nextCleanup       time.Time
-	accountPath       string
-	accounts          []localAccount
-	accountsRevision  uint64
-	accountGroups     []accountGroup
-	accountLoadErr    error
-	// A failed account-file write may have reached disk despite returning an
-	// error. Freeze account-file writes until restart; readers must treat the
-	// current in-memory state as potentially different from disk.
-	accountsWriteUncertain bool
-	// Counts include managed TCP proxies being created or closed. The separate
-	// lock is never held while taking account, app, or frp lifecycle locks.
-	frpProxySlotsMu sync.Mutex
-	frpProxySlots   map[string]int
-	// Invoked under mu; the callback must return promptly and not take locks.
-	onAccountsWriteUncertain func()
 	hashSlots                chan struct{}
 	adminPasswordPath        string
 	adminPassword            adminPasswordFile
@@ -64,11 +48,15 @@ type auth struct {
 }
 
 type authSession struct {
-	expires         time.Time
-	accountID       string        // empty for a root browser session
-	gate            *sync.RWMutex // root sessions share rootGate; account sessions use the account gate
-	oidcRevision    uint64        // zero for non-OIDC sessions
-	passwordAccount bool          // set only after a local account password login succeeds
+	expires time.Time
+	gate    *sync.RWMutex // browser sessions share rootGate
+}
+
+type remoteGrant struct {
+	NodeID     string `json:"nodeId"`
+	InstanceID string `json:"instanceId"`
+	Binding    string `json:"binding"`
+	Control    bool   `json:"control,omitempty"`
 }
 
 type principal struct {
@@ -225,38 +213,11 @@ func (a *auth) identityLocked(r *http.Request) (principal, bool) {
 	if !ok {
 		return principal{}, false
 	}
-	if !time.Now().Before(session.expires) || session.accountID != "" || session.oidcRevision != 0 {
+	if !time.Now().Before(session.expires) {
 		delete(a.sessions, c.Value)
 		return principal{}, false
 	}
 	return principal{Name: "本机管理员", Role: "admin", gate: session.gate}, true
-}
-
-// Both account login and password changes use the same credential budget.
-// Fold aliases without consulting the account list, including for unknown names.
-func accountAttemptKey(username string) string {
-	if len(username) > 32 {
-		return "invalid-account"
-	}
-	name := strings.Map(func(r rune) rune {
-		folded := r
-		for {
-			if folded >= 'A' && folded <= 'Z' {
-				return folded + ('a' - 'A')
-			}
-			if folded >= 'a' && folded <= 'z' {
-				return folded
-			}
-			folded = unicode.SimpleFold(folded)
-			if folded == r {
-				return r
-			}
-		}
-	}, username)
-	if accountNamePattern.MatchString(name) {
-		return "account:" + name
-	}
-	return "invalid-account"
 }
 
 // Reservations include in-flight checks so concurrent guesses cannot all
@@ -407,20 +368,14 @@ func (a *auth) login(r *http.Request, password *string) (string, error) {
 	return sid, err
 }
 
-// A newly authenticated browser replaces its old cookie. Each account can
-// hold at most four sessions, and full capacity evicts an account session so
-// that the local administrator retains a recovery path.
-func (a *auth) newSessionLocked(r *http.Request, accountID string, now time.Time) (string, error) {
-	if accountID != "" && a.accountsWriteUncertain {
-		return "", a.accountWriteFailure()
-	}
+// A newly authenticated browser replaces its old cookie. Plan evictions before
+// changing sessions so a busy session does not log out a failed login's browser.
+func (a *auth) newSessionLocked(r *http.Request, now time.Time) (string, error) {
 	for sid, session := range a.sessions {
 		if !now.Before(session.expires) {
 			delete(a.sessions, sid)
 		}
 	}
-	// Plan all evictions first. If another session is busy, a failed login must
-	// not log out the browser whose cookie it was trying to replace.
 	removed := make(map[string]bool)
 	held := make(map[*sync.RWMutex]bool)
 	defer func() {
@@ -434,14 +389,6 @@ func (a *auth) newSessionLocked(r *http.Request, accountID string, now time.Time
 			return true
 		}
 		gate := session.gate
-		if session.accountID != "" {
-			for _, account := range a.accounts {
-				if account.ID == session.accountID {
-					gate = account.gate
-					break
-				}
-			}
-		}
 		if gate != nil && !held[gate] {
 			// auth.mu is held: never wait for a gate, whose owner may need mu.
 			if !gate.TryLock() {
@@ -457,39 +404,18 @@ func (a *auth) newSessionLocked(r *http.Request, accountID string, now time.Time
 			return "", fmt.Errorf("当前会话仍有操作进行，请稍后再试")
 		}
 	}
-	if accountID != "" {
-		count := 0
-		oldest, oldestTime := "", time.Time{}
-		for sid, session := range a.sessions {
-			if session.accountID == accountID && !removed[sid] {
-				count++
-				if oldest == "" || session.expires.Before(oldestTime) {
-					oldest, oldestTime = sid, session.expires
-				}
-			}
-		}
-		if count >= 4 {
-			if !reserve(oldest) {
-				return "", fmt.Errorf("当前账户的操作尚未结束，请稍后再试")
-			}
-		}
-	}
 	if len(a.sessions)-len(removed) >= 64 {
 		type candidate struct {
 			id      string
 			expires time.Time
-			root    bool
 		}
 		var candidates []candidate
 		for sid, session := range a.sessions {
-			if !removed[sid] && (session.accountID != "" || accountID == "") {
-				candidates = append(candidates, candidate{sid, session.expires, session.accountID == ""})
+			if !removed[sid] {
+				candidates = append(candidates, candidate{sid, session.expires})
 			}
 		}
 		sort.Slice(candidates, func(i, j int) bool {
-			if candidates[i].root != candidates[j].root {
-				return !candidates[i].root
-			}
 			return candidates[i].expires.Before(candidates[j].expires)
 		})
 		evicted := false
@@ -507,11 +433,7 @@ func (a *auth) newSessionLocked(r *http.Request, accountID string, now time.Time
 		delete(a.sessions, sid)
 	}
 	sid := randomHex(32)
-	session := authSession{expires: now.Add(12 * time.Hour), accountID: accountID}
-	if accountID == "" {
-		session.gate = &a.rootGate
-	}
-	a.sessions[sid] = session
+	a.sessions[sid] = authSession{expires: now.Add(12 * time.Hour), gate: &a.rootGate}
 	return sid, nil
 }
 

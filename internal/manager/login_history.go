@@ -7,12 +7,15 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"sync"
 	"time"
 )
 
 const maxLoginHistory = 300
+
+// Preserve validation of usernames already present in legacy login history.
+var loginHistoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$`)
 
 type loginHistoryEntry struct {
 	At      string `json:"at"`
@@ -55,7 +58,7 @@ func loadLoginHistory(dir string) *loginHistory {
 	}
 	for _, entry := range file.Entries {
 		_, err := time.Parse(time.RFC3339, entry.At)
-		if err != nil || (entry.Account != "本机令牌" && entry.Account != "本机密码" && entry.Account != "启动凭据" && entry.Account != "未知账户" && !accountNamePattern.MatchString(entry.Account)) {
+		if err != nil || (entry.Account != "本机令牌" && entry.Account != "本机密码" && entry.Account != "启动凭据" && entry.Account != "未知账户" && !loginHistoryNamePattern.MatchString(entry.Account)) {
 			h.loadFailed = true
 			return h
 		}
@@ -79,32 +82,13 @@ func loginPeer(r *http.Request) string {
 	return peer
 }
 
-// Never persist arbitrary user-supplied text from the username field: it may
-// contain a mistakenly entered credential. Only registered names are recorded.
-func (a *App) loginAccountLabel(name string) string {
-	if name == "" {
-		return "本机令牌"
-	}
-	if !accountNamePattern.MatchString(name) {
-		return "未知账户"
-	}
-	a.auth.mu.Lock()
-	defer a.auth.mu.Unlock()
-	for _, account := range a.auth.accounts {
-		if strings.EqualFold(account.Username, name) {
-			return account.Username
-		}
-	}
-	return "未知账户"
-}
-
 func (h *loginHistory) record(r *http.Request, account string, success bool) {
 	if h == nil {
 		return
 	}
 	if account == "" {
 		account = "本机令牌"
-	} else if account != "启动凭据" && account != "本机令牌" && account != "本机密码" && account != "未知账户" && !accountNamePattern.MatchString(account) {
+	} else if account != "启动凭据" && account != "本机令牌" && account != "本机密码" && account != "未知账户" && !loginHistoryNamePattern.MatchString(account) {
 		account = "未知账户"
 	}
 	h.mu.Lock()

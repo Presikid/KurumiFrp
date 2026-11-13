@@ -206,15 +206,6 @@ func (a *App) checkRuntimeSnapshot(ctx context.Context, snapshot runtimeSnapshot
 	if !ok || current.Kind != snapshot.instance.Kind || current.ManagedAccountLogin != snapshot.config.ManagedAccountLogin {
 		return http.StatusConflict, fmt.Errorf("操作期间账户认证配置已变化，请刷新后重试")
 	}
-	if snapshot.config.ManagedAccountLogin {
-		if err := a.checkManagedAccountWritesLocked(snapshot.config); err != nil {
-			return http.StatusConflict, err
-		}
-		if snapshot.config.ManagedAccountIncarnation != snapshot.incarnation ||
-			a.store.DB.LocalTrafficIDs[snapshot.instance.ID] != snapshot.incarnation {
-			return http.StatusConflict, fmt.Errorf("操作期间服务端实例标识已变化，请刷新后重试")
-		}
-	}
 	rendered, err := a.store.render(snapshot.instance.ID, false)
 	if err != nil || rendered.Digest != snapshot.config.Rendered.Digest {
 		return http.StatusConflict, fmt.Errorf("操作期间实例配置已变化，请重新验证后应用")
