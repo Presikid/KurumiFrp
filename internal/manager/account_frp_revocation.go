@@ -132,13 +132,32 @@ func (a *App) stopAccountFRPRuns() {
 
 func stopAccountFRPRun(p *process) {
 	go func() {
-		// A broken backend must not crash the workbench; the blocked account and
-		// unconfirmed response remain in place if stopping also panics.
-		defer func() { _ = recover() }()
+		// Report an unconfirmed stop without preventing other runs from stopping.
+		defer func() {
+			if recover() != nil {
+				reportAccountFRPStopUnconfirmed(p)
+			}
+		}()
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer stopCancel()
-		_ = p.instance.Stop(stopCtx)
+		if err := p.instance.Stop(stopCtx); err != nil {
+			reportAccountFRPStopUnconfirmed(p)
+			return
+		}
+		select {
+		case <-p.done:
+		case <-stopCtx.Done():
+			reportAccountFRPStopUnconfirmed(p)
+		}
 	}()
+}
+
+func reportAccountFRPStopUnconfirmed(p *process) {
+	// A failing log sink must not crash the workbench.
+	defer func() { _ = recover() }()
+	if p != nil && p.active() && p.logs != nil {
+		_, _ = p.logs.Write([]byte("\n受管实例停止未确认；已有 FRP 转发可能仍在运行，请确认工作台完全停止后再重启核对\n"))
+	}
 }
 
 func (a *App) clearAccountFRPRevocation(ctx context.Context, r *accountFRPRevocation) bool {
