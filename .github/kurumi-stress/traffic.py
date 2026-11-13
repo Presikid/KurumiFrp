@@ -360,6 +360,41 @@ def main():
         if load_counts[0] == 0:
             raise AssertionError("no continuous TCP request succeeded during restart coverage")
         print(f"PASS: 5 client and 3 server restarts with recovered traffic; concurrent successes={load_counts[0]}, interrupted={load_counts[1]}")
+
+        # Keep all protocols active together after restarts, without injecting
+        # further failures. Any corruption or unexpected error is reported.
+        soak_deadline = time.monotonic() + 60
+        operations = {
+            "tcp": lambda n: exchange_tcp(n),
+            "udp": lambda n: exchange_udp(n),
+            "http": lambda n: exchange_http(n),
+            "unix": lambda n: exchange_tcp(n, proxy_unix),
+            "socks": lambda n: exchange_socks(n),
+        }
+        totals = {name: 0 for name in operations}
+        errors = []
+        results_lock = threading.Lock()
+
+        def soak(name, worker):
+            count = 0
+            while time.monotonic() < soak_deadline:
+                try:
+                    operations[name](f"soak-{worker}-{count}")
+                    count += 1
+                except Exception as exc:
+                    with results_lock:
+                        errors.append(f"{name}: {type(exc).__name__}: {exc}")
+                    break
+            with results_lock:
+                totals[name] += count
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=15) as pool:
+            jobs = [pool.submit(soak, name, index) for name in operations for index in range(3)]
+            for job in jobs:
+                job.result()
+        if errors or any(count == 0 for count in totals.values()):
+            raise AssertionError(f"sustained traffic failed: counts={totals}, errors={errors[:10]}")
+        print("PASS: 60-second mixed-protocol traffic: " + json.dumps(totals, sort_keys=True))
         control(client, "stop")
         control(server, "stop")
         request("quit", {})
