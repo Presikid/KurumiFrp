@@ -816,6 +816,18 @@ func (svr *Service) CloseContext(ctx context.Context) error {
 }
 
 func (svr *Service) closeResources() {
+	// Managed controls must begin stopping even if a shared scope or listener
+	// close blocks. CloseContext itself still waits for their tracked cleanup.
+	var managedControlsDone <-chan struct{}
+	if svr.managedLogin != nil {
+		done := make(chan struct{})
+		managedControlsDone = done
+		go func() {
+			defer lifetime.Recover(svr.workCtx)
+			_ = svr.ctlManager.CloseContext(context.Background())
+			close(done)
+		}()
+	}
 	svr.workCancel()
 	// Interrupt WSS sockets before stopping the shared scope. Closing an active
 	// WebSocket can otherwise block while it writes a close frame to a peer.
@@ -859,7 +871,11 @@ func (svr *Service) closeResources() {
 	if svr.muxer != nil {
 		svr.muxer.Close()
 	}
-	_ = svr.ctlManager.CloseContext(context.Background())
+	if managedControlsDone != nil {
+		<-managedControlsDone
+	} else {
+		_ = svr.ctlManager.CloseContext(context.Background())
+	}
 	svr.workScope.Wait()
 	if svr.metrics != nil {
 		svr.metrics.Close()

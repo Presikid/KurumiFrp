@@ -389,6 +389,16 @@ func (cm *ControlManager) trackControl(ctl *Control) {
 	// Wait for that close as well before declaring this control drained.
 	_ = ctl.interruptReadAndClose()
 	cm.mu.Lock()
+	if cm.closed && ctl.managedScope != nil {
+		// Do not declare shutdown complete before the managed stop result and
+		// registry removal have finished. Neither may wait while cm.mu is held.
+		cm.mu.Unlock()
+		<-ctl.requestManagedStop(cm)
+		if ctl.managedStopErr == nil {
+			cm.Remove(ctl)
+		}
+		cm.mu.Lock()
+	}
 	state := ctl.managedState
 	firstFailure := state != nil && ctl.managedUncertain.Load() && state.failed.CompareAndSwap(false, true)
 	delete(cm.liveControls, ctl)
@@ -431,7 +441,15 @@ func (cm *ControlManager) CloseContext(ctx context.Context) error {
 	for _, ctl := range ctls {
 		go func(ctl *Control) {
 			defer lifetime.Recover(ctl.ctx)
-			_ = ctl.Close()
+			if ctl.managedScope != nil {
+				// Also interrupt tracked forwarding if closing the control blocks.
+				<-ctl.requestManagedStop(cm)
+				if ctl.managedStopErr != nil {
+					return
+				}
+			} else {
+				_ = ctl.Close()
+			}
 			cm.Remove(ctl)
 		}(ctl)
 	}
