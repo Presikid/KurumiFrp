@@ -125,12 +125,14 @@ func run() (resultErr error) {
 		fmt.Println(string(b))
 		return nil
 	}
+	allowExistingOpen := true
 	if *addr == "auto" {
-		chosen, err := autoListen(abs)
+		chosen, savedWithLock, err := autoListen(abs)
 		if err != nil {
 			return err
 		}
 		*addr = chosen
+		allowExistingOpen = savedWithLock
 	}
 	if e = os.MkdirAll(abs, 0700); e != nil {
 		return e
@@ -142,6 +144,9 @@ func run() (resultErr error) {
 	f, e := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if e != nil {
 		if *open {
+			if !allowExistingOpen {
+				return fmt.Errorf("无法确认现有工作台地址，请稍后重试并核对工作台状态：%w", e)
+			}
 			if b, err := os.ReadFile(filepath.Join(abs, "access.token")); err == nil {
 				if err = openExisting(*addr, string(b)); err == nil {
 					return nil
