@@ -123,15 +123,15 @@ func (s *Store) render(id string, preview bool) (Rendered, error) {
 		fmt.Fprintf(&b, "# KurumiFRP control-entry policy (embedded only): %s\n", policy.summary(i.ServerAccessMode))
 	}
 	if i.ManagedAccountLogin {
-		// Account credentials are supplied only to the embedded runtime. A
-		// standalone frps cannot enforce them using this configuration alone.
-		fmt.Fprintln(&b, "# KurumiFRP account authentication requires the embedded runtime.")
-		fmt.Fprintln(&b, "# Do not run this configuration directly; it does not enforce account authentication.")
+		// Legacy account authentication is disabled. Convert the instance to a
+		// shared token in the instance editor before validation or startup.
+		fmt.Fprintln(&b, "# Legacy KurumiFRP account authentication is disabled.")
+		fmt.Fprintln(&b, "# Convert this instance to a shared token in the instance editor.")
 		fmt.Fprintln(&b, "auth.method = \"token\"")
 		if preview {
 			// Previews can be downloaded. Deliberately invalid TOML prevents a
 			// standalone frps from starting with an empty shared token.
-			fmt.Fprintln(&b, "# 此预览不能用于独立 frps；账户认证仅由 KurumiFRP 内嵌核心提供。")
+			fmt.Fprintln(&b, "# 旧版账户认证已停用；请在实例编辑器中转换为共享令牌。")
 			fmt.Fprintln(&b, "auth.token = <requires-KurumiFRP-embedded-runtime>")
 		} else {
 			fmt.Fprintln(&b, "auth.token = \"\"")
