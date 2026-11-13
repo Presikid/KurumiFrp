@@ -57,9 +57,9 @@
   if (memory) localControlMemory.delete(id);
   return true;
  }
- function markLocalControlUncertain(id,expected,error) {
+ function markLocalControlUncertain(id,expected,error,epoch) {
   const memory = localControlMemory.get(id);
-  if (memory?.raw === expected && error.status) { memory.error = error.message; memory.errorEpoch = K.epoch(); }
+  if (memory?.raw === expected && error.status) { memory.error = error.message; memory.errorEpoch = epoch; }
   // A pending record without an active request is shown as uncertain, including after reload.
  }
  function paintLocalControls(root) {
@@ -95,28 +95,35 @@
  const requireRevision = data => {
   if (!K.state() || K.state().revision !== data.revision) throw new Error('草稿已变化，请刷新后重试。');
  };
+ const requireSession = epoch => {
+  if (K.epoch() !== epoch) throw new DOMException('会话已变化', 'AbortError');
+ };
  async function mutation(path, payload, message) {
-  try { await K.api(path, payload); }
+  const epoch = K.epoch();
+  try { await K.api(path, payload); requireSession(epoch); }
   catch (error) {
+   requireSession(epoch);
    if (!error.status || error.status >= 500) {
     await K.refresh().catch(() => {});
+    requireSession(epoch);
     throw new Error('操作结果未确认；请刷新并核对当前状态后再重试。');
    }
    throw error;
   }
-  try { await K.refresh(); }
-  catch (_) { if (K.state()) K.toast('操作已受理，但状态刷新失败；请手动刷新后核对。'); return; }
+  try { await K.refresh(); requireSession(epoch); }
+  catch (_) { requireSession(epoch); if (K.state()) K.toast('操作已受理，但状态刷新失败；请手动刷新后核对。'); return; }
   if (message) K.toast(message);
  }
  function bindButtons(root, handler) {
   root.addEventListener('click', async event => {
    const target = event.target.closest('[data-action]');
    if (!target || !root.contains(target) || target.disabled) return;
+   const epoch = K.epoch();
    target.disabled = true;
    try { await handler(target.dataset.action, target.dataset.id || '', target); }
-   catch (error) { K.toast(error.message); }
+   catch (error) { if (K.epoch() === epoch) K.toast(error.message); }
    finally {
-    if (target.isConnected) target.disabled = ['start','stop','restart'].includes(target.dataset.action) && (localControlInFlight.has(target.dataset.id) || !!localControlNotice(target.dataset.id));
+    if (K.epoch() === epoch && target.isConnected) target.disabled = ['start','stop','restart'].includes(target.dataset.action) && (localControlInFlight.has(target.dataset.id) || !!localControlNotice(target.dataset.id));
    }
   });
  }
@@ -164,29 +171,37 @@
      throw new Error('此客户端有操作正在处理或结果未确认，请先到实例页面核对。');
     }
     if (!confirm(`保存后重启「${instance.name}」并应用该实例全部草稿？\n重启会中断现有连接，失败时可能保持停止，也可能暂停定时计划。`)) return false;
+    requireSession(epoch);
     let result;
     const controller = new AbortController(), deadline = setTimeout(() => controller.abort(), 15000);
-    try { result = await K.api('save', {revision:data.revision, kind, value}, {signal:controller.signal}); }
+    try { result = await K.api('save', {revision:data.revision, kind, value}, {signal:controller.signal}); requireSession(epoch); }
     catch (error) {
+     requireSession(epoch);
      if (!error.status || error.status >= 500) {
       saveUncertain = true; await K.refresh().catch(() => {});
+      requireSession(epoch);
       throw new Error('保存结果尚未确认；没有提交重启。请关闭表单并核对草稿后再操作。');
      }
      throw error;
     } finally { clearTimeout(deadline); }
     if (result?.ok !== true) {
      saveUncertain = true; await K.refresh().catch(() => {});
+     requireSession(epoch);
      throw new Error('保存响应无法确认；没有提交重启。请关闭表单并核对草稿后再操作。');
     }
     const savedRevision = result.revision;
     if (!Number.isSafeInteger(savedRevision) || savedRevision !== data.revision + 1) {
      await K.refresh().catch(() => {});
+     requireSession(epoch);
      if (K.epoch() === epoch && K.state()) K.toast('草稿已保存，但返回的修订号无法确认；未提交重启，请刷新核对。');
      return;
     }
     try {
-     if (!await K.refresh() || K.epoch() !== epoch) return;
+     const refreshed = await K.refresh();
+     requireSession(epoch);
+     if (!refreshed) return;
     } catch (error) {
+     requireSession(epoch);
      if (K.epoch() === epoch && K.state()) K.toast(`草稿已保存（r${savedRevision}）；状态刷新失败，未提交重启：${error.message}`);
      return;
     }
@@ -210,16 +225,18 @@
   if (!clients.length) throw new Error('请先创建 frpc 客户端实例。');
   const update = form => ProtocolEditor.update(form,{kind:'tunnel-batch'},data.state.tunnels);
   K.openDialog({html:ProtocolEditor.batch(clients), submitLabel:'保存规则草稿', onReady:update, onChange:(_,form) => update(form), async onSubmit(form) {
-   requireRevision(data);
+   const epoch = K.epoch(); requireRevision(data);
    let result;
    try {
     result = await K.api('tunnels/batch', {revision:data.revision, ...ProtocolEditor.batchValue(form)});
+    requireSession(epoch);
    } catch (error) {
-    if (!error.status || error.status >= 500) { await K.refresh().catch(() => {}); throw new Error('请求结果未确认，请先刷新并核对规则，避免重复提交。'); }
+    requireSession(epoch);
+    if (!error.status || error.status >= 500) { await K.refresh().catch(() => {}); requireSession(epoch); throw new Error('请求结果未确认，请先刷新并核对规则，避免重复提交。'); }
     throw error;
    }
-   try { await K.refresh(); K.toast(`已创建 ${result.created} 条规则草稿。`); }
-   catch (_) { if (K.state()) K.toast(`已创建 ${result.created} 条规则草稿，但刷新失败；请手动刷新核对。`); }
+   try { await K.refresh(); requireSession(epoch); K.toast(`已创建 ${result.created} 条规则草稿。`); }
+   catch (_) { requireSession(epoch); if (K.state()) K.toast(`已创建 ${result.created} 条规则草稿，但刷新失败；请手动刷新核对。`); }
   }});
  }
  function editSchedule(id, data) {
@@ -234,20 +251,22 @@
     if (event.target.closest('[data-schedule-add]')) form.querySelector('[data-schedule-rows]').insertAdjacentHTML('beforeend', window.KurumiSchedules.row());
     if (event.target.closest('[data-schedule-remove]')) event.target.closest('[data-schedule-row]').remove();
     if (event.target.closest('[data-schedule-delete]')) {
+     const epoch = K.epoch();
      if (!confirm('删除定时计划？原有自动启动设置将在下次启动工作台时生效。')) return;
-     requireRevision(data); K.closeDialog();
+     requireSession(epoch); requireRevision(data); K.closeDialog();
      try { await mutation('schedules', {...payload(), remove:true}, '计划已删除。'); }
-     catch (error) { await K.refresh().catch(() => {}); K.toast(`计划删除未完成或结果未确认：${error.message}。请核对后重试。`); }
+     catch (error) { requireSession(epoch); await K.refresh().catch(() => {}); requireSession(epoch); K.toast(`计划删除未完成或结果未确认：${error.message}。请核对后重试。`); }
     }
    },
    async onSubmit(form) {
-    const value = window.KurumiSchedules.value(form);
+    const epoch = K.epoch(), value = window.KurumiSchedules.value(form);
     if (!value.enabled && plan?.enabled && !confirm('关闭计划后，原有自动启动设置将在下次启动工作台时生效。继续？')) return false;
-    requireRevision(data); await mutation('schedules', {...payload(), ...value}, '计划已保存。');
+    requireSession(epoch); requireRevision(data); await mutation('schedules', {...payload(), ...value}, '计划已保存。');
    }
   });
  }
  async function control(action, id, data, options = {}) {
+  const epoch = K.epoch();
   requireRevision(data);
   const instance = data.state.instances.find(item => item.id === id);
   if (!instance || !can(data, id, action)) throw new Error('实例不存在或没有操作权限。');
@@ -263,9 +282,10 @@
   if (action === 'restart' && !options.confirmed && !confirm(`重启「${instance.name}」会中断现有连接，重新启动失败时可能保持停止。${pause}继续？`)) return;
   if (action === 'stop' && !options.confirmed && !confirm(`停止「${instance.name}」并中断连接？${pause}`)) return;
   if (action === 'start' && pause && !confirm(`启动「${instance.name}」？${pause}`)) return;
+  requireSession(epoch);
   if (action === 'validate') {
-   try { await K.api('validate',{revision:data.revision,id}); K.toast('配置校验通过；这不代表网络连通。'); }
-   finally { await K.refresh().catch(() => {}); }
+   try { await K.api('validate',{revision:data.revision,id}); requireSession(epoch); K.toast('配置校验通过；这不代表网络连通。'); }
+   finally { if (K.epoch() === epoch) await K.refresh().catch(() => {}); requireSession(epoch); }
    return;
   }
   requireRevision(data);
@@ -273,6 +293,7 @@
   const deadline = setTimeout(() => controller.abort(),60000);
   try {
    const result = await K.api('control',{revision:data.revision,id,action,...(options.expectedRunId ? {expectedRunId:options.expectedRunId} : {})},{signal:controller.signal});
+   requireSession(epoch);
    if (result?.ok !== true) throw new Error('服务端响应无法确认操作结果。');
    const needsReview = !clearLocalControl(id,record);
    if (!options.quiet) {
@@ -285,12 +306,13 @@
     if (!clearLocalControl(id,record)) throw new Error(`${error.message}；操作记录已变化或无法清除，请先核对。`);
     throw error;
    }
-   markLocalControlUncertain(id,record,error);
+   markLocalControlUncertain(id,record,error,epoch);
    const volatile = localControlNotice(id)?.volatile ? '提示仅保存在本页面，其他标签页不共享；关闭或重新加载页面后会丢失。' : '';
    throw new Error(`${error.status ? `服务端返回：${error.message}。` : ''}实例操作结果尚未确认，请刷新并独立核对实际状态及请求是否仍在处理，再解除提示。${volatile}`);
   } finally {
    clearTimeout(deadline); localControlInFlight.delete(id); notifyLocalControl();
-   if (!options.deferRefresh) await K.refresh().catch(() => {});
+   if (!options.deferRefresh && K.epoch() === epoch) await K.refresh().catch(() => {});
+   requireSession(epoch);
   }
  }
 
@@ -537,6 +559,7 @@
       submitted = true;
       const rows = new Map([...form.querySelectorAll('[data-batch-stop-id]')].map(row => [row.dataset.batchStopId,row.querySelector('[data-batch-stop-result]')]));
       const progress = form.querySelector('[data-batch-stop-progress]');
+      const currentDialog = () => K.epoch() === epoch && !!progress?.isConnected && form.contains(progress) && !!form.closest('dialog')?.open;
       let stopped = false, processed = 0;
       for (const target of targets) {
        const output = rows.get(target.id);
@@ -551,14 +574,17 @@
        if (progress) progress.textContent = `正在处理 ${processed + 1} / ${targets.length}。`;
        try {
         const outcome = await control('stop',target.id,current,{confirmed:true,expectedRunId:target.runId,deferRefresh:true,quiet:true});
+        if (!currentDialog()) return false;
         if (output) output.textContent = outcome.needsReview ? '已受理，但核对提示未能清除' : '停止已受理，请刷新核对状态';
         if (outcome.needsReview) stopped = true;
        } catch (error) {
+        if (!currentDialog()) return false;
         if (output) output.textContent = `未完成：${error.message}`;
         stopped = true;
        }
        processed++;
       }
+      if (!currentDialog()) return false;
       if (progress) progress.textContent = stopped ? '已中断后续操作；请核对每项结果。' : '操作已逐项受理；请核对实例状态。';
       form.querySelector('[type="submit"]').textContent = '关闭';
       if (K.epoch() === epoch && K.isCurrent('instances',root)) {
@@ -578,7 +604,9 @@
    const item = data.state.instances.find(value => value.id === id);
    if (!item) throw new Error('实例已不存在。');
    if (action === 'delete-instance') {
+    const epoch = K.epoch();
     if (!confirm(`删除实例「${item.name}」？请先停止实例并删除关联规则。`)) return;
+    requireSession(epoch);
     await mutation('delete',{revision:data.revision,kind:'instance',id},'实例草稿已删除。');
    }
    if (action === 'duplicate-instance') {
@@ -699,17 +727,25 @@
     if (action === 'batch-copy') { requireRevision(data); return window.KurumiBatchCopy.open(root,target,data.revision); }
     requireRevision(data);
     if (action === 'probe-visible') {
+     const epoch = K.epoch();
      const visible = cards.filter(card => !card.hidden).map(card => data.state.tunnels.find(rule => rule.id === card.dataset.rule)).filter(Boolean);
      const supported = visible.filter(rule => !Protocols.probeUnavailable(rule));
      if (!supported.length) throw new Error(visible.length ? '当前筛选的规则不支持目标检测。' : '当前筛选没有规则。');
+     const currentProbe = () => {
+      requireSession(epoch);
+      if (!K.isCurrent('tunnels',root)) { K.toast('页面已变化，已停止批量检测。'); return false; }
+      if (K.state()?.revision !== data.revision) { K.toast('草稿已变化，已停止批量检测；请刷新后核对。'); return false; }
+      return true;
+     };
      let complete = 0;
      try {
       for (const rule of supported) {
-       if (!K.isCurrent('tunnels',root) || K.state()?.revision !== data.revision) { K.toast('草稿已变化，已停止批量检测；请刷新后核对。'); return; }
+       if (!currentProbe()) return;
        target.textContent = `检测中 ${complete}/${supported.length}`;
        const output = cards.find(card => card.dataset.rule === rule.id)?.querySelector('[data-probe]');
-       try { const result = await K.api('probe',{revision:data.revision,id:rule.id}); if (output?.isConnected && K.state()?.revision === data.revision) output.textContent = `${result.status} · ${result.message}`; }
+       try { const result = await K.api('probe',{revision:data.revision,id:rule.id}); if (!currentProbe()) return; if (output?.isConnected) output.textContent = `${result.status} · ${result.message}`; }
        catch (error) {
+        if (!currentProbe()) return;
         if (error.status === 409) { K.toast('草稿已变化，已停止批量检测；请刷新后核对。'); return; }
         if (output?.isConnected) output.textContent = '检测失败：'+error.message;
        }
@@ -722,6 +758,7 @@
      return;
     }
     if (['batch-enable','batch-disable','batch-delete','batch-export','batch-export-toml'].includes(action)) {
+     const epoch = K.epoch();
      const ids = [...selected]; if (!ids.length) throw new Error('请先选择规则。');
      const hiddenCount = hiddenSelectionCount();
      const selectionNote = `\n总计 ${ids.length} 条，筛选外 ${hiddenCount} 条。${hiddenCount ? '筛选外规则也会一并处理。' : ''}`;
@@ -737,19 +774,22 @@
       }
       const disabledNote = rules.some(rule => !rule.enabled) ? '\n选中包含停用规则：导出文件使用 enabled = false，运行前请确认目标 frpc 支持该字段并核对规则状态。' : '';
       if (!confirm(`导出选中规则为 ${toml ? 'TOML' : 'ZIP'}？${selectionNote}\n文件不加密，包含明文认证令牌、配对密钥、HTTP 密码、SOCKS5 插件密码及自定义 HTTP 头值，请妥善保管。${disabledNote}`)) return;
+      requireSession(epoch);
       const payload = {revision:data.revision,ids,confirmed:true,...(toml ? {format:'toml'} : {})};
       const response = await fetch('/api/tunnels/export',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-      if (!response.ok) { let message = '导出失败。'; try { message = (await response.json()).error || message; } catch (_) {} if (response.status === 401) void K.refresh().catch(() => {}); throw new Error(message); }
+      requireSession(epoch);
+      if (!response.ok) { let message = '导出失败。'; try { message = (await response.json()).error || message; } catch (_) {} requireSession(epoch); if (response.status === 401) void K.refresh().catch(() => {}); throw new Error(message); }
       const type = (response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
       if (type !== (toml ? 'application/toml' : 'application/zip')) throw new Error('导出响应格式无效。');
-      const blob = await response.blob(); if (!blob.size || blob.size > 20*1024*1024) throw new Error('导出文件无效或超过大小限制。');
+      const blob = await response.blob(); requireSession(epoch); if (!blob.size || blob.size > 20*1024*1024) throw new Error('导出文件无效或超过大小限制。');
       if (!K.isCurrent('tunnels',root) || K.state()?.revision !== data.revision) throw new Error('草稿已变化，请刷新后重新导出。');
       K.download(toml ? `frpc-${clientId}.toml` : 'kurumi-selected-rules.zip',blob,type); K.toast('导出完成，请妥善保管明文凭据。'); return;
      }
      const deleting = action === 'batch-delete', enabled = action === 'batch-enable';
      if (!confirm(`${deleting ? '删除' : enabled ? '启用' : '停用'}选中的规则草稿？${selectionNote}\n运行中的实例不会立即改变。`)) return;
+     requireSession(epoch);
      try { await mutation(deleting ? 'tunnels/batch-delete' : 'tunnels/batch-enabled', {revision:data.revision,ids,...(deleting ? {} : {enabled})},'规则草稿已更新。'); }
-     catch (error) { await K.refresh().catch(() => {}); throw new Error(`批量操作未完成或结果未确认：${error.message}。请核对草稿。`); }
+     catch (error) { requireSession(epoch); await K.refresh().catch(() => {}); requireSession(epoch); throw new Error(`批量操作未完成或结果未确认：${error.message}。请核对草稿。`); }
      return;
     }
     const rule = data.state.tunnels.find(value => value.id === id); if (!rule) throw new Error('规则已不存在。');
@@ -760,14 +800,20 @@
      const output = target.closest('[data-rule]').querySelector('[data-probe]'); output.textContent = `${result.status} · ${result.message}`; return;
     }
     if (action === 'duplicate-tunnel') {
+     const epoch = K.epoch();
      const clients = data.state.instances.filter(item => item.kind === 'frpc');
      const current = clients.findIndex(item => item.id === rule.instanceId), input = prompt('复制到哪个客户端？输入编号：\n' + clients.map((item,index) => `${index+1}: ${item.name}`).join('\n'),String(current+1));
-     if (input === null) return; const destination = /^\d+$/.test(input.trim()) ? clients[Number(input.trim())-1] : null;
+     if (input === null) return; requireSession(epoch); const destination = /^\d+$/.test(input.trim()) ? clients[Number(input.trim())-1] : null;
      if (!destination) throw new Error('目标客户端编号无效。');
      await mutation('duplicate',{revision:data.revision,kind:'tunnel',id,targetInstanceId:destination.id},'已创建停用的规则副本，请核对配置。'); return;
     }
     if (action === 'toggle') { await mutation('save',{revision:data.revision,kind:'tunnel',value:{...rule,enabled:!rule.enabled}},'草稿意图已保存，请重新应用实例。'); return; }
-    if (action === 'delete-tunnel' && confirm(`删除规则「${rule.name}」的草稿？`)) await mutation('delete',{revision:data.revision,kind:'tunnel',id},'规则草稿已删除。');
+    if (action === 'delete-tunnel') {
+     const epoch = K.epoch();
+     if (!confirm(`删除规则「${rule.name}」的草稿？`)) return;
+     requireSession(epoch);
+     await mutation('delete',{revision:data.revision,kind:'tunnel',id},'规则草稿已删除。');
+    }
    });
   },
   dispose() { rulesCleanup?.(); rulesCleanup = null; }
