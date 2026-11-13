@@ -582,14 +582,28 @@
     await mutation('delete',{revision:data.revision,kind:'instance',id},'实例草稿已删除。');
    }
    if (action === 'duplicate-instance') {
+    const epoch = K.epoch();
     const count = data.state.tunnels.filter(rule => rule.instanceId === id).length;
     const includeTunnels = item.kind === 'frpc' && count > 0 && confirm(`同时复制关联的 ${count} 条规则？副本默认停用。`);
     if (!confirm(`复制「${item.name}」为独立草稿实例？不会启动副本。`)) return;
+    if (K.epoch() !== epoch) return;
     let result;
     try { result = await K.api('duplicate',{revision:data.revision,kind:'instance',id,includeTunnels}); }
-    catch (error) { if (!error.status || error.status >= 500) { await K.refresh().catch(() => {}); throw new Error('复制结果未确认，请刷新并核对实例后重试。'); } throw error; }
-    try { await K.refresh(); K.toast(`实例已复制，附带 ${result.rulesCopied || 0} 条停用规则。`); }
-    catch (_) { if (K.state()) K.toast('实例已复制，但刷新失败；请手动刷新核对。'); }
+    catch (error) {
+     if (K.epoch() !== epoch) return;
+     if (!error.status || error.status >= 500) {
+      await K.refresh().catch(() => {});
+      if (K.epoch() === epoch) K.toast('复制结果未确认，请刷新并核对实例后重试。');
+     } else K.toast(error.message);
+     return;
+    }
+    if (K.epoch() !== epoch) return;
+    try {
+     await K.refresh();
+     if (K.epoch() === epoch) K.toast(`实例已复制，附带 ${result.rulesCopied || 0} 条停用规则。`);
+    } catch (_) {
+     if (K.epoch() === epoch && K.state()) K.toast('实例已复制，但刷新失败；请手动刷新核对。');
+    }
    }
    });
   },
