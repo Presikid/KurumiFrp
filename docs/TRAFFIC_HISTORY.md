@@ -4,13 +4,13 @@
 
 每日数值只是已确认的增量，启动、停止、程序中断、跨日、采样间断、计数器重置和饱和都可能遗漏流量。缺少日期或没有数据不表示没有流量，记录不能用于计费或强制配额。历史功能本身不限制流量。
 
-具有实例查看和流量读取权限的账户可在历史表格导出当前实例的 CSV。文件包含 UTC 日期、十进制接收和发送字节以及 `partial` 标记；缺失的日期不会补零。字节数按原始十进制文本导出，使用电子表格软件时应将字节列作为文本导入，以免大整数被舍入。导出的是页面最近取得的快照，可能尚未写入磁盘，也不适用于计费或配额。
+登录工作台后，可在历史表格导出当前实例的 CSV。文件包含 UTC 日期、十进制接收和发送字节以及 `partial` 标记；缺失的日期不会补零。字节数按原始十进制文本导出，使用电子表格软件时应将字节列作为文本导入，以免大整数被舍入。导出的是页面最近取得的快照，可能尚未写入磁盘，也不适用于计费或配额。
 
 历史写入数据目录的 `traffic-history.json`，最多保留 90 日并约每 30 秒写盘；正常关闭时再尝试写入，异常退出或断电可能丢失最近的数据。读取损坏文件时保留原文件并停止写入，页面显示存储错误；写入失败会在后续周期重试。本机实例删除、配置导入或快照恢复后，原历史不会分配给可能复用同一 ID 的新实例。历史不包含在配置导出或加密备份中。
 
-`GET /api/traffic-history?id=<实例 ID>` 要求已有认证和该实例的查看授权。响应包含实例类型、按日期排列的 `days`、`saved`、`savedAt`、`storageError`、时区和写入间隔。每条日期的接收和发送字节以十进制字符串表示，`partial` 表示存在无法归属的区间。没有可用采样时返回空列表，不填补零值。
+`GET /api/traffic-history?id=<实例 ID>` 需要工作台认证。响应包含实例类型、按日期排列的 `days`、`saved`、`savedAt`、`storageError`、时区和写入间隔。每条日期的接收和发送字节以十进制字符串表示，`partial` 表示存在无法归属的区间。没有可用采样时返回空列表，不填补零值。
 
-响应中的 `months` 仅将当前实例保留的每日采样增量按 UTC 月份分别汇总接收和发送字节，仍以十进制字符串表示；`recordedDays`、`firstDate` 和 `lastDate` 说明该月有哪些日期范围内存在记录，并不表示区间内每天均有记录。只返回有记录的月份；90 天保留窗口可能截断整月。每条月度记录的 `partial` 始终为 `true`，因为即使每日都有记录也无法证明采样完整。月度值可能尚未写入磁盘，不代表账户用量，也不能用于计费或强制配额；客户端与服务端的统计口径不同，不应相加。
+响应中的 `months` 仅将当前实例保留的每日采样增量按 UTC 月份分别汇总接收和发送字节，仍以十进制字符串表示；`recordedDays`、`firstDate` 和 `lastDate` 说明该月有哪些日期范围内存在记录，并不表示区间内每天均有记录。只返回有记录的月份；90 天保留窗口可能截断整月。每条月度记录的 `partial` 始终为 `true`，因为即使每日都有记录也无法证明采样完整。月度值可能尚未写入磁盘，不能用于计费或强制配额；客户端与服务端的统计口径不同，不应相加。
 
 ## 月度采样提醒
 
@@ -22,7 +22,7 @@
 
 提醒设置存放于数据目录的 `traffic-budgets.json`，与配置导出、加密备份及历史 CSV 分开。它与本机实例的流量历史身份绑定；删除实例、导入配置或恢复快照后，原提醒不会分配给可能复用 ID 的新实例。设置文件读取失败时，工作台显示错误并停止覆盖该文件；保存失败后需检查存储并重新启动工作台，才能重新读取设置。历史数据尚未写入或读写失败时也会显示相应状态。
 
-`GET /api/traffic-budget?id=<实例 ID>` 需要该实例查看和流量读取权限。响应包含 `instanceId`、`kind`、`revision`、设置的 `version`、`month`、`limitBytes`、`blockStart`、`recordedBytes`、`recordedDays`、`status`、`partial`、`historySaved` 和 `historyStorageError`。字节数均为十进制字符串；没有当月记录时 `recordedBytes` 为 `null`，`partial` 始终为 `true`。`status` 为 `disabled`、`unknown`、`not_reached` 或 `reached`；`not_reached` 只表示已记录采样未达到，不证明实际流量低于提醒值。
+`GET /api/traffic-budget?id=<实例 ID>` 需要工作台认证。响应包含 `instanceId`、`kind`、`revision`、设置的 `version`、`month`、`limitBytes`、`blockStart`、`recordedBytes`、`recordedDays`、`status`、`partial`、`historySaved` 和 `historyStorageError`。字节数均为十进制字符串；没有当月记录时 `recordedBytes` 为 `null`，`partial` 始终为 `true`。`status` 为 `disabled`、`unknown`、`not_reached` 或 `reached`；`not_reached` 只表示已记录采样未达到，不证明实际流量低于提醒值。
 
 管理员使用 `POST /api/traffic-budget` 提交 JSON：`id`、当前配置 `revision`、最近读取的设置 `version`、十进制字符串 `limitBytes` 和布尔值 `blockStart`。设置首次保存前的 `version` 为空字符串；保存后版本变化，过期编辑返回 409。`limitBytes` 可为 0 至 18446744073709551615，0 关闭提醒和启动检查。兼容旧请求：省略 `blockStart` 时保留原设置，阈值为 0 则关闭检查。设置只在用户修改时写盘，不在转发或采样路径执行额外持久化。
 
@@ -30,4 +30,4 @@
 
 内置客户端运行时，网络总览可查看当前运行代次中各代理和 Visitor 的载荷累计量。名称来自启动时应用的配置，可能与之后编辑的草稿不同；某项为零不表示规则已经注册或链路可达。计数不含协议开销，UDP 按转发边界接受的消息计数，不保证最终送达。它不是历史记录、计费数据或配额；重新启动后重新计数，停止或来源不可用时明细显示不可用。
 
-`GET /api/client-traffic?id=<客户端实例 ID>` 需要该实例的查看授权，以及配置详情和流量两项读取权限，因为明细包含已应用规则名称。响应包含 `instanceId`、`runId`、`state`、`available`、`sampledAt` 和 `rules`；每条明细包含名称、`proxy` 或 `visitor` 类型及以十进制字符串表示的接收和发送字节。来源或运行状态不可用时不以空列表表示零流量。实例或运行对象在读取期间被替换时返回 409。
+`GET /api/client-traffic?id=<客户端实例 ID>` 需要工作台认证；明细包含已应用规则名称。响应包含 `instanceId`、`runId`、`state`、`available`、`sampledAt` 和 `rules`；每条明细包含名称、`proxy` 或 `visitor` 类型及以十进制字符串表示的接收和发送字节。来源或运行状态不可用时不以空列表表示零流量。实例或运行对象在读取期间被替换时返回 409。
