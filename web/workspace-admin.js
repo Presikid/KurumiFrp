@@ -288,14 +288,14 @@
     event.preventDefault(); if (busy || !model?.supported) return;
     const values = settings(), rules = readRules();
     if (!confirm(values.enabled ? '保存并立即应用这些端口来源规则？来源匹配错误可能影响连接。' : '关闭端口来源过滤？尚未应用的规则编辑不会保存。')) return;
-    busy = true; const form = event.target, submit = form.querySelector('[type="submit"]'); submit.disabled = true; form.inert = true;
+    busy = true; const form = event.target, submit = form.querySelector('[type="submit"]'), generation = K.epoch(); submit.disabled = true; form.inert = true;
     try {
      const saved = await timeout('firewall', {revision:model.config.revision, ...values, rules}, 45000);
      if (!current()) return;
      if (!saved?.config || !Number.isSafeInteger(saved.config.revision)) throw new Error('保存响应无效，请重新读取并核对。');
      model = {...model, ...saved}; toast('规则已保存并应用。'); await load(true);
     }
-    catch (error) { toast(error.status === 400 || error.status === 409 ? error.message : '应用结果可能未确认，请重新读取并核对内核状态：' + errorText(error)); }
+    catch (error) { if (generation === K.epoch()) toast(error.status === 400 || error.status === 409 ? error.message : '应用结果可能未确认，请重新读取并核对内核状态：' + errorText(error)); }
     finally {busy = false; form.inert = false; submit.disabled = false;}
    });
    host.addEventListener('click', async event => {
