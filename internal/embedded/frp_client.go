@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	frpclient "github.com/fatedier/frp/client"
+	clientproxy "github.com/fatedier/frp/client/proxy"
 	clienttraffic "github.com/fatedier/frp/client/traffic"
 	"github.com/fatedier/frp/pkg/config"
 	"github.com/fatedier/frp/pkg/config/source"
@@ -220,7 +221,8 @@ func (s *frpService) proxyDetails(name string) (Registration, bool) {
 		return Registration{}, false
 	}
 	result := Registration{Phase: status.Phase}
-	if status.Err != "" {
+	// FRP retains a previous error while waiting for a retry response.
+	if status.Err != "" && status.Phase != clientproxy.ProxyPhaseWaitStart {
 		// Server-supplied errors can contain arbitrary details or credentials.
 		result.Error = "核心报告代理错误"
 	}
