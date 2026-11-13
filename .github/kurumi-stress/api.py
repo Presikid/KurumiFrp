@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise one disposable KurumiFRP instance on a GitHub-hosted runner."""
 
+import base64
 import concurrent.futures
 import copy
 import http.client
@@ -485,6 +486,157 @@ def persistence_stress(api, app, temporary, client_id, copied_client_id):
     return api
 
 
+
+def portable_export(api):
+    value, _ = api.expect(200, "/api/export?scope=all")
+    check(isinstance(value, dict) and "state" in value and "history" in value,
+          "plain export did not return a portable database")
+    return value
+
+
+def replace_request_when_ready(api, path, body, expected, **kwargs):
+    # Each recognized 409 is returned before the replacement is attempted.
+    # Never retry a timeout, disconnect, unexpected error, or stale revision.
+    safe_conflicts = {
+        "备份操作正在进行或工作台正在关闭",
+        "备份或导入操作正在进行或工作台正在关闭",
+        "请等待自动恢复结束后再导入或恢复配置",
+    }
+    for _ in range(25):
+        status, result, headers = api.request(path, body, **kwargs)
+        message = result.get("error") if isinstance(result, dict) else None
+        if status != 409 or message not in safe_conflicts:
+            return status, result, headers
+        check(durable_view(api.state()) == durable_view(expected),
+              "busy import unexpectedly changed configuration")
+        time.sleep(0.2)
+    raise AssertionError("import remained busy or startup did not complete")
+
+
+def transfer_stress(api, app, client_id):
+    # All content here is generated in this disposable runner; never print an
+    # export, backup, key, cookie, or request body.
+    special_name = '配置 <测试> "引号" \\ / & % #'
+    before = api.state()
+    status, result, _ = api.save(before["revision"], "instance",
+                                  {"id": client_id, "name": special_name})
+    check(status == 200 and result.get("revision") == before["revision"] + 1,
+          "special-character configuration was not saved")
+    original = api.state()
+    check(item(original, "instances", client_id)["name"] == special_name,
+          "special-character configuration changed on save")
+
+    # Plain export/import must restore the earlier state, not just accept the
+    # file. Import allocates a fresh revision instead of reusing its old one.
+    plain = portable_export(api)
+    status, result, _ = api.save(original["revision"], "instance",
+                                  {"id": client_id, "name": "ci-plain-change"})
+    check(status == 200 and result.get("revision") == original["revision"] + 1,
+          "could not create a distinct state before plain import")
+    changed = api.state()
+    status, result, _ = replace_request_when_ready(
+        api, f'/api/import?revision={changed["revision"]}', plain, changed)
+    check(status == 200, f"plain import: expected HTTP 200, got {status}")
+    restored = api.state()
+    check(result.get("ok") is True and result.get("revision") == changed["revision"] + 1
+          and restored["revision"] == result["revision"]
+          and restored["state"] == original["state"],
+          "plain import did not restore the exported configuration")
+    roundtrip = portable_export(api)
+    portable_fields = ("state", "history", "historyLimit", "events", "key")
+    check(all(roundtrip.get(key) == plain.get(key) for key in portable_fields),
+          "plain round-trip changed portable content")
+
+    backup_password = 'ci-only-备份密码 "quoted" \\ & %'
+    backup, _ = api.expect(200, "/api/backup/export",
+                           {"revision": restored["revision"], "scope": "all",
+                            "password": backup_password})
+    check(isinstance(backup, dict) and backup.get("format") == "kurumifrp-encrypted-backup"
+          and isinstance(backup.get("ciphertext"), str),
+          "encrypted export did not produce a backup")
+    check(durable_view(api.state()) == durable_view(restored) and portable_export(api) == roundtrip,
+          "encrypted export changed the stored configuration")
+
+    status, result, _ = api.save(restored["revision"], "instance",
+                                  {"id": client_id, "name": "ci-encrypted-change"})
+    check(status == 200 and result.get("revision") == restored["revision"] + 1,
+          "could not create a distinct state before encrypted import")
+    expected = api.state()
+    expected_export = portable_export(api)
+    revision = expected["revision"]
+    plain_path = f"/api/import?revision={revision}"
+    backup_path = "/api/backup/import"
+
+    def reject(label, path, body, expected_status=400, **kwargs):
+        status, _, _ = replace_request_when_ready(api, path, body, expected, **kwargs)
+        check(status == expected_status, f"{label}: expected HTTP {expected_status}, got {status}")
+        check(durable_view(api.state()) == durable_view(expected),
+              f"{label}: rejected request changed public configuration or history")
+        check(portable_export(api) == expected_export,
+              f"{label}: rejected request changed portable configuration")
+
+    bad_plain = copy.deepcopy(expected_export)
+    bad_plain["state"]["instances"][0]["port"] = 0
+    reject("invalid plain state", plain_path, bad_plain)
+    bad_key = copy.deepcopy(expected_export)
+    bad_key["key"] = "!"
+    reject("invalid plain key", plain_path, bad_key)
+    reject("truncated plain JSON", plain_path, b'{"format":', raw=True)
+    reject("stale plain revision", f"/api/import?revision={revision - 1}", expected_export, 409)
+
+    request = {"revision": revision, "password": backup_password, "backup": backup}
+    reject("wrong backup password", backup_path, {**request, "password": "wrong-ci-backup-password"})
+    reject("stale backup revision", backup_path, {**request, "revision": revision - 1}, 409)
+    malformed = copy.deepcopy(backup)
+    malformed["version"] = 999
+    reject("unsupported backup version", backup_path, {**request, "backup": malformed})
+    malformed = copy.deepcopy(backup)
+    malformed["salt"] = "!"
+    reject("invalid backup salt", backup_path, {**request, "backup": malformed})
+    reject("unexpected backup field", backup_path, {**request, "unexpected": True})
+    reject("wrong backup content type", backup_path, request, headers={"Content-Type": "text/plain"})
+    trailing = json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n{}"
+    reject("trailing backup JSON", backup_path, trailing, raw=True)
+
+    # Deterministically flip real ciphertext bytes, preserving valid Base64 and
+    # metadata, to exercise the authenticated-decryption failure path.
+    encoded = backup["ciphertext"]
+    ciphertext = base64.b64decode(encoded + "=" * (-len(encoded) % 4), validate=True)
+    check(len(ciphertext) >= 16, "backup ciphertext was unexpectedly short")
+    rng = random.Random(STRESS_SEED + 2000)
+    for case, position in enumerate(rng.sample(range(len(ciphertext)), 8)):
+        damaged = bytearray(ciphertext)
+        damaged[position] ^= 1 << rng.randrange(8)
+        malformed = copy.deepcopy(backup)
+        malformed["ciphertext"] = base64.b64encode(damaged).decode("ascii").rstrip("=")
+        reject(f"corrupted ciphertext case {case}", backup_path, {**request, "backup": malformed})
+
+    # Prove the rejected requests did not merely leave the in-memory view intact.
+    app.stop()
+    api = app.start()
+    api.login(TEST_PASSWORD)
+    check(durable_view(api.state()) == durable_view(expected) and portable_export(api) == expected_export,
+          "rejected imports changed durable configuration after restart")
+
+    status, result, _ = replace_request_when_ready(api, backup_path, request, expected)
+    check(status == 200, f"encrypted import: expected HTTP 200, got {status}")
+    restored_backup = api.state()
+    check(result.get("ok") is True and result.get("revision") == revision + 1
+          and restored_backup["revision"] == result["revision"]
+          and restored_backup["state"] == restored["state"],
+          "encrypted import did not restore the exported configuration")
+    imported_export = portable_export(api)
+    check(all(imported_export.get(key) == roundtrip.get(key) for key in portable_fields),
+          "encrypted round-trip changed portable content")
+    app.stop()
+    api = app.start()
+    api.login(TEST_PASSWORD)
+    check(durable_view(api.state()) == durable_view(restored_backup)
+          and portable_export(api) == imported_export,
+          "encrypted round-trip was not durable after restart")
+    return api
+
+
 def run(binary, temporary):
     echo = Echo()
     replacement_echo = Echo(b"replacement:")
@@ -604,6 +756,7 @@ def run(binary, temporary):
             check(item(actual, "instances", client_id).get("hasToken") is True,
                   f"token missing after persistence cycle {cycle}")
         api = persistence_stress(api, app, temporary, client_id, copied_client_id)
+        api = transfer_stress(api, app, client_id)
         control(api, server_id, "start")
         server_run = wait_running(api, server_id)
         control(api, client_id, "start")
@@ -611,7 +764,7 @@ def run(binary, temporary):
         check_echo(remote_port, b"replacement:")
         control(api, client_id, "stop", client_run)
         control(api, server_id, "stop", server_run)
-        print(f"PASS: auth, seed {STRESS_SEED}, boundaries, batch atomicity, concurrent revisions, TCP and 303 persistence writes")
+        print(f"PASS: auth, seed {STRESS_SEED}, boundaries, batch atomicity, concurrent revisions, TCP, 303 persistence writes and backup/import failures")
         app.stop()
     finally:
         app.stop(strict=False)
@@ -633,5 +786,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
