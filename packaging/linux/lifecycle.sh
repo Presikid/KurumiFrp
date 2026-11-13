@@ -258,7 +258,11 @@ start_workbench() {
    deb-systemd-helper unmask "$UNIT" >/dev/null || true
    if deb-systemd-helper --quiet was-enabled "$UNIT"; then deb-systemd-helper enable "$UNIT" >/dev/null; fi
    deb-systemd-invoke start "$UNIT"
-  else systemctl preset "$UNIT"; systemctl start "$UNIT"; fi
+  else
+   # Keep an already enabled unit instead of resetting it to the preset.
+   if ! systemctl is-enabled --quiet "$UNIT"; then systemctl preset "$UNIT"; fi
+   systemctl start "$UNIT"
+  fi
  else echo 'Package installed. No active systemd was found.'; fi
 }
 remove_unit_state() {
