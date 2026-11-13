@@ -217,7 +217,7 @@ func (a *auth) identity(r *http.Request) (principal, bool) {
 	return a.identityLocked(r)
 }
 
-// identityLocked checks the current session and account while a.mu is held.
+// identityLocked checks the current session while a.mu is held.
 func (a *auth) identityLocked(r *http.Request) (principal, bool) {
 	if a.localToken(r) {
 		return principal{Name: "本机管理令牌", Role: "admin"}, true
@@ -227,40 +227,14 @@ func (a *auth) identityLocked(r *http.Request) (principal, bool) {
 		return principal{}, false
 	}
 	session, ok := a.sessions[c.Value]
-	if ok && !time.Now().Before(session.expires) {
-		delete(a.sessions, c.Value)
-		return principal{}, false
-	}
 	if !ok {
 		return principal{}, false
 	}
-	if session.oidcRevision != 0 && (a.oidcLoadErr != nil || !a.oidcSettings.Enabled || a.oidcSettings.Revision != session.oidcRevision) {
+	if !time.Now().Before(session.expires) || session.accountID != "" || session.oidcRevision != 0 {
 		delete(a.sessions, c.Value)
 		return principal{}, false
 	}
-	if session.accountID == "" {
-		return principal{Name: "本机管理员", Role: "admin", gate: session.gate}, true
-	}
-	// Account permissions may no longer match the file after a failed write.
-	if a.accountsWriteUncertain {
-		return principal{}, false
-	}
-	for _, account := range a.accounts {
-		if account.ID == session.accountID && account.activeAt(time.Now()) {
-			if session.oidcRoleCap != "" && oidcRoleRank(session.oidcRoleCap) < oidcRoleRank(account.Role) {
-				account.Role = session.oidcRoleCap
-			}
-			logs := effectiveLogInstances(account)
-			read := effectiveReadPermissions(account)
-			var accountExpires time.Time
-			if account.ExpiresAt != "" {
-				accountExpires, _ = time.Parse(time.RFC3339, account.ExpiresAt)
-			}
-			return principal{Name: account.Username, Role: account.Role, Account: true, PasswordAccount: session.passwordAccount && session.oidcRevision == 0, AllowLogs: account.AllowLogs && len(logs) != 0, Instances: append([]string(nil), account.Instances...), OperableInstances: effectiveControlInstances(account), AllowedActions: effectiveOperatorActions(account), ViewConfig: read.Config, ViewTraffic: read.Traffic, LogInstances: logs, RemoteInstances: append([]remoteGrant(nil), account.RemoteInstances...), AccountID: account.ID, AccountRevision: a.accountsRevision, gate: account.gate, sessionExpires: session.expires, accountExpires: accountExpires}, true
-		}
-	}
-	delete(a.sessions, c.Value)
-	return principal{}, false
+	return principal{Name: "本机管理员", Role: "admin", gate: session.gate}, true
 }
 
 // Both account login and password changes use the same credential budget.
@@ -422,40 +396,20 @@ func (a *auth) finishAttemptWithPeer(key string, failed, login bool, peer string
 	}
 }
 
-func (a *auth) login(r *http.Request, token *string, username string, password *string) (string, error) {
-	if (token != nil && (username != "" || password != nil)) || (token == nil && password == nil) {
+func (a *auth) login(r *http.Request, password *string) (string, error) {
+	if password == nil {
 		return "", fmt.Errorf("登录信息无效")
 	}
-	key := "token"
-	if username != "" {
-		key = accountAttemptKey(username)
-	} else if token == nil {
-		key = "admin-password"
-	}
+	const key = "admin-password"
 	if err := a.beginAttemptWithPeer(key, true, r.RemoteAddr); err != nil {
 		return "", err
 	}
 	failed := false
 	defer func() { a.finishAttemptWithPeer(key, failed, true, r.RemoteAddr) }()
-	if username != "" {
-		var sid string
-		var err error
-		sid, failed, err = a.loginAccount(r, username, *password)
-		return sid, err
-	}
-	if token == nil {
-		var sid string
-		var err error
-		sid, failed, err = a.loginAdminPassword(r, *password)
-		return sid, err
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if subtle.ConstantTimeCompare([]byte(*token), []byte(a.token)) != 1 {
-		failed = true
-		return "", fmt.Errorf("访问令牌不正确")
-	}
-	return a.newSessionLocked(r, "", time.Now())
+	var sid string
+	var err error
+	sid, failed, err = a.loginAdminPassword(r, *password)
+	return sid, err
 }
 
 // A newly authenticated browser replaces its old cookie. Each account can
