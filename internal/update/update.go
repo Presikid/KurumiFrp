@@ -28,6 +28,7 @@ const releaseAPI = "https://api.github.com/repos/Presikid/KurumiFrp/releases"
 const maxPackage = 256 << 20
 
 var errGitHubRateLimit = errors.New("GitHub API 请求次数已用完，请稍后重试；同一网络可能与其他设备共享额度")
+var errGitHubNotFound = errors.New("GitHub 返回 HTTP 404")
 
 // Three-part tags remain readable for releases published before the four-part scheme.
 var tagRE = regexp.MustCompile(`^v[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}(\.[0-9]{1,5})?$`)
@@ -101,18 +102,64 @@ func (m *Manager) get(ctx context.Context, address string) (*http.Response, erro
 		if (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests) && resp.Header.Get("X-RateLimit-Remaining") == "0" {
 			return nil, errGitHubRateLimit
 		}
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, errGitHubNotFound
+		}
 		return nil, fmt.Errorf("GitHub 返回 HTTP %d", resp.StatusCode)
 	}
 	return resp, nil
 }
 func (m *Manager) releases(ctx context.Context) ([]release, error) {
-	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	return m.releasesFor(ctx, "")
+}
+
+// A target uses the individual release endpoint and narrows the HTML fallback.
+func (m *Manager) releasesFor(parent context.Context, target string) ([]release, error) {
+	if target != "" {
+		if _, ok := parseVersion(target); !ok {
+			return nil, fmt.Errorf("无效的发行版本")
+		}
+	}
+	ctx, cancel := context.WithTimeout(parent, 25*time.Second)
 	defer cancel()
-	resp, e := m.get(ctx, releaseAPI+"?per_page=100")
+	address := releaseAPI + "?per_page=100"
+	if target != "" {
+		address = releaseAPI + "/tags/" + url.PathEscape(target)
+	}
+	resp, e := m.get(ctx, address)
 	if e != nil {
+		if target != "" {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if errors.Is(e, errGitHubNotFound) {
+				return nil, nil
+			}
+		}
 		if errors.Is(e, errGitHubRateLimit) {
-			fallback, err := m.releasesHTML(ctx)
+			fallback, err := m.releasesHTMLFor(ctx, target)
+			if parent.Err() != nil {
+				return nil, parent.Err()
+			}
+			// A caller deadline still wins if its timer fires concurrently.
+			if deadline, ok := parent.Deadline(); ok && !time.Now().Before(deadline) {
+				return nil, context.DeadlineExceeded
+			}
+			if target != "" {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
+			}
 			if err != nil {
+				// The internal deadline may leave older releases unchecked.
+				// Keep verified results, but never mask caller cancellation.
+				if target == "" && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					for _, r := range fallback {
+						if _, ok := assetFor(r, m.distribution); ok {
+							return fallback, nil
+						}
+					}
+				}
 				return nil, fmt.Errorf("%w；官方发行页面备用查询失败：%v", errGitHubRateLimit, err)
 			}
 			return fallback, nil
@@ -122,7 +169,20 @@ func (m *Manager) releases(ctx context.Context) ([]release, error) {
 	defer resp.Body.Close()
 	b, e := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if e != nil || len(b) >= 8<<20 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return nil, fmt.Errorf("版本列表读取失败或过大")
+	}
+	if target != "" {
+		var one release
+		if e = json.Unmarshal(b, &one); e != nil {
+			return nil, e
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return []release{one}, nil
 	}
 	var all []release
 	e = json.Unmarshal(b, &all)
@@ -208,7 +268,7 @@ func (m *Manager) selectAsset(ctx context.Context, tag string) (Asset, error) {
 	if !tagRE.MatchString(tag) || !newer(tag, current) {
 		return Asset{}, fmt.Errorf("只能更新到更新的版本")
 	}
-	list, e := m.releases(ctx)
+	list, e := m.releasesFor(ctx, tag)
 	if e != nil {
 		return Asset{}, e
 	}

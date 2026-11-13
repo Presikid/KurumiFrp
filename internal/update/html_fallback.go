@@ -88,6 +88,11 @@ func (m *Manager) htmlReleaseAsset(ctx context.Context, tag string) (release, er
 }
 
 func (m *Manager) releasesHTML(ctx context.Context) ([]release, error) {
+	return m.releasesHTMLFor(ctx, "")
+}
+
+// With a target, stop as soon as the releases page contains its tag link.
+func (m *Manager) releasesHTMLFor(ctx context.Context, target string) ([]release, error) {
 	const base = "https://github.com/Presikid/KurumiFrp/releases"
 	tags, seen := []string{}, map[string]bool{}
 	for pageNo := 1; pageNo <= 20; pageNo++ {
@@ -107,6 +112,16 @@ func (m *Manager) releasesHTML(ctx context.Context) ([]release, error) {
 				if len(tags) > 200 {
 					return nil, fmt.Errorf("GitHub 发行版本列表过长")
 				}
+				if target != "" && tag == target {
+					r, err := m.htmlReleaseAsset(ctx, tag)
+					if err != nil {
+						return nil, err
+					}
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+					return []release{r}, nil
+				}
 			}
 		}
 		next := `href="/Presikid/KurumiFrp/releases?page=` + strconv.Itoa(pageNo+1) + `"`
@@ -117,7 +132,17 @@ func (m *Manager) releasesHTML(ctx context.Context) ([]release, error) {
 			return nil, fmt.Errorf("GitHub 发行版本列表过长")
 		}
 	}
+	if target != "" {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	// Preserve tags even if the shared deadline expires before verification.
 	result := make([]release, len(tags))
+	for i, tag := range tags {
+		result[i] = release{Tag: tag, MetadataFallback: true}
+	}
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -154,7 +179,7 @@ func (m *Manager) releasesHTML(ctx context.Context) ([]release, error) {
 	}
 	wg.Wait()
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("无法验证 GitHub 官方发行页面：%w", err)
+		return result, fmt.Errorf("无法验证 GitHub 官方发行页面：%w", err)
 	}
 	if m.distribution == "windows-installed" || strings.HasPrefix(m.distribution, "linux-") {
 		hasAsset := false
