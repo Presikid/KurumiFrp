@@ -290,6 +290,37 @@ def main():
             list(pool.map(exchange_socks, range(128)))
         print("PASS: 128 direct Unix controls, 320 TCP sessions, 128 UDP clients, 320 HTTP requests, 128 Unix and 128 authenticated SOCKS5 sessions")
 
+        # Compare direct and proxied behavior against the same small accept
+        # queue. This is diagnostic: an overloaded target can reject either.
+        def measure_unix(use_proxy):
+            gate = threading.Barrier(32)
+            def one(index):
+                gate.wait(timeout=20)
+                try:
+                    if use_proxy:
+                        exchange_tcp(f"unix-{index}", proxy_unix)
+                    else:
+                        direct_unix(index)
+                    return None
+                except OSError as exc:
+                    return f"{type(exc).__name__}: {exc}"
+            with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
+                return [failure for failure in pool.map(one, range(128)) if failure]
+
+        servers[3].socket.listen(5)
+        try:
+            direct_failures = measure_unix(False)
+            proxy_failures = measure_unix(True)
+        finally:
+            servers[3].socket.listen(256)
+        print(f"Small Unix accept queue: direct failures={len(direct_failures)}, proxied failures={len(proxy_failures)}")
+        if proxy_failures:
+            logs = request("logs?id=" + client["id"])
+            lines = [line for line in logs.get("lines", []) if "dial to uds" in line]
+            print("Unix dial diagnostics: " + json.dumps(lines[-20:], ensure_ascii=False))
+        if proxy_failures and not direct_failures:
+            raise AssertionError(f"Unix proxy failed {len(proxy_failures)} sessions while the same direct load succeeded: {proxy_failures[:3]}")
+
         stop_load = threading.Event()
         load_counts = [0, 0]
         load_lock = threading.Lock()
