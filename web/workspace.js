@@ -288,14 +288,22 @@ window.Kurumi = (() => {
   const themes = result.themes.filter(item => item && typeof item.id === 'string' && item.id.length <= 32 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(item.id));
   const active = document.body.dataset.kurumiSkin || 'default';
   const current = themes.some(item => item.id === active && item.installed) ? active : 'default';
-  const options = [`<option value="default"${current === 'default' ? ' selected' : ''}>默认主题（随程序提供）</option>`];
-  for (const item of themes) {
-   const disabled = !admin && !item.installed;
-   const status = item.installed ? '已安装' : admin ? '选择后下载' : '需要管理员安装';
-   options.push(`<option value="${esc(item.id)}"${current === item.id ? ' selected' : ''}${disabled ? ' disabled' : ''}>${esc(item.name)} · ${status}</option>`);
-  }
+  const cards = [{id:'default', name:'经典灵装', description:'随程序提供，可离线使用。', installed:true}, ...themes].map(item => {
+   const isDefault = item.id === 'default', installed = isDefault || item.installed === true;
+   const disabled = !admin && !installed;
+   const status = isDefault ? '已内置' : installed ? '已安装' : admin ? '选择后下载' : '需要管理员安装';
+   const preview = isDefault ? '/assets/overview.webp' : installed ? `/theme-assets/${item.id}/overview.png` : '';
+   const artwork = preview ? `<img src="${esc(preview)}" alt="" loading="lazy" decoding="async">` : '';
+   return `<label class="theme-picker-choice">
+    <input class="theme-picker-input" type="radio" name="skin" value="${esc(item.id)}"${current === item.id ? ' checked' : ''}${disabled ? ' disabled' : ''}>
+    <span class="theme-picker-card">
+     <span class="theme-picker-art" data-theme="${esc(item.id)}" aria-hidden="true">${artwork}</span>
+     <span class="theme-picker-copy"><strong>${esc(item.name)}</strong><span>${esc(item.description || '')}</span><small>${esc(status)}</small></span>
+    </span>
+   </label>`;
+  }).join('');
   openDialog({
-   html:`<h2>狂三主题</h2><p class="muted">主题只在选择时从 GitHub 下载；已安装的主题可离线使用，选择保存在当前浏览器。</p><div class="form-grid"><label>选择主题<select name="skin">${options.join('')}</select></label></div>`,
+   html:`<h2>狂三主题</h2><p class="muted">选择你喜欢的场景；可选主题只在选择后从 GitHub 下载，安装后可离线使用。</p><fieldset class="theme-picker-grid"><legend>选择主题</legend>${cards}</fieldset>`,
    submitLabel:'应用主题',
    async onSubmit(form) {
     const operation = dialogOperation;
@@ -305,7 +313,7 @@ window.Kurumi = (() => {
      if (!selected || (!selected.installed && !admin)) throw new Error('此主题尚不可用。');
      if (!selected.installed) {
       const submit = form.querySelector('[type="submit"]'), label = submit.textContent;
-      const controller = new AbortController(), deadline = setTimeout(() => controller.abort(), 120000);
+      const controller = new AbortController(), deadline = setTimeout(() => controller.abort(), 140000);
       submit.textContent = '正在下载主题…';
       try { await api('themes/install', {id}, {signal:controller.signal}); }
       catch (error) {
