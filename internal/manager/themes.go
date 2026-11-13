@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -298,6 +299,17 @@ func (m *themeManager) available() []availableTheme {
 	return list
 }
 
+func themeDownloadError(ctx context.Context, err error) error {
+	switch {
+	case ctx.Err() == context.Canceled:
+		return fmt.Errorf("主题下载已取消")
+	case ctx.Err() == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("主题下载超时，请检查网络后重试")
+	default:
+		return fmt.Errorf("主题下载失败，请检查网络后重试")
+	}
+}
+
 func (m *themeManager) download(ctx context.Context, spec themeSpec) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, spec.url, nil)
 	if err != nil {
@@ -306,7 +318,7 @@ func (m *themeManager) download(ctx context.Context, spec themeSpec) ([]byte, er
 	req.Header.Set("User-Agent", "KurumiFRP-theme")
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("无法连接 GitHub 下载主题")
+		return nil, themeDownloadError(ctx, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -316,8 +328,11 @@ func (m *themeManager) download(ctx context.Context, spec themeSpec) ([]byte, er
 		return nil, fmt.Errorf("主题文件大小不符")
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, spec.size+1))
-	if err != nil || int64(len(body)) != spec.size {
-		return nil, fmt.Errorf("主题文件读取失败或大小不符")
+	if err != nil {
+		return nil, themeDownloadError(ctx, err)
+	}
+	if int64(len(body)) != spec.size {
+		return nil, fmt.Errorf("主题文件大小不符")
 	}
 	want, _ := hex.DecodeString(spec.sha256)
 	hash := sha256.Sum256(body)
@@ -396,7 +411,7 @@ func (m *themeManager) install(ctx context.Context, id string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	downloadCtx, cancelDownload := context.WithTimeout(ctx, 30*time.Second)
+	downloadCtx, cancelDownload := context.WithTimeout(ctx, 90*time.Second)
 	body, err := m.download(downloadCtx, spec)
 	cancelDownload()
 	if err != nil {
@@ -507,7 +522,7 @@ func (a *App) themesAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/themes/install" && r.Method == http.MethodPost {
 		// PNG crops can take longer than the normal API write timeout on small devices.
-		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(2 * time.Minute))
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(2*time.Minute + 15*time.Second))
 		var input struct {
 			ID string `json:"id"`
 		}
