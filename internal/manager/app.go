@@ -286,22 +286,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, 403, fmt.Errorf("Host 不允许；请使用本机或 SSH 转发地址"))
 		return
 	}
-	// This top-level redirect comes from the identity provider. The callback
-	// verifies a one-use state and SameSite cookie before it changes a session.
-	if r.URL.Path == "/api/oidc/callback" && r.Method == http.MethodGet {
-		a.oidcCallback(w, r)
-		return
-	}
 	if !sameOrigin(r) {
 		fail(w, 403, fmt.Errorf("跨站请求被拒绝"))
-		return
-	}
-	if r.URL.Path == "/api/oidc/status" && r.Method == http.MethodGet {
-		a.oidcStatus(w, r)
-		return
-	}
-	if r.URL.Path == "/api/oidc/start" && r.Method == http.MethodPost {
-		a.oidcStart(w, r)
 		return
 	}
 	if r.URL.Path == "/api/launch-login" && r.Method == "POST" {
@@ -310,20 +296,14 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == "/api/login" && r.Method == "POST" {
 		var input struct {
-			Token    *string `json:"token"`
-			Username string  `json:"username"`
 			Password *string `json:"password"`
 		}
 		if e := decode(w, r, &input); e != nil {
 			fail(w, 400, e)
 			return
 		}
-		sid, e := a.auth.login(r, input.Token, input.Username, input.Password)
-		label := a.loginAccountLabel(input.Username)
-		if input.Username == "" && input.Token == nil {
-			label = "本机密码"
-		}
-		a.loginHistory.record(r, label, e == nil)
+		sid, e := a.auth.login(r, input.Password)
+		a.loginHistory.record(r, "本机密码", e == nil)
 		if e != nil {
 			fail(w, 401, e)
 			return
@@ -350,45 +330,19 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
-		managedProxySample := r.Method == http.MethodGet && r.URL.Path == "/api/me/managed-proxies"
-		managedProxyQuota := r.Method == http.MethodGet && r.URL.Path == "/api/me/managed-proxy-quota"
-		managedProxyRead := managedProxySample || managedProxyQuota
-		selfSessionRevoke := r.Method == http.MethodPost && r.URL.Path == "/api/me/sessions/revoke-others"
-		if managedProxyRead {
-			w.Header().Set("Cache-Control", "no-store")
-			if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
-				fail(w, http.StatusServiceUnavailable, fmt.Errorf("采样不可用"))
-				return
-			}
-		}
 		var p principal
 		var ok bool
 		var unlock func()
-		// Account mutations take the target's exclusive gate themselves after
-		// expensive password work. Streams acquire it separately per frame.
-		ungated := (r.Method == http.MethodPost && (r.URL.Path == "/api/accounts" || r.URL.Path == "/api/password" || r.URL.Path == "/api/logout")) || (r.Method == http.MethodGet && r.URL.Path == "/api/logs/stream")
-		if selfSessionRevoke {
-			// The handler takes this account's exclusive gate; do not acquire a
-			// read gate here or wait for auth.mu while another request owns it.
-			if !a.auth.mu.TryLock() {
-				fail(w, http.StatusServiceUnavailable, fmt.Errorf("会话操作繁忙，请稍后重试"))
-				return
-			}
-			p, ok = a.auth.identityLocked(r)
-			a.auth.mu.Unlock()
-		} else if ungated {
+		// Password changes and logout take their own exclusive gate; streams
+		// acquire the session gate separately for each frame.
+		ungated := (r.Method == http.MethodPost && (r.URL.Path == "/api/password" || r.URL.Path == "/api/logout")) || (r.Method == http.MethodGet && r.URL.Path == "/api/logs/stream")
+		if ungated {
 			p, ok = a.auth.identity(r)
-		} else if managedProxyRead {
-			p, unlock, ok = a.auth.tryLockManagedProxyRequest(r)
 		} else {
 			p, unlock, ok = a.auth.lockRequest(r)
 		}
 		if !ok {
-			if managedProxyRead {
-				fail(w, http.StatusServiceUnavailable, fmt.Errorf("采样不可用"))
-			} else {
-				fail(w, 401, fmt.Errorf("请先登录"))
-			}
+			fail(w, http.StatusUnauthorized, fmt.Errorf("请先登录"))
 			return
 		}
 		if unlock != nil {
@@ -405,28 +359,12 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		r = withPrincipal(r, p)
-		if r.URL.Path == "/api/me/managed-proxy-quota" {
-			a.accountFRPProxyQuotaAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/me/sessions/revoke-others" {
-			a.revokeOtherSessionsAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/me/managed-proxies" {
-			a.accountManagedProxySnapshotAPI(w, r)
-			return
-		}
 		if r.URL.Path == "/api/node-agents" {
 			a.inboundAgentAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/maintenance" {
 			a.maintenanceAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/oidc/config" {
-			a.oidcSettingsAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/firewall" {
@@ -453,16 +391,12 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			a.firewallListAPI(w, r)
 			return
 		}
-		if r.URL.Path == "/api/accounts" {
-			a.accountsAPI(w, r)
-			return
-		}
 		if r.URL.Path == "/api/login-history" {
 			a.loginHistoryAPI(w, r)
 			return
 		}
 		if r.URL.Path == "/api/password" {
-			a.passwordAPI(w, r)
+			a.adminPasswordAPI(w, r, p)
 			return
 		}
 		if r.URL.Path == "/api/quit" && r.Method == "POST" {

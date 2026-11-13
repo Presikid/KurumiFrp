@@ -18,13 +18,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 	}
 	if r.Method == http.MethodGet {
 		switch r.URL.Path {
-		case "/api/me/managed-proxy-quota":
-			return p.Account && p.PasswordAccount && p.AccountID != "" && p.gate != nil &&
-				(p.Role == "admin" || p.Role == "operator" || p.Role == "viewer")
-		case "/api/me/managed-proxies":
-			return p.Account && p.PasswordAccount && p.AccountID != "" && p.gate != nil && p.canReadConfig() &&
-				(p.Role == "admin" || p.Role == "operator" || p.Role == "viewer")
-		case "/api/login-history", "/api/logs/history", "/api/firewall", "/api/firewall/seen", "/api/oidc/config":
+		case "/api/login-history", "/api/logs/history", "/api/firewall", "/api/firewall/seen":
 			return p.admin()
 		case "/api/webhooks":
 			return p.admin()
@@ -41,16 +35,13 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.canReadTraffic() && p.canReadConfig() && (p.admin() || p.Role == "operator" || p.Role == "viewer")
 		case "/api/logs", "/api/logs/stream":
 			return p.canReadLogs(r.URL.Query().Get("id"))
-		case "/api/registration", "/api/update/status", "/api/update/releases", "/api/export", "/api/webhook", "/api/accounts":
+		case "/api/registration", "/api/update/status", "/api/update/releases", "/api/export", "/api/webhook":
 			return p.admin()
 		}
 	}
 	if r.Method == http.MethodPost {
 		switch r.URL.Path {
-		case "/api/me/sessions/revoke-others":
-			return p.Account && p.PasswordAccount && p.AccountID != "" && p.gate != nil &&
-				(p.Role == "admin" || p.Role == "operator" || p.Role == "viewer")
-		case "/api/login-history", "/api/logs/history", "/api/firewall", "/api/firewall/asn", "/api/firewall/ip-asn", "/api/firewall/import", "/api/firewall/list", "/api/oidc/config":
+		case "/api/login-history", "/api/logs/history", "/api/firewall", "/api/firewall/asn", "/api/firewall/ip-asn", "/api/firewall/import", "/api/firewall/list":
 			return p.admin()
 		case "/api/webhooks":
 			return p.admin()
@@ -60,7 +51,7 @@ func routeAllowed(p principal, r *http.Request) bool {
 			return p.admin() || p.Role == "operator" || p.Role == "viewer"
 		case "/api/control", "/api/validate", "/api/nodes/control":
 			return p.admin() || p.Role == "operator"
-		case "/api/accounts", "/api/quit", "/api/browser-ticket", "/api/probe", "/api/health", "/api/webhook", "/api/backup/export", "/api/backup/import", "/api/update/install", "/api/themes/install", "/api/import", "/api/import/toml", "/api/import/toml/preview", "/api/nodes", "/api/nodes/resolve", "/api/nodes/confirm", "/api/duplicate", "/api/tunnels/batch-enabled", "/api/tunnels/batch-delete", "/api/tunnels/batch", "/api/save", "/api/delete", "/api/restore", "/api/history-settings", "/api/traffic-budget":
+		case "/api/quit", "/api/browser-ticket", "/api/probe", "/api/health", "/api/webhook", "/api/backup/export", "/api/backup/import", "/api/update/install", "/api/themes/install", "/api/import", "/api/import/toml", "/api/import/toml/preview", "/api/nodes", "/api/nodes/resolve", "/api/nodes/confirm", "/api/duplicate", "/api/tunnels/batch-enabled", "/api/tunnels/batch-delete", "/api/tunnels/batch", "/api/save", "/api/delete", "/api/restore", "/api/history-settings", "/api/traffic-budget":
 			return p.admin()
 		}
 	}
