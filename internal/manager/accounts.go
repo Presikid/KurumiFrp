@@ -309,7 +309,7 @@ func (a *auth) writeAccounts(accounts []localAccount) error {
 // Caller holds auth.mu. Avoid telling users to retry against uncertain state.
 func (a *auth) accountWriteFailure() error {
 	if a.accountsWriteUncertain {
-		return fmt.Errorf("账户配置保存状态未确认，请联系管理员安全重启工作台后核对")
+		return fmt.Errorf("账户配置保存状态未确认；已有受管 FRP 连接可能仍在运行，请管理员确认后安全重启工作台并核对")
 	}
 	return fmt.Errorf("无法保存账户配置")
 }
@@ -446,6 +446,11 @@ func (a *auth) loginAccount(r *http.Request, username, password string) (string,
 		return "", false, fmt.Errorf("用户名或密码不正确")
 	}
 	a.mu.Lock()
+	if a.accountsWriteUncertain {
+		err := a.accountWriteFailure()
+		a.mu.Unlock()
+		return "", false, err
+	}
 	var account localAccount
 	for _, u := range a.accounts {
 		if strings.EqualFold(u.Username, username) {
@@ -477,11 +482,14 @@ func (a *auth) loginAccount(r *http.Request, username, password string) (string,
 	if err != nil {
 		return "", false, fmt.Errorf("用户名或密码不正确")
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.accountsWriteUncertain {
+		return "", false, a.accountWriteFailure()
+	}
 	if subtle.ConstantTimeCompare(got, want) != 1 || !account.activeAt(time.Now()) {
 		return "", true, fmt.Errorf("用户名或密码不正确")
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	// A disable/re-enable or other change during password derivation must not
 	// revive an authentication attempt that began before revocation.
 	if a.accountsRevision != revision {
