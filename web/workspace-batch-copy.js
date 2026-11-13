@@ -66,6 +66,7 @@
      const destination = clients.find(item => item.id === target);
      if (!destination) throw new Error('目标客户端无效，请重新选择。');
      if (!confirm(`复制规则到「${destination.name}」？\n总计 ${counts.total} 条；主列表筛选外 ${counts.outside} 条，窗口筛选外 ${counts.hidden} 条（可能重叠），都会复制。\n所有副本默认停用，正在运行的配置不会改变。`)) return false;
+     if (!formCurrent(form)) throw new Error('页面或会话已变化，请重新打开批量复制。');
      let result;
      try { result = await timed('duplicate',{revision:data.revision,kind:'tunnels',ids,targetInstanceId:target},30000); }
      catch (error) {
@@ -76,8 +77,8 @@
       pendingUnknown = true; throw new Error('复制结果无法确认，请关闭窗口并刷新草稿后核对。');
      }
      if (formCurrent(form)) {
-      try { await K.refresh(); K.toast(`已复制 ${ids.length} 条停用规则，请核对配置。`); }
-      catch (_) { if (K.state()) K.toast('复制已完成，但刷新失败；请手动刷新核对。'); }
+      try { await K.refresh(); if (K.epoch() === epoch) K.toast(`已复制 ${ids.length} 条停用规则，请核对配置。`); }
+      catch (_) { if (K.epoch() === epoch && K.state()) K.toast('复制已完成，但刷新失败；请手动刷新核对。'); }
      }
     }
    });
