@@ -1,0 +1,217 @@
+# Temporary, separate from the release workflow.
+name: Temporary native lifecycle verification
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/native-lifecycle.yml
+      - cmd/**
+      - internal/**
+      - third_party/frp/**
+      - web/**
+      - packaging/**
+      - scripts/package-native.py
+      - docs/INSTALL.md
+      - go.mod
+      - go.sum
+      - VERSION
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - name: Require a disposable GitHub-hosted Windows VM
+        shell: pwsh
+        run: |
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') { throw 'Requires a disposable GitHub-hosted Windows VM.' }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: stable
+          cache: false
+      - name: Build native Windows package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') { throw 'Requires a disposable GitHub-hosted Windows VM.' }
+          python scripts/package-native.py windows
+          if ($LASTEXITCODE -ne 0) { throw "Native package build failed: $LASTEXITCODE" }
+      - name: Install, exercise, uninstall, reinstall and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:RUNNER_OS -ne 'Windows') { throw 'Requires a disposable GitHub-hosted Windows VM.' }
+          if ($env:GITHUB_RUN_ID -notmatch '^\d+$' -or $env:GITHUB_RUN_ATTEMPT -notmatch '^\d+$') { throw 'Unexpected run identifier.' }
+          $current = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = [Security.Principal.WindowsPrincipal]::new($current)
+          if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'INFRA: runner is not an administrator.' }
+          $installDir = Join-Path $env:ProgramFiles ("KurumiFRP-CI-" + $env:GITHUB_RUN_ID + "-" + $env:GITHUB_RUN_ATTEMPT)
+          $legacy = Join-Path $env:ProgramData 'KurumiFRP'
+          $registration = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\io.github.Presikid.KurumiFRP_is1'
+          if ((Test-Path -LiteralPath $installDir) -or (Test-Path -LiteralPath $legacy) -or (Test-Path -LiteralPath $registration)) { throw 'INFRA: existing installation or data; nothing changed.' }
+          $setupFiles = @(Get-ChildItem -LiteralPath dist-native -Filter '*-Setup.exe' -File)
+          if ($setupFiles.Count -ne 1) { throw 'Expected exactly one generated Setup executable.' }
+          $setup = $setupFiles[0].FullName
+          $logRoot = (Resolve-Path -LiteralPath dist-native).Path
+          $exe = Join-Path $installDir 'kurumi.exe'
+          $icon = Join-Path $installDir 'kurumi.ico'
+          $guide = Join-Path $installDir 'INSTALL.md'
+          $dataDir = Join-Path $installDir ("runtime\profiles\" + $current.User.Value + "\data")
+          $sentinel = Join-Path $dataDir 'ci-synthetic-sentinel.txt'
+          $marker = Join-Path $installDir 'runtime\.uninstalling'
+          function Install-App([string]$logName) {
+            $processArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', ('/DIR="' + $installDir + '"'), ('/LOG="' + (Join-Path $logRoot $logName) + '"'))
+            $p = Start-Process -WindowStyle Hidden -FilePath $setup -ArgumentList $processArgs -PassThru -Wait
+            if ($p.ExitCode -ne 0) { throw "Setup returned $($p.ExitCode); inspect the setup log." }
+            if (-not (Test-Path -LiteralPath $exe)) { throw 'Setup returned success but the program is absent.' }
+          }
+          function Start-App() {
+            $process = Start-Process -WindowStyle Hidden -FilePath $exe -PassThru
+            $check = Start-Process -WindowStyle Hidden -FilePath $exe -ArgumentList '--check-running' -PassThru -Wait
+            if ($check.ExitCode -ne 0 -or $process.HasExited) { throw 'Workbench readiness was not confirmed.' }
+            return $process
+          }
+          function Assert-Exited($process) {
+            if (-not $process.WaitForExit(60000)) { throw 'Workbench did not exit after stop or uninstall.' }
+            if ($process.ExitCode -ne 0) { throw "Workbench returned $($process.ExitCode) during shutdown." }
+            if (Test-Path -LiteralPath (Join-Path $dataDir 'manager.lock')) { throw 'Manager lock remains after the confirmed exit.' }
+          }
+          function Stop-App($process) {
+            $stop = Start-Process -WindowStyle Hidden -FilePath $exe -ArgumentList '--stop' -PassThru -Wait
+            if ($stop.ExitCode -ne 0) { throw "Stop returned $($stop.ExitCode)." }
+            Assert-Exited $process
+          }
+          function Uninstall-App($process, [string]$logName) {
+            $uninstallers = @(Get-ChildItem -LiteralPath $installDir -Filter 'unins*.exe' -File)
+            if ($uninstallers.Count -ne 1) { throw 'Uninstaller not uniquely identified.' }
+            $processArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/LOG="' + (Join-Path $logRoot $logName) + '"'))
+            $p = Start-Process -WindowStyle Hidden -FilePath $uninstallers[0].FullName -ArgumentList $processArgs -PassThru -Wait
+            # A launcher exit alone does not prove its separate cleanup callback succeeded.
+            if ($p.ExitCode -ne 0) { throw "Uninstall launcher returned $($p.ExitCode)." }
+            Assert-Exited $process
+            if ((Test-Path -LiteralPath $exe) -or (Test-Path -LiteralPath $icon) -or (Test-Path -LiteralPath $guide) -or (Test-Path -LiteralPath $marker) -or (Test-Path -LiteralPath $registration)) {
+              throw 'Uninstall cleanup not confirmed. Check the uninstall log and reboot-pending status before attributing cause.'
+            }
+            if (-not (Test-Path -LiteralPath $sentinel) -or [IO.File]::ReadAllText($sentinel) -ne 'synthetic-ci-data') { throw 'Synthetic data was not retained.' }
+          }
+          Install-App 'setup-1-ci.log'
+          for ($i = 0; $i -lt 3; $i++) { $manager = Start-App; Stop-App $manager }
+          $manager = Start-App
+          [IO.File]::WriteAllText($sentinel, 'synthetic-ci-data')
+          Uninstall-App $manager 'uninstall-1-ci.log'
+          Install-App 'setup-2-ci.log'
+          if ([IO.File]::ReadAllText($sentinel) -ne 'synthetic-ci-data') { throw 'Reinstall did not preserve synthetic data.' }
+          $manager = Start-App
+          $ico = Get-Item -LiteralPath $icon
+          $ico.Attributes = $ico.Attributes -bor [IO.FileAttributes]::ReadOnly
+          Uninstall-App $manager 'uninstall-readonly-ci.log'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: failure()
+        with:
+          name: windows-native-lifecycle-logs
+          path: dist-native/*-ci.log
+          if-no-files-found: ignore
+          retention-days: 2
+
+  deb-systemd:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Require a disposable GitHub-hosted Linux VM
+        shell: bash
+        run: |
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted && "$RUNNER_OS" == Linux ]] || { echo 'Requires a disposable GitHub-hosted Linux VM.'; exit 1; }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: stable
+          cache: false
+      - name: Build and exercise DEB on a disposable systemd VM
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted && "$RUNNER_OS" == Linux ]] || { echo 'Requires a disposable GitHub-hosted Linux VM.'; exit 1; }
+          [[ -d /run/systemd/system ]] && systemctl show -p Version >/dev/null || { echo 'INFRA: systemd is not running.'; exit 1; }
+          [[ ! -e /opt/kurumifrp && ! -L /opt/kurumifrp ]] || { echo 'INFRA: existing installation; nothing changed.'; exit 1; }
+          if getent passwd kurumifrp >/dev/null || getent group kurumifrp >/dev/null; then echo 'INFRA: existing service identity.'; exit 1; fi
+          python3 scripts/package-native.py linux --arch amd64 --deb-only
+          set -- dist-native/kurumifrp_*_amd64.deb
+          [[ "$#" == 1 && -f "$1" ]] || { echo 'Expected exactly one DEB.'; exit 1; }
+          deb="$PWD/$1"
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb"
+          for n in 1 2 3; do
+            sudo systemctl start kurumifrp.service
+            sudo systemctl is-active --quiet kurumifrp.service
+            sudo /usr/bin/kurumifrp --check-running
+            sudo systemctl stop kurumifrp.service
+            sudo test ! -e /opt/kurumifrp/runtime/data/manager.lock
+          done
+          sudo systemctl start kurumifrp.service
+          sudo /usr/bin/kurumifrp --check-running
+          sudo -u kurumifrp sh -c 'printf synthetic-ci-data > /opt/kurumifrp/runtime/data/ci-synthetic-sentinel.txt'
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get remove -y kurumifrp
+          sudo test -f /opt/kurumifrp/runtime/data/ci-synthetic-sentinel.txt
+          [[ "$(sudo cat /opt/kurumifrp/runtime/data/ci-synthetic-sentinel.txt)" == synthetic-ci-data ]]
+          sudo test ! -e /opt/kurumifrp/runtime/data/manager.lock
+          [[ ! -e /usr/bin/kurumifrp && ! -L /usr/bin/kurumifrp ]]
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb"
+          sudo systemctl start kurumifrp.service
+          sudo /usr/bin/kurumifrp --check-running
+          [[ "$(sudo cat /opt/kurumifrp/runtime/data/ci-synthetic-sentinel.txt)" == synthetic-ci-data ]]
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get purge -y kurumifrp
+          [[ ! -e /opt/kurumifrp && ! -L /opt/kurumifrp ]]
+          if getent passwd kurumifrp >/dev/null || getent group kurumifrp >/dev/null; then echo 'Service identity remains after purge.'; exit 1; fi
+
+  rpm-container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Require a disposable GitHub-hosted Linux VM
+        shell: bash
+        run: |
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted && "$RUNNER_OS" == Linux ]] || { echo 'Requires a disposable GitHub-hosted Linux VM.'; exit 1; }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: stable
+          cache: false
+      - name: Build RPM and exercise it in a disposable Fedora container
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_ENVIRONMENT" == github-hosted && "$RUNNER_OS" == Linux ]] || { echo 'Requires a disposable GitHub-hosted Linux VM.'; exit 1; }
+          sudo apt-get update
+          sudo apt-get install -y rpm
+          python3 scripts/package-native.py linux --arch amd64
+          set -- dist-native/kurumifrp-*.x86_64.rpm
+          [[ "$#" == 1 && -f "$1" ]] || { echo 'Expected exactly one RPM.'; exit 1; }
+          container="kurumi-rpm-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          created=0
+          cleanup() { if [[ "$created" == 1 ]]; then docker rm -f "$container" >/dev/null 2>&1 || true; fi; }
+          trap cleanup EXIT
+          docker run -d --name "$container" fedora:44 sleep infinity >/dev/null
+          created=1
+          docker cp "$1" "$container:/tmp/kurumifrp.rpm"
+          docker exec "$container" sh -c 'test ! -d /run/systemd/system && test ! -e /opt/kurumifrp' || { echo 'INFRA: expected a clean non-systemd container.'; exit 1; }
+          docker exec "$container" dnf install -y /tmp/kurumifrp.rpm
+          for n in 1 2 3; do
+            docker exec -d "$container" sh -c 'exec runuser -u kurumifrp -- /usr/bin/kurumifrp >>/tmp/kurumi-ci.log 2>&1'
+            docker exec "$container" /usr/bin/kurumifrp --check-running
+            docker exec "$container" runuser -u kurumifrp -- /usr/bin/kurumifrp --stop
+          done
+          docker exec -d "$container" sh -c 'exec runuser -u kurumifrp -- /usr/bin/kurumifrp >>/tmp/kurumi-ci.log 2>&1'
+          docker exec "$container" /usr/bin/kurumifrp --check-running
+          docker exec -u kurumifrp "$container" sh -c 'printf synthetic-ci-data > /opt/kurumifrp/runtime/data/ci-synthetic-sentinel.txt'
+          docker exec "$container" dnf remove -y kurumifrp
+          docker exec "$container" sh -c 'test ! -e /opt/kurumifrp && ! getent passwd kurumifrp >/dev/null && ! getent group kurumifrp >/dev/null'
+
