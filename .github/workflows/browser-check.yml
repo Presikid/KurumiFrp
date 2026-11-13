@@ -1,0 +1,46 @@
+name: Temporary browser interaction checks
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/browser-check.yml'
+      - '.github/kurumi-stress/browser.cjs'
+      - 'cmd/**'
+      - 'internal/**'
+      - 'web/**'
+      - 'third_party/frp/**'
+      - 'go.mod'
+      - 'go.sum'
+permissions:
+  contents: read
+concurrency:
+  group: kurumi-browser-check-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Require a disposable hosted runner
+        run: |
+          test "${GITHUB_ACTIONS:-}" = true
+          test "${RUNNER_ENVIRONMENT:-}" = github-hosted
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build temporary workbench
+        run: CGO_ENABLED=0 go build -o "$RUNNER_TEMP/kurumi-browser-check" ./cmd/kurumi
+      - name: Install browser dependencies
+        run: |
+          npm install --prefix "$RUNNER_TEMP/kurumi-browser-deps" --no-save playwright@1.56.1
+          "$RUNNER_TEMP/kurumi-browser-deps/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Exercise the workbench in Chromium
+        env:
+          NODE_PATH: ${{ runner.temp }}/kurumi-browser-deps/node_modules
+          KURUMI_BROWSER_BINARY: ${{ runner.temp }}/kurumi-browser-check
+        run: node .github/kurumi-stress/browser.cjs
