@@ -144,14 +144,17 @@ func (m *Manager) releasesHTML(ctx context.Context) ([]release, error) {
 					firstErr = err
 				}
 				mu.Unlock()
+				// Keep the release visible but unavailable when its own asset
+				// metadata cannot be verified; other releases remain usable.
+				result[i] = release{Tag: tag, MetadataFallback: true}
 				return
 			}
 			result[i] = r
 		}(i, tag)
 	}
 	wg.Wait()
-	if firstErr != nil {
-		return nil, fmt.Errorf("无法验证 GitHub 官方发行页面：%w", firstErr)
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("无法验证 GitHub 官方发行页面：%w", err)
 	}
 	if m.distribution == "windows-installed" || strings.HasPrefix(m.distribution, "linux-") {
 		hasAsset := false
@@ -162,6 +165,9 @@ func (m *Manager) releasesHTML(ctx context.Context) ([]release, error) {
 			}
 		}
 		if !hasAsset {
+			if firstErr != nil {
+				return nil, fmt.Errorf("无法验证 GitHub 官方发行页面：%w", firstErr)
+			}
 			return nil, fmt.Errorf("官方发行页面没有可验证的安装包")
 		}
 	}
