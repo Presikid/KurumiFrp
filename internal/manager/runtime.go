@@ -327,10 +327,9 @@ func runtimeConfig(i Instance, r Rendered) RuntimeConfig {
 	return RuntimeConfig{InstanceID: i.ID, Kind: i.Kind, Rendered: r, ServerAccessMode: i.ServerAccessMode, ServerAccessList: i.ServerAccessList, ManagedAccountLogin: i.ManagedAccountLogin}
 }
 
-// runtimeConfigLocked binds managed authentication to the persisted instance
-// and its current incarnation. The caller holds a.mu and owns the resulting
-// snapshot for both verification and startup.
-func (a *App) runtimeConfigLocked(i Instance, r Rendered, incarnation string) (RuntimeConfig, error) {
+// runtimeConfigLocked checks the persisted instance before creating the
+// snapshot used for verification and startup. The caller holds a.mu.
+func (a *App) runtimeConfigLocked(i Instance, r Rendered, _ string) (RuntimeConfig, error) {
 	cfg := runtimeConfig(i, r)
 	if a.store == nil {
 		return RuntimeConfig{}, fmt.Errorf("工作台配置不可用")
@@ -338,13 +337,6 @@ func (a *App) runtimeConfigLocked(i Instance, r Rendered, incarnation string) (R
 	current, ok := a.store.DB.State.Instance(i.ID)
 	if !ok || current.Kind != i.Kind || current.ManagedAccountLogin != i.ManagedAccountLogin {
 		return RuntimeConfig{}, fmt.Errorf("实例或账户认证配置已变化，请刷新后重试")
-	}
-	if cfg.ManagedAccountLogin {
-		if !validLocalTrafficID(incarnation) || a.store.DB.LocalTrafficIDs[i.ID] != incarnation {
-			return RuntimeConfig{}, fmt.Errorf("服务端实例标识不可用，请刷新后重试")
-		}
-		cfg.ManagedAccountIncarnation = incarnation
-		cfg.ManagedLoginProvider = a.accountFRPLoginProvider(i.ID, incarnation)
 	}
 	if err := a.checkManagedAccountBackend(i, cfg); err != nil {
 		return RuntimeConfig{}, err

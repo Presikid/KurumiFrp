@@ -229,6 +229,9 @@ func (a *App) duplicateInstance(sourceID string, includeTunnels bool) (string, i
 	if !ok {
 		return "", 0, fmt.Errorf("源实例不存在")
 	}
+	if source.ManagedAccountLogin {
+		return "", 0, fmt.Errorf("旧版服务端认证方式已停用，请先填写共享连接令牌并保存实例，再复制")
+	}
 	name, err := duplicateInstanceName(st, source.Name)
 	if err != nil {
 		return "", 0, err

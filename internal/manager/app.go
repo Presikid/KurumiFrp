@@ -718,6 +718,14 @@ func (a *App) api(w http.ResponseWriter, r *http.Request) {
 				err = fmt.Errorf("已有实例不能改变类型")
 				break
 			}
+			if v.ManagedAccountLogin && (!exists || !old.ManagedAccountLogin) {
+				err = fmt.Errorf("旧版服务端认证方式已停用，不能启用")
+				break
+			}
+			if exists && old.ManagedAccountLogin && !v.ManagedAccountLogin && v.Token == "" {
+				err = fmt.Errorf("切换认证方式时，请明确填写共享连接令牌")
+				break
+			}
 			v.HasToken = false
 			if v.Token == "" {
 				v.Token = old.Token
