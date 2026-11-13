@@ -4,6 +4,7 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const updateRequest = "/opt/kurumifrp/runtime/update.request"
@@ -100,7 +103,16 @@ func requestSystemUpdate(tag string) error {
 	if e != nil {
 		return e
 	}
-	return os.Rename(temp.Name(), updateRequest)
+	// Publish the complete request without replacing another pending request.
+	e = unix.Renameat2(unix.AT_FDCWD, temp.Name(), unix.AT_FDCWD, updateRequest, unix.RENAME_NOREPLACE)
+	if errors.Is(e, unix.ENOSYS) || errors.Is(e, unix.EINVAL) || errors.Is(e, unix.EOPNOTSUPP) {
+		// Older kernels and some filesystems do not support RENAME_NOREPLACE.
+		e = os.Link(temp.Name(), updateRequest)
+	}
+	if errors.Is(e, os.ErrExist) {
+		return fmt.Errorf("已有待处理或状态未确认的系统更新请求，请先核对")
+	}
+	return e
 }
 
 // Executed by the root-owned systemd unit; the unprivileged request only selects
