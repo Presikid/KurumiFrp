@@ -37,7 +37,15 @@ func (s *updateNoticeState) observe(sequence uint64, versions []update.Version, 
 	s.latestObserved = sequence
 	tag := ""
 	for _, version := range versions {
-		if version.Newer && version.Available {
+		if !version.Newer {
+			continue
+		}
+		// HTML fallback may not have verified this newer release's asset.
+		// Do not announce an older one as the latest available update.
+		if version.MetadataFallback && !version.Available {
+			return
+		}
+		if version.Available {
 			tag = version.Tag
 			break // Versions is sorted newest first.
 		}
@@ -45,13 +53,17 @@ func (s *updateNoticeState) observe(sequence uint64, versions []update.Version, 
 	if tag == s.current {
 		return
 	}
-	s.current = tag
-	if tag == "" || s.seen[tag] || (!s.lastNotification.IsZero() && time.Since(s.lastNotification) < 5*time.Minute) {
+	if tag == "" || s.seen[tag] {
+		s.current = tag
+		return
+	}
+	if !s.lastNotification.IsZero() && time.Since(s.lastNotification) < 5*time.Minute {
 		return
 	}
 	if !dispatcher.emitUpdateAvailable(tag) {
 		return
 	}
+	s.current = tag
 	if s.seen == nil {
 		s.seen = make(map[string]bool)
 	}
