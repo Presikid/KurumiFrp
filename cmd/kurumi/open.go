@@ -40,6 +40,15 @@ func openBrowser(address string) error {
 	go cmd.Wait()
 	return nil
 }
+type browserOpenError struct {
+	address string
+	cause   error
+}
+
+func (e *browserOpenError) Error() string {
+	return fmt.Sprintf("无法打开浏览器，请手动访问 %s：%v", e.address, e.cause)
+}
+
 func openExisting(addr, token string) error {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -75,7 +84,10 @@ func openExisting(addr, token string) error {
 	if result.URL != address {
 		return fmt.Errorf("unexpected browser address response")
 	}
-	return openBrowser(address)
+	if err := openBrowser(address); err != nil {
+		return &browserOpenError{address: address, cause: err}
+	}
+	return nil
 }
 
 // Installation launchers use auto; explicit --listen retains its original behavior.
