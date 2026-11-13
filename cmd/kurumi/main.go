@@ -149,8 +149,14 @@ func run() error {
 		}
 		return fmt.Errorf("data directory locked; verify no old manager/frp process is alive before removing manager.lock")
 	}
-	fmt.Fprintln(f, os.Getpid())
-	f.Close()
+	_, writeErr := fmt.Fprintln(f, os.Getpid())
+	closeErr := f.Close()
+	if writeErr != nil {
+		return fmt.Errorf("manager lock write failed; startup aborted without removing the lock: %w", writeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("manager lock close failed; startup aborted without removing the lock: %w", closeErr)
+	}
 	cleanShutdown := true
 	defer func() {
 		if cleanShutdown {
