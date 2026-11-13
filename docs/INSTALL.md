@@ -1,6 +1,6 @@
 # KurumiFRP 安装、目录与卸载
 
-> 0.8 内置核心与安装包改造仍是开发候选，尚未完成实际设备、协议、并发、异常恢复及安装升级卸载验收，不可据此视为正式发行。以下 0.7.1.23 文件名仅说明已发布版本的安装形式。
+> 本文使用 0.8.0.24 作为版本示例，实际可用版本及文件名以 [Releases](https://github.com/Presikid/KurumiFrp/releases) 为准。构建或发布不等于完成实际设备、协议、并发、异常恢复及安装升级卸载验收。
 
 0.8 默认构建将 frp 代码编入工作台，不下载或附带独立 frpc/frps 程序。已有用户核心目录不用于内置运行时；包管理器可能按其自身记录移除旧包拥有的预置文件。frp 许可证包含在 Windows 安装说明、Linux 包版权文件和便携包的 `LICENSE-frp` 中。
 
@@ -18,29 +18,29 @@ Linux 原生包使用 `sudo kurumifrp --show-token`，源码版使用 `./kurumi 
 
 ## Windows：Program Files 正式安装
 
-以下文件名以 0.7.1.23 安装包为例；请以 Releases 中实际已发布的版本和下载的文件名为准。
+以下文件名以 0.8.0.24 安装包为例；请以 Releases 中实际已发布的版本和下载的文件名为准。
 
-下载 `KurumiFRP-0.7.1.23-Setup.exe`，双击并允许 UAC 管理员授权。一个安装文件按系统选择 x64 或 ARM64。默认程序目录是 `C:\Program Files\KurumiFRP`（实际路径使用系统 Program Files 定义），注册到 HKLM 的“已安装的应用”，不是 AppData 内的当前用户安装。安装、打开和卸载均不依赖 PS1/CMD、Python、Go 或 Node.js。
+下载 `KurumiFRP-0.8.0.24-Setup.exe`，双击并允许 UAC 管理员授权。一个安装文件按系统选择 x64 或 ARM64。默认程序目录是 `C:\Program Files\KurumiFRP`（实际路径使用系统 Program Files 定义），注册到 HKLM 的“已安装的应用”，不是 AppData 内的当前用户安装。安装、打开和卸载均不依赖 PS1/CMD、Python、Go 或 Node.js。
 
 程序文件和可变数据分离：
 
 | 内容 | 位置 |
 |---|---|
 | 主程序、说明、安装登记、原生卸载器 | `%ProgramFiles%\KurumiFRP` |
-| 账户隔离的配置、令牌、密钥、历史 | `%ProgramFiles%\KurumiFRP\runtime\profiles\<Windows SID>\data` |
+| 按 Windows 用户隔离的工作台配置、令牌、密钥和历史 | `%ProgramFiles%\KurumiFRP\runtime\profiles\<Windows SID>\data` |
 | 旧版外部核心（如有，内置模式不使用） | `%ProgramFiles%\KurumiFRP\runtime\profiles\<Windows SID>\cores` |
 | 工作台及托管 frp 的运行临时文件 | `%ProgramFiles%\KurumiFRP\runtime\profiles\<Windows SID>\tmp\session-*` |
 | 机器级目录所有权记录 | `%ProgramFiles%\KurumiFRP\runtime\machine-install.json` |
 
-这是机器级安装、按 Windows 账户隔离的本机工作台，不是 Windows 系统服务。每个账户有独立配置、令牌和实例；应用自己的长期文件不另外放进该账户的 AppData/Documents。SID 是 Windows 安全标识，不是另建系统账户。安装目录中的 `runtime` 根目录由管理员创建并保护；普通用户只能创建并访问自己受 NTFS 权限保护的 SID 子目录，系统和管理员仍拥有管理权限。上表是新安装的默认路径；符合检查的旧版机器级安装可以继续使用 `%ProgramData%\KurumiFRP\profiles\<Windows SID>`。
+这是机器级安装、按 Windows 账户隔离的本机工作台，不是 Windows 系统服务。每个 Windows 用户有独立的工作台配置、令牌和实例；应用自己的长期文件不另外放进该用户的 AppData/Documents。SID 是 Windows 安全标识，不是另建系统账户。安装目录中的 `runtime` 根目录由管理员创建并保护；普通用户只能创建并访问自己受 NTFS 权限保护的 SID 子目录，系统和管理员仍拥有管理权限。上表是新安装的默认路径；符合检查的旧版机器级安装可以继续使用 `%ProgramData%\KurumiFRP\profiles\<Windows SID>`。
 
-安装向导可选公共桌面快捷方式和各用户登录时启动。安装结束后，登录平时使用的 Windows 账户，从开始菜单以普通权限手动打开工作台；输入了另一个管理员账户的 UAC 凭据时尤其如此。快捷方式直接运行 `kurumi.exe --open`。选择登录启动会在各账户登录时启动其独立工作台；默认不勾选。管理端只选择 9000–9010 中的本机回环端口，不对公网开放。
+安装向导可选公共桌面快捷方式和各用户登录时启动。安装结束后，登录平时使用的 Windows 账户，从开始菜单以普通权限手动打开工作台；输入了另一个管理员账户的 UAC 凭据时尤其如此。快捷方式直接运行 `kurumi.exe --open`。选择登录启动会在各 Windows 用户登录时启动其独立工作台；默认不勾选。管理端只选择 9000–9010 中的本机回环端口，不对公网开放。
 
-覆盖升级沿用登记的旧安装目录，并使用安装包内的新维护程序停止各账户工作台。旧 ProgramData 数据通过安装记录和 ACL 检查后继续在原位置使用，不自动搬迁或清理。旧目录不可确认、存在新旧两份数据、中断维护标记、链接、不支持的权限或工作台无法停止时，升级中止并保留数据；先备份并排查，不要删除这些目录或标记来强行继续。新安装目录必须为空；机器级安装使用有持久 ACL 的受保护本地目录。
+覆盖升级沿用登记的旧安装目录，并使用安装包内的新维护程序停止各 Windows 用户的工作台。旧 ProgramData 数据通过安装记录和 ACL 检查后继续在原位置使用，不自动搬迁或清理。旧目录不可确认、存在新旧两份数据、中断维护标记、链接、不支持的权限或工作台无法停止时，升级中止并保留数据；先备份并排查，不要删除这些目录或标记来强行继续。新安装目录必须为空；机器级安装使用有持久 ACL 的受保护本地目录。
 
-0.8.0.1 起，卸载器会先自动停止所有账户的工作台和连接，再移除程序及快捷方式，保留账户数据和重新安装所需的记录。如果其他进程仍占用程序文件，Windows 会安排在重启时删除。停止工作台失败时，卸载在删除程序文件之前中止。已经安装的 0.8.0.0 仍使用旧卸载器，需要先覆盖安装新版才能使用上述卸载流程。
+0.8.0.1 起，卸载器会先自动停止所有 Windows 用户的工作台和连接，再移除程序及快捷方式，保留工作台数据和重新安装所需的记录。如果其他进程仍占用程序文件，卸载器可能安排在重启时删除；并非所有删除失败都可以这样处理。停止工作台失败时，卸载在删除程序文件之前中止。已经安装的 0.8.0.0 仍使用旧卸载器，需要先覆盖安装新版才能使用上述卸载流程。
 
-卸载后如需接回保留的数据，请手动选择原来的完整安装目录。安装器会先核对安装记录、数据根目录和账户资料的权限与记录，再停止仍在运行的工作台；检查失败时保留原文件并停止。卸载后自定义目录无法自动定位；如果选择另一个空目录，安装器可能创建新的空配置，原目录的数据不会自动接回。中断恢复的限制见 [Windows 报告](https://github.com/Presikid/KurumiFrp/blob/v0.7.1.23/docs/WINDOWS_0.7.1.23.md)。
+卸载后如需接回保留的数据，请手动选择原来的完整安装目录。安装器会先核对安装记录、数据根目录和 Windows 用户工作台目录的权限与记录，再停止仍在运行的工作台；检查失败时保留原文件并停止。卸载后自定义目录无法自动定位；如果选择另一个空目录，安装器可能创建新的空配置，原目录的数据不会自动接回。中断恢复的限制见 [0.8.0.24 发布说明](https://github.com/Presikid/KurumiFrp/releases/tag/v0.8.0.24)。
 
 安装程序不再自动验证工作台就绪或删除 Setup.exe；确认安装和配置后可自行保留或删除安装包。Inno Setup 的解包/卸载工作目录仍可能使用系统 Temp；浏览器缓存、Cookie、主题存储、快捷方式、系统审计和安全软件记录也不属于应用数据根目录。不能宣称全系统零写入或取证无痕。
 
@@ -51,11 +51,11 @@ Linux 原生包使用 `sudo kurumifrp --show-token`，源码版使用 `./kurumi 
 Debian/Ubuntu 按架构下载 DEB，Fedora/RHEL 系按架构下载 RPM：
 
 ```sh
-sudo apt install ./kurumifrp_0.7.1.23_amd64.deb
-# ARM64 改为 kurumifrp_0.7.1.23_arm64.deb
+sudo apt install ./kurumifrp_0.8.0.24_amd64.deb
+# ARM64 改为 kurumifrp_0.8.0.24_arm64.deb
 
-sudo dnf install ./kurumifrp-0.7.1.23-1.x86_64.rpm
-# ARM64 改为 kurumifrp-0.7.1.23-1.aarch64.rpm
+sudo dnf install ./kurumifrp-0.8.0.24-1.x86_64.rpm
+# ARM64 改为 kurumifrp-0.8.0.24-1.aarch64.rpm
 ```
 
 升级继续交给 APT/DNF。没有另外部署在线 APT/YUM 软件源，也未提供仓库 GPG 签名；这是上游发布的软件包，不表示已进入发行版官方仓库。附带 SHA-256 是完整性校验，不是独立身份签名。
@@ -93,7 +93,7 @@ sudo dnf remove kurumifrp  # 此 RPM 的最终卸载会清除托管数据；升�
 DEB/RPM 不在包维护脚本里猜测、扫描并删除用户下载文件，不破坏包管理器缓存或事务记录。需要安装验证后删除当前包，可执行：
 
 ```sh
-file=kurumifrp_0.7.1.23_amd64.deb
+file=kurumifrp_0.8.0.24_amd64.deb
 sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 ```
 
@@ -101,7 +101,7 @@ sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 
 除 amd64 和 arm64 外，发布页提供 armhf、riscv64 的 DEB；按系统架构选择对应文件。系统安装包按上面的方式安装和更新。
 
-计划构建 KurumiFRP-版本-linux-架构.tar.gz 便携包，覆盖 ARM 基线版、ARM 硬浮点版、RISC-V 64、LoongArch 64，以及 MIPS 大小端 32/64 位。解压后在可写目录运行 ./kurumifrp，可通过 --data 指定数据目录。管理页面默认只监听本机，通过 SSH 端口转发从其他设备访问。未设置过管理员密码的数据目录使用空密码；登录说明见上方「登录工作台」。
+发布页提供 KurumiFRP-版本-linux-架构.tar.gz 便携包，覆盖 ARM 基线版、ARM 硬浮点版、RISC-V 64、LoongArch 64，以及 MIPS 大小端 32/64 位。解压后在可写目录运行 ./kurumifrp，可通过 --data 指定数据目录。管理页面默认只监听本机，通过 SSH 端口转发从其他设备访问。未设置过管理员密码的数据目录使用空密码；登录说明见上方「登录工作台」。
 
 便携包不会注册系统服务。更新时先停止旧工作台并备份数据，将对应架构的新压缩包完整解压到新的空目录；启动新程序时通过 `--data` 指向原来的数据目录，建议使用绝对路径。若此前使用默认路径，它是旧进程工作目录下的 `data`。不要覆盖已有目录。ARM 基线包适合较老的 ARM 设备，arm_hf 包要求 ARMv7 硬浮点支持。MIPS 包按设备位数和大小端选择。
 
@@ -121,9 +121,9 @@ sudo apt install "./$file" && sudo kurumifrp --check-running && rm -- "./$file"
 
 目录依据：微软 Shell 安全建议 https://learn.microsoft.com/en-us/windows/win32/shell/sec-shell ，Windows Known Folders https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid ，FHS https://refspecs.linuxfoundation.org/FHS_3.0/fhs/index.html ，systemd.exec https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html 。程序放 Program Files 不代表配置也应写入该只读目录。
 
-历史版本的 CI 曾覆盖默认 Program Files 安装、HKLM 登记、真实普通账户使用、账户间密钥隔离、Program Files 写保护、临时路径、升级与完整卸载；Linux 曾覆盖实际 DEB/systemd 与 Fedora 容器 RPM 生命周期。以对应提交的 CI 结果为准。ARM64 构建不等于原生硬件验证；没有完成全系统文件访问追踪，不承诺操作系统、浏览器或第三方软件完全不产生外部记录。
+历史版本的 CI 曾覆盖默认 Program Files 安装、HKLM 登记、真实 Windows 普通用户使用、Windows 用户间密钥隔离、Program Files 写保护、临时路径、升级与完整卸载；Linux 曾覆盖实际 DEB/systemd 与 Fedora 容器 RPM 生命周期。以对应提交的 CI 结果为准。ARM64 构建不等于原生硬件验证；没有完成全系统文件访问追踪，不承诺操作系统、浏览器或第三方软件完全不产生外部记录。
 
-候选 CI 构建 Windows 安装包、Linux 安装包和便携包，并编译 macOS 源码；自动发布已禁用，须完成实际验收后再评估启用。
+CI 构建 Windows 安装包、Linux 安装包和便携包，并编译 macOS 源码。主分支的发布工作流在对应版本的发布说明和校验条件满足时创建预发布版本；已有发布不会被覆盖，实际发布以 Releases 为准。
 
 ## 配置迁移与软件更新
 
