@@ -91,20 +91,22 @@
   } else if (!view.versions.length) {
    listStatus.textContent = '没有可显示的发行版本。';
   } else {
-   const latest = view.versions.find(eligible);
-   listStatus.textContent = latest ? '最新可安装的新版本：' + latest.tag : '当前列表中没有可安装的新版本。';
+   const confirmed = view.versions.find(eligible);
+   const unconfirmed = view.versions.some(version => version.newer === true && version.metadataFallback && !version.available);
+   listStatus.textContent = confirmed ? '已确认可安装的新版本：' + confirmed.tag : unconfirmed ? '目前没有已确认可安装的新版本。' : '当前列表中没有可安装的新版本。';
+   if (unconfirmed) listStatus.textContent += ' 部分新版本的安装包尚未确认。';
   }
   if (view.loaded && !view.listError && view.versions.length) {
    const currentVersion = K.state()?.version;
    const rows = view.versions.map(version => {
     const relation = sameVersion(version.tag, currentVersion) ? '当前版本' : version.newer ? '较当前版本新' : '非更新版本';
-    return `<tr><td><strong>${escape(version.tag)}</strong></td><td>${escape(versionChannel(version))}</td><td>${version.available ? '安装包可用' : '无可用安装包'}</td><td>${relation}</td></tr>`;
+    return `<tr><td><strong>${escape(version.tag)}</strong></td><td>${escape(versionChannel(version))}</td><td>${version.available ? '安装包可用' : version.metadataFallback ? '安装包未确认' : '无可用安装包'}</td><td>${relation}</td></tr>`;
    }).join('');
    host.innerHTML = `<div class="table-wrap"><table><thead><tr><th>版本</th><th>发布状态</th><th>安装包</th><th>版本关系</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   } else host.replaceChildren();
   const available = view.versions.filter(eligible);
-  if (view.selected && !available.some(version => version.tag === view.selected)) view.selected = '';
-  if (!view.selected && !view.selectedByUser) view.selected = available.find(version => !version.prerelease && !version.metadataFallback)?.tag || '';
+  if (!view.selectedByUser) view.selected = available.find(version => !version.prerelease && !version.metadataFallback)?.tag || '';
+  else if (view.selected && !available.some(version => version.tag === view.selected)) view.selected = '';
   select.innerHTML = '<option value="">请选择可安装版本</option>' + available.map(version =>
    `<option value="${escape(version.tag)}">${escape(version.tag)} · ${escape(versionChannel(version))}</option>`).join('');
   select.value = view.selected;
