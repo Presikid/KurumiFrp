@@ -309,5 +309,9 @@ func (m *Manager) start(ctx context.Context, tag string) error {
 		os.RemoveAll(stage)
 		return e
 	}
-	return launchInstaller(path)
+	if e = launchInstaller(path); e != nil {
+		_ = os.RemoveAll(stage)
+		return e
+	}
+	return nil
 }
