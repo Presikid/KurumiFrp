@@ -95,3 +95,27 @@ body[data-kurumi-skin="moon-witch"] .actions button { border-radius: 999px; }
   body[data-kurumi-skin] .dashboard-hero { background-image: var(--skin-overview-mobile); }
   body[data-kurumi-skin] .overview-intro::before { background-image: var(--skin-hero-overlay), var(--skin-overview-mobile); }
 }
+
+/* Theme choices reuse installed artwork; undownloaded themes use palette swatches. */
+#editor .theme-picker-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; max-height: 55vh; overflow-y: auto; margin: 16px 0 0; padding: 0 3px 3px; border: 0; }
+#editor .theme-picker-grid legend { padding: 0; margin-bottom: 8px; font-weight: 600; }
+#editor .theme-picker-choice { position: relative; display: block; min-width: 0; cursor: pointer; }
+#editor .theme-picker-input { position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; opacity: 0; }
+.theme-picker-card { display: flex; flex-direction: column; height: 100%; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-raised); color: var(--text); }
+.theme-picker-input:checked + .theme-picker-card { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.theme-picker-input:focus-visible + .theme-picker-card { outline: 3px solid var(--accent); outline-offset: 3px; }
+.theme-picker-input:disabled + .theme-picker-card { opacity: .55; cursor: not-allowed; }
+.theme-picker-art { display: block; height: 100px; overflow: hidden; background: linear-gradient(135deg, #422133, #211827); }
+.theme-picker-art[data-theme="sunlit-white"] { background: linear-gradient(135deg, #568ea9, #d5e6e8); }
+.theme-picker-art[data-theme="detective-study"] { background: linear-gradient(135deg, #44301f, #b99769); }
+.theme-picker-art[data-theme="moon-witch"] { background: linear-gradient(135deg, #352044, #9c75af); }
+.theme-picker-art img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center; }
+.theme-picker-copy { display: flex; flex: 1; flex-direction: column; gap: 4px; padding: 11px 12px 12px; }
+.theme-picker-copy strong { font-size: .95rem; }
+.theme-picker-copy span { color: var(--muted); font-size: .8rem; line-height: 1.4; }
+.theme-picker-copy small { margin-top: auto; padding-top: 3px; color: var(--accent); font-size: .75rem; }
+@media (max-width: 420px) {
+  #editor .theme-picker-grid { grid-template-columns: 1fr; }
+  .theme-picker-card { flex-direction: row; }
+  .theme-picker-art { width: 92px; height: auto; min-height: 96px; flex: 0 0 auto; }
+}
