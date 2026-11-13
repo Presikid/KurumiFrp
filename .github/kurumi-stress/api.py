@@ -7,6 +7,7 @@ import http.cookies
 import json
 import os
 import pathlib
+import random
 import signal
 import socket
 import subprocess
@@ -19,7 +20,9 @@ import time
 NO_BODY = object()
 TEST_PASSWORD = "kurumi-ci-only-password"
 TEST_TOKEN = "kurumi-ci-only-frp-token"
+STRESS_SEED = 20261114
 HOST = "127.0.0.1"
+ECHO_PAYLOAD = b"kurumi-loopback-probe"
 
 
 def check(condition, message):
@@ -147,7 +150,8 @@ class Workbench:
 
 
 class Echo:
-    def __init__(self):
+    def __init__(self, prefix=b""):
+        self.prefix = prefix
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.bind((HOST, 0))
         self.listener.listen()
@@ -170,16 +174,22 @@ class Echo:
             with conn:
                 conn.settimeout(2)
                 try:
-                    data = conn.recv(4096)
+                    data = b""
+                    while len(data) < len(ECHO_PAYLOAD):
+                        chunk = conn.recv(len(ECHO_PAYLOAD) - len(data))
+                        if not chunk:
+                            break
+                        data += chunk
                     if data:
-                        conn.sendall(data)
+                        conn.sendall(self.prefix + data)
                 except OSError:
                     pass
 
     def close(self):
         self.done.set()
         self.listener.close()
-        self.thread.join(timeout=3)
+        if self.thread.ident is not None:
+            self.thread.join(timeout=3)
 
 
 def item(snapshot, kind, object_id):
@@ -223,21 +233,22 @@ def wait_running(api, object_id, old_run=""):
     raise AssertionError("instance did not become ready in 35 seconds")
 
 
-def check_echo(port):
+def check_echo(port, prefix=b""):
     deadline = time.monotonic() + 35
-    payload = b"kurumi-loopback-probe"
+    payload = ECHO_PAYLOAD
+    expected = prefix + payload
     while time.monotonic() < deadline:
         try:
             with socket.create_connection((HOST, port), timeout=2) as conn:
                 conn.settimeout(2)
                 conn.sendall(payload)
                 received = b""
-                while len(received) < len(payload):
-                    chunk = conn.recv(len(payload) - len(received))
+                while len(received) < len(expected):
+                    chunk = conn.recv(len(expected) - len(received))
                     if not chunk:
                         break
                     received += chunk
-                if received == payload:
+                if received == expected:
                     return
         except OSError:
             pass
@@ -245,7 +256,7 @@ def check_echo(port):
     raise AssertionError("local TCP tunnel did not relay the echo payload")
 
 
-def concurrent_revision_check(api, instance_id):
+def concurrent_revision_check(api, instance_id, round_index):
     initial = api.state()
     revision = initial["revision"]
     old_name = item(initial, "instances", instance_id)["name"]
@@ -254,7 +265,7 @@ def concurrent_revision_check(api, instance_id):
 
     def write(index):
         barrier.wait(timeout=10)
-        name = f"stress-client-{index}"
+        name = f"stress-client-{round_index}-{index}"
         status, _, _ = api.save(revision, "instance", {"id": instance_id, "name": name})
         return status, name
 
@@ -277,13 +288,101 @@ def concurrent_revision_check(api, instance_id):
     return final
 
 
+def boundary_and_batch_check(api, instance_id):
+    rng = random.Random(STRESS_SEED)
+    cases = [("tcp", 1, 0, 0), ("udp", 65535, 65535, 10_000_000),
+             ("tcp", 65535, 1, 1), ("udp", 1, 65535, 0)]
+    for _ in range(12):
+        cases.append((rng.choice(("tcp", "udp")), rng.randint(1, 65535),
+                      rng.randint(0, 65535), rng.choice((0, 1, 1024))))
+
+    revision = api.state()["revision"]
+    expected = {}
+    for index, (kind, local_port, remote_port, bandwidth) in enumerate(cases):
+        name = "x" * 64 if index == 0 else f"seeded-{index:02d}"
+        value = {"instanceId": instance_id, "name": name, "type": kind, "localHost": HOST,
+                 "localPort": local_port, "remotePort": remote_port, "bandwidthKB": bandwidth,
+                 "enabled": False}
+        status, result, _ = api.save(revision, "tunnel", value)
+        check(status == 200 and result.get("revision") == revision + 1,
+              f"seed {STRESS_SEED} valid case {index}: HTTP {status} or invalid revision")
+        revision += 1
+        expected[name] = value
+
+    snapshot = api.state()
+    rows = {row["name"]: row for row in snapshot["state"]["tunnels"] if row["instanceId"] == instance_id}
+    check(snapshot["revision"] == revision, "seeded saves produced an unexpected revision")
+    for name, wanted in expected.items():
+        row = rows.get(name)
+        check(row is not None, f"seeded rule missing: {name}")
+        for key in ("type", "localHost", "localPort", "remotePort", "bandwidthKB", "enabled"):
+            check(row.get(key) == wanted[key], f"seeded rule changed field {key}: {name}")
+
+    base = {"instanceId": instance_id, "name": "invalid", "type": "tcp", "localHost": HOST,
+            "localPort": 8080, "remotePort": 0, "enabled": False}
+    invalid = [{"localPort": 0}, {"localPort": 65536}, {"remotePort": -1},
+               {"remotePort": 65536}, {"remotePort": None}, {"name": "y" * 65},
+               {"type": "unsupported"}, {"bandwidthKB": -1}, {"bandwidthKB": 10_000_001},
+               {"name": "x" * 64}]
+    for index, changes in enumerate(invalid):
+        value = {**base, **changes}
+        status, _, _ = api.save(revision, "tunnel", value)
+        check(status == 400, f"seed {STRESS_SEED} invalid case {index}: HTTP {status}")
+        after = api.state()
+        check(after["revision"] == revision and after["state"] == snapshot["state"],
+              f"invalid case {index} changed the stored configuration")
+
+    batch = {"revision": revision, "name": "bulk-ci", "instanceId": instance_id,
+             "protocol": "tcp+udp", "localHost": HOST, "localPorts": "40000-40003",
+             "remotePorts": "41000-41003", "enabled": False}
+    result, _ = api.expect(200, "/api/tunnels/batch", batch)
+    check(result.get("created") == 8 and result.get("revision") == revision + 1,
+          "batch creation count or revision mismatch")
+    snapshot = api.state()
+    revision = snapshot["revision"]
+    bulk = [row for row in snapshot["state"]["tunnels"]
+            if row["instanceId"] == instance_id and row["name"].startswith("bulk-ci-")]
+    pairs = {(row["type"], row["localPort"], row["remotePort"], row["enabled"]) for row in bulk}
+    wanted_pairs = {(kind, local_port, local_port + 1000, False)
+                    for kind in ("tcp", "udp") for local_port in range(40000, 40004)}
+    check(len(bulk) == 8 and pairs == wanted_pairs, "batch port pairing changed")
+
+    present_ids = {row["id"] for row in snapshot["state"]["tunnels"]}
+    missing_id = next(f"{index:016x}" for index in range(600) if f"{index:016x}" not in present_ids)
+    status, _, _ = api.request("/api/tunnels/batch-delete", {"revision": revision, "ids": [bulk[0]["id"], missing_id]})
+    check(status == 400, "batch delete with a missing rule was not rejected")
+    after = api.state()
+    check(after["revision"] == revision and after["state"] == snapshot["state"],
+          "failed batch delete changed the stored configuration")
+
+    keep = next(row for row in bulk if row["type"] == "udp" and row["localPort"] == 40003)
+    deleted = [row["id"] for row in bulk if row["id"] != keep["id"]]
+    result, _ = api.expect(200, "/api/tunnels/batch-delete", {"revision": revision, "ids": deleted})
+    check(result.get("changed") == 7 and result.get("revision") == revision + 1,
+          "batch delete count or revision mismatch")
+    snapshot = api.state()
+    remaining = [row for row in snapshot["state"]["tunnels"] if row["id"] in {r["id"] for r in bulk}]
+    check(len(remaining) == 1 and remaining[0]["id"] == keep["id"], "batch delete removed the wrong rules")
+
+    # Seven valid new rows precede the retained conflicting name; the whole
+    # create must still fail without a partial write.
+    batch["revision"] = snapshot["revision"]
+    status, _, _ = api.request("/api/tunnels/batch", batch)
+    check(status == 400, "conflicting batch was not rejected")
+    after = api.state()
+    check(after["revision"] == snapshot["revision"] and after["state"] == snapshot["state"],
+          "conflicting batch left a partial write")
+
+
 def run(binary, temporary):
     echo = Echo()
+    replacement_echo = Echo(b"replacement:")
     management_port, server_port, remote_port = available_ports(3)
     data_dir = temporary / "data"
     app = Workbench(binary, data_dir, management_port, temporary / "workbench.log")
     try:
         echo.start()
+        replacement_echo.start()
         api = app.start()
         api.expect(401, "/api/state", authenticated=False)
         api.expect(400, "/api/login", b"{", authenticated=False, raw=True)
@@ -316,7 +415,8 @@ def run(binary, temporary):
         check(status == 400 and api.state()["revision"] == snapshot["revision"], "invalid tunnel was not rejected atomically")
         status, _, _ = api.save(snapshot["revision"] - 1, "instance", {"id": client_id, "name": "stale-name"})
         check(status == 409 and api.state()["revision"] == snapshot["revision"], "stale save was not rejected atomically")
-        snapshot = concurrent_revision_check(api, client_id)
+        for round_index in range(4):
+            snapshot = concurrent_revision_check(api, client_id, round_index)
         check(item(snapshot, "instances", client_id).get("hasToken") is True, "editing cleared the saved token")
 
         copied, _ = api.expect(200, "/api/duplicate", {"revision": snapshot["revision"], "kind": "instance", "id": server_id})
@@ -330,15 +430,21 @@ def run(binary, temporary):
         rules = [row for row in snapshot["state"]["tunnels"] if row["instanceId"] == copied["id"]]
         check(duplicate.get("udpPacketSize") == 4096 and copied.get("rulesCopied") == 1, "client copy lost settings or rule")
         check(len(rules) == 1 and rules[0]["enabled"] is False, "copied rule should be disabled")
+        boundary_and_batch_check(api, copied["id"])
 
         control(api, server_id, "start")
         server_run = wait_running(api, server_id)
         control(api, client_id, "start")
         first_run = wait_running(api, client_id)
         check_echo(remote_port)
+        snapshot = api.state()
+        status, _, _ = api.save(snapshot["revision"], "tunnel", {"id": tunnel_id, "localPort": replacement_echo.port})
+        check(status == 200, f"retarget running rule: HTTP {status}")
+        check(api.state()["runtime"][client_id].get("pending") is True, "changed running draft was not marked pending")
+        check_echo(remote_port)
         control(api, client_id, "restart", first_run)
         second_run = wait_running(api, client_id, first_run)
-        check_echo(remote_port)
+        check_echo(remote_port, b"replacement:")
         status, _, _ = api.request("/api/control", {"revision": api.state()["revision"], "id": client_id,
                                                     "action": "stop", "expectedRunId": first_run})
         check(status == 409, "stale run ID did not reject stop")
@@ -370,11 +476,27 @@ def run(binary, temporary):
         check(after_restart["revision"] == before_restart["revision"], "revision changed across restart")
         check(after_restart["state"] == before_restart["state"], "configuration changed across restart")
         check(item(after_restart, "instances", client_id).get("hasToken") is True, "token missing after restart")
-        print("PASS: authentication, validation, concurrent saves, duplication, local TCP, restart and persistence")
+        for cycle in range(2):
+            for index in range(3):
+                snapshot = api.state()
+                status, _, _ = api.save(snapshot["revision"], "instance",
+                                        {"id": client_id, "name": f"persist-{cycle}-{index}"})
+                check(status == 200, f"post-restart save {cycle}/{index}: HTTP {status}")
+            expected = api.state()
+            app.stop()
+            api = app.start()
+            api.login(TEST_PASSWORD)
+            actual = api.state()
+            check(actual["revision"] == expected["revision"] and actual["state"] == expected["state"],
+                  f"configuration changed after persistence cycle {cycle}")
+            check(item(actual, "instances", client_id).get("hasToken") is True,
+                  f"token missing after persistence cycle {cycle}")
+        print(f"PASS: auth, seed {STRESS_SEED}, boundaries, batch atomicity, concurrent revisions, TCP and persistence")
         app.stop()
     finally:
         app.stop(strict=False)
         echo.close()
+        replacement_echo.close()
 
 
 def main():
