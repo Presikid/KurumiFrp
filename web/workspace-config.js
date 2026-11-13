@@ -208,16 +208,23 @@
   mount(root,data) {
    const picker = root.querySelector('[data-instance]'), output = root.querySelector('[data-config-output]');
    if (!picker || !output) return;
+   const epoch = K.epoch(), sameSession = () => K.epoch() === epoch;
    let previewSerial = 0, model = null, webhookSerial = 0;
    let maintenance = null, maintenanceSerial = 0, maintenanceBusy = false;
    async function saveConfig(path,payload,message) {
     try { await K.api(path,payload); }
     catch (error) {
-     if (!error.status || error.status >= 500) { await K.refresh().catch(() => {}); throw new Error('操作结果未确认，请刷新并核对当前配置后重试。'); }
+     if (!sameSession()) return;
+     if (!error.status || error.status >= 500) {
+      await K.refresh().catch(() => {});
+      if (!sameSession()) return;
+      throw new Error('操作结果未确认，请刷新并核对当前配置后重试。');
+     }
      throw error;
     }
-    try { await K.refresh(); K.toast(message); }
-    catch (_) { if (K.state()) K.toast('操作已受理，但刷新失败；请手动刷新并核对配置。'); }
+    if (!sameSession()) return;
+    try { await K.refresh(); if (sameSession()) K.toast(message); }
+    catch (_) { if (sameSession() && K.state()) K.toast('操作已受理，但刷新失败；请手动刷新并核对配置。'); }
    }
    async function loadPreview() {
     const id = picker.value, sequence = ++previewSerial; K.selectedInstance = id;
@@ -232,6 +239,7 @@
     catch (error) { if (sequence === previewSerial && K.isCurrent('config',root)) output.textContent = '读取失败：' + error.message; }
    }
    async function loadWebhooks() {
+    if (!sameSession()) return;
     const box = root.querySelector('[data-webhooks]'); if (!box) return;
     const sequence = ++webhookSerial, generation = K.epoch();
     const controller = new AbortController(), deadline = setTimeout(() => controller.abort(),15000);
@@ -248,6 +256,7 @@
     } finally { clearTimeout(deadline); }
    }
    async function loadMaintenance() {
+    if (!sameSession()) return;
     const box = root.querySelector('[data-maintenance]'); if (!box) return;
     const sequence = ++maintenanceSerial; box.textContent = '正在读取…';
     try {
@@ -327,7 +336,7 @@
       try {
        const result = await K.api('maintenance',{expected,enabled});
        if (typeof result?.enabled !== 'boolean' || result.available !== true || result.enabled !== enabled) throw new Error('服务端响应无法确认维护状态。');
-       if (K.isCurrent('config',root)) { await loadMaintenance(); K.toast(enabled ? '维护模式已开启。' : '维护模式已关闭。'); }
+       if (K.isCurrent('config',root)) { await loadMaintenance(); if (sameSession()) K.toast(enabled ? '维护模式已开启。' : '维护模式已关闭。'); }
       } catch (error) {
        await loadMaintenance();
        throw new Error(error.status === 409 ? '维护状态已变化，请核对后重新操作。' : '操作结果未确认，请刷新并核对维护状态。');
@@ -358,10 +367,15 @@
       if (operation === 'delete' && !confirm(`删除通知目标「${item.name}」？`)) return;
       try { await K.api('webhooks',{revision:model.revision,action:operation,id:item.id}); }
       catch (error) { await loadWebhooks(); throw new Error(`${error.message}。请核对当前通知设置。`); }
-      try { await K.refresh(); K.toast('通知目标已更新。'); }
-      catch (_) { await loadWebhooks(); if (K.state()) K.toast('通知目标已更新，但刷新失败；请手动刷新并核对。'); }
+      if (!sameSession()) return;
+      try { await K.refresh(); if (sameSession()) K.toast('通知目标已更新。'); }
+      catch (_) {
+       if (!sameSession()) return;
+       await loadWebhooks();
+       if (sameSession() && K.state()) K.toast('通知目标已更新，但刷新失败；请手动刷新并核对。');
+      }
      }
-    } catch (error) { K.toast(error.message); }
+    } catch (error) { if (sameSession()) K.toast(error.message); }
     finally { if (target.isConnected) target.disabled = false; }
    });
   }
