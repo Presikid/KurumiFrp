@@ -32,7 +32,14 @@ const Protocols = Object.freeze({
   return ['tcp', 'udp'].includes(t.type) && t.remotePort === 0 ? '动态分配（查看代理状态）' : t.remotePort;
  },
  matches(t, instance, query, protocol) {
-  const words = [t.name, t.type, t.pluginType, t.localHost, t.localPort, t.unixSocketPath, t.remotePort, ...(t.domains || []), ...(t.locations || []), t.httpRouteByUser, t.type === 'tcpmux' ? t.routeByHTTPUser : '', t.subdomain, t.serverName, t.serverUser, instance?.name];
+  const virtualHost = ['http', 'https', 'tcpmux'].includes(t.type);
+  const networkTarget = t.pluginType !== 'socks5' && !t.unixSocketPath;
+  const socketTarget = t.pluginType !== 'socks5' ? t.unixSocketPath : '';
+  const words = [t.name, t.type, t.pluginType, networkTarget ? t.localHost : '', networkTarget ? t.localPort : '', socketTarget,
+   ...(['tcp', 'udp'].includes(t.type) ? [t.remotePort] : []),
+   ...(virtualHost ? (t.domains || []) : []), ...(t.type === 'http' ? (t.locations || []) : []),
+   t.type === 'http' ? t.httpRouteByUser : '', t.type === 'tcpmux' ? t.routeByHTTPUser : '',
+   virtualHost ? t.subdomain : '', ...(this.isVisitor(t.type) ? [t.serverName, t.serverUser] : []), instance?.name];
   return (!protocol || t.type === protocol) && words.join(' ').toLocaleLowerCase().includes(query.toLocaleLowerCase());
  }
 });
