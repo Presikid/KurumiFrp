@@ -89,7 +89,9 @@ window.Kurumi = (() => {
   return wasBusy;
  }
  function showLogin(message = '') {
-  ++session; stopTimer(); dispose(); snapshot = null; request = null;
+  ++session;
+  window.dispatchEvent(new Event('kurumi-workspace-identity-invalidated'));
+  stopTimer(); dispose(); snapshot = null; request = null;
   closeMenu(); const wasBusy = invalidateDialog();
   if ($('#diff-dialog').open) $('#diff-dialog').close();
   $('#content').replaceChildren(); $('#app').hidden = true; $('#login').hidden = false;
@@ -198,6 +200,7 @@ window.Kurumi = (() => {
    const changed = previous !== JSON.stringify(snapshot);
    const accessChanged = previousScope !== null && previousScope !== scope(snapshot);
    const identityChanged = previousIdentity !== null && previousIdentity !== JSON.stringify(snapshot.identity || null);
+   if (identityChanged) window.dispatchEvent(new Event('kurumi-workspace-identity-invalidated'));
    const keepEdits = !discardEdits && !identityChanged && root && activePage?.hasUnsaved?.(root);
    if (accessChanged && !keepEdits) {
     const wasBusy = invalidateDialog();

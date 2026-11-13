@@ -35,6 +35,8 @@
   } catch (_) { throw new Error('无法保存远程操作核对记录，请检查浏览器存储。'); }
  };
 
+ let nodeIssueNotice = '', refreshNodeIssueNotice = null;
+
  K.register('nodes', {
   render(data) {
    const admin = data.identity?.role === 'admin';
@@ -50,9 +52,11 @@
    const paintNotices = () => {
     const host = root.querySelector('[data-node-notices]'), notices = nodeNotices();
     if (!host) return;
-    if (!notices) { host.innerHTML = '<p class="notice">无法读取远程操作核对记录，暂不能提交远程操作。</p>'; return; }
-    host.innerHTML = notices.map(n => `<div class="notice">远程操作结果未确认：${esc(n.item?.nodeId || '未知节点')} / ${esc(n.item?.instanceId || '未知实例')}。请先核对目标状态。 <button data-node="ack" data-key="${esc(n.key)}">核对后解除</button></div>`).join('');
+    const issue = admin && nodeIssueNotice ? `<div class="notice">${esc(nodeIssueNotice)} <button data-node="ack-issue">知道了</button></div>` : '';
+    if (!notices) { host.innerHTML = issue + '<p class="notice">无法读取远程操作核对记录，暂不能提交远程操作。</p>'; return; }
+    host.innerHTML = issue + notices.map(n => `<div class="notice">远程操作结果未确认：${esc(n.item?.nodeId || '未知节点')} / ${esc(n.item?.instanceId || '未知实例')}。请先核对目标状态。 <button data-node="ack" data-key="${esc(n.key)}">核对后解除</button></div>`).join('');
    };
+   refreshNodeIssueNotice = () => { if (current() && admin && K.state()?.identity?.role === 'admin') paintNotices(); };
    const paint = () => {
     if (!current() || !model) return;
     paintNotices();
@@ -102,17 +106,20 @@
     }
     if (auto && generation === autoGeneration && current()) autoTimer = setTimeout(() => { void pollNodes(generation); }, 15000);
    };
-   const syncRevision = async revision => {
+   const syncRevision = async (revision, valid = () => true) => {
     try {
+     if (!valid()) return;
      await K.refresh(true);
+     if (!valid()) return;
      if (Number.isSafeInteger(revision) && K.state()?.revision < revision) await K.refresh(true);
-    } catch (_) { toast('节点设置已保存，但工作台状态刷新失败，请手动刷新。'); }
+    } catch (_) { if (valid()) toast('节点设置已保存，但工作台状态刷新失败，请手动刷新。'); }
    };
-   const mutate = async (payload, options = {}) => {
+   const mutate = async (payload, options = {}, valid = () => true) => {
     if (!model || !Number.isSafeInteger(model.revision)) throw new Error('节点列表已变化，请刷新。');
     const result = await timeout('nodes', {revision:model.revision, ...payload}, 20000, options);
-    if (options.acceptLateSuccess) { if (K.state()) void syncRevision(result.revision); }
-    else await syncRevision(result.revision);
+    if (!valid()) throw new DOMException('会话或授权已变化', 'AbortError');
+    if (options.acceptLateSuccess) { if (K.state()) void syncRevision(result.revision, valid); }
+    else await syncRevision(result.revision, valid);
     return result;
    };
    const edit = node => {
@@ -124,24 +131,56 @@
      }});
    };
    const issue = async action => {
+    const epoch = K.epoch(), identity = JSON.stringify(K.state()?.identity || null);
+    const sameIdentity = () => K.epoch() === epoch && K.state()?.identity?.role === 'admin' && JSON.stringify(K.state()?.identity || null) === identity;
+    if (!sameIdentity()) return;
     if (!confirm('生成新授权会使同类旧授权失效；新授权只显示一次。继续？')) return;
+    if (!sameIdentity()) return;
+    if (!model || !Number.isSafeInteger(model.revision)) throw new Error('节点列表已变化，请刷新。');
     const dialog = document.createElement('dialog');
     dialog.innerHTML = '<h2>生成授权</h2><p data-message>正在生成，请等待结果。</p><textarea data-value rows="3" readonly hidden></textarea><div class="dialog-actions"><button type="button" data-close disabled>关闭</button></div>';
     document.body.appendChild(dialog);
-    let pending = true;
+    let pending = true, outcome = 'not-submitted', closed = false;
+    const close = () => {
+     if (closed) return;
+     closed = true;
+     if (outcome === 'uncertain') {
+      nodeIssueNotice = '授权生成结果尚未确认；旧授权可能已失效，请管理员核对或重新生成。';
+      if (sameIdentity()) refreshNodeIssueNotice?.();
+     }
+     window.removeEventListener('kurumi-workspace-identity-invalidated', invalidate);
+     const output = dialog.querySelector('[data-value]'); if (output) output.value = '';
+     if (dialog.open) dialog.close();
+     dialog.remove();
+    };
+    const invalidate = () => {
+     if (dialog.open) {
+      if (outcome === 'pending' || outcome === 'uncertain') nodeIssueNotice = '授权生成结果尚未确认；旧授权可能已失效，请管理员核对或重新生成。';
+      else if (outcome === 'issued' && !nodeIssueNotice) nodeIssueNotice = '授权已生成，旧授权已失效；窗口已关闭，请核对已保存的授权。';
+     }
+     close();
+    };
+    const active = () => sameIdentity() && dialog.isConnected && dialog.open;
+    window.addEventListener('kurumi-workspace-identity-invalidated', invalidate);
     dialog.addEventListener('cancel', e => {if (pending) e.preventDefault();});
-    dialog.addEventListener('close', () => dialog.remove());
+    dialog.addEventListener('close', close, {once:true});
     dialog.querySelector('[data-close]').addEventListener('click', () => dialog.close());
-    dialog.showModal();
+    try { dialog.showModal(); } catch (error) { close(); throw error; }
     try {
-     const value = await mutate({action}, {acceptLateSuccess:true});
+     if (!active()) return;
+     outcome = 'pending';
+     const value = await mutate({action}, {acceptLateSuccess:true}, active);
+     if (!active()) return;
      if (!/^[a-f0-9]{64}$/.test(value.credential || '')) throw new Error('授权响应无效，请重新生成。');
+     outcome = 'issued';
      dialog.querySelector('[data-message]').textContent = '请复制此授权并通过安全渠道交给目标；关闭后不能再次显示。';
      const output = dialog.querySelector('[data-value]'); output.value = value.credential; output.hidden = false; output.focus(); output.select();
      if (current()) await load();
     } catch (error) {
-     dialog.querySelector('[data-message]').textContent = error.status ? error.message : '结果未确认，旧授权可能已失效；请刷新后重新生成。';
-    } finally {pending = false; dialog.querySelector('[data-close]').disabled = false;}
+     if (!active()) return;
+     outcome = !error.status || error.status >= 500 ? 'uncertain' : 'rejected';
+     dialog.querySelector('[data-message]').textContent = outcome === 'uncertain' ? '结果未确认，旧授权可能已失效；请刷新后重新生成。' : error.message;
+    } finally {pending = false; if (active()) dialog.querySelector('[data-close]').disabled = false;}
    };
    const control = async (node, instance, action) => {
     const notices = nodeNotices();
@@ -164,6 +203,7 @@
     const button = event.target.closest('[data-node]');
     if (!button || busy) return;
     const action = button.dataset.node;
+    if (action === 'ack-issue' && admin && K.state()?.identity?.role === 'admin') { nodeIssueNotice = ''; paintNotices(); return; }
     if (action === 'ack') {
      if (confirm('已独立核对目标及之前的请求状态，解除此记录？')) {try {localStorage.removeItem(button.dataset.key);} catch (_) {} paintNotices();}
      return;
@@ -209,7 +249,8 @@
     finally {busy = false; if (button.isConnected) button.disabled = false;}
    });
    paintNotices(); void load();
-  }
+  },
+  dispose() { refreshNodeIssueNotice = null; }
  });
 
  K.register('firewall', {
