@@ -84,6 +84,8 @@ english.InitFailed=Program files may have been updated, but workbench initializa
 chinesesimplified.InitFailed=程序文件可能已更新，但工作台初始化未完成。请核对安装状态和原有数据；不要删除维护标记强行启动。
 english.InitFailedHeading=KurumiFRP setup incomplete
 chinesesimplified.InitFailedHeading=KurumiFRP 安装未完成
+english.InitFailedRestart=Setup also requests a restart. Restarting does not mean initialization succeeded.
+chinesesimplified.InitFailedRestart=安装程序还提示需要重启；重启不代表初始化成功。
 english.ManualStart=Installation completed. Sign in to your usual Windows account and open KurumiFRP without administrator privileges.
 chinesesimplified.ManualStart=安装完成。请登录平时使用的 Windows 账户，以普通权限手动打开 KurumiFRP。
 english.BundledMismatch=A legacy bundled core already exists for this application version. Install a newer version instead; the current installation was not changed.
@@ -274,6 +276,8 @@ begin
   if (CurPageID = wpFinished) and InstallInitFailed then begin
     WizardForm.FinishedHeadingLabel.Caption := ExpandConstant('{cm:InitFailedHeading}');
     WizardForm.FinishedLabel.Caption := ExpandConstant('{cm:InitFailed}');
+    if WizardForm.YesRadio.Visible then
+      WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10 + ExpandConstant('{cm:InitFailedRestart}');
     Delta := WizardForm.AdjustLabelHeight(WizardForm.FinishedLabel);
     WizardForm.IncTopDecHeight(WizardForm.RunList, Delta);
     WizardForm.YesRadio.Top := WizardForm.YesRadio.Top + Delta;
