@@ -151,6 +151,10 @@ func run() (resultErr error) {
 				if err = openExisting(*addr, string(b)); err == nil {
 					return nil
 				}
+				var browserErr *browserOpenError
+				if errors.As(err, &browserErr) {
+					return err
+				}
 			}
 		}
 		return fmt.Errorf("data directory locked; verify no old manager/frp process is alive before removing manager.lock")
@@ -206,8 +210,11 @@ func run() (resultErr error) {
 	go func() { errs <- server.Serve(listener) }()
 	fmt.Printf("KurumiFRP %s\nOpen http://%s\nNew data directories use an empty administrator password. For existing data, see the installation guide.\n", version.Current, *addr)
 	if *open {
-		if e := openBrowser(app.BrowserURL()); e != nil {
-			log.Print("Browser could not be opened; use the printed local URL.")
+		address := app.BrowserURL()
+		if e := openBrowser(address); e != nil {
+			e = &browserOpenError{address: address, cause: e}
+			log.Print(e)
+			go reportDesktopError(e)
 		}
 	}
 	select {
