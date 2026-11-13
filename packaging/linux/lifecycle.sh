@@ -264,9 +264,14 @@ start_workbench() {
    if deb-systemd-helper --quiet was-enabled "$UNIT"; then deb-systemd-helper enable "$UNIT" >/dev/null; fi
    deb-systemd-invoke start "$UNIT"
   else
-   # Keep an already enabled unit instead of resetting it to the preset.
-   if ! systemctl is-enabled --quiet "$UNIT"; then systemctl preset "$UNIT"; fi
-   systemctl start "$UNIT"
+   service_load_state=$(systemctl show -p LoadState "$UNIT") || return $?
+   if [ "$service_load_state" = "LoadState=masked" ]; then
+    echo 'Workbench service is masked; skipping its activation.'
+   else
+    # Keep an already enabled unit instead of resetting it to the preset.
+    if ! systemctl is-enabled --quiet "$UNIT"; then systemctl preset "$UNIT"; fi
+    systemctl start "$UNIT"
+   fi
   fi
  else echo 'Package installed. No active systemd was found.'; fi
 }
