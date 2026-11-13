@@ -61,7 +61,7 @@ jobs:
           if-no-files-found: error
   source-macos:
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -80,7 +80,11 @@ jobs:
         with:
           go-version: stable
           cache: false
-      - name: Build macOS source
+      - name: Build macOS ARM64 source
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_ENABLED: '0'
         run: go build -o kurumi ./cmd/kurumi
   release:
     needs: [package, source-macos]
