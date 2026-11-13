@@ -296,7 +296,10 @@
      if (!saved?.config || !Number.isSafeInteger(saved.config.revision)) throw new Error('保存响应无效，请重新读取并核对。');
      model = {...model, ...saved}; toast('规则已保存并应用。'); await load(true);
     }
-    catch (error) { if (generation === K.epoch()) toast(error.status === 400 || error.status === 409 ? error.message : '应用结果可能未确认，请重新读取并核对内核状态：' + errorText(error)); }
+    catch (error) {
+     if (generation !== K.epoch()) toast(error.status === 401 ? '登录已失效，端口访问控制操作未提交，请重新登录。' : '会话已变更，先前提交的端口访问控制操作结果未确认，请重新读取并核对内核状态。');
+     else toast(error.status === 400 || error.status === 409 ? error.message : '应用结果可能未确认，请重新读取并核对内核状态：' + errorText(error));
+    }
     finally {busy = false; form.inert = false; submit.disabled = false;}
    });
    host.addEventListener('click', async event => {
