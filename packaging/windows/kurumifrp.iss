@@ -113,6 +113,7 @@ Name: "{commonstartup}\KurumiFRP"; Filename: "{app}\kurumi.exe"; WorkingDir: "{a
 var
   Helper: String;
   UninstallStopped: Boolean;
+  UninstallFinishFailed: Boolean;
 
 function GetFileAttributesW(lpFileName: String): LongWord;
   external 'GetFileAttributesW@kernel32.dll stdcall';
@@ -256,8 +257,25 @@ begin
   if (CurStep = ssDone) and WizardSilent then Log(ExpandConstant('{cm:ManualStart}'));
 end;
 
+procedure FinishUninstallMaintenance();
+begin
+  if not UninstallStopped then Exit;
+  // Do not retry: the helper may have removed our marker before failing.
+  UninstallStopped := False;
+  UninstallFinishFailed := True;
+  try
+    UninstallFinishFailed := not RunHelper('--native-maintenance finish-stop');
+  except
+    Log('Uninstall maintenance cleanup failed unexpectedly.');
+  end;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
+  if CurUninstallStep = usPostUninstall then begin
+    FinishUninstallMaintenance();
+    Exit;
+  end;
   if CurUninstallStep <> usUninstall then Exit;
   if not SafeTempVolume(ExpandConstant('{tmp}')) then
     RaiseException(ExpandConstant('{cm:UnsafeTemp}'));
@@ -271,6 +289,7 @@ end;
 
 procedure DeinitializeUninstall();
 begin
-  if UninstallStopped and not RunHelper('--native-maintenance finish-stop') then
+  FinishUninstallMaintenance();
+  if UninstallFinishFailed then
     SuppressibleMsgBox(ExpandConstant('{cm:UninstallFinishFailed}'), mbError, MB_OK, IDOK);
 end;
