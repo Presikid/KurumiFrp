@@ -2,8 +2,9 @@ name: Build native packages
 on:
   push:
     branches: [main]
-  pull_request:
-    types: [opened, reopened, synchronize]
+    paths:
+      - VERSION
+      - 'docs/RELEASE_*.md'
   workflow_dispatch:
 permissions:
   contents: read
