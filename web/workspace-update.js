@@ -9,23 +9,41 @@
  let posting = false;
  let dismissedStatus = '';
  let storageAvailable = true;
+ let pendingInMemoryOnly = false;
 
  function readPending() {
+  let raw;
   try {
-   const value = JSON.parse(localStorage.getItem(storageKey) || 'null');
-   if (!value || !['submitting', 'accepted', 'uncertain'].includes(value.phase)) return null;
-   if (typeof value.tag !== 'string' || (value.tag && !/^v[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}(?:\.[0-9]{1,5})?$/.test(value.tag))) return null;
+   raw = localStorage.getItem(storageKey);
+  } catch (_) { storageAvailable = false; return undefined; }
+  if (raw === null) return null;
+  try {
+   const value = JSON.parse(raw);
+   if (!value || !['submitting', 'accepted', 'uncertain'].includes(value.phase)) throw new Error('Invalid pending update');
+   if (typeof value.tag !== 'string' || (value.tag && !/^v[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}(?:\.[0-9]{1,5})?$/.test(value.tag))) throw new Error('Invalid pending update');
    return {tag:value.tag, phase:value.phase === 'submitting' ? 'uncertain' : value.phase};
-  } catch (_) { return null; }
+  } catch (_) { return {tag:'', phase:'uncertain', invalid:true}; }
  }
- let pending = readPending();
+ let pending = readPending() || null;
 
  function setPending(value) {
+  if (pending?.invalid && value) return false;
   pending = value;
   try {
    if (value) localStorage.setItem(storageKey, JSON.stringify(value));
    else localStorage.removeItem(storageKey);
-  } catch (_) { storageAvailable = false; }
+   pendingInMemoryOnly = false; storageAvailable = true;
+   return true;
+  } catch (_) {
+   storageAvailable = false;
+   pendingInMemoryOnly = !!pending;
+   return false;
+  }
+ }
+ function syncPending() {
+  if (posting) return;
+  const saved = readPending();
+  if (saved !== undefined && !pendingInMemoryOnly) pending = saved;
  }
  function current(view) {
   return active === view && K.isCurrent('update', view.root) && view.epoch === K.epoch();
@@ -43,7 +61,8 @@
  function noticeText() {
   if (!pending) return '';
   const version = pending.tag ? ' ' + pending.tag : '';
-  const storageNote = storageAvailable ? '' : ' 浏览器无法保存此提示，关闭页面后仍须手动核对。';
+  const storageNote = storageAvailable ? '' : ' 浏览器无法可靠读取或保存此提示，关闭页面后仍须手动核对。';
+  if (pending.invalid) return '浏览器中的更新提示格式损坏，请先核对工作台状态和当前版本，再决定是否解除。' + storageNote;
   if (posting && pending.phase === 'submitting') return '正在提交' + version + '的更新请求，请等待。' + storageNote;
   if (pending.phase === 'accepted') return '更新请求' + version + '已受理，最终安装结果仍需核对。请重新打开工作台并确认当前版本。' + storageNote;
   return '更新请求' + version + '的结果尚未确认。请先核对工作台状态和当前版本，再决定是否重新操作。' + storageNote;
@@ -261,7 +280,9 @@
     if (!pending || posting || view.statusLoading || (view.statusKnown && running(view.status))) return;
     if (!confirm('确认已经核对工作台状态和当前版本？解除提示不会取消可能仍在执行的更新。')) return;
     if (submitted(view.status)) dismissedStatus = view.status;
-    setPending(null); syncControls(view);
+    const removed = setPending(null);
+    syncControls(view);
+    if (!removed) K.toast('当前页面已解除；浏览器记录未能清除，重新进入后可能再次出现。');
    });
    view.onVisibility = () => {
     if (document.hidden) stopPoll(view);
@@ -269,10 +290,11 @@
    };
    view.onStorage = event => {
     if (event.key !== storageKey || posting || !current(view)) return;
-    pending = readPending(); syncControls(view);
+    syncPending(); syncControls(view);
    };
    document.addEventListener('visibilitychange', view.onVisibility);
    window.addEventListener('storage', view.onStorage);
+   syncPending();
    paintVersions(view); paintStatus(view);
    void loadReleases(view);
    if (!posting) void loadStatus(view);
