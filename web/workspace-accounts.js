@@ -31,6 +31,10 @@
   return Number.isNaN(date.getTime()) ? String(value || '') : date.toLocaleString('zh-CN');
  };
  const uncertain = error => error.name === 'AbortError' || !error.status || error.status >= 500;
+ const accountUncertainMessage = (error, message, freezeMessage = message) => {
+  const hint = K.accountWriteFreezeHint(error);
+  return hint ? `${hint} ${freezeMessage}` : message;
+ };
  async function request(path, body, ms = 20000) {
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), ms);
   try { return await K.api(path, body, {signal:controller.signal}); }
@@ -148,12 +152,12 @@
     } finally { managedPending = false; activeManagedRender?.(); }
    };
    const writesBlocked = () => model?.accountWritesUncertain !== false;
-   const writeBlockReason = () => model?.accountWritesUncertain === true ? '账户文件写入结果未确认，账户文件的所有写入已冻结；整个账户列表可能是旧的内存状态，已有工作台登录和 frp 转发可能继续。请安全停止并重启工作台，然后刷新并核对恢复后的账户状态。' : '无法确认账户文件的写入状态，账户修改已禁用；请刷新账户或更新工作台。';
+   const writeBlockReason = () => model?.accountWritesUncertain === true ? '账户文件写入结果未确认，账户文件的所有写入已冻结；整个账户列表可能是旧的内存状态，已获授权的在途操作和受管 FRP 转发可能继续。请确认工作台完全停止后再启动，然后刷新并核对恢复后的账户状态。' : '无法确认账户文件的写入状态，账户修改已禁用；请刷新账户或更新工作台。';
    const requireWritable = () => { if (writesBlocked()) throw new Error(writeBlockReason()); };
    const updateWriteWarning = () => {
     if (!model) return;
     writeWarning.hidden = !writesBlocked();
-    writeWarning.textContent = model.accountWritesUncertain === true ? '账户文件写入发生错误，本进程已冻结全部账户文件写入。整个账户列表可能是旧的内存状态；已有工作台登录和 frp 转发可能继续。请安全停止并重启工作台，再刷新并核对恢复后的账户状态；若仍显示冻结，请检查账户文件和数据目录。' : writesBlocked() ? '无法确认账户文件的写入状态，账户修改已禁用。请刷新账户或更新工作台。' : '';
+    writeWarning.textContent = model.accountWritesUncertain === true ? '账户文件写入发生错误，本进程已冻结全部账户文件写入。整个账户列表可能是旧的内存状态；已获授权的在途操作和受管 FRP 转发可能继续。请确认工作台完全停止后再启动，再刷新并核对恢复后的账户状态；若仍显示冻结，请检查账户文件和数据目录。' : writesBlocked() ? '无法确认账户文件的写入状态，账户修改已禁用。请刷新账户或更新工作台。' : '';
    };
    const updateRevocationWarning = () => {
     revocationWarning.hidden = revocationNotices.length === 0;
@@ -173,7 +177,7 @@
    const updateFRPWarning = () => {
     frpWarning.hidden = !frpPending && !frpNeedsReview && !frpReviewNotice;
     const target = frpReviewTarget, action = target && ({'frp-issue':'发放','frp-rotate':'轮换','frp-disable':'停用'}[target.action] || '登记');
-    frpWarning.textContent = frpPending ? 'frp 凭据操作正在处理，离开页面不会取消服务端操作；若离开，可能无法取得一次性令牌。' : frpNeedsReview ? `账户 ${target.accountId}、实例 ${target.instanceId} 的凭据${action}${target.tokenLost ? '已完成，但令牌未显示' : '结果未确认，旧请求可能仍在处理'}。刷新只是当时的快照，未收到的明文无法取回；请核对后点击“已核对”。新操作若发生版本冲突，请关闭窗口并刷新复核。账户文件写入冻结时须先安全重启。` : frpReviewNotice ? '请核对 frp 凭据登记：未收到或未保存的一次性令牌无法再次显示；已有记录时请主动轮换，无记录时可发放。账户状态不能判断是否收到过明文。' : '';
+    frpWarning.textContent = frpPending ? 'frp 凭据操作正在处理，离开页面不会取消服务端操作；若离开，可能无法取得一次性令牌。' : frpNeedsReview ? `账户 ${target.accountId}、实例 ${target.instanceId} 的凭据${action}${target.tokenLost ? '已完成，但令牌未显示' : '结果未确认，旧请求可能仍在处理'}。刷新只是当时的快照，未收到的明文无法取回；请核对后点击“已核对”。新操作若发生版本冲突，请关闭窗口并刷新复核。账户文件写入冻结时请先确认工作台完全停止，再启动并核对。` : frpReviewNotice ? '请核对 frp 凭据登记：未收到或未保存的一次性令牌无法再次显示；已有记录时请主动轮换，无记录时可发放。账户状态不能判断是否收到过明文。' : '';
     frpReviewed.hidden = !frpNeedsReview && !frpReviewNotice;
     frpReviewed.disabled = frpPending || (frpNeedsReview && (writesBlocked() || frpReviewSnapshot !== model));
    };
@@ -403,8 +407,8 @@
        if (error.status === 408 || uncertain(error)) {
         requireFRPReview(user.id,instanceId,action); invalidated = true; reloadAfterCompletion = true;
         if (formCurrent(form)) syncForm(form);
-        else if (K.epoch() === epoch) K.toast('frp 凭据保存结果未确认，请勿自动重试；请刷新账户并核对。');
-        throw new Error('保存结果未确认，请勿自动重试。旧请求可能仍在处理，刷新只是当时的快照；请关闭窗口并核对账户和实例，再点击“已核对”。若写入已冻结，请安全重启工作台。未收到的明文无法取回；新操作若发生版本冲突，请关闭窗口并刷新复核。');
+        else if (K.epoch() === epoch) K.toast(accountUncertainMessage(error,'frp 凭据保存结果未确认，请勿自动重试；请刷新账户并核对。','请勿自动重试；未收到的明文无法取回。'));
+        throw new Error(accountUncertainMessage(error,'保存结果未确认，请勿自动重试。旧请求可能仍在处理，刷新只是当时的快照；请关闭窗口并核对账户和实例，再点击“已核对”。若写入已冻结，请安全重启工作台。未收到的明文无法取回；新操作若发生版本冲突，请关闭窗口并刷新复核。','请勿自动重试；旧请求可能仍在处理，未收到的明文无法取回。恢复后请核对账户和实例，再点击“已核对”；新操作若发生版本冲突，请关闭窗口并刷新复核。'));
        }
        if (error.status === 409 || error.status === 404) {
         invalidated = true;
@@ -455,7 +459,7 @@
        await request('accounts',payload,30000);
        if (current()) { K.toast('分组已保存。'); await loadAccounts(); }
       } catch (error) {
-       if (uncertain(error)) { saveUncertain = true; if (current()) void loadAccounts(); throw new Error('保存结果未确认，请关闭窗口并刷新账户后核对，勿重复提交；若账户文件写入已冻结，请安全重启工作台。'); }
+       if (uncertain(error)) { saveUncertain = true; if (current()) void loadAccounts(); throw new Error(accountUncertainMessage(error,'保存结果未确认，请关闭窗口并刷新账户后核对，勿重复提交；若账户文件写入已冻结，请安全重启工作台。','请勿重复提交。')); }
        throw error;
       } finally {
        groupBusy = false;
@@ -490,7 +494,7 @@
        if (result?.ok !== true || result.revision !== revision + 1) throw new Error('响应无法确认代理上限的保存结果。');
        if (current()) { K.toast('代理上限已保存；已有代理不受影响。'); await loadAccounts(); }
       } catch (error) {
-       if (error.status === 408 || uncertain(error)) { saveUncertain = true; if (current()) void loadAccounts(); throw new Error('保存结果未确认，旧请求可能仍在处理；刷新只是当时的快照。请关闭窗口并核对，勿盲目重复提交；若后续版本冲突请再次刷新，若账户写入已冻结请安全重启工作台。'); }
+       if (error.status === 408 || uncertain(error)) { saveUncertain = true; if (current()) void loadAccounts(); throw new Error(accountUncertainMessage(error,'保存结果未确认，旧请求可能仍在处理；刷新只是当时的快照。请关闭窗口并核对，勿盲目重复提交；若后续版本冲突请再次刷新，若账户写入已冻结请安全重启工作台。','旧请求可能仍在处理；请勿盲目重复提交，若后续版本冲突请再次刷新核对。')); }
        throw error;
       } finally { accountSaving = false; activeManagedRender?.(); }
      }
@@ -644,7 +648,7 @@
       let result;
       accountSaving = true; activeManagedRender?.();
       try { result = await request('accounts',payload,30000); }
-      catch (error) { if (uncertain(error)) { saveUncertain = true; if (current()) void loadAccounts(); throw new Error('保存结果未确认，请关闭窗口并刷新账户后核对，勿重复提交；若账户文件写入已冻结，请安全重启工作台。'); } throw error; }
+      catch (error) { if (uncertain(error)) { saveUncertain = true; if (current()) void loadAccounts(); throw new Error(accountUncertainMessage(error,'保存结果未确认，请关闭窗口并刷新账户后核对，勿重复提交；若账户文件写入已冻结，请安全重启工作台。','请勿重复提交。')); } throw error; }
       finally { accountSaving = false; activeManagedRender?.(); }
       const revocation = recordRevocationWarning(result,`账户「${user?.username || payload.username}」的变更`);
       if (formCurrent(form)) { form.elements.password.value = ''; if (!revocation) K.toast('账户已保存。'); await loadAccounts(); }
@@ -671,7 +675,7 @@
       await request('accounts',{action:'group-assign',revision:source.revision,id:user.id,groupId},30000);
       if (current()) K.toast('账户分组已更新。');
      } catch (error) {
-      if (current()) K.toast(uncertain(error) ? '分组变更结果未确认，请刷新后核对。' : error.message);
+      if (current()) K.toast(uncertain(error) ? accountUncertainMessage(error,'分组变更结果未确认，请刷新后核对。','请勿重复提交。') : error.message);
      } finally {
       groupBusy = false;
       if (current()) await loadAccounts();
@@ -698,7 +702,7 @@
       if (frpPending) return;
       if (frpNeedsReview) {
        requireCurrent();
-       if (!frpReviewTarget || writesBlocked() || frpReviewSnapshot !== model) throw new Error('请先刷新账户；若账户写入已冻结，请安全重启后再核对。');
+       if (!frpReviewTarget || writesBlocked() || frpReviewSnapshot !== model) throw new Error('请先刷新账户；若账户写入已冻结，请确认工作台完全停止后再启动核对。');
        const target = frpReviewTarget, user = model.accounts.find(item => item.id === target.accountId);
        if (user && user.frpTokens !== undefined && !Array.isArray(user.frpTokens)) throw new Error('该账户的凭据状态无法读取，请刷新后核对。');
        const entries = user ? (user.frpTokens || []).filter(item => item?.instanceId === target.instanceId) : [];
@@ -725,7 +729,7 @@
        await request('accounts',{action:'group-delete',revision:source.revision,id:group.id},30000);
        if (current()) K.toast('分组已删除。');
       } catch (error) {
-       if (current()) K.toast(uncertain(error) ? '删除结果未确认，请刷新后核对。' : error.message);
+       if (current()) K.toast(uncertain(error) ? accountUncertainMessage(error,'删除结果未确认，请刷新后核对。','请勿重复提交。') : error.message);
       } finally {
        groupBusy = false;
        if (current()) await loadAccounts();
@@ -781,7 +785,7 @@
       if (deleting || !confirm(`删除账户「${user.username}」并撤销其工作台会话？\n此操作可能影响受管 frp 连接；连接关闭未确认时服务端可能请求停止实例。`)) return;
       deleting = true; button.disabled = true; activeManagedRender?.();
       try { const result = await request('accounts',{action:'delete',revision:source.revision,id:user.id},30000); const revocation = recordRevocationWarning(result,`账户「${user.username}」的删除`); if (current()) { if (!revocation) K.toast('账户已删除。'); await loadAccounts(); } }
-      catch (error) { if (current()) { K.toast(uncertain(error) ? '删除结果未确认，请刷新账户后核对。' : error.message); await loadAccounts(); } }
+      catch (error) { if (current()) { K.toast(uncertain(error) ? accountUncertainMessage(error,'删除结果未确认，请刷新账户后核对。','请勿重复提交。') : error.message); await loadAccounts(); } }
       finally { deleting = false; if (button.isConnected) button.disabled = false; activeManagedRender?.(); }
       return;
      }
