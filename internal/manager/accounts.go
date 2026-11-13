@@ -487,13 +487,13 @@ func (a *auth) loginAccount(r *http.Request, username, password string) (string,
 	if a.accountsWriteUncertain {
 		return "", false, a.accountWriteFailure()
 	}
-	if subtle.ConstantTimeCompare(got, want) != 1 || !account.activeAt(time.Now()) {
-		return "", true, fmt.Errorf("用户名或密码不正确")
-	}
-	// A disable/re-enable or other change during password derivation must not
-	// revive an authentication attempt that began before revocation.
+	// A change during password derivation invalidates the snapshot before
+	// it can be counted as a failed login or used to create a session.
 	if a.accountsRevision != revision {
 		return "", false, fmt.Errorf("账户状态已变化，请重试")
+	}
+	if subtle.ConstantTimeCompare(got, want) != 1 || !account.activeAt(time.Now()) {
+		return "", true, fmt.Errorf("用户名或密码不正确")
 	}
 	for _, current := range a.accounts {
 		if current.ID == account.ID && current.activeAt(time.Now()) && current.Salt == account.Salt && current.Hash == account.Hash {
