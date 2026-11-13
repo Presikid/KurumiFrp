@@ -45,6 +45,7 @@ class EchoUDP(socketserver.BaseRequestHandler):
 class ThreadedTCP(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+    request_queue_size = 256
 
 
 class ThreadedUDP(socketserver.ThreadingUDPServer):
@@ -54,6 +55,7 @@ class ThreadedUDP(socketserver.ThreadingUDPServer):
 
 class ThreadedUnix(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
+    request_queue_size = 256
 
 
 class HTTPHandler(http.server.BaseHTTPRequestHandler):
@@ -206,6 +208,22 @@ def main():
                 raise AssertionError("SOCKS5 proxy changed the payload")
             return True
 
+    def direct_unix(seed):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(10)
+            sock.connect(servers[3].server_address)
+            for iteration in range(8):
+                payload = hashlib.sha256(f"unix-{seed}:{iteration}".encode()).digest() * (1 + iteration * 17)
+                sock.sendall(payload)
+                received = bytearray()
+                while len(received) < len(payload):
+                    block = sock.recv(len(payload) - len(received))
+                    if not block:
+                        raise ConnectionResetError("direct Unix target closed early")
+                    received.extend(block)
+                if received != payload:
+                    raise AssertionError("direct Unix target changed the payload")
+
     def exchange_udp(seed):
         payload = hashlib.sha256(f"udp:{seed}".encode()).digest() * 4
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -264,12 +282,13 @@ def main():
         wait_until("SOCKS5 proxy", lambda: exchange_socks("ready"))
         exchange_socks("wrong-password", b"invalid-password")
         with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
+            list(pool.map(direct_unix, range(128)))
             list(pool.map(exchange_tcp, range(320)))
             list(pool.map(exchange_udp, range(128)))
             list(pool.map(exchange_http, range(320)))
             list(pool.map(lambda n: exchange_tcp(f"unix-{n}", proxy_unix), range(128)))
             list(pool.map(exchange_socks, range(128)))
-        print("PASS: 320 TCP sessions, 128 UDP clients, 320 HTTP requests, 128 Unix socket and 128 authenticated SOCKS5 sessions")
+        print("PASS: 128 direct Unix controls, 320 TCP sessions, 128 UDP clients, 320 HTTP requests, 128 Unix and 128 authenticated SOCKS5 sessions")
 
         stop_load = threading.Event()
         load_counts = [0, 0]
@@ -317,6 +336,17 @@ def main():
         if proc.returncode != 0:
             raise AssertionError(f"manager exited with {proc.returncode}")
         print("PASS: clean shutdown of the manager and embedded frp instances")
+    except Exception:
+        # These are disposable runner-only instances containing synthetic data.
+        for label in ("server", "client"):
+            instance = locals().get(label)
+            if isinstance(instance, dict) and instance.get("id"):
+                try:
+                    print(f"--- {label} instance logs ---", file=sys.stderr)
+                    print(json.dumps(request("logs?id=" + instance["id"]), ensure_ascii=False)[-16000:], file=sys.stderr)
+                except Exception as exc:
+                    print(f"Unable to read {label} logs: {exc}", file=sys.stderr)
+        raise
     finally:
         failed = sys.exc_info()[0] is not None
         if proc is not None and proc.poll() is None:
