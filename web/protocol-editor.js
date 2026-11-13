@@ -17,7 +17,8 @@ const ProtocolEditor = (() => {
     ${field('host', '服务器地址 / 本机监听地址', v.host, 'text', 'required')}
     ${field('port', '连接 / 监听端口', v.port, 'number', 'required min="1" max="65535" step="1"')}
     <div class="span-2">${field('token', old?.hasToken ? '认证令牌（已保存，留空保留）' : '认证令牌（8–1024 字节）', '', 'password', `${old?.hasToken ? '' : 'required'} autocomplete="new-password"`)}</div>
-    <fieldset class="span-2"><legend>frp 附加认证范围</legend>${check('authHeartbeats', '对心跳附加认证（HeartBeats）', v.authHeartbeats)}${check('authNewWorkConns', '对新工作连接附加认证（NewWorkConns）', v.authNewWorkConns)}<p class="small-note">默认关闭。服务端启用某项时，连接它的客户端也须启用该项，否则心跳或代理连接可能失败。默认 TCP 多路复用的保活不属于心跳认证范围。仍使用现有共享令牌，不能据此识别账户或限制流量；更改后需重启实例。</p></fieldset>
+    ${old?.kind === 'frps' && old.managedAccountLogin === true ? `<div class="span-2 notice"><p>此实例使用旧版受管认证。可切换为普通 FRP 共享令牌认证；保存草稿不会改变正在运行的实例。</p><label class="form-check"><input name="convertLegacyAuth" type="checkbox">切换为普通 FRP 共享令牌认证</label><div data-legacy-auth-confirm hidden><label>再次输入新共享令牌<input name="confirmSharedToken" type="password" maxlength="1024" autocomplete="new-password" disabled></label><small>请在上方认证令牌处输入新共享令牌；客户端也须同步新令牌并核对 TCP 多路复用设置。</small></div></div>` : ''}
+    <fieldset class="span-2"><legend>frp 附加认证范围</legend>${check('authHeartbeats', '对心跳附加认证（HeartBeats）', v.authHeartbeats)}${check('authNewWorkConns', '对新工作连接附加认证（NewWorkConns）', v.authNewWorkConns)}<p class="small-note">默认关闭。服务端启用某项时，连接它的客户端也须启用该项，否则心跳或代理连接可能失败。默认 TCP 多路复用的保活不属于心跳认证范围。仍使用现有共享令牌，不能据此限制流量；更改后需重启实例。</p></fieldset>
     <div class="client-field">${field('user', '客户端用户名称（可选）', v.user || '', 'text', 'pattern="[A-Za-z0-9][A-Za-z0-9_.\\-]{0,63}"')}</div>
     <div class="client-field">${field('natHoleStunServer', 'NAT 穿透 STUN 地址（可选）', v.natHoleStunServer || '', 'text', 'placeholder="host:port"')}</div>
     <div class="client-field">${field('dnsServer', 'DNS 服务器 IP（可选）', v.dnsServer || '', 'text', 'placeholder="例如 1.1.1.1 或 [::1]:53"')}</div>
@@ -31,9 +32,9 @@ const ProtocolEditor = (() => {
     <div>${field('muxKeepalive', '多路复用保活间隔（秒）', v.muxKeepalive ?? 0, 'number', 'min="0" max="3600" step="1"')}<small>0 使用默认 30 秒；需启用 TCP 多路复用。</small></div>
     <div class="client-field span-2">${check('loginFailExit', '首次登录失败时退出（关闭时持续重连）', v.loginFailExit)}</div>
     <div class="client-field span-2">${check('clientTLSDisabled', '关闭客户端 TLS（WSS 和 QUIC 始终使用 TLS）', v.clientTLSDisabled)}</div>
-    <div class="client-field span-2">${check('clientTLSUseSystemCA', '使用系统信任库验证服务端 TLS 证书', v.clientTLSUseSystemCA)}<small>可与下方 CA 文件合用；两者都未配置时不验证服务端证书。此设置不识别账户。</small></div>
+    <div class="client-field span-2">${check('clientTLSUseSystemCA', '使用系统信任库验证服务端 TLS 证书', v.clientTLSUseSystemCA)}<small>可与下方 CA 文件合用；两者都未配置时不验证服务端证书。</small></div>
     <div class="span-2">${field('tlsCertFile', 'frp TLS 证书文件绝对路径（可选）', v.tlsCertFile || '', 'text', 'maxlength="1024" autocomplete="off"')}</div>
-    <div class="span-2">${field('tlsKeyFile', 'frp TLS 私钥文件绝对路径（可选）', v.tlsKeyFile || '', 'text', 'maxlength="1024" autocomplete="off"')}<small>证书和私钥须成对填写。只保存路径，不上传或复制文件；工作台账户须有读取权限。配置检查不读取文件，启动或连接时才加载。</small></div>
+    <div class="span-2">${field('tlsKeyFile', 'frp TLS 私钥文件绝对路径（可选）', v.tlsKeyFile || '', 'text', 'maxlength="1024" autocomplete="off"')}<small>证书和私钥须成对填写。只保存路径，不上传或复制文件；工作台运行进程须有读取权限。配置检查不读取文件，启动或连接时才加载。</small></div>
     <div class="span-2">${field('tlsTrustedCAFile', 'frp TLS 可信 CA 文件绝对路径（可选）', v.tlsTrustedCAFile || '', 'text', 'maxlength="1024" autocomplete="off"')}</div>
     <p class="client-field small-note span-2">客户端 CA 用于验证服务端证书；与系统信任库同时启用时合并信任。证书、私钥和 CA 文件均要求启用客户端 TLS。</p>
     <div class="client-field span-2">${field('clientTLSServerName', '验证服务端证书时使用的名称（可选）', v.clientTLSServerName || '', 'text', 'maxlength="253" placeholder="例如 frps.example.com"')}<small>留空使用连接地址；填写 DNS 名称或 IP，不含端口。仅设置名称不会启用证书验证。</small></div>
@@ -136,7 +137,7 @@ const ProtocolEditor = (() => {
     <div class="unix-target-choice span-2"><label>本地目标类型<select name="targetKind"><option value="network" ${!v.unixSocketPath && v.pluginType !== 'socks5' ? 'selected' : ''}>TCP 地址和端口</option><option value="unix" ${v.unixSocketPath ? 'selected' : ''}>Unix 域套接字</option><option value="socks5" ${v.pluginType === 'socks5' ? 'selected' : ''}>SOCKS5 代理</option></select></label><small>Unix 和 SOCKS5 目标仅用于 TCP 规则；Unix 目标支持连接式和 HTTP 代理健康检查。切换为 SOCKS5 会清除代理健康检查、PROXY 协议和本地诊断参数。</small></div>
     <label class="network-target-field"><span class="local-host-label">本地目标地址</span><input name="localHost" type="text" value="${esc(v.localHost)}" required></label>
     <label class="network-target-field"><span class="local-port-label">本地目标端口</span><input name="localPort" type="number" value="${esc(v.localPort)}" required min="1" max="65535" step="1" ${lockedPort ? 'readonly' : ''}><small class="unbound-note" hidden>负数表示仅接收回退连接，不监听本地端口。</small>${lockedPort ? '<small>当前暂不支持更改此规则的回退监听端口。</small>' : ''}</label>
-    <div class="unix-target-field span-2">${field('unixSocketPath', 'Unix 套接字绝对路径', v.unixSocketPath || '', 'text', 'maxlength="1024" placeholder="/run/service.sock"')}<small>需运行在支持 Unix 域套接字的平台，且工作台账户有访问该套接字的权限。</small></div>
+    <div class="unix-target-field span-2">${field('unixSocketPath', 'Unix 套接字绝对路径', v.unixSocketPath || '', 'text', 'maxlength="1024" placeholder="/run/service.sock"')}<small>需运行在支持 Unix 域套接字的平台，且工作台运行进程有访问该套接字的权限。</small></div>
     <div class="socks-target-field">${field('pluginUser', 'SOCKS5 用户名（1–255 UTF-8 字节）', v.pluginType === 'socks5' ? (v.pluginUser || '') : '', 'text', 'maxlength="255" autocomplete="off"')}</div>
     <div class="socks-target-field">${field('pluginPassword', old?.pluginType === 'socks5' && old?.hasPluginPassword ? 'SOCKS5 密码（已保存，留空保留）' : 'SOCKS5 密码（1–255 UTF-8 字节）', '', 'password', 'maxlength="255" autocomplete="new-password"')}<div class="actions"><button type="button" data-socks-generate>生成随机密码</button><button type="button" data-socks-visibility>显示密码</button></div><small>建议使用随机密码；生成后可复制，保存时才会替换已有密码。</small></div>
     <p class="socks-target-field small-note span-2">仅支持 TCP CONNECT。代理可访问 frpc 主机能够访问的内网；用户名和密码只验证代理入口，不限制目标地址，也不加密 SOCKS5 连接。请限制远端代理端口的访问并保护连接。客户端限速暂不可用，可选择服务端限速。</p>
@@ -227,6 +228,14 @@ const ProtocolEditor = (() => {
   if (editing.kind === 'instance') {
    visible(form, '.client-field', f.kind.value === 'frpc');
    visible(form, '.server-field', f.kind.value === 'frps');
+   if (f.convertLegacyAuth) {
+    const converting = f.convertLegacyAuth.checked;
+    form.querySelector('[data-legacy-auth-confirm]').hidden = !converting;
+    f.confirmSharedToken.disabled = !converting;
+    f.confirmSharedToken.required = converting;
+    f.token.required = converting || !editing.old?.hasToken;
+    if (!converting) f.confirmSharedToken.value = '';
+   }
    return;
   }
   const type = f.type.value, visitor = Protocols.isVisitor(type), paired = Protocols.hasPairingSecret(type);
@@ -317,6 +326,12 @@ const ProtocolEditor = (() => {
     user:kind === 'frpc' ? val('user').trim() : '', natHoleStunServer:kind === 'frpc' ? val('natHoleStunServer').trim() : '', dnsServer:kind === 'frpc' ? val('dnsServer').trim() : '', clientTransport:kind === 'frpc' ? val('clientTransport') : '', clientBindIP:kind === 'frpc' ? val('clientBindIP').trim() : '', loginFailExit:kind === 'frpc' && f.loginFailExit.checked, clientTLSDisabled:kind === 'frpc' && f.clientTLSDisabled.checked, clientTLSUseSystemCA:kind === 'frpc' && f.clientTLSUseSystemCA.checked, serverAllowPlaintext:kind === 'frps' && f.serverAllowPlaintext.checked, kcpBindPort:kind === 'frps' ? +val('kcpBindPort') : 0, quicBindPort:kind === 'frps' ? +val('quicBindPort') : 0,
     tcpmuxHTTPConnectPort:kind === 'frps' ? +val('tcpmuxHTTPConnectPort') : 0, serverAccessMode:kind === 'frps' ? val('serverAccessMode') : '', serverAccessList:kind === 'frps' && val('serverAccessMode') ? val('serverAccessList').trim() : '', clientDialTimeout:kind === 'frpc' ? +val('clientDialTimeout') : 0, tcpKeepalive:+val('tcpKeepalive'), muxKeepalive:+val('muxKeepalive'),
     tcpmuxPassthrough:kind === 'frps' && f.tcpmuxPassthrough.checked, subDomainHost:kind === 'frps' ? val('subDomainHost').trim() : '', maxPortsPerClient:kind === 'frps' ? +val('maxPortsPerClient') : 0, serverAllowedPorts:kind === 'frps' ? val('serverAllowedPorts').trim() : '', proxyBindAddr:kind === 'frps' ? val('proxyBindAddr').trim() : '', vhostHTTPTimeout:kind === 'frps' ? +val('vhostHTTPTimeout') : 0, userConnTimeout:kind === 'frps' ? +val('userConnTimeout') : 0, clientPoolCount:kind === 'frpc' ? +val('clientPoolCount') : 0, serverMaxPoolCount:kind === 'frps' ? +val('serverMaxPoolCount') : 0, transportMuxDisabled:f.transportMuxDisabled.checked});
+   if (f.convertLegacyAuth?.checked) {
+    const token = val('token'), bytes = new TextEncoder().encode(token).length;
+    if (bytes < 8 || bytes > 1024 || /[\u0000-\u001f\u007f\ud800-\udfff]/u.test(token)) throw new Error('新共享令牌须为 8–1024 个 UTF-8 字节，不能包含控制字符。');
+    if (token !== val('confirmSharedToken')) throw new Error('两次输入的新共享令牌不一致。');
+    result.managedAccountLogin = false;
+   }
    return result;
   }
   const type = val('type'), visitor = Protocols.isVisitor(type), paired = Protocols.hasPairingSecret(type);

@@ -173,6 +173,13 @@
     if (saveUncertain) throw new Error('上次保存结果尚未确认，请关闭表单并核对草稿后再操作。');
     requireRevision(data);
     const value = ProtocolEditor.value(form, editing);
+    if (kind === 'instance' && old?.kind === 'frps' && old.managedAccountLogin === true && value.managedAccountLogin === false) {
+     const epoch = K.epoch(), identityVersion = localControlIdentityVersion;
+     if (!confirm(`将「${old.name}」切换为普通 FRP 共享令牌认证？\n保存后需启动或重启实例才会应用；旧版受管凭据将不再用于新运行的实例。请确认客户端已同步新令牌，并核对两端 TCP 多路复用设置。`)) return false;
+     requireSession(epoch);
+     if (identityVersion !== localControlIdentityVersion) throw new Error('访问权限已变化，请刷新后重试。');
+     requireRevision(data);
+    }
     if (kind !== 'tunnel' || !form.elements.applyAfterSave.checked) {
      await mutation('save', {revision:data.revision, kind, value}, '草稿已保存；运行中的实例需要重新应用。');
      return;
@@ -282,11 +289,17 @@
    }
   });
  }
+ function requireLegacyConversion(action, instance) {
+  if (instance?.kind === 'frps' && instance.managedAccountLogin === true && ['start','restart','validate'].includes(action)) {
+   throw new Error('此实例草稿仍使用旧版受管认证，请先编辑并转换为普通 FRP 共享令牌。若已转换，请刷新后重试；运行状态请单独核对。');
+  }
+ }
  async function control(action, id, data, options = {}) {
   const epoch = K.epoch(), identityVersion = localControlIdentityVersion;
   requireRevision(data);
   const instance = data.state.instances.find(item => item.id === id);
   if (!instance || !can(data, id, action)) throw new Error('实例不存在或没有操作权限。');
+  requireLegacyConversion(action, instance);
   if (action !== 'validate') {
    const notice = localControlNotice(id);
    if (localControlInFlight.has(id) || notice) {
@@ -575,6 +588,7 @@
    bindButtons(root, async (action,id) => {
    if (action === 'ack-local-control') return acknowledgeLocalControl(id);
    if (['start','stop','restart','validate'].includes(action)) {
+    requireLegacyConversion(action,items.get(id));
     const runtime = runtimeFor(data,id), guard = ['stop','restart'].includes(action) && runtime.state === 'running';
     if (guard && !runtime.runId) throw new Error('实例运行代次不可用，请刷新后再试。');
     return control(action,id,data,guard ? {expectedRunId:runtime.runId} : {});
@@ -604,7 +618,7 @@
         if (stopped) { if (output) output.textContent = '未执行：前一项需要核对'; continue; }
         const current = K.state(), item = current?.state?.instances?.find(value => value.id === target.id), runtime = item ? runtimeFor(current,target.id) : null;
         if (K.epoch() !== epoch || !K.isCurrent('instances',root) || !current || !admin(current) || current.revision !== revision || !item || runtime.state !== 'running' || runtime.runId !== target.runId) {
-         if (output) output.textContent = '未执行：账户、草稿或运行代次已变化';
+         if (output) output.textContent = '未执行：会话、草稿或运行代次已变化';
          stopped = true;
          continue;
         }
