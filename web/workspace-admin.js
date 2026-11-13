@@ -46,7 +46,7 @@
   },
   mount(root, data) {
    const admin = data.identity?.role === 'admin', list = root.querySelector('[data-node-list]'), share = root.querySelector('[data-node-share]');
-   let model = null, busy = false, auto = false, autoTimer = null, autoGeneration = 0;
+   let model = null, busy = false, auto = false, autoTimer = null, autoGeneration = 0, loadSequence = 0;
    const results = new Map();
    const current = () => K.isCurrent('nodes', root);
    const paintNotices = () => {
@@ -78,16 +78,17 @@
     if (share) share.innerHTML = `<p>只读共享：${model.sharing ? '已启用' : '未启用'} · 流量共享：${model.shareTraffic ? '已启用' : '未启用'} · 远程控制：${model.controlSharing ? '已启用' : '未启用'}</p><div class="actions"><button data-node="issue">生成只读授权</button>${model.sharing ? '<button data-node="revoke">撤销只读授权</button><button data-node="traffic">切换流量共享</button>' : ''}<button data-node="issue-control">生成控制授权</button>${model.controlSharing ? '<button data-node="revoke-control">撤销控制授权</button>' : ''}</div>`;
    };
    const load = async () => {
+    const sequence = ++loadSequence;
     try {
      const value = await timeout('nodes', undefined);
-     if (!current()) return;
+     if (!current() || sequence !== loadSequence) return false;
      if (!value || !Array.isArray(value.nodes)) throw new Error('节点列表格式无效');
      model = value;
      for (const [id, result] of results) {
       if (!model.nodes.some(node => node.id === id && node.stamp === result.stamp)) results.delete(id);
      }
      paint(); return true;
-    } catch (error) { if (current()) list.textContent = '读取失败：' + errorText(error); return false; }
+    } catch (error) { if (current() && sequence === loadSequence) list.textContent = '读取失败：' + errorText(error); return false; }
    };
    const pollNodes = async generation => {
     if (!auto || generation !== autoGeneration || !current()) return;
