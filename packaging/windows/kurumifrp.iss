@@ -98,10 +98,10 @@ Name: autostart; Description: "{cm:AutostartTask}"; GroupDescription: "{cm:Start
 [Files]
 Source: "{#PayloadDir}\amd64\kurumi.exe"; DestName: "maintenance-amd64.exe"; Flags: dontcopy noencryption
 Source: "{#PayloadDir}\arm64\kurumi.exe"; DestName: "maintenance-arm64.exe"; Flags: dontcopy noencryption
-Source: "{#PayloadDir}\amd64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete; Check: not IsArm64
-Source: "{#PayloadDir}\arm64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete; Check: IsArm64
-Source: "{#PayloadDir}\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete
-Source: "kurumi.ico"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete
+Source: "{#PayloadDir}\amd64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete uninsremovereadonly; Check: not IsArm64
+Source: "{#PayloadDir}\arm64\kurumi.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete uninsremovereadonly; Check: IsArm64
+Source: "{#PayloadDir}\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete uninsremovereadonly
+Source: "kurumi.ico"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete uninsremovereadonly
 
 [Icons]
 Name: "{group}\KurumiFRP"; Filename: "{app}\kurumi.exe"; Parameters: "--open"; WorkingDir: "{app}"; IconFilename: "{app}\kurumi.ico"
