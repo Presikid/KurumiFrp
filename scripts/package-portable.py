@@ -26,11 +26,9 @@ TARGETS = {
 README = """KurumiFRP portable Linux edition
 
 Extract this archive, then run ./kurumifrp from a writable directory.
-The local WebUI listens on 127.0.0.1:9000. For a new data directory, leave
-the administrator username and password empty to sign in, then change the
-password if desired. When upgrading existing data without a configured
-administrator password, use its previous local access token as the initial
-password; ./kurumifrp --data <existing-data> --show-token prints it locally.
+The local WebUI listens on 127.0.0.1:9000. No username is required. When the
+data directory has no password file, leave the password empty to sign in.
+Existing passwords are retained. Change the password in the WebUI if desired.
 Choose an explicit --data path when you need a persistent location. This
 portable build does not register a
 system service or update itself. To upgrade, stop the old workbench, then
