@@ -30,15 +30,11 @@ type RuntimeConfig struct {
 }
 
 func validateManagedRuntimeConfig(cfg RuntimeConfig) error {
-	if !cfg.ManagedAccountLogin {
-		if cfg.ManagedLoginProvider != nil || cfg.ManagedAccountIncarnation != "" {
-			return fmt.Errorf("未启用账户认证，不能提供账户认证配置")
-		}
-		return nil
+	if cfg.ManagedAccountLogin {
+		return fmt.Errorf("旧版服务端认证方式已停用；请填写共享连接令牌并保存实例后再试")
 	}
-	if cfg.Kind != "frps" || !idPattern.MatchString(cfg.InstanceID) ||
-		!validLocalTrafficID(cfg.ManagedAccountIncarnation) || cfg.ManagedLoginProvider == nil {
-		return fmt.Errorf("账户认证需要有效的服务端实例、实例标识及令牌查询器")
+	if cfg.ManagedLoginProvider != nil || cfg.ManagedAccountIncarnation != "" {
+		return fmt.Errorf("未启用账户认证，不能提供账户认证配置")
 	}
 	return nil
 }
@@ -61,16 +57,7 @@ func (a *App) checkManagedAccountBackend(i Instance, cfg RuntimeConfig) error {
 	if cfg.InstanceID != i.ID || cfg.Kind != i.Kind || cfg.ManagedAccountLogin != i.ManagedAccountLogin {
 		return fmt.Errorf("账户认证配置与目标实例不匹配")
 	}
-	if err := validateManagedRuntimeConfig(cfg); err != nil {
-		return err
-	}
-	if !cfg.ManagedAccountLogin {
-		return nil
-	}
-	if _, ok := a.runtime.(*embeddedRuntime); !ok {
-		return fmt.Errorf("当前运行核心不支持账户认证，仅内嵌服务端可用")
-	}
-	return nil
+	return validateManagedRuntimeConfig(cfg)
 }
 
 // RuntimeBackend selects, validates and starts runtime instances. Resolve is
