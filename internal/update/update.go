@@ -219,7 +219,7 @@ func (m *Manager) selectAsset(ctx context.Context, tag string) (Asset, error) {
 			}
 		}
 	}
-	return Asset{}, fmt.Errorf("没有适用于当前安装方式的官方安装包")
+	return Asset{}, fmt.Errorf("没有可验证且适用于当前安装方式的官方安装包")
 }
 func (m *Manager) download(ctx context.Context, a Asset, dir string) (string, error) {
 	resp, e := m.get(ctx, a.URL)
