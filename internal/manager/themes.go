@@ -44,9 +44,7 @@ type themeSpec struct {
 // atlases use the same coordinate layout and are pinned to a published commit.
 var themeAtlasParts = []themePart{
 	{name: "overview", rect: image.Rect(0, 0, 1536, 1024)},
-	{name: "overview-mobile", rect: image.Rect(0, 0, 1536, 1024)},
 	{name: "login-desktop", rect: image.Rect(1536, 0, 2560, 1536)},
-	{name: "login-mobile", rect: image.Rect(1536, 0, 2560, 1536)},
 	{name: "empty-search", rect: image.Rect(0, 1536, 1024, 2560)},
 	{name: "empty-welcome", rect: image.Rect(1024, 1536, 2048, 2560)},
 }
@@ -559,12 +557,19 @@ func (a *App) serveThemeAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	spec, ok := lookupTheme(parts[0])
-	role := strings.TrimSuffix(parts[1], ".png")
+	requestedRole := strings.TrimSuffix(parts[1], ".png")
+	role := requestedRole
+	switch role {
+	case "login-mobile":
+		role = "login-desktop"
+	case "overview-mobile":
+		role = "overview"
+	}
 	allowed := false
 	for _, part := range spec.parts {
 		allowed = allowed || part.name == role
 	}
-	if !allowed && defaultThemeAsset(role) == "" {
+	if !allowed && defaultThemeAsset(requestedRole) == "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -588,7 +593,7 @@ func (a *App) serveThemeAsset(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if fallback := defaultThemeAsset(role); fallback != "" {
+	if fallback := defaultThemeAsset(requestedRole); fallback != "" {
 		copy := r.Clone(r.Context())
 		u := *r.URL
 		u.Path, u.RawPath = fallback, ""
