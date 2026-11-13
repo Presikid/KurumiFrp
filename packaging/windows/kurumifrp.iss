@@ -51,8 +51,8 @@ english.FinishedLabelNoIcons=KurumiFRP was installed. Sign in to the account you
 chinesesimplified.FinishedLabel=KurumiFRP 已安装。请登录平时使用的 Windows 账户，通过开始菜单以普通权限手动打开 KurumiFRP。
 chinesesimplified.FinishedLabelNoIcons=KurumiFRP 已安装。请登录平时使用的 Windows 账户，以普通权限手动打开 KurumiFRP。
 
-english.ConfirmUninstall=Uninstall will stop all %1 workbenches and their connections, remove the application files, and retain account data. Continue?
-chinesesimplified.ConfirmUninstall=卸载将关闭所有账户的 %1 工作台及连接、移除程序文件，并保留账户数据。是否继续？
+english.ConfirmUninstall=Uninstall will stop all %1 workbenches and their connections, remove the application files, and retain account data. To continue using the retained data, reinstall to the original installation directory, then use the same Windows account as before. Continue?
+chinesesimplified.ConfirmUninstall=卸载将关闭所有账户的 %1 工作台及连接、移除程序文件，并保留账户数据。如需继续使用保留的数据，重装时请选择原安装目录，之后使用原 Windows 账户。是否继续？
 
 [CustomMessages]
 english.ShortcutGroup=Shortcuts:
