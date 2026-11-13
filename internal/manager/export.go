@@ -225,6 +225,29 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
+	// Account FRP credentials stay local and use the current data key.
+	// An unreadable record prevents collision checks for all managed logins.
+	a.auth.mu.Lock()
+	if a.auth.accountsWriteUncertain {
+		accountErr := a.auth.accountWriteFailure()
+		a.auth.mu.Unlock()
+		fail(w, http.StatusConflict, accountErr)
+		return
+	}
+	hasAccountFRPTokens := false
+	if !bytes.Equal(a.store.key, key) {
+		for _, account := range a.auth.accounts {
+			if len(account.FRPTokens) != 0 {
+				hasAccountFRPTokens = true
+				break
+			}
+		}
+	}
+	a.auth.mu.Unlock()
+	if hasAccountFRPTokens {
+		fail(w, http.StatusConflict, fmt.Errorf("本机仍有受管 frp 凭据登记，不能导入使用不同数据密钥的配置；请先在账户页逐一停用全部登记。无法停用时请核对账户记录，处理后再导入"))
+		return
+	}
 	db.Schedules = cloneSchedules(db.Schedules)
 	for id, plan := range db.Schedules {
 		plan = pauseSchedule(plan, "导入或恢复后请检查并重新启用计划")
