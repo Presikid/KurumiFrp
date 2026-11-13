@@ -1,11 +1,6 @@
 package manager
 
-import (
-	"fmt"
-	"net/http"
-	"sort"
-	"sync"
-)
+import "net/http"
 
 // Every API method has an explicit policy. Unknown methods and future routes
 // are denied for all identities until they are deliberately added here.
@@ -78,44 +73,8 @@ func (a *auth) lockRequest(r *http.Request) (principal, func(), bool) {
 	return current, p.gate.RUnlock, true
 }
 
-// Acquire every restricted account gate before App.mu. These critical
-// sections protect instance deletion or replacement from reviving stale grants.
-// A changed account revision aborts, rather than trusting an incomplete list.
+// State replacement is serialized with other app mutations.
 func (a *App) lockStateReplacement() (func(), error) {
-	type gateEntry struct {
-		id   string
-		gate *sync.RWMutex
-	}
-	a.auth.mu.Lock()
-	if a.auth.accountLoadErr != nil {
-		a.auth.mu.Unlock()
-		return nil, fmt.Errorf("账户文件无法读取，修复前不能替换或删除实例")
-	}
-	revision := a.auth.accountsRevision
-	gates := make([]gateEntry, 0, len(a.auth.accounts))
-	for _, u := range a.auth.accounts {
-		if u.Role != "admin" {
-			gates = append(gates, gateEntry{u.ID, u.gate})
-		}
-	}
-	a.auth.mu.Unlock()
-	sort.Slice(gates, func(i, j int) bool { return gates[i].id < gates[j].id })
-	for _, entry := range gates {
-		entry.gate.Lock()
-	}
-	release := func() {
-		for i := len(gates) - 1; i >= 0; i-- {
-			gates[i].gate.Unlock()
-		}
-	}
 	a.mu.Lock()
-	a.auth.mu.Lock()
-	valid := a.auth.accountLoadErr == nil && a.auth.accountsRevision == revision
-	a.auth.mu.Unlock()
-	if !valid {
-		a.mu.Unlock()
-		release()
-		return nil, fmt.Errorf("账户授权已变化，请刷新后重试")
-	}
-	return func() { a.mu.Unlock(); release() }, nil
+	return a.mu.Unlock, nil
 }

@@ -6,14 +6,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 )
 
-func stateWriteAfterGrantRevocationError(operation string, err error) error {
-	return fmt.Errorf("%s未完成或配置保存状态未确认；相关非管理员账户及分组模板的实例授权（如有）已先行撤销，请核对配置和授权：%w", operation, err)
+func stateWriteOutcomeError(operation string, err error) error {
+	return fmt.Errorf("%s未完成或配置保存状态未确认；请核对配置：%w", operation, err)
 }
 
-// Bound and consume slow uploads before waiting on other accounts' gates.
+// Bound and consume slow uploads before waiting on the app lock.
 func bufferMutationBody(w http.ResponseWriter, r *http.Request, limit int64) (*http.Request, error) {
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil {
@@ -26,8 +28,8 @@ func bufferMutationBody(w http.ResponseWriter, r *http.Request, limit int64) (*h
 }
 
 func (a *App) importConfigAPI(w http.ResponseWriter, r *http.Request) {
-	// Buffering before the permission gates avoids a slow client blocking
-	// revocation; reserve the shared transfer slot to bound that allocation.
+	// Reserve the shared transfer slot and buffer before taking the app lock,
+	// so a slow client cannot block other operations.
 	if !a.reserveBackup() {
 		fail(w, http.StatusConflict, fmt.Errorf("备份或导入操作正在进行或工作台正在关闭"))
 		return
@@ -225,28 +227,14 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	// Account FRP credentials stay local and use the current data key.
-	// An unreadable record prevents collision checks for all managed logins.
-	a.auth.mu.Lock()
-	if a.auth.accountsWriteUncertain {
-		accountErr := a.auth.accountWriteFailure()
-		a.auth.mu.Unlock()
-		fail(w, http.StatusConflict, accountErr)
-		return
-	}
-	hasAccountFRPTokens := false
+	// Legacy account credentials may depend on the current data key. Their
+	// file is not included in portable backups and must remain untouched.
 	if !bytes.Equal(a.store.key, key) {
-		for _, account := range a.auth.accounts {
-			if len(account.FRPTokens) != 0 {
-				hasAccountFRPTokens = true
-				break
-			}
+		_, accountErr := os.Lstat(filepath.Join(a.store.dir, "accounts.json"))
+		if accountErr == nil || !os.IsNotExist(accountErr) {
+			fail(w, http.StatusConflict, fmt.Errorf("本机有旧版账户资料或无法确认其状态；为保留旧资料，已拒绝使用不同数据密钥的导入。请备份完整数据目录，工作台配置备份不包含旧版账户资料"))
+			return
 		}
-	}
-	a.auth.mu.Unlock()
-	if hasAccountFRPTokens {
-		fail(w, http.StatusConflict, fmt.Errorf("本机仍有受管 frp 凭据登记，不能导入使用不同数据密钥的配置；请先在账户页逐一停用全部登记。无法停用时请核对账户记录，处理后再导入"))
-		return
 	}
 	db.Schedules = cloneSchedules(db.Schedules)
 	for id, plan := range db.Schedules {
@@ -290,17 +278,11 @@ func (a *App) importConfig(w http.ResponseWriter, r *http.Request) {
 	db.Format = currentDatabaseFormat
 	// Imported IDs must never inherit this device's previous observations.
 	db.LocalTrafficIDs = freshLocalTrafficIDs(db.State)
-	// Authorizations must not attach to different imported instances reusing
-	// old IDs. This write precedes the state replacement and fails closed.
-	if err = a.clearInstanceGrantsLocked(""); err != nil {
-		fail(w, 500, fmt.Errorf("无法撤销原实例授权：%w", err))
-		return
-	}
 	previousKey := a.store.key
 	a.store.key = key
 	if err = a.store.write(db); err != nil {
 		a.store.key = previousKey
-		fail(w, 500, stateWriteAfterGrantRevocationError("导入", err))
+		fail(w, 500, stateWriteOutcomeError("导入", err))
 		return
 	}
 	a.store.DB = db
