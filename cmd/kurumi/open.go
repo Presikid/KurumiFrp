@@ -81,14 +81,21 @@ func openExisting(addr, token string) error {
 // Installation launchers use auto; explicit --listen retains its original behavior.
 func autoListen(dir string) (string, bool, error) {
 	saved, err := os.ReadFile(filepath.Join(dir, "listen.addr"))
-	preferred := strings.TrimSpace(string(saved))
+	preferred := ""
+	if err != nil && !os.IsNotExist(err) {
+		return "", false, err
+	}
 	if err == nil {
-		host, port, e := net.SplitHostPort(preferred)
-		n, _ := strconv.Atoi(port)
-		if e != nil || host != "127.0.0.1" || n < 9000 || n > 9010 {
+		preferred = strings.TrimSpace(string(saved))
+		host, port, splitErr := net.SplitHostPort(preferred)
+		n, portErr := strconv.Atoi(port)
+		ip := net.ParseIP(host)
+		if splitErr != nil || ip == nil || !ip.IsLoopback() || portErr != nil || n < 1024 || n > 65535 {
 			return "", false, fmt.Errorf("invalid saved management address")
 		}
-		if _, e := os.Stat(filepath.Join(dir, "manager.lock")); e == nil {
+		if host != "127.0.0.1" || n < 9000 || n > 9010 {
+			preferred = ""
+		} else if _, e := os.Stat(filepath.Join(dir, "manager.lock")); e == nil {
 			return preferred, true, nil
 		}
 	}
