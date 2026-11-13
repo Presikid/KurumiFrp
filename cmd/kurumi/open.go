@@ -79,17 +79,17 @@ func openExisting(addr, token string) error {
 }
 
 // Installation launchers use auto; explicit --listen retains its original behavior.
-func autoListen(dir string) (string, error) {
+func autoListen(dir string) (string, bool, error) {
 	saved, err := os.ReadFile(filepath.Join(dir, "listen.addr"))
 	preferred := strings.TrimSpace(string(saved))
 	if err == nil {
 		host, port, e := net.SplitHostPort(preferred)
 		n, _ := strconv.Atoi(port)
 		if e != nil || host != "127.0.0.1" || n < 9000 || n > 9010 {
-			return "", fmt.Errorf("invalid saved management address")
+			return "", false, fmt.Errorf("invalid saved management address")
 		}
 		if _, e := os.Stat(filepath.Join(dir, "manager.lock")); e == nil {
-			return preferred, nil
+			return preferred, true, nil
 		}
 	}
 	choices := []string{}
@@ -103,10 +103,10 @@ func autoListen(dir string) (string, error) {
 		l, e := net.Listen("tcp", candidate)
 		if e == nil {
 			l.Close()
-			return candidate, nil
+			return candidate, false, nil
 		}
 	}
-	return "", fmt.Errorf("no available loopback port in 9000..9010; existing services were not changed")
+	return "", false, fmt.Errorf("no available loopback port in 9000..9010; existing services were not changed")
 }
 func saveListen(dir, addr string) error {
 	f, err := os.CreateTemp(dir, ".listen-")
