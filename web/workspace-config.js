@@ -101,7 +101,10 @@
     if (!K.isCurrent('config',root)) throw new Error('页面已变化，请重新操作。'); validRevision(data);
     const operation = K.transfer.begin('import');
     try { const result = await withTimeout('import/toml',preview); K.transfer.finish(operation,'complete'); K.toast(`已导入实例和 ${result.rulesImported} 条规则草稿。`); }
-    catch (error) { K.transfer.finish(operation,'uncertain',error.message); throw new Error('导入结果尚未确认，请先核对当前草稿。'); }
+    catch (error) {
+     if (error.status === 409) { K.transfer.finish(operation,'rejected'); throw error; }
+     K.transfer.finish(operation,'uncertain',error.message); throw new Error('导入结果尚未确认，请先核对当前草稿。');
+    }
    }
   });
  }
