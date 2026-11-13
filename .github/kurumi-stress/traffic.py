@@ -25,11 +25,15 @@ def free_port():
 
 class EchoTCP(socketserver.BaseRequestHandler):
     def handle(self):
-        while True:
-            data = self.request.recv(65536)
-            if not data:
-                return
-            self.request.sendall(data)
+        try:
+            while True:
+                data = self.request.recv(65536)
+                if not data:
+                    return
+                self.request.sendall(data)
+        except (ConnectionResetError, BrokenPipeError):
+            # Restarting an frp instance intentionally interrupts active sockets.
+            return
 
 
 class EchoUDP(socketserver.BaseRequestHandler):
@@ -152,7 +156,7 @@ def main():
                 while len(received) < len(payload):
                     block = sock.recv(len(payload) - len(received))
                     if not block:
-                        raise AssertionError("TCP proxy closed before returning the payload")
+                        raise ConnectionResetError("TCP proxy closed before returning the payload")
                     received.extend(block)
                 if received != payload:
                     raise AssertionError("TCP proxy changed the payload")
@@ -224,9 +228,10 @@ def main():
                 try:
                     exchange_tcp(f"continuous-{worker}")
                     outcome = 0
-                except (OSError, AssertionError):
+                except OSError:
                     # In-flight connections may be interrupted by an explicit restart.
                     outcome = 1
+                    time.sleep(0.01)
                 with load_lock:
                     load_counts[outcome] += 1
 
