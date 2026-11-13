@@ -55,10 +55,6 @@ type auth struct {
 	frpProxySlots   map[string]int
 	// Invoked under mu; the callback must return promptly and not take locks.
 	onAccountsWriteUncertain func()
-	oidcSettings             oidcSettings
-	oidcLoadErr              error
-	oidcFlows                map[string]oidcFlow
-	oidcStartSlots           chan struct{}
 	hashSlots                chan struct{}
 	adminPasswordPath        string
 	adminPassword            adminPasswordFile
@@ -72,7 +68,6 @@ type authSession struct {
 	accountID       string        // empty for a root browser session
 	gate            *sync.RWMutex // root sessions share rootGate; account sessions use the account gate
 	oidcRevision    uint64        // zero for non-OIDC sessions
-	oidcRoleCap     string        // empty unless a provider-group policy restricted this session
 	passwordAccount bool          // set only after a local account password login succeeds
 }
 
