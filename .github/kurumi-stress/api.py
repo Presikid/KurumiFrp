@@ -2,6 +2,7 @@
 """Exercise one disposable KurumiFRP instance on a GitHub-hosted runner."""
 
 import concurrent.futures
+import copy
 import http.client
 import http.cookies
 import json
@@ -10,6 +11,7 @@ import pathlib
 import random
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -374,6 +376,115 @@ def boundary_and_batch_check(api, instance_id):
           "conflicting batch left a partial write")
 
 
+def durable_view(snapshot):
+    return {key: snapshot[key] for key in ("revision", "state", "history", "historyLimit", "events")}
+
+
+def persistence_stress(api, app, temporary, client_id, copied_client_id):
+    # The permission fault must only ever touch the data directory made by this
+    # script under RUNNER_TEMP. Root would bypass the intended permission error.
+    check(os.geteuid() != 0, "persistence fault injection requires a non-root runner")
+    runner_temp = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+    temp_path = temporary.resolve(strict=True)
+    check(temp_path.parent == runner_temp and temp_path.name.startswith("kurumi-api-check-"),
+          "test temporary directory is not a direct child of RUNNER_TEMP")
+    data_dir = app.data_dir
+    check(not data_dir.is_symlink() and data_dir.is_dir(), "test data directory is not a plain directory")
+    data_path = data_dir.resolve(strict=True)
+    check(data_path.parent == temp_path and data_path.name == "data", "test data directory escaped the temporary directory")
+    initial_stat = data_path.stat()
+    check(initial_stat.st_uid == os.geteuid(), "test data directory is not owned by the runner")
+    directory_identity = (initial_stat.st_dev, initial_stat.st_ino)
+
+    rng = random.Random(STRESS_SEED + 1000)
+    snapshot = api.state()
+    candidates = sorted((row for row in snapshot["state"]["tunnels"]
+                         if row["instanceId"] == copied_client_id and
+                         (row["name"].startswith("seeded-") or row["name"] == "x" * 64)),
+                        key=lambda row: row["name"])
+    check(len(candidates) == 16 and all(row["enabled"] is False for row in candidates),
+          "expected 16 disabled seeded rules before persistence stress")
+    rule_ids = [row["id"] for row in candidates]
+    expected = {"state": copy.deepcopy(snapshot["state"])}
+    revision = snapshot["revision"]
+
+    def different(current, low, high):
+        value = rng.randint(low, high)
+        return value if value != current else (low if value != low else high)
+
+    for batch in range(3):
+        for index in range(100):
+            if index % 5 == 0:
+                target = item(expected, "instances", client_id)
+                changes = {"name": f"load-client-{batch}-{index}",
+                           "udpPacketSize": different(target.get("udpPacketSize", 0), 1500, 9000)}
+                kind, object_id = "instance", client_id
+            else:
+                object_id = rng.choice(rule_ids)
+                target = item(expected, "tunnels", object_id)
+                kind = "tunnel"
+                field = index % 5
+                if field == 1:
+                    changes = {"localPort": different(target["localPort"], 1, 65535)}
+                elif field == 2:
+                    changes = {"remotePort": different(target["remotePort"], 0, 65535)}
+                elif field == 3:
+                    changes = {"bandwidthKB": different(target["bandwidthKB"], 1, 5_000_000)}
+                else:
+                    changes = {"name": f"load-rule-{batch}-{index}"}
+            status, result, _ = api.save(revision, kind, {"id": object_id, **changes})
+            check(status == 200 and result.get("revision") == revision + 1,
+                  f"persistence batch {batch} save {index}: HTTP {status} or invalid revision")
+            revision += 1
+            target.update(changes)
+            if index % 25 == 24:
+                actual = api.state()
+                check(actual["revision"] == revision and actual["state"] == expected["state"],
+                      f"persistence batch {batch} checkpoint {index} lost or changed data")
+
+        before_failure = api.state()
+        status, _, _ = api.save(revision, "tunnel", {"id": rule_ids[0], "remotePort": 65536})
+        check(status == 400 and durable_view(api.state()) == durable_view(before_failure),
+              f"persistence batch {batch} invalid save changed data")
+
+        directory_fd = os.open(data_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            opened = os.fstat(directory_fd)
+            check(stat.S_ISDIR(opened.st_mode) and opened.st_uid == os.geteuid() and
+                  (opened.st_dev, opened.st_ino) == directory_identity,
+                  "test data directory changed before fault injection")
+            original_mode = stat.S_IMODE(opened.st_mode)
+            try:
+                os.fchmod(directory_fd, original_mode & ~0o222)
+                status, result, _ = api.save(revision, "instance",
+                                             {"id": client_id, "name": f"must-not-save-{batch}"})
+                check(status == 400 and "permission denied" in str(result.get("error", "")).lower(),
+                      f"persistence batch {batch}: expected a permission-denied write failure")
+            finally:
+                os.fchmod(directory_fd, original_mode)
+        finally:
+            os.close(directory_fd)
+        check(durable_view(api.state()) == durable_view(before_failure),
+              f"persistence batch {batch} failed write changed data")
+
+        # Confirm the store accepts a new valid write after permissions recover.
+        name = f"recovered-batch-{batch}"
+        status, result, _ = api.save(revision, "instance", {"id": client_id, "name": name})
+        check(status == 200 and result.get("revision") == revision + 1,
+              f"persistence batch {batch}: save did not recover")
+        revision += 1
+        item(expected, "instances", client_id)["name"] = name
+        before_restart = api.state()
+        check(before_restart["revision"] == revision and before_restart["state"] == expected["state"],
+              f"persistence batch {batch}: recovered state mismatch")
+        app.stop()
+        api = app.start()
+        api.login(TEST_PASSWORD)
+        check(durable_view(api.state()) == durable_view(before_restart),
+              f"persistence batch {batch}: state or history changed after restart")
+    return api
+
+
 def run(binary, temporary):
     echo = Echo()
     replacement_echo = Echo(b"replacement:")
@@ -430,7 +541,8 @@ def run(binary, temporary):
         rules = [row for row in snapshot["state"]["tunnels"] if row["instanceId"] == copied["id"]]
         check(duplicate.get("udpPacketSize") == 4096 and copied.get("rulesCopied") == 1, "client copy lost settings or rule")
         check(len(rules) == 1 and rules[0]["enabled"] is False, "copied rule should be disabled")
-        boundary_and_batch_check(api, copied["id"])
+        copied_client_id = copied["id"]
+        boundary_and_batch_check(api, copied_client_id)
 
         control(api, server_id, "start")
         server_run = wait_running(api, server_id)
@@ -491,7 +603,15 @@ def run(binary, temporary):
                   f"configuration changed after persistence cycle {cycle}")
             check(item(actual, "instances", client_id).get("hasToken") is True,
                   f"token missing after persistence cycle {cycle}")
-        print(f"PASS: auth, seed {STRESS_SEED}, boundaries, batch atomicity, concurrent revisions, TCP and persistence")
+        api = persistence_stress(api, app, temporary, client_id, copied_client_id)
+        control(api, server_id, "start")
+        server_run = wait_running(api, server_id)
+        control(api, client_id, "start")
+        client_run = wait_running(api, client_id)
+        check_echo(remote_port, b"replacement:")
+        control(api, client_id, "stop", client_run)
+        control(api, server_id, "stop", server_run)
+        print(f"PASS: auth, seed {STRESS_SEED}, boundaries, batch atomicity, concurrent revisions, TCP and 303 persistence writes")
         app.stop()
     finally:
         app.stop(strict=False)
@@ -513,4 +633,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
