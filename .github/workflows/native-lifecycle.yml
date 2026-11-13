@@ -146,6 +146,13 @@ jobs:
           set -- dist-native/kurumifrp_*_amd64.deb
           [[ "$#" == 1 && -f "$1" ]] || { echo 'Expected exactly one DEB.'; exit 1; }
           deb="$PWD/$1"
+          # GitHub's disposable image may make /opt group-writable. Exercise
+          # package installation with normal root-owned directory permissions.
+          [[ -d /opt && ! -L /opt && "$(stat -c %u /opt)" == 0 ]] || { echo 'INFRA: /opt is not root-owned.'; exit 1; }
+          original_opt_mode="$(stat -c %a /opt)"
+          stat -c 'Original /opt: mode=%a uid=%u gid=%g' /opt
+          trap 'sudo chmod -- "$original_opt_mode" /opt' EXIT
+          sudo chmod -- 00755 /opt
           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb"
           for n in 1 2 3; do
             sudo systemctl start kurumifrp.service
