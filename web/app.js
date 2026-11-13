@@ -682,12 +682,15 @@ function instanceRegistrationText(instance) {
  if (stateOf(instance.id).state === 'starting') return '实例启动中';
  if (stateOf(instance.id).state === 'stopping') return '实例停止中';
  if (stateOf(instance.id).state !== 'running') return '代理未运行';
+ if (data.identity?.role !== 'admin') return '未查询代理注册状态';
  const eligible=data.state.tunnels.filter(t=>t.instanceId===instance.id && t.enabled && !Protocols.isVisitor(t.type));
  const items=eligible.map(registrationFor);
  const count=items.filter(item=>item?.state==='registered'&&!item.portPending).length;
  const unresolved=items.some(item=>!item || item.portPending || !['registered','failed'].includes(item.state));
+ if (stateOf(instance.id).pending) return (count ? `观察到 ${count} 条对应规则的运行状态已注册` : '代理注册状态待确认') + ' · 草稿待应用，旧配置可能还有其他规则';
+ if (!eligible.length) return '草稿中没有可统计的代理规则';
  if (unresolved) return count ? `观察到已注册 ${count} · 其余待确认` : '注册状态待确认';
- return `观察到已注册 ${count}`+(stateOf(instance.id).pending?' · 实例待应用':'');
+ return `观察到已注册 ${count}`;
 }
 function healthSummary(rules) {
  const summary={registered:0,failed:0,unknown:0,notApplicable:0,targetResponded:0,targetUnreachable:0,targetOther:0};
