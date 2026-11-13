@@ -67,8 +67,36 @@ func lockSystemUpdate() (*os.File, error) {
 }
 
 func packageDistribution() string {
-	if e := exec.Command("dpkg-query", "-W", "-f=${Status}", "kurumifrp").Run(); e == nil {
-		return "linux-deb"
+	output, err := exec.Command("dpkg-query", "-W", "-f=${Status}", "kurumifrp").Output()
+	if err == nil {
+		status := strings.Fields(string(output))
+		if len(status) != 3 || status[1] != "ok" {
+			return ""
+		}
+		switch status[0] {
+		case "unknown", "install", "hold", "deinstall", "purge":
+		default:
+			return ""
+		}
+		switch status[2] {
+		case "installed":
+			return "linux-deb"
+		case "config-files", "not-installed":
+			// A selected but not fully installed package may still be in transition.
+			if status[0] == "install" || status[0] == "hold" {
+				return ""
+			}
+		default:
+			return ""
+		}
+	} else {
+		var exitErr *exec.ExitError
+		// Missing dpkg or exit 1 with no output allows an RPM check.
+		// Some older dpkg versions also use exit 1 for other errors.
+		if !errors.Is(err, exec.ErrNotFound) &&
+			!(errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && len(output) == 0) {
+			return ""
+		}
 	}
 	if e := exec.Command("rpm", "-q", "kurumifrp").Run(); e == nil {
 		return "linux-rpm"
