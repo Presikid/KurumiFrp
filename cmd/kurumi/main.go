@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -31,6 +30,7 @@ func main() {
 		dataFlag       = flag.String("data", "", "数据与配置文件存储目录（默认保存在软件目录内 data 文件夹）")
 		listenFlag     = flag.String("listen", "", "WebUI 监听地址（例如 127.0.0.1:9000 或 0.0.0.0:9000，默认 auto）")
 		openFlag       = flag.Bool("open", false, "启动后自动在系统默认浏览器中打开 WebUI")
+		headlessFlag   = flag.Bool("headless", false, "后台静默启动（供开机自启使用，不自动弹出浏览器）")
 		stopFlag       = flag.Bool("stop", false, "优雅停止当前正在运行的 KurumiFrp 后台进程")
 		checkRunning   = flag.Bool("check-running", false, "检查后台服务是否正在运行")
 		showToken      = flag.Bool("show-token", false, "输出本地 CLI 维护令牌")
@@ -53,6 +53,10 @@ func main() {
 		}
 		return
 	}
+
+	// On Windows desktop builds, double-clicking kurumi.exe or any shortcut should ALWAYS open the WebUI
+	// unless explicitly launched in background mode via -headless.
+	shouldOpenBrowser := *openFlag || (runtime.GOOS == "windows" && !*headlessFlag)
 
 	dataDir := resolveDataDir(*dataFlag)
 	if *pathsFlag {
@@ -91,12 +95,19 @@ func main() {
 		return
 	}
 
-	// If an instance is already running for this dataDir, open browser directly if --open was passed.
+	// If an instance is already running, immediately open the browser WebUI for the user!
 	if existingAddr, ok := probeExistingServer(dataDir); ok {
-		if *openFlag {
+		if shouldOpenBrowser {
 			openWebUIWithTicket(dataDir, existingAddr)
 		}
 		return
+	}
+	// Fallback check: even if dataDir token wasn't readable (e.g. legacy elevated instance), check default loopback ports
+	if shouldOpenBrowser {
+		if fallbackURL, ok := probePublicSessionOnDefaultPorts(); ok {
+			_ = platformOpenURL(fallbackURL)
+			return
+		}
 	}
 
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -104,14 +115,22 @@ func main() {
 
 	app, err := manager.NewApp(dataDir, stopSignals)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "初始化 KurumiFrp 失败: %v\n", err)
+		msg := fmt.Sprintf("初始化数据目录 (%s) 失败: %v", dataDir, err)
+		fmt.Fprintln(os.Stderr, msg)
+		if shouldOpenBrowser {
+			platformShowFatalError(msg)
+		}
 		os.Exit(1)
 	}
 	defer app.Close()
 
 	ln, actualAddr, browserBaseURL, err := bindListener(*listenFlag)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "绑定 WebUI 端口失败: %v\n", err)
+		msg := fmt.Sprintf("绑定本地 WebUI 端口失败: %v", err)
+		fmt.Fprintln(os.Stderr, msg)
+		if shouldOpenBrowser {
+			platformShowFatalError(msg)
+		}
 		os.Exit(1)
 	}
 	defer ln.Close()
@@ -134,23 +153,26 @@ func main() {
 	}()
 
 	fmt.Printf("KurumiFrp v%s WebUI 已启动: %s (数据目录: %s)\n", version.Current, browserBaseURL, dataDir)
-	if *openFlag {
+	if shouldOpenBrowser {
 		go func() {
-			time.Sleep(150 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 			openWebUIWithTicket(dataDir, browserBaseURL)
 		}()
 	}
 
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fmt.Fprintf(os.Stderr, "HTTP 服务异常退出: %v\n", err)
+		msg := fmt.Sprintf("WebUI 服务异常退出: %v", err)
+		fmt.Fprintln(os.Stderr, msg)
+		if shouldOpenBrowser {
+			platformShowFatalError(msg)
+		}
 		os.Exit(1)
 	}
 }
 
 func resolveDataDir(explicit string) string {
 	if strings.TrimSpace(explicit) != "" {
-		abs, err := filepath.Abs(strings.TrimSpace(explicit))
-		if err == nil {
+		if abs, err := filepath.Abs(strings.TrimSpace(explicit)); err == nil {
 			return abs
 		}
 		return explicit
@@ -158,22 +180,44 @@ func resolveDataDir(explicit string) string {
 	if distribution == "linux-system" {
 		return "/opt/kurumifrp/data"
 	}
-	exe, err := os.Executable()
-	if err == nil {
+	if exe, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exe)
-		if distribution == "windows-installed" {
-			return filepath.Join(exeDir, "data")
-		}
-		// Portable or source build: keep configs inside ./data or next to binary if writable
-		if st, err := os.Stat(filepath.Join(exeDir, "bundled")); err == nil && st.IsDir() {
-			return filepath.Join(exeDir, "data")
+		if distribution == "windows-installed" || dirExists(filepath.Join(exeDir, "bundled")) {
+			preferred := filepath.Join(exeDir, "data")
+			if ensureDirWritable(preferred) {
+				return preferred
+			}
+			// Fallback if installed into a locked folder without Users write ACL
+			if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+				fallback := filepath.Join(localAppData, "KurumiFRP", "data")
+				if ensureDirWritable(fallback) {
+					return fallback
+				}
+			}
+			return preferred
 		}
 	}
-	abs, err := filepath.Abs("./data")
-	if err == nil {
+	if abs, err := filepath.Abs("./data"); err == nil {
 		return abs
 	}
 	return "./data"
+}
+
+func dirExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
+}
+
+func ensureDirWritable(dir string) bool {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return false
+	}
+	probe := filepath.Join(dir, ".write-probe")
+	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
+		return false
+	}
+	_ = os.Remove(probe)
+	return true
 }
 
 func bindListener(requested string) (net.Listener, string, string, error) {
@@ -192,7 +236,6 @@ func bindListener(requested string) (net.Listener, string, string, error) {
 		return ln, callbackAddr, fmt.Sprintf("http://%s", net.JoinHostPort(hostForURL, fmt.Sprintf("%d", tcpAddr.Port))), nil
 	}
 
-	// Atomic port scan in 9000..9020 without TOCTOU close-reopen race
 	for port := 9000; port <= 9020; port++ {
 		addr := fmt.Sprintf("127.0.0.1:%d", port)
 		ln, err := net.Listen("tcp", addr)
@@ -218,25 +261,35 @@ func probeExistingServer(dataDir string) (string, bool) {
 	if !strings.HasPrefix(baseURL, "http://") {
 		return "", false
 	}
-	tokBytes, err := os.ReadFile(filepath.Join(dataDir, "access.token"))
-	if err != nil {
-		return "", false
-	}
-	tok := strings.TrimSpace(string(tokBytes))
-
-	client := &http.Client{Timeout: 1500 * time.Millisecond}
-	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/state", nil)
-	if err != nil {
-		return "", false
-	}
-	req.Header.Set("Authorization", "Bearer "+tok)
-	resp, err := client.Do(req)
+	client := &http.Client{Timeout: 1200 * time.Millisecond}
+	resp, err := client.Get(baseURL + "/api/session")
 	if err != nil {
 		return "", false
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 	return baseURL, resp.StatusCode == http.StatusOK
+}
+
+func probePublicSessionOnDefaultPorts() (string, bool) {
+	client := &http.Client{Timeout: 400 * time.Millisecond}
+	for port := 9000; port <= 9005; port++ {
+		base := fmt.Sprintf("http://127.0.0.1:%d", port)
+		resp, err := client.Get(base + "/api/session")
+		if err != nil {
+			continue
+		}
+		var body struct {
+			Version         string `json:"version"`
+			DefaultUsername string `json:"defaultUsername"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if err == nil && resp.StatusCode == http.StatusOK && body.Version != "" && body.DefaultUsername != "" {
+			return base, true
+		}
+	}
+	return "", false
 }
 
 func stopExistingServer(dataDir string) error {
@@ -287,23 +340,10 @@ func openWebUIWithTicket(dataDir, baseURL string) {
 			}
 		}
 	}
-	openSystemBrowser(targetURL)
-}
-
-func openSystemBrowser(u string) {
-	if !strings.HasPrefix(u, "http://127.0.0.1:") && !strings.HasPrefix(u, "http://[::1]:") {
+	if !strings.HasPrefix(targetURL, "http://127.0.0.1:") && !strings.HasPrefix(targetURL, "http://[::1]:") {
 		return
 	}
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
-	case "darwin":
-		cmd = exec.Command("open", u)
-	default:
-		cmd = exec.Command("xdg-open", u)
-	}
-	_ = cmd.Start()
+	_ = platformOpenURL(targetURL)
 }
 
 func handleNativeMaintenance(action, installDir string) error {
@@ -319,15 +359,12 @@ func handleNativeMaintenance(action, installDir string) error {
 
 	switch action {
 	case "preflight", "preflight-existing":
-		// Allow any valid non-symlink local directory chosen by the user (e.g., C:\Program Files\KurumiFRP or D:\KurumiFRP).
-		if info, err := os.Lstat(dir); err == nil {
-			if info.Mode()&os.ModeSymlink != 0 {
-				return errors.New("不支持符号链接安装目录")
-			}
+		if info, err := os.Lstat(dir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("不支持符号链接安装目录")
 		}
 		return nil
 	case "init":
-		if err := os.MkdirAll(filepath.Join(dataDir, "configs"), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Join(dataDir, "configs"), 0o777); err != nil {
 			return err
 		}
 		marker := map[string]string{
@@ -337,12 +374,20 @@ func handleNativeMaintenance(action, installDir string) error {
 		b, _ := json.MarshalIndent(marker, "", "  ")
 		return os.WriteFile(filepath.Join(dir, "native-install.json"), append(b, '\n'), 0o644)
 	case "stop":
-		return stopExistingServer(dataDir)
+		_ = stopExistingServer(dataDir)
+		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+			_ = stopExistingServer(filepath.Join(localAppData, "KurumiFRP", "data"))
+		}
+		return nil
 	case "finish-stop":
 		return nil
 	case "purge":
 		_ = stopExistingServer(dataDir)
 		_ = os.RemoveAll(dataDir)
+		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+			_ = stopExistingServer(filepath.Join(localAppData, "KurumiFRP", "data"))
+			_ = os.RemoveAll(filepath.Join(localAppData, "KurumiFRP"))
+		}
 		_ = os.Remove(filepath.Join(dir, "native-install.json"))
 		return nil
 	default:

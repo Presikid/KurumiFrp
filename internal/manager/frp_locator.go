@@ -8,7 +8,21 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/Presikid/KurumiFrp/internal/childprocess"
+)
+
+type cachedBinVer struct {
+	size    int64
+	modNano int64
+	version string
+}
+
+var (
+	binVerMu    sync.Mutex
+	binVerCache = make(map[string]cachedBinVer)
 )
 
 func binaryFileName(base string) string {
@@ -73,19 +87,39 @@ func findBinary(fileName string, dirs []string) (string, bool) {
 }
 
 func probeBinaryVersion(binPath string) string {
+	if st, err := os.Stat(binPath); err == nil {
+		binVerMu.Lock()
+		cached, ok := binVerCache[binPath]
+		binVerMu.Unlock()
+		if ok && cached.size == st.Size() && cached.modNano == st.ModTime().UnixNano() {
+			return cached.version
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binPath, "-v")
+	childprocess.Configure(cmd)
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "unknown"
+	ver := "unknown"
+	if err == nil {
+		v := strings.TrimSpace(string(bytes.TrimSpace(out)))
+		if idx := strings.IndexAny(v, "\r\n"); idx >= 0 {
+			v = strings.TrimSpace(v[:idx])
+		}
+		if v != "" {
+			ver = v
+		}
 	}
-	v := strings.TrimSpace(string(bytes.TrimSpace(out)))
-	if idx := strings.IndexAny(v, "\r\n"); idx >= 0 {
-		v = strings.TrimSpace(v[:idx])
+
+	if st, statErr := os.Stat(binPath); statErr == nil && ver != "unknown" {
+		binVerMu.Lock()
+		binVerCache[binPath] = cachedBinVer{
+			size:    st.Size(),
+			modNano: st.ModTime().UnixNano(),
+			version: ver,
+		}
+		binVerMu.Unlock()
 	}
-	if v == "" {
-		return "unknown"
-	}
-	return v
+	return ver
 }
