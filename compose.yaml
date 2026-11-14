@@ -1,12 +1,7 @@
 services:
   kurumifrp:
     build: .
-    image: kurumifrp:local
     network_mode: host
-    restart: "no"
-    stop_grace_period: 2m
+    restart: unless-stopped
     volumes:
-      - kurumifrp-data:/data
-
-volumes:
-  kurumifrp-data:
+      - ./data:/opt/kurumifrp/data

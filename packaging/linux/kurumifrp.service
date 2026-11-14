@@ -1,28 +1,23 @@
 [Unit]
-Description=KurumiFRP local management workbench
+Description=KurumiFrp WebUI Controller (Bundled Official frpc/frps)
 Documentation=https://github.com/Presikid/KurumiFrp
 Wants=network-online.target
 After=network-online.target
-ConditionPathExists=!/opt/kurumifrp/meta/migrating
 
 [Service]
 Type=simple
 User=kurumifrp
 Group=kurumifrp
-WorkingDirectory=/opt/kurumifrp/runtime
-ExecStart=/opt/kurumifrp/kurumifrp
-ExecStop=/opt/kurumifrp/kurumifrp --stop
+WorkingDirectory=/opt/kurumifrp
+ExecStart=/opt/kurumifrp/kurumifrp -listen 0.0.0.0:9000 -data /opt/kurumifrp/data
+ExecStop=/opt/kurumifrp/kurumifrp -stop -data /opt/kurumifrp/data
 KillMode=control-group
-TimeoutStopSec=60
-Restart=no
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=3
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=/opt/kurumifrp/runtime
-CapabilityBoundingSet=
-RestrictSUIDSGID=yes
 
 [Install]
 WantedBy=multi-user.target

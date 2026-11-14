@@ -1,4 +1,4 @@
-"""Build real Inno Setup EXE and dpkg/RPM packages. Build-time Python only."""
+"""Build native Inno Setup Windows EXE and Linux DEB/RPM packages bundling official frpc + frps."""
 import argparse
 import gzip
 import hashlib
@@ -7,12 +7,16 @@ import re
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bundled_frp  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = (ROOT / 'VERSION').read_text().strip()
+VERSION = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
 if not re.fullmatch(r'[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}', VERSION):
-    raise ValueError('invalid package version')
+    raise ValueError(f'invalid four-segment version: {VERSION}')
 OUT = ROOT / 'dist-native'
 
 
@@ -21,199 +25,228 @@ def run(args, **kwargs):
     subprocess.run(list(map(str, args)), cwd=ROOT, check=True, **kwargs)
 
 
-def build(system, arch, dest):
+def build_kurumi(system, arch, dest):
     dest.parent.mkdir(parents=True, exist_ok=True)
     mode = 'windows-installed' if system == 'windows' else 'linux-system'
     goarch = {'armhf': 'arm'}.get(arch, arch)
-    flags = '-s -w -X main.distribution=' + mode
+    flags = f'-s -w -X main.distribution={mode}'
     if system == 'windows':
         flags += ' -H=windowsgui'
-    run(['go', 'build', '-trimpath', '-ldflags=' + flags, '-o', dest, './cmd/kurumi'],
-        env=dict(os.environ, GOOS=system, GOARCH=goarch, GOARM='7', CGO_ENABLED='0', GOFLAGS=''))
+    env = dict(os.environ, GOOS=system, GOARCH=goarch, GOARM='7', CGO_ENABLED='0', GOFLAGS='')
+    run(['go', 'build', '-trimpath', f'-ldflags={flags}', '-o', dest, './cmd/kurumi'], env=env)
 
 
-def windows():
-    iscc = os.environ.get('ISCC') or shutil.which('ISCC.exe')
-    if not iscc:
-        p = Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) / 'Inno Setup 6/ISCC.exe'
-        if p.is_file():
-            iscc = str(p)
-    if not iscc:
-        raise SystemExit('Install Inno Setup 6.3+ on the build host, not end-user devices.')
-    with tempfile.TemporaryDirectory(prefix='kurumi-setup-') as temp:
-        stage = Path(temp)
-        for arch in ('amd64', 'arm64'):
-            build('windows', arch, stage / arch / 'kurumi.exe')
-        # The bundled language translation has its own attribution; include it
-        # in the existing installation guide rather than creating a license folder.
-        guide = (ROOT / 'docs/INSTALL.md').read_text(encoding='utf-8')
-        notice = (ROOT / 'packaging/windows/ChineseSimplified-LICENSE.txt').read_text(encoding='utf-8')
-        components = (ROOT / 'internal/embedded/NOTICE').read_text(encoding='utf-8')
-        frp_license = (ROOT / 'internal/embedded/LICENSE-frp').read_text(encoding='utf-8')
-        (stage / 'INSTALL.md').write_text(guide + '\n## 第三方组件声明\n\n' + components + '\n\n简体中文安装界面翻译使用以下第三方许可；这不是 KurumiFRP 的项目许可。\n\n' + notice + '\n\n## Apache 2.0 许可\n\n' + frp_license, encoding='utf-8')
-        run([iscc, '/DAppVersion=' + VERSION, '/DPayloadDir=' + str(stage),
-             '/DOutputPath=' + str(OUT), ROOT / 'packaging/windows/kurumifrp.iss'])
-
-
-def write(path, text, mode=0o644):
+def write_text(path, text, mode=0o644):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding='utf-8')
     path.chmod(mode)
 
 
-def linux_tree(stage, binary):
-    target = stage / 'opt/kurumifrp/kurumifrp'
-    target.parent.mkdir(parents=True)
-    shutil.copyfile(binary, target)
-    target.chmod(0o755)
+def windows():
+    iscc = os.environ.get('ISCC') or shutil.which('ISCC.exe')
+    if not iscc:
+        candidate = Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) / 'Inno Setup 6/ISCC.exe'
+        if candidate.is_file():
+            iscc = str(candidate)
+    if not iscc:
+        raise SystemExit('Inno Setup 6 (ISCC.exe) is required on Windows build host.')
+
+    with tempfile.TemporaryDirectory(prefix='kurumi-win-') as temp:
+        stage = Path(temp)
+        for arch in ('amd64', 'arm64'):
+            build_kurumi('windows', arch, stage / arch / 'kurumi.exe')
+            bundled_frp.prepare(f'windows_{arch}', stage / arch / 'bundled')
+
+        readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+        isl_notice = (ROOT / 'packaging/windows/ChineseSimplified-LICENSE.txt').read_text(encoding='utf-8')
+        frp_lic = (stage / 'amd64/bundled/LICENSE').read_text(encoding='utf-8')
+        combined_doc = (
+            readme
+            + '\n\n## 第三方组件许可声明\n\n'
+            + '安装包内随附的上游官方 `frpc` / `frps` 二进制来自 `fatedier/frp`（Apache License 2.0）；'
+            + '安装向导简体中文语言文件许可如下（上述许可均不授予 KurumiFrp 项目本身任何开源权利）：\n\n'
+            + isl_notice
+            + '\n\n### Apache License 2.0 (fatedier/frp)\n\n'
+            + frp_lic
+        )
+        write_text(stage / 'README.md', combined_doc)
+        run([
+            iscc,
+            f'/DAppVersion={VERSION}',
+            f'/DPayloadDir={stage}',
+            f'/DOutputPath={OUT}',
+            ROOT / 'packaging/windows/kurumifrp.iss',
+        ])
+
+
+def populate_linux_tree(stage, binary, bundled_dir):
+    app_root = stage / 'opt/kurumifrp'
+    (app_root / 'bundled').mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(binary, app_root / 'kurumifrp')
+    (app_root / 'kurumifrp').chmod(0o755)
+
+    for item in bundled_dir.iterdir():
+        dest = app_root / 'bundled' / item.name
+        shutil.copyfile(item, dest)
+        dest.chmod(0o644 if item.name in ('LICENSE', 'manifest.json') else 0o755)
+
     link = stage / 'usr/bin/kurumifrp'
     link.parent.mkdir(parents=True, exist_ok=True)
     link.symlink_to('../../opt/kurumifrp/kurumifrp')
-    write(stage / 'usr/lib/systemd/system/kurumifrp.service',
-          (ROOT / 'packaging/linux/kurumifrp.service').read_text())
-    for unit in ('kurumifrp-updater.service', 'kurumifrp-updater.path'):
-        write(stage / 'usr/lib/systemd/system' / unit, (ROOT / 'packaging/linux' / unit).read_text())
+
+    write_text(
+        stage / 'usr/lib/systemd/system/kurumifrp.service',
+        (ROOT / 'packaging/linux/kurumifrp.service').read_text(encoding='utf-8'),
+    )
+
     docs = stage / 'usr/share/doc/kurumifrp'
-    write(docs / 'README.md', (ROOT / 'docs/INSTALL.md').read_text())
-    write(docs / 'copyright', 'Upstream: https://github.com/Presikid/KurumiFrp\n'
-          'No project license grant has been specified. Packaging does not grant additional rights.\n\n'
-          + (ROOT / 'internal/embedded/NOTICE').read_text(encoding='utf-8') + '\n\n'
-          'Apache 2.0 license:\n' + (ROOT / 'internal/embedded/LICENSE-frp').read_text(encoding='utf-8'))
-    write(docs / 'changelog', 'KurumiFRP ' + VERSION + ': native installers and package-managed lifecycle.\n')
-    for src, dest in [(ROOT / 'packaging/linux/kurumifrp.1', stage / 'usr/share/man/man1/kurumifrp.1.gz'),
-                      (docs / 'changelog', docs / 'changelog.gz')]:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(gzip.compress(src.read_bytes(), mtime=0))
-        dest.chmod(0o644)
-    (docs / 'changelog').unlink()
+    write_text(docs / 'README.md', (ROOT / 'README.md').read_text(encoding='utf-8'))
+    frp_lic = (bundled_dir / 'LICENSE').read_text(encoding='utf-8')
+    write_text(
+        docs / 'copyright',
+        'Upstream: https://github.com/Presikid/KurumiFrp\n'
+        'Copyright (c) Presikid. All Rights Reserved. No open-source license grant is provided for KurumiFrp.\n\n'
+        'Bundled official fatedier/frp binaries (frpc, frps) are distributed under Apache License 2.0:\n\n'
+        + frp_lic,
+    )
+    changelog_bytes = f'KurumiFrp ({VERSION}) native Linux package with bundled official frpc/frps.\n'.encode('utf-8')
+    (docs / 'changelog.gz').write_bytes(gzip.compress(changelog_bytes, mtime=0))
+    (docs / 'changelog.gz').chmod(0o644)
+
+    man_src = (ROOT / 'packaging/linux/kurumifrp.1').read_bytes()
+    man_dst = stage / 'usr/share/man/man1/kurumifrp.1.gz'
+    man_dst.parent.mkdir(parents=True, exist_ok=True)
+    man_dst.write_bytes(gzip.compress(man_src, mtime=0))
+    man_dst.chmod(0o644)
+
     for p in stage.rglob('*'):
         if p.is_dir():
             p.chmod(0o755)
 
 
-def maintainer(action):
-    return '#!/bin/sh\n' + (ROOT / 'packaging/linux/lifecycle.sh').read_text().replace('@PACKAGE_VERSION@', VERSION) + '\n' + action + '\n'
+def maintainer_script(action):
+    body = (ROOT / 'packaging/linux/lifecycle.sh').read_text(encoding='utf-8').replace('@PACKAGE_VERSION@', VERSION)
+    return '#!/bin/sh\nset -e\n' + body + '\n' + action + '\n'
 
 
 def linux(arch, deb_only=False):
     rpm_arch = {'amd64': 'x86_64', 'arm64': 'aarch64'}.get(arch)
-    if not deb_only and rpm_arch is None:
-        raise ValueError('RPM is not supported for this architecture')
-    with tempfile.TemporaryDirectory(prefix='kurumi-native-') as temp:
+    frp_plat = {
+        'amd64': 'linux_amd64',
+        'arm64': 'linux_arm64',
+        'armhf': 'linux_arm_hf',
+        'riscv64': 'linux_riscv64',
+    }[arch]
+
+    with tempfile.TemporaryDirectory(prefix=f'kurumi-linux-{arch}-') as temp:
         work = Path(temp)
         binary = work / 'kurumifrp'
-        build('linux', arch, binary)
-        stage = work / 'debian'
-        linux_tree(stage, binary)
-        size = sum(p.stat().st_size for p in stage.rglob('*') if p.is_file()) // 1024 + 1
-        write(stage / 'DEBIAN/control', f'''Package: kurumifrp
+        bundled_dir = work / 'bundled'
+        build_kurumi('linux', arch, binary)
+        bundled_frp.prepare(frp_plat, bundled_dir)
+
+        deb_stage = work / 'debian'
+        populate_linux_tree(deb_stage, binary, bundled_dir)
+        installed_kb = sum(p.stat().st_size for p in deb_stage.rglob('*') if p.is_file()) // 1024 + 1
+
+        write_text(deb_stage / 'DEBIAN/control', f'''Package: kurumifrp
 Version: {VERSION}
 Section: net
 Priority: optional
 Architecture: {arch}
 Maintainer: Presikid <67297065+Presikid@users.noreply.github.com>
-Installed-Size: {size}
-Depends: ca-certificates, passwd, procps, util-linux, findutils, mawk | gawk, init-system-helpers (>= 1.54)
+Installed-Size: {installed_kb}
+Depends: ca-certificates, passwd, procps
 Recommends: systemd
 Homepage: https://github.com/Presikid/KurumiFrp
-Description: Local frpc and frps management workbench
- Embedded WebUI and frp runtime, with configuration history. Runs as a
- dedicated unprivileged systemd service.
- Management listens only on loopback; no firewall rules are changed.
+Description: Tokisaki Kurumi themed WebUI manager with bundled official frpc and frps
+ Self-contained FRP server and client WebUI controller bundling official frpc/frps.
 ''')
         scripts = {
-            'preinst': 'case "${1:-}" in install|upgrade) pre_upgrade;; esac',
-            'postinst': 'case "${1:-}" in configure) setup_state; start_workbench;; esac',
-            'prerm': 'case "${1:-}" in remove) lock_updater_for_purge; stop_workbench;; upgrade|deconfigure) stop_workbench;; esac',
-            'postrm': 'case "${1:-}" in remove) remove_unit_state;; purge) remove_unit_state; purge_state;; esac',
+            'postinst': 'case "${1:-}" in configure) setup_service;; esac',
+            'prerm': 'case "${1:-}" in remove|upgrade|deconfigure) stop_service;; esac',
+            'postrm': 'case "${1:-}" in remove) cleanup_unit;; purge) cleanup_unit; purge_all;; esac',
         }
-        for name, action in scripts.items():
-            write(stage / 'DEBIAN' / name, maintainer(action), 0o755)
-        md5s = ''.join(hashlib.md5(p.read_bytes()).hexdigest() + '  ' + p.relative_to(stage).as_posix() + '\n'
-                       for top in ('usr', 'opt') for p in sorted((stage / top).rglob('*')) if p.is_file() and not p.is_symlink())
-        write(stage / 'DEBIAN/md5sums', md5s)
-        run(['dpkg-deb', '--root-owner-group', '--build', stage, OUT / f'kurumifrp_{VERSION}_{arch}.deb'])
-        if deb_only:
+        for name, act in scripts.items():
+            write_text(deb_stage / 'DEBIAN' / name, maintainer_script(act), 0o755)
+
+        md5s = ''.join(
+            hashlib.md5(p.read_bytes()).hexdigest() + '  ' + p.relative_to(deb_stage).as_posix() + '\n'
+            for top in ('usr', 'opt')
+            for p in sorted((deb_stage / top).rglob('*'))
+            if p.is_file() and not p.is_symlink()
+        )
+        write_text(deb_stage / 'DEBIAN/md5sums', md5s)
+        run(['dpkg-deb', '--root-owner-group', '--build', deb_stage, OUT / f'kurumifrp_{VERSION}_{arch}.deb'])
+
+        if deb_only or rpm_arch is None:
             return
-        top = work / 'rpm'
-        for d in ('BUILD', 'BUILDROOT', 'RPMS', 'SOURCES', 'SPECS', 'SRPMS'):
-            (top / d).mkdir(parents=True)
-        payload = top / 'SOURCES/payload'
-        linux_tree(payload, binary)
-        common = (ROOT / 'packaging/linux/lifecycle.sh').read_text().replace('@PACKAGE_VERSION@', VERSION).replace('%', '%%')
+
+        rpm_top = work / 'rpm'
+        for sub in ('BUILD', 'BUILDROOT', 'RPMS', 'SOURCES', 'SPECS', 'SRPMS'):
+            (rpm_top / sub).mkdir(parents=True)
+        payload = rpm_top / 'SOURCES/payload'
+        populate_linux_tree(payload, binary, bundled_dir)
+        common = (ROOT / 'packaging/linux/lifecycle.sh').read_text(encoding='utf-8').replace('@PACKAGE_VERSION@', VERSION).replace('%', '%%')
+
         spec = f'''Name: kurumifrp
 Version: {VERSION}
 Release: 1
-Summary: Local frpc and frps management workbench
-License: LicenseRef-KurumiFRP-Unspecified
+Summary: Tokisaki Kurumi themed WebUI manager with bundled official frpc and frps
+License: LicenseRef-KurumiFRP-Proprietary
 URL: https://github.com/Presikid/KurumiFrp
 ExclusiveArch: x86_64 aarch64
 AutoReqProv: no
-Requires: ca-certificates, systemd, shadow-utils, procps-ng, coreutils, util-linux, findutils, gawk
-Requires(pre): shadow-utils, procps-ng, coreutils, util-linux, findutils, gawk
-Requires(preun): systemd, coreutils, util-linux
-Requires(postun): shadow-utils, procps-ng, coreutils, util-linux, gawk
+Requires: ca-certificates, systemd, shadow-utils, procps-ng
 %global debug_package %{{nil}}
 %global __os_install_post %{{nil}}
 %description
-Native system package with embedded WebUI and frp runtime and a
-least-privilege systemd service. Management is loopback-only.
+Self-contained FRP server and client WebUI controller bundling official frpc and frps.
 %install
 mkdir -p %{{buildroot}}
 cp -a %{{_sourcedir}}/payload/. %{{buildroot}}/
-%pre
-{common}
-pre_upgrade
 %posttrans
 {common}
-setup_state
-start_workbench
+setup_service
 %preun
 {common}
-if [ "$1" = 0 ]; then lock_updater_for_purge; fi
-stop_workbench
+if [ "$1" = 0 ]; then stop_service; fi
 %postun
 {common}
-if [ "$1" = 0 ]; then remove_unit_state; purge_state; elif systemd_active; then systemctl daemon-reload; fi
+if [ "$1" = 0 ]; then cleanup_unit; purge_all; fi
 %files
 /usr/bin/kurumifrp
 %dir /opt/kurumifrp
 /opt/kurumifrp/kurumifrp
+%dir /opt/kurumifrp/bundled
+/opt/kurumifrp/bundled/*
 /usr/lib/systemd/system/kurumifrp.service
-/usr/lib/systemd/system/kurumifrp-updater.service
-/usr/lib/systemd/system/kurumifrp-updater.path
 %dir /usr/share/doc/kurumifrp
 %doc /usr/share/doc/kurumifrp/*
 /usr/share/man/man1/kurumifrp.1.gz
 '''
-        path = top / 'SPECS/kurumifrp.spec'
-        write(path, spec)
-        run(['rpmbuild', '-bb', '--define', '_topdir ' + str(top), '--target', rpm_arch, path])
-        # --target determines the binary RPM architecture. A fixed BuildArch
-        # re-enters spec parsing and rejects cross-targets on RPM 4.18 hosts.
-        packages = list((top / 'RPMS').rglob('*.rpm'))
-        if len(packages) != 1:
-            raise SystemExit('Expected exactly one target RPM.')
-        for p in packages:
-            actual = subprocess.check_output(
-                ['rpm', '-qp', '--queryformat', '%{ARCH}', str(p)], text=True).strip()
-            if actual != rpm_arch:
-                raise SystemExit('RPM architecture mismatch: ' + actual)
-            shutil.copyfile(p, OUT / p.name)
+        spec_path = rpm_top / 'SPECS/kurumifrp.spec'
+        write_text(spec_path, spec)
+        run(['rpmbuild', '-bb', '--define', f'_topdir {rpm_top}', '--target', rpm_arch, spec_path])
+        rpms = list((rpm_top / 'RPMS').rglob('*.rpm'))
+        if len(rpms) != 1:
+            raise SystemExit(f'Expected 1 RPM, found {len(rpms)}')
+        shutil.copyfile(rpms[0], OUT / rpms[0].name)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('target', choices=['windows', 'linux'])
     parser.add_argument('--arch', choices=['amd64', 'arm64', 'armhf', 'riscv64', 'all'], default='all')
-    parser.add_argument('--deb-only', action='store_true', help='local DEB build without rpmbuild')
+    parser.add_argument('--deb-only', action='store_true')
     args = parser.parse_args()
     OUT.mkdir(exist_ok=True)
     if args.target == 'windows':
         windows()
     else:
-        for arch in (('amd64', 'arm64', 'armhf', 'riscv64') if args.arch == 'all' else (args.arch,)):
-            linux(arch, args.deb_only or arch in ('armhf', 'riscv64'))
+        arches = ('amd64', 'arm64', 'armhf', 'riscv64') if args.arch == 'all' else (args.arch,)
+        for a in arches:
+            linux(a, args.deb_only or a in ('armhf', 'riscv64'))
 
 
 if __name__ == '__main__':

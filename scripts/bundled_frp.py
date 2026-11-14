@@ -1,6 +1,6 @@
-"""Prepare the verified official frp pair for a native or portable package."""
-import hashlib
+"""Download and SHA-256 verify official fatedier/frp (frpc + frps) binaries for packaging."""
 from functools import lru_cache
+import hashlib
 import io
 import json
 import os
@@ -11,14 +11,13 @@ import urllib.parse
 import urllib.request
 import zipfile
 
-ROOT = Path(__file__).resolve().parents[1]
-
 
 class OfficialRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         u = urllib.parse.urlsplit(newurl)
-        if u.scheme != 'https' or u.hostname not in {'github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'} or u.username or u.password or u.port not in (None, 443):
-            raise ValueError('untrusted official download redirect')
+        allowed = {'github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'}
+        if u.scheme != 'https' or u.hostname not in allowed or u.username or u.password or u.port not in (None, 443):
+            raise ValueError(f'untrusted redirect target: {newurl}')
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -26,72 +25,96 @@ class OfficialRedirect(urllib.request.HTTPRedirectHandler):
 def release_metadata():
     supplied = os.environ.get('KURUMI_FRP_RELEASE')
     if supplied is None:
-        req = urllib.request.Request('https://api.github.com/repos/fatedier/frp/releases/latest', headers={'User-Agent':'KurumiFRP-package', 'Accept':'application/vnd.github+json'})
+        headers = {'User-Agent': 'KurumiFRP-Packager', 'Accept': 'application/vnd.github+json'}
+        gh_tok = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
+        if gh_tok:
+            headers['Authorization'] = f'Bearer {gh_tok}'
+        req = urllib.request.Request('https://api.github.com/repos/fatedier/frp/releases/latest', headers=headers)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), OfficialRedirect())
-        with opener.open(req, timeout=60) as response:
-            raw = response.read((4 << 20) + 1)
+        with opener.open(req, timeout=60) as resp:
+            raw = resp.read((4 << 20) + 1)
     else:
         raw = supplied.encode('utf-8')
-    if len(raw) > 4 << 20: raise ValueError('official release metadata too large')
-    release = json.loads(raw)
-    if release.get('draft') is not False or release.get('prerelease') is not False:
-        raise ValueError('official latest release is not a confirmed stable release')
-    return release
+    if len(raw) > 4 << 20:
+        raise ValueError('official frp release metadata exceeds 4 MiB')
+    rel = json.loads(raw)
+    if rel.get('draft') is not False or rel.get('prerelease') is not False:
+        raise ValueError('latest fatedier/frp release is not a stable release')
+    return rel
+
+
+def resolve_asset(release, tag, platform):
+    candidates = [platform]
+    if platform == 'linux_arm_hf':
+        candidates.append('linux_arm')
+    for plat in candidates:
+        suffix = '.zip' if plat.startswith('windows_') else '.tar.gz'
+        prefix = f'frp_{tag[1:]}_{plat}'
+        name = prefix + suffix
+        matches = [a for a in release.get('assets', []) if a.get('name') == name]
+        if len(matches) == 1:
+            return plat, prefix, suffix, matches[0]
+    raise ValueError(f'official frp asset not found for platform {platform}')
 
 
 def prepare(platform, target):
     release = release_metadata()
     tag = release['tag_name']
     if not re.fullmatch(r'v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}', tag):
-        raise ValueError('invalid official frp version')
-    suffix = '.zip' if platform.startswith('windows_') else '.tar.gz'
-    prefix = f'frp_{tag[1:]}_{platform}'
-    name = prefix + suffix
-    entries = [asset for asset in release['assets'] if asset['name'] == name]
-    if len(entries) != 1:
-        raise ValueError('official platform asset not unique')
-    asset = entries[0]
-    url = f'https://github.com/fatedier/frp/releases/download/{tag}/{name}'
-    size, digest = asset['size'], asset['digest']
-    if asset['browser_download_url'] != url or not isinstance(size, int) or not 0 < size <= 160 << 20 or not re.fullmatch(r'sha256:[a-f0-9]{64}', digest):
+        raise ValueError(f'invalid official frp tag: {tag}')
+
+    resolved_plat, prefix, suffix, asset = resolve_asset(release, tag, platform)
+    url = f"https://github.com/fatedier/frp/releases/download/{tag}/{asset['name']}"
+    size = asset.get('size')
+    digest = asset.get('digest')
+    if asset.get('browser_download_url') != url or not isinstance(size, int) or not (0 < size <= (160 << 20)):
         raise ValueError('invalid official asset metadata')
+
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), OfficialRedirect())
-    req = urllib.request.Request(url, headers={'User-Agent': 'KurumiFRP-package'})
-    with opener.open(req, timeout=120) as response:
-        body = response.read(size + 1)
-    if len(body) != size or 'sha256:' + hashlib.sha256(body).hexdigest() != digest:
-        raise ValueError('official frp archive size or digest mismatch')
+    req = urllib.request.Request(url, headers={'User-Agent': 'KurumiFRP-Packager'})
+    with opener.open(req, timeout=120) as resp:
+        body = resp.read(size + 1)
+
+    if len(body) != size:
+        raise ValueError('official frp archive size mismatch')
+    actual_sha256 = hashlib.sha256(body).hexdigest()
+    if digest:
+        if not re.fullmatch(r'sha256:[a-f0-9]{64}', digest) or digest != f'sha256:{actual_sha256}':
+            raise ValueError('official frp archive SHA-256 digest mismatch')
+
     names = ['frpc.exe', 'frps.exe', 'LICENSE'] if suffix == '.zip' else ['frpc', 'frps', 'LICENSE']
-    data = {}
+    extracted = {}
     if suffix == '.zip':
-        with zipfile.ZipFile(io.BytesIO(body)) as z:
-            if len(z.infolist()) > 1024 or sum(i.file_size for i in z.infolist()) > 300 << 20:
-                raise ValueError('frp archive exceeds limits')
+        with zipfile.ZipFile(io.BytesIO(body)) as zf:
             for item in names:
-                matches = [x for x in z.infolist() if x.filename == prefix + '/' + item]
-                if len(matches) != 1 or matches[0].is_dir() or matches[0].file_size > 120 << 20:
-                    raise ValueError('invalid official archive member')
-                data[item] = z.read(matches[0])
+                matches = [x for x in zf.infolist() if x.filename == f'{prefix}/{item}']
+                if len(matches) != 1 or matches[0].is_dir():
+                    raise ValueError(f'missing {item} in official zip archive')
+                extracted[item] = zf.read(matches[0])
     else:
-        with tarfile.open(fileobj=io.BytesIO(body), mode='r:gz') as tar:
-            count = total = 0
-            for entry in tar:
-                count += 1; total += entry.size
-                if count > 1024 or entry.size < 0 or entry.size > 120 << 20 or total > 300 << 20:
-                    raise ValueError('frp archive exceeds limits')
+        with tarfile.open(fileobj=io.BytesIO(body), mode='r:gz') as tf:
+            for entry in tf:
                 for item in names:
-                    if entry.name == prefix + '/' + item:
-                        if item in data or not entry.isfile(): raise ValueError('invalid official archive member')
-                        data[item] = tar.extractfile(entry).read()
-    if set(data) != set(names) or not all(data.values()):
-        raise ValueError('official archive is missing binaries or license')
-    target = Path(target); target.mkdir(parents=True, exist_ok=True)
-    for item, content in data.items():
-        (target / item).write_bytes(content)
-        (target / item).chmod(0o644 if item == 'LICENSE' else 0o755)
-    manifest = {'tag':tag, 'platform':platform, 'archiveSHA256':digest[7:],
-                'files':{item:hashlib.sha256(content).hexdigest() for item, content in data.items()}}
-    raw = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
-    (target / 'manifest.json').write_bytes(raw)
-    (target / 'manifest.json').chmod(0o644)
-    return hashlib.sha256(raw).hexdigest()
+                    if entry.name == f'{prefix}/{item}' and entry.isfile():
+                        extracted[item] = tf.extractfile(entry).read()
+
+    if set(extracted) != set(names) or not all(extracted.values()):
+        raise ValueError('official frp archive missing required binaries or LICENSE')
+
+    target_dir = Path(target)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for item, content in extracted.items():
+        out_file = target_dir / item
+        out_file.write_bytes(content)
+        out_file.chmod(0o644 if item == 'LICENSE' else 0o755)
+
+    manifest = {
+        'tag': tag,
+        'platform': resolved_plat,
+        'archiveSHA256': actual_sha256,
+        'files': {k: hashlib.sha256(v).hexdigest() for k, v in extracted.items()},
+    }
+    raw_manifest = json.dumps(manifest, indent=2, sort_keys=True).encode('utf-8') + b'\n'
+    (target_dir / 'manifest.json').write_bytes(raw_manifest)
+    (target_dir / 'manifest.json').chmod(0o644)
+    return tag
