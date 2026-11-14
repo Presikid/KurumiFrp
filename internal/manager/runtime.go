@@ -1,843 +1,932 @@
 package manager
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
-	"strconv"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/Presikid/KurumiFrp/internal/childprocess"
 )
 
-// RuntimeStatus reports instance liveness, not proxy registration or service
-// health. Generation counts admitted runs of an ID, including startup failures;
-// RunID also distinguishes generations across App lifetimes.
-type RuntimeStatus struct {
-	State      string `json:"state"`
-	PID        int    `json:"pid"`
-	Started    string `json:"started"`
-	RunID      string `json:"runId,omitempty"`
-	Generation uint64 `json:"generation,omitempty"`
-	Exit       string `json:"exit"`
-	Applied    string `json:"applied"`
-	Pending    bool   `json:"pending"`
-}
-type process struct {
-	mu                  sync.Mutex
-	instance            RuntimeInstance
-	done                chan struct{}
-	status              RuntimeStatus
-	logs                *logBuffer
-	appliedConfig       string
-	appliedDigest       string
-	appliedSecretDigest string
+const logRingCapacity = 500
 
-	// Set before publication for an in-process client and kept for this run.
-	registrationReader      ProxyRegistrationReader
-	readiness               RuntimeReadiness
-	monitorReason           string
-	stopRequested           bool
-	upEmitted               bool
-	downEmitted             bool
-	failedBeforeReady       bool
-	appliedTunnels          map[string]Tunnel
-	appliedTunnelSignatures map[string][32]byte
-}
-
-// An instance remains owned until its Wait and final bookkeeping finish,
-// including while it is starting or stopping.
-func (p *process) active() bool {
-	if p == nil {
-		return false
-	}
-	select {
-	case <-p.done:
-		return false
-	default:
-		return true
-	}
-}
-type logBuffer struct {
+// ringLogBuffer stores masked log lines in a fixed-size ring buffer and broadcasts live lines to SSE subscribers.
+type ringLogBuffer struct {
 	mu       sync.Mutex
-	pending  []byte
-	dropping bool
 	lines    []string
-	secrets  []string // immutable after the first Write; retained for literal fixtures
-	redactor *logRedactor
-	sequence uint64
-	changed  chan struct{}
-	history  func(string)
+	head     int
+	count    int
+	replacer *strings.Replacer
+	subs     map[chan string]struct{}
 }
 
-var ansi = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
-
-type logRedactor struct {
-	values []string
-	short  []string
-}
-
-func newLogRedactor(secrets []string) *logRedactor {
-	values := make(map[string]struct{})
-	short := make(map[string]struct{})
-	add := func(s string) {
-		if s != "" {
-			values[s] = struct{}{}
-		}
-		// Logs are stripped of terminal formatting before masking. Also include
-		// this form when the credential itself contains an ANSI sequence.
-		if clean := ansi.ReplaceAllString(s, ""); clean != "" {
-			values[clean] = struct{}{}
+func newRingLogBuffer(secrets []string) *ringLogBuffer {
+	var pairs []string
+	seen := make(map[string]bool)
+	// Sort longer secrets first so overlapping substrings never leak partial secrets.
+	sorted := append([]string(nil), secrets...)
+	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
+	for _, s := range sorted {
+		s = strings.TrimSpace(s)
+		if len(s) >= 3 && !seen[s] {
+			seen[s] = true
+			pairs = append(pairs, s, "********")
 		}
 	}
-	addSecret := func(secret string) {
-		if secret == "" {
-			return // an empty replacement pattern would match between every byte
-		}
-		addVariant := func(value string) {
-			add(value)
-			if len(secret) < 8 && value != "" {
-				short[value] = struct{}{}
-			}
-		}
-		addVariant(secret)
-		// A raw multiline secret is split by the line-oriented log buffer.
-		if strings.Contains(secret, "\n") {
-			for _, part := range strings.Split(secret, "\n") {
-				addVariant(part)
-				addVariant(strings.TrimSuffix(part, "\r"))
-			}
-		}
-		jsonText, _ := json.Marshal(secret)
-		addVariant(templateCredential(secret))
-		addVariant("\"" + templateCredential(secret) + "\"")
-		for _, quoted := range []string{quote(secret), string(jsonText), strconv.Quote(secret)} {
-			addVariant(quoted)
-			addVariant(quoted[1 : len(quoted)-1])
-		}
-	}
-	for _, secret := range secrets {
-		addSecret(secret)
-		// HTTP transports can strip surrounding spaces or tabs before a value
-		// appears in an error. Treat the remaining nonempty value as sensitive.
-		trimmed := strings.Trim(secret, " \t")
-		if trimmed != "" && trimmed != secret {
-			addSecret(trimmed)
-		}
-	}
-	ordered := make([]string, 0, len(values))
-	for value := range values {
-		ordered = append(ordered, value)
-	}
-	shortValues := make([]string, 0, len(short))
-	for value := range short {
-		shortValues = append(shortValues, value)
-	}
-	return &logRedactor{values: ordered, short: shortValues}
-}
-
-// Replace masks the union of all matching spans. Matching against the original
-// line matters: replacing one credential first could hide the start of another
-// overlapping credential and leave the latter's tail visible.
-func (r *logRedactor) Replace(s string) string {
-	// A short value can match ordinary text constantly. Do not silently replace
-	// individual characters and make the result look like the original line.
-	for _, value := range r.short {
-		if strings.Contains(s, value) {
-			return "[内容已隐藏：可能包含短密钥]"
-		}
-	}
-	var boundaries []int
-	const maxMatches = 32768
-	matches := 0
-	for _, value := range r.values {
-		for start := 0; start < len(s); {
-			i := strings.Index(s[start:], value)
-			if i < 0 {
-				break
-			}
-			i += start
-			matches++
-			if matches > maxMatches {
-				// Do not expose any fragment when excessive overlaps exhaust the budget.
-				return "[REDACTED]"
-			}
-			if boundaries == nil {
-				boundaries = make([]int, len(s)+1)
-			}
-			boundaries[i]++
-			boundaries[i+len(value)]--
-			start = i + 1 // include overlapping occurrences of the same value
-		}
-	}
-	if boundaries == nil {
-		return s
-	}
-	var out strings.Builder
-	active := 0
-	masked := false
-	for i := 0; i < len(s); i++ {
-		active += boundaries[i]
-		if active > 0 {
-			if !masked {
-				out.WriteString("[REDACTED]")
-				masked = true
-			}
-		} else {
-			masked = false
-			out.WriteByte(s[i])
-		}
-	}
-	return out.String()
-}
-
-func redact(s string, secrets []string) string {
-	return newLogRedactor(secrets).Replace(ansi.ReplaceAllString(s, ""))
-}
-func newLogBuffer(secrets []string) *logBuffer {
-	return &logBuffer{secrets: append([]string(nil), secrets...), redactor: newLogRedactor(secrets)}
-}
-func (l *logBuffer) Write(b []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.redactor == nil {
-		l.redactor = newLogRedactor(l.secrets)
-	}
-
-	written := len(b)
-	added := false
-	for len(b) > 0 {
-		newline := bytes.IndexByte(b, '\n')
-		chunk := b
-		if newline >= 0 {
-			chunk = b[:newline]
-		}
-		if !l.dropping && len(chunk) > 0 {
-			if len(chunk) > 16384-len(l.pending) {
-				l.pending = nil
-				l.dropping = true
-			} else {
-				l.pending = append(l.pending, chunk...)
-			}
-		}
-		if newline < 0 {
-			break
-		}
-
-		line := "[oversized log line omitted]"
-		if !l.dropping {
-			line = l.redactor.Replace(ansi.ReplaceAllString(string(l.pending), ""))
-		}
-		l.lines = append(l.lines, line)
-		if l.history != nil {
-			l.history(line)
-		}
-		l.sequence++
-		added = true
-		if len(l.lines) > 200 {
-			l.lines[0] = ""
-			l.lines = l.lines[len(l.lines)-200:]
-		}
-		l.pending = l.pending[:0]
-		l.dropping = false
-		b = b[newline+1:]
-	}
-	// Broadcast once per write without waiting for any network reader.
-	if added && l.changed != nil {
-		close(l.changed)
-		l.changed = nil
-	}
-	return written, nil
-}
-func (l *logBuffer) read() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return append([]string{}, l.lines...)
-}
-
-// updates captures redacted lines and a wakeup atomically. Readers that fall
-// behind the retained window must replace their snapshot instead of appending.
-func (l *logBuffer) updates(cursor uint64, initial bool) ([]string, uint64, bool, <-chan struct{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.changed == nil {
-		l.changed = make(chan struct{})
-	}
-	oldest := l.sequence - uint64(len(l.lines))
-	reset := initial || cursor < oldest || cursor > l.sequence
-	start := 0
-	if !reset {
-		start = int(cursor - oldest)
-	}
-	return append([]string{}, l.lines[start:]...), l.sequence, reset, l.changed
-}
-func (p *process) view() RuntimeStatus {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.viewLocked()
-}
-
-func (p *process) runningAs(runID string) bool {
-	if p == nil {
-		return false
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.runningAsLocked(runID)
-}
-
-// The caller holds p.mu, including while a guarded stop is claimed.
-func (p *process) runningAsLocked(runID string) bool {
-	return runID != "" && p.active() && !p.stopRequested && p.status.RunID == runID && p.viewLocked().State == "running"
-}
-
-// viewLocked uses the same readiness observation for every state consumer.
-// The caller must hold p.mu.
-func (p *process) viewLocked() RuntimeStatus {
-	status := p.status
-	// The observer goroutine may not have run yet after the engine has exited.
-	if status.State == "running" && p.readiness != nil && !p.readiness.ReadyNow() {
-		status.State = "stopping"
-	}
-	// An exited generation is still owned until Wait's final bookkeeping ends.
-	// In particular, do not issue a remote start preview before p.done closes.
-	if status.State == "exited" && p.active() {
-		status.State = "stopping"
-	}
-	if observer, ok := p.readiness.(runtimeCleanupObserver); ok && p.active() && observer.CleanupUncertain() {
-		status.State = "stopping"
-		status.Exit = "内嵌核心异常，资源清理状态未知；需退出工作台并核对残留锁文件"
-	}
-	return status
-}
-
-func (a *App) resolveRuntime(kind string) (string, error) {
-	return a.runtime.Resolve(kind)
-}
-
-func runtimeConfig(i Instance, r Rendered) RuntimeConfig {
-	r.Env = append([]string(nil), r.Env...)
-	r.Secrets = append([]string(nil), r.Secrets...)
-	return RuntimeConfig{InstanceID: i.ID, Kind: i.Kind, Rendered: r, ServerAccessMode: i.ServerAccessMode, ServerAccessList: i.ServerAccessList, ManagedAccountLogin: i.ManagedAccountLogin}
-}
-
-// runtimeConfigLocked checks the persisted instance before creating the
-// snapshot used for verification and startup. The caller holds a.mu.
-func (a *App) runtimeConfigLocked(i Instance, r Rendered, _ string) (RuntimeConfig, error) {
-	cfg := runtimeConfig(i, r)
-	if a.store == nil {
-		return RuntimeConfig{}, fmt.Errorf("工作台配置不可用")
-	}
-	current, ok := a.store.DB.State.Instance(i.ID)
-	if !ok || current.Kind != i.Kind || current.ManagedAccountLogin != i.ManagedAccountLogin {
-		return RuntimeConfig{}, fmt.Errorf("实例或账户认证配置已变化，请刷新后重试")
-	}
-	if err := a.checkManagedAccountBackend(i, cfg); err != nil {
-		return RuntimeConfig{}, err
-	}
-	return cfg, nil
-}
-
-func cloneRuntimeConfig(cfg RuntimeConfig) RuntimeConfig {
-	cfg.Rendered.Env = append([]string(nil), cfg.Rendered.Env...)
-	cfg.Rendered.Secrets = append([]string(nil), cfg.Rendered.Secrets...)
-	return cfg
-}
-
-func (a *App) verify(i Instance, r Rendered) (string, error) {
-	target, e := a.resolveRuntime(i.Kind)
-	if e != nil {
-		return "", e
-	}
-	return a.verifyRuntime(context.Background(), target, i, r)
-}
-func (a *App) verifyRuntime(parent context.Context, target string, i Instance, r Rendered) (string, error) {
-	// Legacy callers do not carry a bound provider from verification to start.
-	// Refuse managed instances, including a stale caller-supplied copy that
-	// predates enabling managed login. Never wait on an unknown caller's lock.
-	if !a.mu.TryLock() {
-		return "", fmt.Errorf("实例状态正忙，请使用运行快照重新校验")
-	}
-	if a.closing || a.store == nil {
-		a.mu.Unlock()
-		return "", fmt.Errorf("工作台配置不可用")
-	}
-	current, ok := a.store.DB.State.Instance(i.ID)
-	if !ok || current.Kind != i.Kind || current.ManagedAccountLogin != i.ManagedAccountLogin {
-		a.mu.Unlock()
-		return "", fmt.Errorf("实例或账户认证配置已变化，请重新校验")
-	}
-	if current.ManagedAccountLogin {
-		a.mu.Unlock()
-		return "", fmt.Errorf("账户认证服务端须使用绑定的运行快照校验")
-	}
-	revision := a.store.DB.Revision
-	a.mu.Unlock()
-	output, err := a.verifyRuntimeConfig(parent, target, i, runtimeConfig(i, r))
-	if err != nil {
-		return output, err
-	}
-	if !a.mu.TryLock() {
-		return "", fmt.Errorf("实例状态正忙，请重新校验")
-	}
-	defer a.mu.Unlock()
-	if a.closing || a.store == nil || a.store.DB.Revision != revision {
-		return "", fmt.Errorf("校验期间配置已变化，请重新校验")
-	}
-	current, ok = a.store.DB.State.Instance(i.ID)
-	if !ok || current.Kind != i.Kind || current.ManagedAccountLogin {
-		return "", fmt.Errorf("校验期间账户认证配置已变化，请重新校验")
-	}
-	return output, nil
-}
-
-func (a *App) verifyRuntimeConfig(parent context.Context, target string, i Instance, config RuntimeConfig) (string, error) {
-	if err := a.checkManagedAccountBackend(i, config); err != nil {
-		return "", err
-	}
-	if err := a.checkControlAccessBackend(i); err != nil {
-		return "", err
-	}
-	if err := a.checkSystemCATLSBackend(i); err != nil {
-		return "", err
-	}
-	if err := a.checkTLSFileBackend(i); err != nil {
-		return "", err
-	}
-	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
-	defer cancel()
-	output, err := a.runtime.Verify(ctx, target, cloneRuntimeConfig(config))
-	output = redact(output, config.Rendered.Secrets)
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return output, fmt.Errorf("frp 配置检查超时")
-	}
-	if ctx.Err() != nil {
-		return output, fmt.Errorf("frp 配置检查已取消")
-	}
-	if err != nil {
-		return output, errors.New(redact(err.Error(), config.Rendered.Secrets))
-	}
-	return output, nil
-}
-// start is retained for internal callers which already hold a.mu.
-func (a *App) start(i Instance, r Rendered) error {
-	if a.closing {
-		return fmt.Errorf("工作台正在关闭")
-	}
-	if p := a.procs[i.ID]; p.active() {
-		return fmt.Errorf("实例正在运行，请明确选择重启应用")
-	}
-	target, e := a.resolveRuntime(i.Kind)
-	if e != nil {
-		return e
-	}
-	return a.startPrepared(i, r, target)
-}
-
-// a.mu protects final publication from concurrent shutdown or draft changes.
-func (a *App) startPrepared(i Instance, r Rendered, target string) error {
-	return a.startPreparedWithSource(i, r, target, false)
-}
-
-// startPreparedWithSource is called with a.mu held. Automatic restoration
-// records later asynchronous startup failures against this generation.
-func (a *App) startPreparedWithSource(i Instance, r Rendered, target string, autoStart bool) error {
-	return a.startPreparedConfigWithSource(i, runtimeConfig(i, r), target, autoStart)
-}
-
-func (a *App) startPreparedConfigWithSource(i Instance, cfg RuntimeConfig, target string, autoStart bool) error {
-	if a.closing {
-		return fmt.Errorf("工作台正在关闭")
-	}
-	if a.store == nil {
-		return fmt.Errorf("工作台配置不可用")
-	}
-	current, ok := a.store.DB.State.Instance(i.ID)
-	if !ok || current.Kind != i.Kind || current.ManagedAccountLogin != i.ManagedAccountLogin {
-		return fmt.Errorf("实例或账户认证配置已变化，请重新校验")
-	}
-	if err := a.checkManagedAccountBackend(i, cfg); err != nil {
-		return err
-	}
-	if err := a.checkTrafficBudgetStartLocked(i); err != nil {
-		return err
-	}
-	if err := a.checkControlAccessBackend(i); err != nil {
-		return err
-	}
-	if err := a.checkSystemCATLSBackend(i); err != nil {
-		return err
-	}
-	if err := a.checkTLSFileBackend(i); err != nil {
-		return err
-	}
-	if p := a.procs[i.ID]; p.active() {
-		return fmt.Errorf("实例正在运行，请明确选择重启应用")
-	}
-	r := cfg.Rendered
-	config := cloneRuntimeConfig(cfg)
-	config.RunID = randomHex(8)
-	p := &process{done: make(chan struct{}), logs: newLogBuffer(r.Secrets), appliedConfig: r.Text, appliedDigest: r.Digest, appliedSecretDigest: r.SecretDigest, appliedTunnels: map[string]Tunnel{}, appliedTunnelSignatures: map[string][32]byte{}}
-	if binding := nodeInstanceBinding(a.store.DB.LocalTrafficIDs[i.ID]); a.logHistory != nil && binding != "" {
-		history, instanceID, runID := a.logHistory, i.ID, config.RunID
-		p.logs.history = func(line string) { history.enqueue(instanceID, binding, runID, line) }
-	}
-	for _, tunnel := range a.store.DB.State.clone().Tunnels {
-		if tunnel.InstanceID == i.ID && tunnel.Enabled {
-			p.appliedTunnels[tunnel.ID] = tunnel
-			if signature, err := a.store.tunnelSignature(tunnel); err == nil {
-				p.appliedTunnelSignatures[tunnel.ID] = signature
-			}
-		}
-	}
-	instance, err := a.runtime.Start(target, config, p.logs)
-	if err != nil {
-		return fmt.Errorf("无法启动 frp：%s", redact(err.Error(), r.Secrets))
-	}
-	if instance == nil {
-		return fmt.Errorf("无法启动 frp：运行后端未返回实例")
-	}
-	p.instance = instance
-	if reader, ok := instance.(ProxyRegistrationReader); ok && i.Kind == "frpc" {
-		p.registrationReader = reader
-	} else if i.Kind == "frpc" {
-		p.monitorReason = "当前运行后端尚未提供代理注册状态"
-	}
-	pid := 0
-	if info, ok := instance.(RuntimePID); ok {
-		pid = info.PID()
-	}
-	if a.generations == nil {
-		a.generations = make(map[string]uint64)
-	}
-	a.generations[i.ID]++
-	state, startedAt, applied := "running", now(), r.Digest
-	readiness, hasReadiness := instance.(RuntimeReadiness)
-	if hasReadiness {
-		state, startedAt, applied = "starting", "", ""
-		p.readiness = readiness
-	}
-	p.status = RuntimeStatus{State: state, PID: pid, Started: startedAt, RunID: config.RunID, Generation: a.generations[i.ID], Applied: applied}
-	a.procs[i.ID] = p
-	delete(a.startupErrors, i.ID)
-	launchRevision := a.store.DB.Revision
-	if !hasReadiness && a.webhooks != nil {
-		a.webhooks.emitInstance("instance.up", i.ID, i.Kind)
-	}
-	if !hasReadiness {
-		p.upEmitted = true
-	}
-	if hasReadiness {
-		go a.publishRuntimeReady(i, p, readiness)
-	}
-	if source, ok := instance.(RuntimeTrafficReader); ok {
-		go a.captureRuntimeTraffic(i.ID, config.RunID, p, source)
-	}
-	if source, ok := instance.(RuntimeServerTrafficReader); ok && i.Kind == "frps" {
-		go a.captureServerDailyTraffic(i.ID, config.RunID, p, source)
-	}
-	go func() {
-		err := instance.Wait()
-		if source, ok := instance.(RuntimeTrafficReader); ok {
-			if snapshot := source.ReadTraffic(); snapshot.Available {
-				_ = a.RecordTrafficSnapshot(i.ID, config.RunID, snapshot)
-			}
-		}
-		if source, ok := instance.(RuntimeServerTrafficReader); ok && i.Kind == "frps" {
-			a.recordServerDailyTraffic(i.ID, config.RunID, p, source.ReadServerTraffic())
-		}
-		p.logs.Write([]byte("\n"))
-		p.mu.Lock()
-		wasRunning := p.upEmitted
-		// An independent startup or cleanup error remains a failure even if a
-		// stop was requested while the engine was exiting or rolling back.
-		startupFailed := hasReadiness && !p.upEmitted && (p.failedBeforeReady || !p.stopRequested || (err != nil && !errors.Is(err, context.Canceled)))
-		p.status.State = "exited"
-		p.status.PID = 0
-		if err != nil {
-			p.status.Exit = safeStatusText(err.Error(), r.Secrets)
-		} else {
-			p.status.Exit = "exit 0"
-		}
-		exitMessage := p.status.Exit
-		if a.webhooks != nil && wasRunning && !p.downEmitted {
-			a.webhooks.emitInstance("instance.down", i.ID, i.Kind)
-			p.downEmitted = true
-		} else if a.webhooks != nil && startupFailed {
-			a.webhooks.emitInstance("instance.start_failed", i.ID, i.Kind)
-		}
-		p.mu.Unlock()
-		if autoStart && startupFailed {
-			a.mu.Lock()
-			latest, exists := a.store.DB.State.Instance(i.ID)
-			if !a.closing && exists && latest.AutoStart && a.procs[i.ID] == p {
-				message := exitMessage
-				if err == nil {
-					message = "实例在启动完成前退出"
-				}
-				if a.store.DB.Revision != launchRevision {
-					message = "自动恢复期间配置已变化，请检查后手动启动"
-				}
-				if a.startupErrors == nil {
-					a.startupErrors = make(map[string]string)
-				}
-				a.startupErrors[i.ID] = message
-			}
-			a.mu.Unlock()
-		}
-		close(p.done)
-	}()
-	return nil
-}
-
-// Readiness publication races with stop and completion. Keep the generation
-// reserved until Wait returns, and never publish readiness after stop starts.
-func (a *App) publishRuntimeReady(i Instance, p *process, ready RuntimeReadiness) {
-	select {
-	case <-ready.Ready():
-	case <-ready.Done():
-	case <-p.done:
-		return
-	}
-	a.mu.Lock()
-	if a.closing || a.procs[i.ID] != p {
-		a.mu.Unlock()
-		return
-	}
-	select {
-	case <-a.quit:
-		a.mu.Unlock()
-		return
-	default:
-	}
-	p.mu.Lock()
-	if p.status.State == "starting" && !p.stopRequested && ready.ReadyNow() {
-		p.status.State = "running"
-		p.status.Started = now()
-		p.status.Applied = p.appliedDigest
-		p.upEmitted = true
-		if a.webhooks != nil {
-			a.webhooks.emitInstance("instance.up", i.ID, i.Kind)
-		}
-	}
-	p.mu.Unlock()
-	a.mu.Unlock()
-
-	select {
-	case <-ready.Done():
-	case <-p.done:
-		return
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.procs[i.ID] != p {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.status.State != "exited" {
-		if !p.upEmitted && !p.stopRequested {
-			p.failedBeforeReady = true
-		}
-		p.status.State = "stopping"
-		if p.upEmitted && !p.downEmitted && a.webhooks != nil {
-			a.webhooks.emitInstance("instance.down", i.ID, i.Kind)
-			p.downEmitted = true
-		}
+	var rep *strings.Replacer
+	if len(pairs) > 0 {
+		rep = strings.NewReplacer(pairs...)
+	}
+	return &ringLogBuffer{
+		lines:    make([]string, logRingCapacity),
+		replacer: rep,
+		subs:     make(map[chan string]struct{}),
 	}
 }
 
-func (a *App) stop(id string) error {
-	a.mu.Lock()
-	p := a.procs[id]
-	a.mu.Unlock()
-	return stopProcess(p)
-}
-func stopProcess(p *process) error {
-	return stopProcessGuarded(p, "")
+func (b *ringLogBuffer) Append(line string) {
+	if b.replacer != nil {
+		line = b.replacer.Replace(line)
+	}
+	stamped := time.Now().Format("15:04:05") + " " + line
+	b.mu.Lock()
+	b.lines[b.head] = stamped
+	b.head = (b.head + 1) % len(b.lines)
+	if b.count < len(b.lines) {
+		b.count++
+	}
+	for ch := range b.subs {
+		select {
+		case ch <- stamped:
+		default:
+		}
+	}
+	b.mu.Unlock()
 }
 
-// A nonempty run ID requires the same running generation at the point the
-// stop is claimed. Conditional stops and restarts cannot affect a replacement
-// that started after the caller observed the previous run.
-func stopProcessGuarded(p *process, runID string) error {
-	if !p.active() {
-		if runID != "" {
-			return fmt.Errorf("实例运行状态或代次已变化，未停止目标运行代次")
-		}
-		return nil
-	}
-	p.mu.Lock()
-	if runID != "" && !p.runningAsLocked(runID) {
-		p.mu.Unlock()
-		return fmt.Errorf("实例运行状态或代次已变化，未停止目标运行代次")
-	}
-	if !p.stopRequested && !p.upEmitted && p.readiness != nil {
-		// Observe failure before recording the first stop request. A second
-		// stop must not reinterpret the first stop's exit as startup failure.
-		if observer, ok := p.readiness.(runtimeExitObserver); ok {
-			p.failedBeforeReady = p.failedBeforeReady || observer.ExitedNow()
-		} else {
-			select {
-			case <-p.readiness.Done():
-				p.failedBeforeReady = true
-			default:
-			}
-		}
-	}
-	p.stopRequested = true
-	instance := p.instance
-	exited := p.status.State == "exited"
-	if _, hasReadiness := instance.(RuntimeReadiness); !exited && hasReadiness {
-		p.status.State = "stopping"
-	}
-	p.mu.Unlock()
-	if instance == nil {
-		return fmt.Errorf("无法访问托管实例")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	if !exited {
-		if err := instance.Stop(ctx); err != nil {
-			select {
-			case <-p.done:
-				return nil
-			default:
-			}
-			return fmt.Errorf("实例停止结果未知，未启动替代实例：%s", safeStatusText(err.Error(), p.logs.secrets))
-		}
-	}
-	// A successful stop request is not proof that Wait has returned.
-	select {
-	case <-p.done:
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("实例停止结果未知，未启动替代实例")
-	}
-}
-func (a *App) statuses() map[string]RuntimeStatus {
-	out := map[string]RuntimeStatus{}
-	for _, i := range a.store.DB.State.Instances {
-		out[i.ID] = a.observedRuntimeStatusLocked(i, a.observeRuntimeLocked(i))
+func (b *ringLogBuffer) Snapshot() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]string, 0, b.count)
+	start := (b.head - b.count + len(b.lines)) % len(b.lines)
+	for i := 0; i < b.count; i++ {
+		out = append(out, b.lines[(start+i)%len(b.lines)])
 	}
 	return out
 }
-func (a *App) Close() error {
-	a.closeOnce.Do(func() {
-		a.requestMu.Lock()
-		a.requestClosing = true
-		a.requestMu.Unlock()
-		a.RequestShutdown()
-		a.mu.Lock()
-		a.closing = true
-		if a.webhooks != nil {
-			a.webhooks.close()
+
+func (b *ringLogBuffer) Subscribe() (chan string, func()) {
+	ch := make(chan string, 64)
+	b.mu.Lock()
+	b.subs[ch] = struct{}{}
+	b.mu.Unlock()
+	return ch, func() {
+		b.mu.Lock()
+		if _, ok := b.subs[ch]; ok {
+			delete(b.subs, ch)
+			close(ch)
 		}
-		if a.startupCancel != nil {
-			a.startupCancel()
-		}
-		if a.scheduleCancel != nil {
-			a.scheduleCancel()
-		}
-		for _, op := range a.operations {
-			op.cancel()
-		}
-		a.mu.Unlock()
-		if a.agentReceiver != nil {
-			a.agentReceiver.close()
-		}
-		if a.agentReporter != nil {
-			a.agentReporter.stop()
-		}
-		if a.startupDone != nil {
-			<-a.startupDone
-		}
-		if a.scheduleDone != nil {
-			<-a.scheduleDone
-		}
-		if a.firewallDone != nil {
-			<-a.firewallDone
-		}
-		if a.nodeMonitorDone != nil {
-			<-a.nodeMonitorDone
-		}
-		// In-flight control operations must finish before the final process
-		// snapshot; no app mutex is held while waiting on them or on children.
-		a.operationWG.Wait()
-		a.mu.Lock()
-		processes := make([]*process, 0, len(a.procs))
-		for _, p := range a.procs {
-			processes = append(processes, p)
-		}
-		a.mu.Unlock()
-		var wg sync.WaitGroup
-		var mu sync.Mutex
-		var failures []error
-		for _, p := range processes {
-			wg.Add(1)
-			go func(p *process) {
-				defer wg.Done()
-				if err := stopProcess(p); err != nil {
-					mu.Lock()
-					failures = append(failures, err)
-					mu.Unlock()
-				}
-			}(p)
-		}
-		wg.Wait()
-		if a.logHistory != nil {
-			historyCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-			if err := a.logHistory.shutdown(historyCtx); err != nil {
-				failures = append(failures, fmt.Errorf("日志历史未能确认安全关闭，数据目录锁将保留到进程退出"))
-			}
-			cancel()
-		}
-		for _, p := range processes {
-			if observer, ok := p.instance.(runtimeCleanupObserver); ok && observer.CleanupUncertain() {
-				failures = append(failures, fmt.Errorf("实例清理状态未知，数据目录锁将保留到进程退出"))
-			}
-		}
-		if a.trafficDaily != nil {
-			close(a.trafficDaily.stop)
-			<-a.trafficDaily.done
-		}
-		// RequestShutdown wakes streams before waiting. A timed-out request can
-		// still touch the store, so retain the directory lock on timeout.
-		requestsDone := make(chan struct{})
-		go func() {
-			a.requests.Wait()
-			close(requestsDone)
-		}()
-		timer := time.NewTimer(8 * time.Second)
-		select {
-		case <-requestsDone:
-		case <-timer.C:
-			failures = append(failures, fmt.Errorf("仍有工作台请求未结束，数据目录锁将保留到进程退出"))
-		}
-		timer.Stop()
-		if observer, ok := a.runtime.(runtimeCleanupObserver); ok && observer.CleanupUncertain() {
-			failures = append(failures, fmt.Errorf("内嵌核心清理状态未知，数据目录锁将保留到进程退出"))
-		}
-		if a.updater != nil && a.updater.Busy() {
-			failures = append(failures, fmt.Errorf("更新任务仍在运行，数据目录锁将保留到进程退出"))
-		}
-		if len(failures) == 0 {
-			if err := a.finishSchedulesAfterShutdown(); err != nil {
-				failures = append(failures, err)
-			}
-		}
-		if len(failures) == 0 {
-			if err := a.dataLock.release(); err != nil {
-				failures = append(failures, err)
-			}
-		}
-		a.closeErr = errors.Join(failures...)
-	})
-	return a.closeErr
+		b.mu.Unlock()
+	}
 }
 
-// Keeps the scanner-free writer above tested for secret fragments spanning writes.
-var _ interface{ Write([]byte) (int, error) } = (*logBuffer)(nil)
+type proxyRateSample struct {
+	inBytes  int64
+	outBytes int64
+	at       time.Time
+}
+
+type managedProc struct {
+	id           string
+	kind         string // "frps" or "frpc"
+	cfgPath      string
+	adminPort    int
+	adminUser    string
+	adminPass    string
+	pluginSecret string
+	cmd          *exec.Cmd
+	startedAt    time.Time
+	done         chan struct{}
+	logs         *ringLogBuffer
+
+	mu          sync.Mutex
+	state       string
+	lastErr     string
+	conns       map[string]ConnLiveItem
+	rateSamples map[string]proxyRateSample
+	tunnelStats []TunnelLiveStatus
+}
+
+// RuntimeSupervisor manages official frps & frpc child processes and Connection Dashboard polling.
+type RuntimeSupervisor struct {
+	mu           sync.RWMutex
+	dataDir      string
+	runtimeDir   string
+	store        *Store
+	procs        map[string]*managedProc
+	historyLogs  map[string]*ringLogBuffer
+	callbackAddr atomic.Value // stores string "127.0.0.1:<port>"
+	onChange     func()
+	stopPollCh   chan struct{}
+	httpClient   *http.Client
+}
+
+// NewRuntimeSupervisor creates the official FRP process supervisor.
+func NewRuntimeSupervisor(dataDir string, store *Store, onChange func()) (*RuntimeSupervisor, error) {
+	rtDir := filepath.Join(dataDir, "runtime")
+	if err := os.MkdirAll(rtDir, 0o700); err != nil {
+		return nil, err
+	}
+	rs := &RuntimeSupervisor{
+		dataDir:     dataDir,
+		runtimeDir:  rtDir,
+		store:       store,
+		procs:       make(map[string]*managedProc),
+		historyLogs: make(map[string]*ringLogBuffer),
+		onChange:    onChange,
+		stopPollCh:  make(chan struct{}),
+		httpClient:  &http.Client{Timeout: 2 * time.Second},
+	}
+	go rs.pollLoop()
+	return rs, nil
+}
+
+// SetCallbackAddr records the local HTTP listener address so frps HTTP plugins can call back into KurumiFrp.
+func (rs *RuntimeSupervisor) SetCallbackAddr(addr string) {
+	rs.callbackAddr.Store(addr)
+}
+
+func (rs *RuntimeSupervisor) notifyChange() {
+	if rs.onChange != nil {
+		rs.onChange()
+	}
+}
+
+// StartAutoStarts launches all ServerProfiles and ClientProfiles configured with AutoStart: true.
+func (rs *RuntimeSupervisor) StartAutoStarts() {
+	_, doc := rs.store.Snapshot()
+	for _, srv := range doc.Servers {
+		if srv.AutoStart {
+			srvCopy := srv
+			go func() { _ = rs.StartServer(srvCopy) }()
+		}
+	}
+	for _, cli := range doc.Clients {
+		if cli.AutoStart {
+			cliCopy := cli
+			go func() { _ = rs.StartClient(cliCopy) }()
+		}
+	}
+}
+
+// StopAll gracefully terminates all running frps and frpc child processes.
+func (rs *RuntimeSupervisor) StopAll() {
+	select {
+	case <-rs.stopPollCh:
+	default:
+		close(rs.stopPollCh)
+	}
+	rs.mu.RLock()
+	ids := make([]string, 0, len(rs.procs))
+	for id := range rs.procs {
+		ids = append(ids, id)
+	}
+	rs.mu.RUnlock()
+
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func(pid string) {
+			defer wg.Done()
+			_ = rs.StopInstance(pid)
+		}(id)
+	}
+	wg.Wait()
+}
+
+// StartServer verifies and launches an official frps subprocess for srv.
+func (rs *RuntimeSupervisor) StartServer(srv ServerProfile) error {
+	bins := LocateBinaries(rs.dataDir)
+	if !bins.FrpsFound {
+		return errors.New("未找到内置 frps 核心程序，请确认安装包完整或将官方 frps 放入 data/bin 目录")
+	}
+	_ = rs.StopInstance(srv.ID)
+
+	adminPort, err := pickFreeLoopbackPort()
+	if err != nil {
+		return fmt.Errorf("分配本地管理端口失败: %w", err)
+	}
+	adminPass := randomHex(16)
+	pluginSecret := randomHex(20)
+	cbAddr, _ := rs.callbackAddr.Load().(string)
+
+	rendered := RenderServerTOML(srv, ServerRuntimeInjections{
+		Preview:        false,
+		AdminPort:      adminPort,
+		AdminUser:      "kurumi",
+		AdminPass:      adminPass,
+		KurumiCallback: cbAddr,
+		PluginPath:     fmt.Sprintf("/internal/frps-plugin/%s?token=%s", srv.ID, pluginSecret),
+	})
+
+	cfgPath := filepath.Join(rs.runtimeDir, srv.ID+".toml")
+	if _, err := writeIfChanged(cfgPath, []byte(rendered.TOML), 0o600); err != nil {
+		return fmt.Errorf("写入运行配置失败: %w", err)
+	}
+
+	if err := verifyConfigBinary(bins.FrpsPath, cfgPath, rendered.Env); err != nil {
+		return err
+	}
+
+	return rs.spawnProcess(srv.ID, "frps", bins.FrpsPath, cfgPath, rendered, adminPort, "kurumi", adminPass, pluginSecret)
+}
+
+// StartClient verifies and launches an official frpc subprocess for cli.
+func (rs *RuntimeSupervisor) StartClient(cli ClientProfile) error {
+	bins := LocateBinaries(rs.dataDir)
+	if !bins.FrpcFound {
+		return errors.New("未找到内置 frpc 核心程序，请确认安装包完整或将官方 frpc 放入 data/bin 目录")
+	}
+	_ = rs.StopInstance(cli.ID)
+
+	adminPort, err := pickFreeLoopbackPort()
+	if err != nil {
+		return fmt.Errorf("分配本地管理端口失败: %w", err)
+	}
+	adminPass := randomHex(16)
+
+	rendered := RenderClientTOML(cli, ClientRuntimeInjections{
+		Preview:   false,
+		AdminPort: adminPort,
+		AdminUser: "kurumi",
+		AdminPass: adminPass,
+	})
+
+	cfgPath := filepath.Join(rs.runtimeDir, cli.ID+".toml")
+	if _, err := writeIfChanged(cfgPath, []byte(rendered.TOML), 0o600); err != nil {
+		return fmt.Errorf("写入运行配置失败: %w", err)
+	}
+
+	if err := verifyConfigBinary(bins.FrpcPath, cfgPath, rendered.Env); err != nil {
+		return err
+	}
+
+	return rs.spawnProcess(cli.ID, "frpc", bins.FrpcPath, cfgPath, rendered, adminPort, "kurumi", adminPass, "")
+}
+
+// ReloadOrRestartClient hot-reloads a running frpc instance via official Admin API (`frpc reload`) without dropping active tunnels.
+func (rs *RuntimeSupervisor) ReloadOrRestartClient(cli ClientProfile) error {
+	rs.mu.RLock()
+	p, ok := rs.procs[cli.ID]
+	rs.mu.RUnlock()
+	if !ok || p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	running := p.state == "running"
+	adminPort := p.adminPort
+	adminUser := p.adminUser
+	adminPass := p.adminPass
+	cfgPath := p.cfgPath
+	p.mu.Unlock()
+	if !running {
+		return nil
+	}
+
+	bins := LocateBinaries(rs.dataDir)
+	if !bins.FrpcFound {
+		return errors.New("未找到 frpc 核心程序")
+	}
+
+	rendered := RenderClientTOML(cli, ClientRuntimeInjections{
+		Preview:   false,
+		AdminPort: adminPort,
+		AdminUser: adminUser,
+		AdminPass: adminPass,
+	})
+	if _, err := writeIfChanged(cfgPath, []byte(rendered.TOML), 0o600); err != nil {
+		return err
+	}
+	if err := verifyConfigBinary(bins.FrpcPath, cfgPath, rendered.Env); err != nil {
+		return err
+	}
+
+	// Attempt zero-downtime hot reload via local Admin API first; fall back to clean restart if transport params changed.
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/api/reload", adminPort), nil)
+	if err == nil {
+		req.SetBasicAuth(adminUser, adminPass)
+		resp, err := rs.httpClient.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				p.logs.Append("[KurumiFrp] 已通过官方热重载接口无缝更新隧道配置")
+				rs.notifyChange()
+				return nil
+			}
+		}
+	}
+	return rs.StartClient(cli)
+}
+
+func (rs *RuntimeSupervisor) spawnProcess(id, kind, binPath, cfgPath string, rendered RenderedConfig, adminPort int, adminUser, adminPass, pluginSecret string) error {
+	cmd := exec.Command(binPath, "-c", cfgPath)
+	cmd.Dir = rs.runtimeDir
+	cmd.Env = append(os.Environ(), rendered.Env...)
+	childprocess.Configure(cmd)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+
+	logs := newRingLogBuffer(rendered.Secrets)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("启动 %s 进程失败: %w", kind, err)
+	}
+
+	proc := &managedProc{
+		id:           id,
+		kind:         kind,
+		cfgPath:      cfgPath,
+		adminPort:    adminPort,
+		adminUser:    adminUser,
+		adminPass:    adminPass,
+		pluginSecret: pluginSecret,
+		cmd:          cmd,
+		startedAt:    time.Now(),
+		done:         make(chan struct{}),
+		logs:         logs,
+		state:        "running",
+		conns:        make(map[string]ConnLiveItem),
+		rateSamples:  make(map[string]proxyRateSample),
+	}
+
+	logs.Append(fmt.Sprintf("[KurumiFrp] 已启动官方 %s 核心 (PID=%d)", kind, cmd.Process.Pid))
+
+	rs.mu.Lock()
+	rs.procs[id] = proc
+	rs.historyLogs[id] = logs
+	rs.mu.Unlock()
+	rs.notifyChange()
+
+	go streamPipeLines(stdout, logs)
+	go streamPipeLines(stderr, logs)
+	go func() {
+		waitErr := cmd.Wait()
+		close(proc.done)
+		proc.mu.Lock()
+		if waitErr != nil && proc.state != "stopping" {
+			proc.state = "error"
+			proc.lastErr = waitErr.Error()
+			logs.Append(fmt.Sprintf("[KurumiFrp] %s 异常退出: %v", kind, waitErr))
+		} else {
+			proc.state = "stopped"
+			logs.Append(fmt.Sprintf("[KurumiFrp] %s 已停止", kind))
+		}
+		proc.mu.Unlock()
+
+		rs.mu.Lock()
+		if cur, exists := rs.procs[id]; exists && cur == proc {
+			delete(rs.procs, id)
+		}
+		rs.mu.Unlock()
+		rs.notifyChange()
+	}()
+
+	return nil
+}
+
+// StopInstance stops a running frps or frpc instance outside the global mutex so UI requests never hang.
+func (rs *RuntimeSupervisor) StopInstance(id string) error {
+	rs.mu.RLock()
+	p, ok := rs.procs[id]
+	rs.mu.RUnlock()
+	if !ok || p == nil {
+		return nil
+	}
+
+	p.mu.Lock()
+	p.state = "stopping"
+	p.mu.Unlock()
+
+	_ = childprocess.Terminate(p.cmd)
+	select {
+	case <-p.done:
+	case <-time.After(4 * time.Second):
+		_ = childprocess.Kill(p.cmd)
+		select {
+		case <-p.done:
+		case <-time.After(1 * time.Second):
+		}
+	}
+
+	rs.mu.Lock()
+	if cur, exists := rs.procs[id]; exists && cur == p {
+		delete(rs.procs, id)
+	}
+	rs.mu.Unlock()
+	rs.notifyChange()
+	return nil
+}
+
+// Views returns live runtime views for all ServerProfiles and ClientProfiles in doc.
+func (rs *RuntimeSupervisor) Views(doc ConfigDocument) map[string]ProcessRuntimeView {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+
+	out := make(map[string]ProcessRuntimeView)
+	for _, srv := range doc.Servers {
+		view := ProcessRuntimeView{
+			ID:          srv.ID,
+			Kind:        "frps",
+			State:       "stopped",
+			Connections: buildMergedConnections(srv, nil),
+		}
+		if p, ok := rs.procs[srv.ID]; ok {
+			p.mu.Lock()
+			view.Running = p.state == "running"
+			view.State = p.state
+			if p.cmd != nil && p.cmd.Process != nil {
+				view.PID = p.cmd.Process.Pid
+			}
+			view.StartedAt = p.startedAt.UTC().Format(time.RFC3339)
+			view.LastError = p.lastErr
+			view.AdminPort = p.adminPort
+			view.Connections = buildMergedConnections(srv, p.conns)
+			p.mu.Unlock()
+		}
+		out[srv.ID] = view
+	}
+
+	for _, cli := range doc.Clients {
+		view := ProcessRuntimeView{
+			ID:    cli.ID,
+			Kind:  "frpc",
+			State: "stopped",
+		}
+		if p, ok := rs.procs[cli.ID]; ok {
+			p.mu.Lock()
+			view.Running = p.state == "running"
+			view.State = p.state
+			if p.cmd != nil && p.cmd.Process != nil {
+				view.PID = p.cmd.Process.Pid
+			}
+			view.StartedAt = p.startedAt.UTC().Format(time.RFC3339)
+			view.LastError = p.lastErr
+			view.AdminPort = p.adminPort
+			view.TunnelStats = append([]TunnelLiveStatus(nil), p.tunnelStats...)
+			p.mu.Unlock()
+		}
+		out[cli.ID] = view
+	}
+	return out
+}
+
+// Logs returns buffered log lines and an optional SSE subscription channel for an instance.
+func (rs *RuntimeSupervisor) Logs(id string) ([]string, *ringLogBuffer) {
+	rs.mu.RLock()
+	defer rs.mu.RUnlock()
+	if p, ok := rs.procs[id]; ok {
+		return p.logs.Snapshot(), p.logs
+	}
+	if hist, ok := rs.historyLogs[id]; ok {
+		return hist.Snapshot(), hist
+	}
+	return []string{}, nil
+}
+
+// HandleFRPSPlugin implements the official fatedier/frp HTTP Server Plugin webhook to enforce
+// Connection Dashboard controls: 开关 (Enabled), 限流 (TrafficLimitMB), 限速 (SpeedLimitKBps), and 限时 (ExpiresAt).
+func (rs *RuntimeSupervisor) HandleFRPSPlugin(w http.ResponseWriter, r *http.Request, serverID string) {
+	rs.mu.RLock()
+	proc, ok := rs.procs[serverID]
+	rs.mu.RUnlock()
+	if !ok || proc == nil {
+		http.Error(w, "unknown server instance", http.StatusNotFound)
+		return
+	}
+	gotToken := r.URL.Query().Get("token")
+	if subtle.ConstantTimeCompare([]byte(gotToken), []byte(proc.pluginSecret)) != 1 {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	op := r.URL.Query().Get("op")
+	var reqPayload struct {
+		Content map[string]any `json:"content"`
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+	_ = json.Unmarshal(body, &reqPayload)
+	if op == "" {
+		op = stringField(reqPayload.Content, "op")
+	}
+
+	proxyName := stringField(reqPayload.Content, "proxy_name")
+	if proxyName == "" {
+		if pMap, ok := reqPayload.Content["proxy_name"].(string); ok {
+			proxyName = pMap
+		}
+	}
+
+	if proxyName != "" && (op == "NewProxy" || op == "NewUserConn") {
+		if reject, reason := rs.evaluateConnPolicy(serverID, proc, proxyName); reject {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"reject":        true,
+				"reject_reason": reason,
+			})
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"reject":   false,
+		"unchange": true,
+	})
+}
+
+func (rs *RuntimeSupervisor) evaluateConnPolicy(serverID string, proc *managedProc, proxyName string) (bool, string) {
+	_, doc := rs.store.Snapshot()
+	var srv *ServerProfile
+	for i := range doc.Servers {
+		if doc.Servers[i].ID == serverID {
+			srv = &doc.Servers[i]
+			break
+		}
+	}
+	if srv == nil {
+		return false, ""
+	}
+	pol, exists := srv.ConnPolicies[proxyName]
+	if !exists {
+		// Auto-register newly discovered connection with Enabled: true on the Connection Dashboard.
+		_ = rs.store.Update(func(d *ConfigDocument) error {
+			for i := range d.Servers {
+				if d.Servers[i].ID == serverID {
+					if d.Servers[i].ConnPolicies == nil {
+						d.Servers[i].ConnPolicies = make(map[string]ConnPolicy)
+					}
+					if _, has := d.Servers[i].ConnPolicies[proxyName]; !has {
+						d.Servers[i].ConnPolicies[proxyName] = ConnPolicy{
+							ProxyName: proxyName,
+							Enabled:   true,
+						}
+					}
+				}
+			}
+			return nil
+		})
+		return false, ""
+	}
+
+	if !pol.Enabled {
+		return true, "该连接已在 KurumiFrp 连接看板关闭"
+	}
+	if strings.TrimSpace(pol.ExpiresAt) != "" {
+		if exp, err := time.Parse(time.RFC3339, strings.TrimSpace(pol.ExpiresAt)); err == nil {
+			if time.Now().After(exp) {
+				return true, "该连接已到达限时截止时间 (" + exp.Local().Format("2006-01-02 15:04") + ")"
+			}
+		}
+	}
+	if pol.TrafficLimitMB > 0 {
+		limitBytes := pol.TrafficLimitMB * 1024 * 1024
+		totalUsed := pol.RecordedInBytes + pol.RecordedOutBytes
+		if proc != nil {
+			proc.mu.Lock()
+			if live, has := proc.conns[proxyName]; has {
+				totalUsed = live.TotalInBytes + live.TotalOutBytes
+			}
+			proc.mu.Unlock()
+		}
+		if totalUsed >= limitBytes {
+			return true, fmt.Sprintf("该连接已达限流上限 (%d MB)", pol.TrafficLimitMB)
+		}
+	}
+	return false, ""
+}
+
+// CloseOfflineProxies calls official frps Admin API DELETE /api/proxies?status=offline to purge closed proxies.
+func (rs *RuntimeSupervisor) CloseOfflineProxies(serverID string) {
+	rs.mu.RLock()
+	p, ok := rs.procs[serverID]
+	rs.mu.RUnlock()
+	if !ok || p == nil {
+		return
+	}
+	req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("http://127.0.0.1:%d/api/proxies?status=offline", p.adminPort), nil)
+	if err != nil {
+		return
+	}
+	req.SetBasicAuth(p.adminUser, p.adminPass)
+	if resp, err := rs.httpClient.Do(req); err == nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+}
+
+func (rs *RuntimeSupervisor) pollLoop() {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-rs.stopPollCh:
+			return
+		case <-ticker.C:
+			rs.pollOnce()
+		}
+	}
+}
+
+func (rs *RuntimeSupervisor) pollOnce() {
+	rs.mu.RLock()
+	list := make([]*managedProc, 0, len(rs.procs))
+	for _, p := range rs.procs {
+		list = append(list, p)
+	}
+	rs.mu.RUnlock()
+
+	_, doc := rs.store.Snapshot()
+	srvMap := make(map[string]ServerProfile, len(doc.Servers))
+	for _, s := range doc.Servers {
+		srvMap[s.ID] = s
+	}
+
+	changed := false
+	for _, p := range list {
+		if p.kind == "frps" {
+			if srv, ok := srvMap[p.id]; ok {
+				if rs.pollServerAdmin(p, srv) {
+					changed = true
+				}
+			}
+		} else if p.kind == "frpc" {
+			if rs.pollClientAdmin(p) {
+				changed = true
+			}
+		}
+	}
+	if changed {
+		rs.notifyChange()
+	}
+}
+
+func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) bool {
+	proxyTypes := []string{"tcp", "udp", "http", "https", "stcp", "xtcp", "tcpmux"}
+	now := time.Now()
+	discovered := make(map[string]ConnLiveItem)
+
+	for _, pt := range proxyTypes {
+		url := fmt.Sprintf("http://127.0.0.1:%d/api/proxy/%s", p.adminPort, pt)
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			continue
+		}
+		req.SetBasicAuth(p.adminUser, p.adminPass)
+		resp, err := rs.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		var payload struct {
+			Proxies []struct {
+				Name            string         `json:"name"`
+				TodayTrafficIn  int64          `json:"todayTrafficIn"`
+				TodayTrafficOut int64          `json:"todayTrafficOut"`
+				CurConns        int64          `json:"curConns"`
+				LastStartTime   string         `json:"lastStartTime"`
+				LastCloseTime   string         `json:"lastCloseTime"`
+				Status          string         `json:"status"`
+				ClientVersion   string         `json:"clientVersion"`
+				Conf            map[string]any `json:"conf"`
+			} `json:"proxies"`
+		}
+		err = json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&payload)
+		resp.Body.Close()
+		if err != nil {
+			continue
+		}
+
+		p.mu.Lock()
+		for _, item := range payload.Proxies {
+			if item.Name == "" {
+				continue
+			}
+			pol, hasPol := srv.ConnPolicies[item.Name]
+			if !hasPol {
+				pol = ConnPolicy{ProxyName: item.Name, Enabled: true}
+			}
+			totalIn := pol.RecordedInBytes + item.TodayTrafficIn
+			totalOut := pol.RecordedOutBytes + item.TodayTrafficOut
+
+			var speedIn, speedOut int64
+			if prev, ok := p.rateSamples[item.Name]; ok {
+				dt := now.Sub(prev.at).Seconds()
+				if dt >= 0.5 {
+					if dIn := item.TodayTrafficIn - prev.inBytes; dIn > 0 {
+						speedIn = int64(float64(dIn) / dt)
+					}
+					if dOut := item.TodayTrafficOut - prev.outBytes; dOut > 0 {
+						speedOut = int64(float64(dOut) / dt)
+					}
+				}
+			}
+			p.rateSamples[item.Name] = proxyRateSample{
+				inBytes:  item.TodayTrafficIn,
+				outBytes: item.TodayTrafficOut,
+				at:       now,
+			}
+
+			// Enforce real-time bandwidth speed alert/block status if configured
+			status := item.Status
+			blockReason := ""
+			if !pol.Enabled {
+				status = "blocked"
+				blockReason = "已手动关闭"
+			} else if strings.TrimSpace(pol.ExpiresAt) != "" {
+				if exp, err := time.Parse(time.RFC3339, strings.TrimSpace(pol.ExpiresAt)); err == nil && now.After(exp) {
+					status = "blocked"
+					blockReason = "限时已到期"
+				}
+			}
+			if blockReason == "" && pol.TrafficLimitMB > 0 && (totalIn+totalOut) >= pol.TrafficLimitMB*1024*1024 {
+				status = "blocked"
+				blockReason = fmt.Sprintf("已达限流 (%d MB)", pol.TrafficLimitMB)
+			}
+			if blockReason == "" && pol.SpeedLimitKBps > 0 && (speedIn+speedOut) > pol.SpeedLimitKBps*1024 {
+				blockReason = fmt.Sprintf("超限速阈值 (%d KB/s)", pol.SpeedLimitKBps)
+			}
+
+			discovered[item.Name] = ConnLiveItem{
+				ProxyName:      item.Name,
+				ProxyType:      pt,
+				ClientVersion:  item.ClientVersion,
+				Status:         status,
+				BlockReason:    blockReason,
+				CurConns:       item.CurConns,
+				TotalInBytes:   totalIn,
+				TotalOutBytes:  totalOut,
+				SpeedInBps:     speedIn,
+				SpeedOutBps:    speedOut,
+				Enabled:        pol.Enabled,
+				TrafficLimitMB: pol.TrafficLimitMB,
+				SpeedLimitKBps: pol.SpeedLimitKBps,
+				ExpiresAt:      pol.ExpiresAt,
+				Note:           pol.Note,
+				LastSyncAt:     now.UTC().Format(time.RFC3339),
+			}
+		}
+		p.mu.Unlock()
+	}
+
+	p.mu.Lock()
+	p.conns = discovered
+	p.mu.Unlock()
+	return len(discovered) > 0
+}
+
+func (rs *RuntimeSupervisor) pollClientAdmin(p *managedProc) bool {
+	url := fmt.Sprintf("http://127.0.0.1:%d/api/status", p.adminPort)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	req.SetBasicAuth(p.adminUser, p.adminPass)
+	resp, err := rs.httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	var statusMap map[string][]TunnelLiveStatus
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&statusMap); err != nil {
+		return false
+	}
+	var flat []TunnelLiveStatus
+	for _, group := range statusMap {
+		flat = append(flat, group...)
+	}
+	sort.Slice(flat, func(i, j int) bool { return flat[i].Name < flat[j].Name })
+
+	p.mu.Lock()
+	p.tunnelStats = flat
+	p.mu.Unlock()
+	return true
+}
+
+func buildMergedConnections(srv ServerProfile, live map[string]ConnLiveItem) []ConnLiveItem {
+	merged := make(map[string]ConnLiveItem)
+	for name, pol := range srv.ConnPolicies {
+		status := "offline"
+		reason := ""
+		if !pol.Enabled {
+			status = "blocked"
+			reason = "已手动关闭"
+		} else if strings.TrimSpace(pol.ExpiresAt) != "" {
+			if exp, err := time.Parse(time.RFC3339, strings.TrimSpace(pol.ExpiresAt)); err == nil && time.Now().After(exp) {
+				status = "blocked"
+				reason = "限时已到期"
+			}
+		}
+		if reason == "" && pol.TrafficLimitMB > 0 && (pol.RecordedInBytes+pol.RecordedOutBytes) >= pol.TrafficLimitMB*1024*1024 {
+			status = "blocked"
+			reason = fmt.Sprintf("已达限流 (%d MB)", pol.TrafficLimitMB)
+		}
+		merged[name] = ConnLiveItem{
+			ProxyName:      name,
+			ProxyType:      "-",
+			Status:         status,
+			BlockReason:    reason,
+			TotalInBytes:   pol.RecordedInBytes,
+			TotalOutBytes:  pol.RecordedOutBytes,
+			Enabled:        pol.Enabled,
+			TrafficLimitMB: pol.TrafficLimitMB,
+			SpeedLimitKBps: pol.SpeedLimitKBps,
+			ExpiresAt:      pol.ExpiresAt,
+			Note:           pol.Note,
+		}
+	}
+	for name, item := range live {
+		merged[name] = item
+	}
+	out := make([]ConnLiveItem, 0, len(merged))
+	for _, v := range merged {
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ProxyName < out[j].ProxyName })
+	return out
+}
+
+func verifyConfigBinary(binPath, cfgPath string, extraEnv []string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, "verify", "-c", cfgPath)
+	cmd.Env = append(os.Environ(), extraEnv...)
+	childprocess.Configure(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(bytes.TrimSpace(out)))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("官方核心配置预检未通过: %s", msg)
+	}
+	return nil
+}
+
+func streamPipeLines(r io.Reader, buf *ringLogBuffer) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 4096), 256*1024)
+	for sc.Scan() {
+		buf.Append(sc.Text())
+	}
+}
+
+func pickFreeLoopbackPort() (int, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port, nil
+}
+
+func randomHex(nBytes int) string {
+	b := make([]byte, nBytes)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func stringField(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	if s, ok := m[key].(string); ok {
+		return s
+	}
+	return ""
+}

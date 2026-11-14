@@ -1,120 +1,242 @@
-<!doctype html>
-<html lang="zh-CN">
+<!DOCTYPE html>
+<html lang="zh-CN" data-skin="zafkiel-crimson">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark light">
-  <meta name="theme-color" content="#14171d">
-  <title>KurumiFRP · 连接工作台</title>
-  <link rel="stylesheet" href="/style.css">
-  <script src="/protocols.js" defer></script>
-  <script src="/protocol-editor.js" defer></script>
-  <script src="/schedules.js" defer></script>
-  <script src="/workspace.js" defer></script>
-  <script src="/workspace-reporting-nodes.js" defer></script>
-  <script src="/workspace-batch-copy.js" defer></script>
-  <script src="/workspace-pages.js" defer></script>
-  <script src="/workspace-config.js" defer></script>
-  <script src="/workspace-admin.js" defer></script>
-  <script src="/workspace-update.js" defer></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KurumiFrp · 刻刻帝穿透控制台</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="/app.js" defer></script>
 </head>
 <body>
-  <section id="login" class="login" aria-label="登录 KurumiFRP">
-    <div class="login-art" aria-hidden="true">
-      <div class="login-art-copy">
-        <span class="visual-label">KURUMIFRP / 连接管理</span>
-        <p>让每一次连接，<br>都有迹可循。</p>
-        <span class="visual-caption">集中查看配置与运行状态</span>
-      </div>
-    </div>
-    <div class="login-panel">
-      <div class="login-top">
-        <div class="brand-lockup">
-          <span class="brand-mark" aria-hidden="true">K</span>
-          <span class="brand-word">Kurumi<span>FRP</span><small>连接工作台</small></span>
+  <!-- 登录视图：唯一管理员「用户名 + 密码」认证 -->
+  <section id="login-screen" class="login-screen" hidden>
+    <div class="login-card">
+      <div class="login-art">
+        <picture>
+          <source media="(max-width: 760px)" srcset="/assets/login-mobile.webp" />
+          <img src="/assets/login-desktop.webp" alt="Tokisaki Kurumi" />
+        </picture>
+        <div class="login-art-overlay">
+          <span class="roman-badge">Ⅻ · ZAFKIEL</span>
+          <h2>KurumiFrp</h2>
+          <p>时崎狂三主题 · 官方原版双端内网穿透管理器</p>
         </div>
-        <span class="login-top-label">WORKSPACE</span>
       </div>
-      <div class="login-main">
-        <div class="login-heading">
-          <span class="overline">WELCOME BACK</span>
-          <h1>登录工作台</h1>
-          <p>输入工作台访问密码。</p>
+      <div class="login-panel">
+        <div class="clock-emblem" aria-hidden="true">
+          <svg viewBox="0 0 120 120" class="clock-svg">
+            <circle cx="60" cy="60" r="54" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3" />
+            <circle cx="60" cy="60" r="44" fill="none" stroke="currentColor" stroke-width="1" opacity="0.65" />
+            <line x1="60" y1="60" x2="60" y2="24" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+            <line x1="60" y1="60" x2="86" y2="68" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            <circle cx="60" cy="60" r="3.5" fill="currentColor" />
+          </svg>
         </div>
-        <form id="login-form" class="login-form">
-          <label for="login-password">密码</label>
-          <input id="login-password" name="password" type="password" autocomplete="current-password" maxlength="1024" placeholder="输入密码">
-          <button class="primary login-submit" type="submit"><span>进入工作台</span><span aria-hidden="true">→</span></button>
-          <p id="login-error" class="error" role="alert"></p>
+        <h1>管理员登录</h1>
+        <p id="login-hint" class="muted-text">请输入管理员用户名与密码进入控制台</p>
+        <form id="login-form" class="stack-form">
+          <label class="field">
+            <span>用户名</span>
+            <input type="text" id="login-username" name="username" autocomplete="username" value="admin" required />
+          </label>
+          <label class="field">
+            <span>密码</span>
+            <input type="password" id="login-password" name="password" autocomplete="current-password" placeholder="首次启动未设密码可直接留空登录" />
+          </label>
+          <div id="login-error" class="error-banner" hidden></div>
+          <button type="submit" class="btn btn-primary btn-block">进入刻刻帝工作台</button>
         </form>
-        <details class="login-help">
-          <summary><span>首次使用如何登录？</span><span class="help-icon" aria-hidden="true">＋</span></summary>
-          <p>全新数据目录的访问密码初始为空，直接点击进入即可。已有密码不会更改；登录后可修改密码。</p>
-        </details>
       </div>
-      <div class="login-footer"><span>KurumiFRP</span><span>连接与配置，一处管理</span></div>
     </div>
   </section>
 
-  <div id="app" class="app-shell" hidden>
-    <aside id="sidebar" class="sidebar" aria-label="工作台导航">
-      <div class="sidebar-top">
-        <a href="#overview" class="brand-lockup brand" aria-label="KurumiFRP，返回总览">
-          <span class="brand-mark" aria-hidden="true">K</span>
-          <span class="brand-word">Kurumi<span>FRP</span><small>连接工作台</small></span>
-        </a>
-        <button id="menu-close" class="icon-button menu-close" type="button" aria-label="关闭导航">×</button>
+  <!-- 主工作台视图：严格对应设计手稿三大版块 -->
+  <div id="workbench" class="workbench" hidden>
+    <header class="topbar">
+      <div class="brand-group">
+        <span class="brand-clock">Ⅻ</span>
+        <div>
+          <div class="brand-title">KurumiFrp <span id="app-version" class="version-pill">v0.9.0.0</span></div>
+          <div class="brand-sub">当前配置文件：<strong id="top-active-config">default.json</strong></div>
+        </div>
       </div>
-      <nav id="nav" aria-label="页面导航">
-        <div class="nav-group">
-          <p class="nav-label">连接管理</p>
-          <button type="button" data-page="overview" class="active" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 5l8 6.5v7a1 1 0 0 1-1 1h-5v-5h-4v5H5a1 1 0 0 1-1-1z"/></svg><span>网络总览</span></button>
-          <button type="button" data-page="tunnels"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h13m-3-3 3 3-3 3M20 16H7m3-3-3 3 3 3"/></svg><span>规则管理</span></button>
-          <button type="button" data-page="instances"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="6" rx="1.5"/><rect x="4" y="13" width="16" height="6" rx="1.5"/><path d="M8 8h.01M8 16h.01M12 8h5M12 16h5"/></svg><span>运行实例</span></button>
-          <button type="button" data-page="nodes"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="m11 7-5 9m7-9 5 9M7 18h10"/></svg><span>节点管理</span></button>
-          <button type="button" data-page="reported-nodes" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 15v4h16v-4M8 11l4-4 4 4M12 7v9"/></svg><span>主动上报</span></button>
-          <button type="button" data-page="firewall"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 2.4 7.8 7 10 4.6-2.2 7-5.6 7-10V6zM9 12h6"/></svg><span>端口访问控制</span></button>
-          <button type="button" data-page="health"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"/></svg><span>链路监测</span></button>
-        </div>
-        <div class="nav-group">
-          <p class="nav-label">工作台</p>
-          <button type="button" data-page="config"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h14"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="10" cy="18" r="2"/></svg><span>配置中心</span></button>
-          <button type="button" data-page="core"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 17v3h14v-3"/></svg><span>核心管理</span></button>
-          <button type="button" data-page="logs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h9l3 3v13H6zM14 4v4h4M9 12h6M9 16h6"/></svg><span>运行记录</span></button>
-          <button type="button" data-page="update"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 9a7 7 0 0 0-12-2L4 10m0-5v5h5m-4 5a7 7 0 0 0 12 2l3-3m0 5v-5h-5"/></svg><span>软件更新</span></button>
-        </div>
+
+      <nav class="main-tabs" aria-label="三大功能版块">
+        <button type="button" class="tab-btn active" data-tab="server">
+          <span class="roman">Ⅰ</span> 转发端 Server
+          <span id="badge-servers" class="tab-count">0</span>
+        </button>
+        <button type="button" class="tab-btn" data-tab="client">
+          <span class="roman">Ⅱ</span> 客户端 Client
+          <span id="badge-clients" class="tab-count">0</span>
+        </button>
+        <button type="button" class="tab-btn" data-tab="control">
+          <span class="roman">Ⅲ</span> 应用控制 App Control
+        </button>
       </nav>
-      <div class="sidebar-bottom">
-        <div class="sidebar-caption"><span class="sidebar-caption-dot" aria-hidden="true"></span><span>连接工作台<small>管理当前配置与实例</small></span></div>
-        <div class="sidebar-actions">
-          <button id="change-password" type="button" hidden>修改登录密码</button>
-          <button id="logout" type="button">退出登录</button>
-          <button id="quit-app" type="button">退出程序并停止实例</button>
-        </div>
+
+      <div class="topbar-actions">
+        <select id="skin-select" class="skin-select" title="切换时崎狂三主题色板">
+          <option value="zafkiel-crimson">刻刻帝 · 绯夜黑金</option>
+          <option value="detective-study">狂三 · 侦探书房</option>
+          <option value="moon-witch">狂三 · 月夜魔女</option>
+          <option value="sunlit-white">狂三 · 白昼礼装</option>
+        </select>
+        <button type="button" id="btn-account-quick" class="btn btn-ghost btn-sm" title="修改唯一管理员账号密码">
+          👤 <span id="top-username">admin</span>
+        </button>
+        <button type="button" id="btn-logout" class="btn btn-ghost btn-sm">退出登录</button>
       </div>
-    </aside>
-    <div id="nav-scrim" class="nav-scrim" aria-hidden="true"></div>
-    <div class="workspace">
-      <header class="topbar">
-        <div class="page-location">
-          <button id="menu-toggle" class="icon-button menu-toggle" type="button" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg></button>
-          <div class="location-copy"><span class="location-prefix">工作台</span><span class="location-separator" aria-hidden="true">/</span><strong id="page-title">网络总览</strong></div>
-        </div>
-        <div class="top-actions">
-          <span id="revision" class="revision"></span>
-          <span class="top-divider" aria-hidden="true"></span>
-          <button id="theme" class="icon-button" type="button" aria-label="切换深浅主题" title="切换深浅主题"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/><circle cx="12" cy="12" r="4"/></svg></button>
-          <button id="refresh" class="icon-button" type="button" aria-label="刷新状态" title="刷新状态"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 9a7 7 0 0 0-12-2L4 10m0-5v5h5m-4 5a7 7 0 0 0 12 2l3-3m0 5v-5h-5"/></svg></button>
-        </div>
-      </header>
-      <main id="content" class="workspace-content" tabindex="-1"></main>
-      <footer class="workspace-footer"><span>KurumiFRP <span aria-hidden="true">·</span> 连接工作台</span><span id="sync-time"></span></footer>
+    </header>
+
+    <div id="password-setup-alert" class="setup-banner" hidden>
+      <span>⚠️ 当前处于初始空密码状态，为了保障公网或局域网安全，建议立即设置管理员用户名与登录密码。</span>
+      <button type="button" id="btn-setup-now" class="btn btn-primary btn-sm">立即设置账号密码</button>
     </div>
+
+    <!-- 狂三主题横幅 -->
+    <section class="hero-strip">
+      <div class="hero-copy">
+        <div class="hero-kicker">TOKISAKI KURUMI · OFFICIAL FRP CONTROLLER</div>
+        <h2 id="hero-heading">转发端 Server 与连接看板</h2>
+        <p id="hero-desc">管理多套互相独立的官方 frps 服务端配置，并在连接看板中实时掌控每条隧道的流量统计、限流、限速、限时与开关。</p>
+      </div>
+      <div class="hero-art-wrap">
+        <picture>
+          <source media="(max-width: 760px)" srcset="/assets/overview-mobile.webp" />
+          <img src="/assets/overview.webp" alt="Kurumi Banner" class="hero-art-img" />
+        </picture>
+      </div>
+    </section>
+
+    <main class="main-container">
+      <!-- 版块 Ⅰ：转发端 Server (frps) + 连接看板 -->
+      <section id="panel-server" class="tab-panel">
+        <div class="section-toolbar">
+          <div class="profile-pills" id="server-pills"></div>
+          <div class="toolbar-btns">
+            <button type="button" id="btn-new-server" class="btn btn-primary">+ 新建转发端配置</button>
+          </div>
+        </div>
+        <div id="server-workspace"></div>
+      </section>
+
+      <!-- 版块 Ⅱ：客户端 Client (frpc) 多独立配置穿透 -->
+      <section id="panel-client" class="tab-panel" hidden>
+        <div class="section-toolbar">
+          <div class="profile-pills" id="client-pills"></div>
+          <div class="toolbar-btns">
+            <button type="button" id="btn-new-client" class="btn btn-primary">+ 新建客户端配置</button>
+          </div>
+        </div>
+        <div id="client-workspace"></div>
+      </section>
+
+      <!-- 版块 Ⅲ：应用控制 App Control (配置文件选择/导入/导出、账号密码、日志与核心状态) -->
+      <section id="panel-control" class="tab-panel" hidden>
+        <div class="control-grid">
+          <!-- 1. 软件内配置文件管理 -->
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3>软件内配置文件管理</h3>
+                <p class="muted-text">所有配置文件自包含保存在软件安装目录 <code>data/configs/</code> 内，可随时切换、导入或导出。</p>
+              </div>
+              <div class="btn-row">
+                <button type="button" id="btn-new-config-file" class="btn btn-secondary btn-sm">+ 新建配置方案</button>
+                <button type="button" id="btn-export-json" class="btn btn-primary btn-sm">导出当前配置 (.json)</button>
+              </div>
+            </div>
+            <div id="config-files-list" class="config-file-list"></div>
+            <div class="import-box">
+              <h4>导入配置文件</h4>
+              <div class="btn-row">
+                <label class="btn btn-secondary btn-sm file-btn">
+                  导入 JSON 配置存档
+                  <input type="file" id="input-import-json" accept=".json,application/json" hidden />
+                </label>
+                <button type="button" id="btn-open-import-toml" class="btn btn-secondary btn-sm">导入官方 frps/frpc TOML</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 2. 唯一管理员用户名与密码 & 核心信息 -->
+          <div class="stack-col">
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <h3>唯一管理员账户设置</h3>
+                  <p class="muted-text">简易单用户「用户名 + 密码」保护，无多余权限组负担。</p>
+                </div>
+              </div>
+              <form id="account-form" class="stack-form compact-form">
+                <div class="form-row-2">
+                  <label class="field">
+                    <span>管理员用户名</span>
+                    <input type="text" id="acc-username" required maxlength="64" />
+                  </label>
+                  <label class="field">
+                    <span>当前密码</span>
+                    <input type="password" id="acc-current-pass" placeholder="初始未设密码可留空" />
+                  </label>
+                </div>
+                <label class="field">
+                  <span>新登录密码</span>
+                  <input type="password" id="acc-new-pass" placeholder="输入新密码（留空则置为空密码）" />
+                </label>
+                <div class="btn-row">
+                  <button type="submit" class="btn btn-primary btn-sm">保存用户名与密码</button>
+                </div>
+              </form>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <h3>内置官方 FRP 核心与软件状态</h3>
+                  <p class="muted-text">100% 调度原版 fatedier/frp 双端核心，兼容全配置参数。</p>
+                </div>
+                <button type="button" id="btn-check-update" class="btn btn-secondary btn-sm">检查更新</button>
+              </div>
+              <div id="core-status-box" class="kv-list"></div>
+              <div id="update-result-box" class="update-note" hidden></div>
+              <div class="btn-row top-gap">
+                <button type="button" id="btn-stop-daemon" class="btn btn-danger btn-sm">关闭后台服务进程</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. 实时运行日志中心 -->
+        <div class="card top-gap">
+          <div class="card-header">
+            <div class="log-header-left">
+              <h3>实例运行日志（自动脱敏）</h3>
+              <select id="log-instance-select" class="input-select"></select>
+            </div>
+            <div class="btn-row">
+              <button type="button" id="btn-refresh-logs" class="btn btn-secondary btn-sm">刷新日志</button>
+              <button type="button" id="btn-download-logs" class="btn btn-secondary btn-sm">导出日志 (.txt)</button>
+            </div>
+          </div>
+          <pre id="log-viewer" class="log-viewer">暂无运行日志，请先启动任一转发端或客户端配置。</pre>
+        </div>
+      </section>
+    </main>
   </div>
 
-  <dialog id="dialog"><form id="editor"><div id="dialog-body"></div><div class="dialog-actions"><button id="cancel" type="button">取消</button><button type="submit" class="primary">保存草稿</button></div><p id="form-error" class="error" role="alert"></p></form></dialog>
-  <dialog id="diff-dialog" class="diff-dialog" aria-labelledby="diff-title"><div class="dialog-heading"><span class="overline">配置管理</span><h2 id="diff-title">配置差异预览</h2></div><p id="diff-summary" class="muted"></p><pre id="diff-content"></pre><div class="dialog-actions"><button id="diff-close" type="button">关闭</button></div></dialog>
-  <div id="transfer-notice" class="transfer-notice notice" role="status" hidden><span id="transfer-message"></span><button id="transfer-dismiss" type="button">知道了</button></div>
-  <div id="toast" class="toast" role="status" hidden></div>
+  <!-- 通用模态弹窗 -->
+  <dialog id="modal-dialog" class="modal-dialog">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3 id="modal-title">配置编辑</h3>
+        <button type="button" id="modal-close" class="icon-close" aria-label="关闭">✕</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+    </div>
+  </dialog>
+
+  <!-- 轻提示 Toast -->
+  <div id="toast-container" class="toast-container"></div>
 </body>
 </html>

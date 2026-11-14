@@ -1,35 +1,12 @@
-.TH KURUMIFRP 1 "November 2026" "KurumiFRP" "User Commands"
+.TH KURUMIFRP 1 "November 2026" "KurumiFrp" "User Commands"
 .SH NAME
-kurumifrp \- local workbench with an embedded frp runtime
+kurumifrp \- Tokisaki Kurumi themed WebUI controller for official frpc and frps
 .SH SYNOPSIS
 .B kurumifrp
-.RI [ options ]
+[\fB\-listen\fR \fIaddr\fR]
+[\fB\-data\fR \fIdir\fR]
+[\fB\-open\fR]
+[\fB\-stop\fR]
+[\fB\-version\fR]
 .SH DESCRIPTION
-The native Linux package installs a systemd service running as the unprivileged
-kurumifrp account. The management interface binds only to 127.0.0.1 on a free port
-between 9000 and 9010. Configuration and runtime data reside under
-/opt/kurumifrp/runtime. Existing web servers and firewall rules are not modified.
-.SH OPTIONS
-.TP
-.B --show-token
-Print the existing local management token. With system package state this requires
-root or the dedicated service account. Do not publish this token.
-.TP
-.B --check-running
-Verify that the installed manager responds to an authenticated local API request.
-.TP
-.B --stop
-Request authenticated shutdown and wait for managed instances to stop.
-.TP
-.B --version
-Print the application version.
-.SH ADMINISTRATION
-Use systemctl status/start/stop kurumifrp. Read the chosen address from
-/opt/kurumifrp/runtime/data/listen.addr. Use SSH port forwarding for remote access.
-The workbench starts at boot; only instances configured for automatic restore start.
-The service has no capability to bind privileged ports below 1024.
-.SH REMOVAL
-Debian/Ubuntu: apt remove preserves state; apt purge kurumifrp removes application
-state, keys, retained legacy cores and the service account created by this package.
-RPM: final dnf remove kurumifrp removes managed state; upgrade preserves it.
-System logs, browser records and user-created exports are not erased.
+KurumiFrp manages multiple independent official frps and frpc configurations and provides a real-time Connection Dashboard in a unified WebUI.

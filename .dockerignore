@@ -1,11 +1,8 @@
 *
 !go.mod
-!go.sum
-!cmd/
+!VERSION
+!README.md
 !cmd/**
-!internal/
 !internal/**
-!third_party/
-!third_party/**
-!web/
 !web/**
+!scripts/bundled_frp.py
