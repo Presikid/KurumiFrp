@@ -1,948 +1,1064 @@
 package manager
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"net/http"
-	"os"
-	"path/filepath"
+	"net/url"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/Presikid/KurumiFrp/internal/update"
+	"github.com/Presikid/KurumiFrp/internal/version"
+	"github.com/Presikid/KurumiFrp/web"
 )
 
+// App wires together single-user AuthManager, self-contained Store, Official FRP RuntimeSupervisor, and WebUI static assets.
 type App struct {
-	quit     chan struct{}
-	quitOnce sync.Once
-	runtime  RuntimeBackend
-	updater  *update.Manager
-	mu       sync.Mutex
-	// Take the appropriate node gate before mu; never hold both node gates.
-	nodeAccessGate   sync.RWMutex
-	nodeControlGate  sync.RWMutex
-	nodeControlEpoch string
-	// Protected by mu; changes when a valid instance operation is attempted.
-	nodeOperationVersions map[string]string
-
-	store    *Store
-	dataLock *dataDirectoryLock
-	addr     string
-	auth     auth
-	procs    map[string]*process
-	traffic               map[string]*trafficSamples // protected by mu, keyed by instance and run ID
-	trafficDaily          *trafficDailyHistory
-	trafficBudget         *trafficBudgetStore
-	assets                http.Handler
-	themes                *themeManager
-	webhooks              *webhookDispatcher
-	loginHistory          *loginHistory
-	logHistory            *logHistory
-	firewall              *firewallManager
-	updateNotices         updateNoticeState
-
-	// Lifecycle reservations are protected by mu. Slow operations run without it.
-	operations          map[string]*runtimeOperation
-	operationWG         sync.WaitGroup
-	closing             bool
-	closeOnce           sync.Once
-	closeErr            error
-	requestMu           sync.Mutex
-	requestClosing      bool
-	requestStarted      bool
-	requests            sync.WaitGroup
-	stateCache          *stateResponseCache
-	activeProbes        int
-	activeNodeChecks    int
-	nodeMonitors        map[string]nodeMonitorObservation
-	agentReporter       *outboundAgentManager
-	agentReceiver       *inboundAgentRegistry
-	activeBackup        bool
-	activeRegistration  bool
-	activeHealth        bool
-	startupDone         chan struct{}
-	startupCancel       context.CancelFunc
-	startupErrors       map[string]string
-	autoStartSuppressed map[string]bool
-	scheduleCancel      context.CancelFunc
-	scheduleDone        chan struct{}
-	firewallDone        chan struct{}
-	nodeMonitorDone     chan struct{}
-	scheduleBlocks      map[string]string
-	generations         map[string]uint64
-	logStreams          int
-	logStreamsByID      map[string]int
+	dataDir    string
+	auth       *AuthManager
+	store      *Store
+	runtime    *RuntimeSupervisor
+	staticFS   http.Handler
+	stateSeq   atomic.Uint64
+	onShutdown func()
 }
 
-func New(dir, addr string, assets fs.FS) (*App, error) {
-	return NewWithRuntime(dir, addr, assets, nil)
-}
+// NewApp initializes the complete KurumiFrp backend application.
+func NewApp(dataDir string, onShutdown func()) (*App, error) {
+	auth, err := NewAuthManager(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	store, err := NewStore(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	app := &App{
+		dataDir:    dataDir,
+		auth:       auth,
+		store:      store,
+		onShutdown: onShutdown,
+	}
+	app.stateSeq.Store(1)
 
-// NewWithRuntime installs the backend before restoring AutoStart instances.
-// A nil backend selects the in-process runtime used by normal builds.
-func NewWithRuntime(dir, addr string, assets fs.FS, backend RuntimeBackend) (result *App, resultErr error) {
-	if e := loopbackListen(addr); e != nil {
-		return nil, e
+	rt, err := NewRuntimeSupervisor(dataDir, store, func() {
+		app.stateSeq.Add(1)
+	})
+	if err != nil {
+		return nil, err
 	}
-	absDir, e := canonicalDataDirectory(dir)
-	if e != nil {
-		return nil, e
+	app.runtime = rt
+
+	subFS, err := fs.Sub(web.Files, ".")
+	if err != nil {
+		return nil, err
 	}
-	dir = absDir
-	dataLock, e := acquireDataDirectoryLock(dir)
-	if e != nil {
-		return nil, e
-	}
-	resourcesStarted := false
-	defer func() {
-		if resultErr != nil && !resourcesStarted {
-			resultErr = errors.Join(resultErr, dataLock.release())
-		}
-	}()
-	if backend == nil {
-		backend = NewEmbeddedRuntime()
-	}
-	adminPassword, adminPasswordData, e := prepareAdminPassword(dir)
-	var adminPasswordErr error
-	if e != nil {
-		// Keep the workbench and existing account/token recovery available if a
-		// password file exists but is damaged. Never replace it automatically.
-		path := filepath.Join(dir, "admin-password.json")
-		if _, statErr := os.Lstat(path); statErr != nil {
-			return nil, e
-		}
-		adminPassword, adminPasswordData, adminPasswordErr = readAdminPassword(path)
-	}
-	s, e := newStore(dir)
-	if e != nil {
-		return nil, e
-	}
-	tokenPath := filepath.Join(s.dir, "access.token")
-	token, e := privateFile(tokenPath)
-	if os.IsNotExist(e) {
-		token = []byte(randomHex(32))
-		e = atomicWrite(tokenPath, token)
-	}
-	if e != nil {
-		return nil, e
-	}
-	if len(token) != 64 {
-		return nil, fmt.Errorf("invalid access token file")
-	}
-	app := &App{nodeControlEpoch: randomHex(16), quit: make(chan struct{}), runtime: backend, updater: update.New(s.dir, "source"), store: s, dataLock: dataLock, addr: addr, auth: auth{token: string(token), attempts: map[string]attempt{}, sessions: map[string]authSession{}, hashSlots: make(chan struct{}, 2), adminPasswordPath: filepath.Join(s.dir, "admin-password.json"), adminPassword: adminPassword, adminPasswordData: adminPasswordData, adminPasswordErr: adminPasswordErr}, procs: map[string]*process{}, assets: newEmbeddedAssetHandler(assets), themes: newThemeManager(s.dir), startupDone: make(chan struct{}), startupErrors: make(map[string]string)}
-	if e = app.recoverSchedules(); e != nil {
-		return nil, e
-	}
-	// No initialization below this point may release the lock on failure:
-	// background resources can already have been created or started.
-	resourcesStarted = true
-	app.logHistory = newLogHistory(s.dir)
-	app.trafficDaily = loadTrafficDaily(s.dir, s.DB.State, s.DB.LocalTrafficIDs)
-	// An unreadable registration file disables only inbound reporting and is
-	// retained for repair; it must never be silently replaced.
-	app.agentReceiver, _ = newInboundAgentRegistry(s)
-	app.trafficBudget = loadTrafficBudgets(s.dir)
-	app.firewall = loadFirewall(s.dir)
-	s.beforeCommit = func(before, after State) error {
-		for id, op := range app.operations {
-			if op.scheduled && scheduleDraftChanged(before, after, id) {
-				return fmt.Errorf("定时操作正在执行，请等待结束后修改该实例配置")
-			}
-		}
-		return nil
-	}
-	app.webhooks = newWebhookDispatcher()
-	app.loginHistory = loadLoginHistory(s.dir)
-	app.auth.onLoginLimit = app.webhooks.emitLoginLimit
-	app.configureWebhooks()
-	s.onCommit = app.webhooks.emitConfig
-	ctx, cancel := context.WithCancel(context.Background())
-	app.startupCancel = cancel
-	instances := append([]Instance(nil), s.DB.State.Instances...)
-	go app.restoreAutoStart(ctx, instances)
-	scheduleCtx, scheduleCancel := context.WithCancel(context.Background())
-	app.scheduleCancel = scheduleCancel
-	app.scheduleDone = make(chan struct{})
-	go app.scheduleLoop(scheduleCtx)
-	app.firewallDone = make(chan struct{})
-	go app.firewallRefreshLoop(scheduleCtx)
-	app.nodeMonitorDone = make(chan struct{})
-	go app.nodeMonitorLoop(scheduleCtx)
-	go app.runTrafficDaily()
-	app.agentReporter = &outboundAgentManager{}
-	app.agentReporter.gate.Lock()
-	app.agentReporter.restartLocked(app)
-	app.agentReporter.gate.Unlock()
+	app.staticFS = http.FileServer(http.FS(subFS))
 	return app, nil
 }
 
-// SetDistribution configures the updater before the first HTTP request.
-// Later calls, including calls during shutdown, leave the existing updater intact.
-func (a *App) SetDistribution(distribution string) {
-	a.requestMu.Lock()
-	defer a.requestMu.Unlock()
-	if a.requestStarted || a.requestClosing {
-		return
+// SetListenAddr informs RuntimeSupervisor of the local callback port and triggers AutoStart profiles.
+func (a *App) SetListenAddr(addr string) {
+	a.runtime.SetCallbackAddr(addr)
+	a.runtime.StartAutoStarts()
+}
+
+// Close gracefully stops all running frpc and frps child processes.
+func (a *App) Close() {
+	if a.runtime != nil {
+		a.runtime.StopAll()
 	}
-	a.updater = update.New(a.store.dir, update.DetectDistribution(distribution))
 }
-func (a *App) AccessToken() string { return a.auth.token }
-func HTTPServer(addr string, h http.Handler) *http.Server {
-	return &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 45 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
+
+// Auth exposes the AuthManager for CLI maintenance commands.
+func (a *App) Auth() *AuthManager {
+	return a.auth
 }
-func reply(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+
+func (a *App) bumpState() {
+	a.stateSeq.Add(1)
 }
-func fail(w http.ResponseWriter, status int, e error) {
-	reply(w, status, map[string]any{"error": e.Error()})
-}
-func decode(w http.ResponseWriter, r *http.Request, v any) error {
-	if strings.Split(r.Header.Get("Content-Type"), ";")[0] != "application/json" {
-		return fmt.Errorf("需要 application/json")
-	}
-	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	d.DisallowUnknownFields()
-	if e := d.Decode(v); e != nil {
-		return fmt.Errorf("请求 JSON 无效：%w", e)
-	}
-	if e := d.Decode(&struct{}{}); e != io.EOF {
-		return fmt.Errorf("请求只能包含一个 JSON 对象")
-	}
-	return nil
-}
+
+// ServeHTTP dispatches internal FRP webhooks, REST APIs, and embedded Tokisaki Kurumi WebUI assets.
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	a.requestMu.Lock()
-	if a.requestClosing {
-		a.requestMu.Unlock()
-		http.Error(w, "工作台正在关闭", http.StatusServiceUnavailable)
-		return
-	}
-	a.requestStarted = true
-	a.requests.Add(1)
-	a.requestMu.Unlock()
-	defer a.requests.Done()
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-	_, port, _ := net.SplitHostPort(a.addr)
-	if r.Host != a.addr && r.Host != "localhost:"+port {
-		fail(w, 403, fmt.Errorf("Host 不允许；请使用本机或 SSH 转发地址"))
+
+	path := r.URL.Path
+
+	// 1. Internal official frps HTTP Server Plugin callback (authenticated by per-process random secret)
+	if strings.HasPrefix(path, "/internal/frps-plugin/") {
+		srvID := strings.TrimPrefix(path, "/internal/frps-plugin/")
+		a.runtime.HandleFRPSPlugin(w, r, srvID)
 		return
 	}
-	if !sameOrigin(r) {
-		fail(w, 403, fmt.Errorf("跨站请求被拒绝"))
-		return
-	}
-	if r.URL.Path == "/api/launch-login" && r.Method == "POST" {
-		a.launchLogin(w, r)
-		return
-	}
-	if r.URL.Path == "/api/login" && r.Method == "POST" {
-		var input struct {
-			Password *string `json:"password"`
+
+	// 2. One-time local browser launch ticket (--open)
+	if path == "/launch" && r.Method == http.MethodGet {
+		ticket := r.URL.Query().Get("ticket")
+		if sid, ok := a.auth.RedeemBrowserTicket(ticket); ok {
+			setSessionCookie(w, sid)
 		}
-		if e := decode(w, r, &input); e != nil {
-			fail(w, 400, e)
+		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+
+	// 3. Public session check & login/logout endpoints
+	if path == "/api/session" && r.Method == http.MethodGet {
+		user, ok := a.auth.Authenticated(r)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"authenticated":      ok,
+			"username":           nonEmptyStr(user, a.auth.Username()),
+			"defaultUsername":    a.auth.Username(),
+			"needsPasswordSetup": a.auth.NeedsPasswordSetup(),
+			"version":            version.Current,
+		})
+		return
+	}
+
+	if path == "/api/login" && r.Method == http.MethodPost {
+		if !sameOriginRequest(r) {
+			writeError(w, http.StatusForbidden, "跨站请求已被拦截")
 			return
 		}
-		sid, e := a.auth.login(r, input.Password)
-		a.loginHistory.record(r, "本机密码", e == nil)
-		if e != nil {
-			fail(w, 401, e)
+		var req struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "kurumi_session", Value: sid, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 43200})
-		reply(w, 200, map[string]bool{"ok": true})
-		return
-	}
-	// The remote summary has its own narrow, read-only credential.
-	if r.URL.Path == "/api/node/summary" {
-		a.nodeSummaryAPI(w, r)
-		return
-	}
-	if r.URL.Path == "/api/node/control" {
-		a.nodeControlAPI(w, r)
-		return
-	}
-	if r.URL.Path == "/api/node-agent/session" || r.URL.Path == "/api/node-agent/report" {
-		if a.agentReceiver == nil {
-			fail(w, http.StatusServiceUnavailable, fmt.Errorf("主动节点接收服务不可用"))
+		sid, err := a.auth.Login(clientIPFromRequest(r), req.Username, req.Password)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, err.Error())
 			return
 		}
-		a.agentReceiver.serveAgent(w, r)
+		setSessionCookie(w, sid)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":                 true,
+			"username":           a.auth.Username(),
+			"needsPasswordSetup": a.auth.NeedsPasswordSetup(),
+		})
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, "/api/") {
-		var p principal
-		var ok bool
-		var unlock func()
-		// Password changes and logout take their own exclusive gate; streams
-		// acquire the session gate separately for each frame.
-		ungated := (r.Method == http.MethodPost && (r.URL.Path == "/api/password" || r.URL.Path == "/api/logout")) || (r.Method == http.MethodGet && r.URL.Path == "/api/logs/stream")
-		if ungated {
-			p, ok = a.auth.identity(r)
-		} else {
-			p, unlock, ok = a.auth.lockRequest(r)
+
+	if path == "/api/logout" && r.Method == http.MethodPost {
+		a.auth.Logout(r)
+		clearSessionCookie(w)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+
+	if path == "/api/browser-ticket" && r.Method == http.MethodPost {
+		if !a.auth.VerifyLocalToken(r) {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
 		}
+		ticket, err := a.auth.IssueBrowserTicket()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ticket": ticket})
+		return
+	}
+
+	// 4. Authenticated API routes
+	if strings.HasPrefix(path, "/api/") {
+		username, ok := a.auth.Authenticated(r)
 		if !ok {
-			fail(w, http.StatusUnauthorized, fmt.Errorf("请先登录"))
+			writeError(w, http.StatusUnauthorized, "登录会话已失效，请重新输入用户名与密码")
 			return
 		}
-		if unlock != nil {
-			defer unlock()
-		}
-		if !routeAllowed(p, r) {
-			fail(w, 403, fmt.Errorf("没有此操作的权限"))
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !a.auth.VerifyLocalToken(r) && !sameOriginRequest(r) {
+			writeError(w, http.StatusForbidden, "跨站修改请求已被拦截")
 			return
 		}
-		r = withPrincipal(r, p)
-		if r.URL.Path == "/api/node-agents" {
-			a.inboundAgentAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/firewall" {
-			a.firewallAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/firewall/seen" {
-			a.firewallSeenAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/firewall/asn" {
-			a.firewallASNAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/firewall/ip-asn" {
-			a.firewallIPASNAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/firewall/import" {
-			a.firewallImportAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/firewall/list" {
-			a.firewallListAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/login-history" {
-			a.loginHistoryAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/password" {
-			a.adminPasswordAPI(w, r, p)
-			return
-		}
-		if r.URL.Path == "/api/quit" && r.Method == "POST" {
-			a.RequestShutdown()
-			reply(w, 200, map[string]bool{"ok": true})
-			return
-		}
-		if r.URL.Path == "/api/browser-ticket" && r.Method == "POST" {
-			if !a.auth.localToken(r) {
-				fail(w, http.StatusForbidden, fmt.Errorf("仅本机管理令牌可签发启动凭据"))
-				return
-			}
-			reply(w, 200, map[string]string{"url": a.BrowserURL()})
-			return
-		}
-		if r.URL.Path == "/api/logout" && r.Method == "POST" {
-			// A Bearer credential may accompany a different browser cookie.
-			// Drain the cookie's session, not the Bearer principal's gate.
-			cookieRequest := r.Clone(r.Context())
-			cookieRequest.Header = r.Header.Clone()
-			cookieRequest.Header.Del("Authorization")
-			cookiePrincipal, cookieValid := a.auth.identity(cookieRequest)
-			if cookieValid && cookiePrincipal.gate != nil {
-				if !cookiePrincipal.gate.TryLock() {
-					fail(w, http.StatusTooManyRequests, fmt.Errorf("其他操作正在进行，本次未退出，请稍后重试"))
-					return
-				}
-				defer cookiePrincipal.gate.Unlock()
-				current, valid := a.auth.identity(cookieRequest)
-				if !valid || current.gate != cookiePrincipal.gate {
-					fail(w, 401, fmt.Errorf("请先登录"))
-					return
-				}
-			}
-			a.auth.logout(r)
-			http.SetCookie(w, &http.Cookie{Name: "kurumi_session", Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1})
-			reply(w, 200, map[string]bool{"ok": true})
-			return
-		}
-		if r.URL.Path == "/api/probe" && r.Method == "POST" {
-			a.probeAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/registration" {
-			if r.Method != http.MethodGet {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			a.registrationAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/health" {
-			if r.Method != http.MethodPost {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			a.healthAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/themes" || r.URL.Path == "/api/themes/install" {
-			a.themesAPI(w, r)
-			return
-		}
-		if strings.HasPrefix(r.URL.Path, "/api/update/") {
-			a.updateAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/control" || r.URL.Path == "/api/validate" {
-			a.runtimeAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/schedules" {
-			a.scheduleAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/tunnels/export" {
-			a.batchTunnelExportAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/nodes" || r.URL.Path == "/api/nodes/check" || r.URL.Path == "/api/nodes/control" || r.URL.Path == "/api/nodes/resolve" || r.URL.Path == "/api/nodes/confirm" {
-			a.nodesAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/webhook" {
-			a.webhookAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/webhooks" {
-			a.webhookTargetsAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/backup/export" || r.URL.Path == "/api/backup/import" {
-			if r.Method != http.MethodPost {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			if r.URL.Path == "/api/backup/export" {
-				a.backupExport(w, r)
-			} else {
-				a.backupImport(w, r)
-			}
-			return
-		}
-		if r.URL.Path == "/api/traffic-history" {
-			if r.Method != http.MethodGet {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			a.trafficDailyAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/traffic-budget" {
-			a.trafficBudgetAPI(a.trafficBudget, w, r)
-			return
-		}
-		if r.URL.Path == "/api/server-traffic" {
-			if r.Method != http.MethodGet {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			a.serverTrafficAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/client-traffic" {
-			if r.Method != http.MethodGet {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			a.clientRuleTrafficAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/traffic" {
-			if r.Method != http.MethodGet {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			a.trafficAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/state" && r.Method == "GET" {
-			a.handleState(w, r)
-			return
-		}
-		if r.URL.Path == "/api/logs/history" {
-			a.logHistoryAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/logs" || r.URL.Path == "/api/logs/stream" {
-			if r.Method != http.MethodGet {
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				return
-			}
-			if r.URL.Path == "/api/logs" {
-				a.pollLogs(w, r)
-			} else {
-				a.streamLogs(w, r)
-			}
-			return
-		}
-		if r.URL.Path == "/api/import" {
-			a.importConfigAPI(w, r)
-			return
-		}
-		if r.URL.Path == "/api/delete" || r.URL.Path == "/api/restore" {
-			buffered, err := bufferMutationBody(w, r, 1<<20)
-			if err != nil {
-				fail(w, 400, err)
-				return
-			}
-			r = buffered
-			release, err := a.lockStateReplacement()
-			if err != nil {
-				fail(w, 409, err)
-				return
-			}
-			defer release()
-		} else {
-			a.mu.Lock()
-			defer a.mu.Unlock()
-		}
-		a.api(w, r)
+		a.handleAPI(w, r, username)
 		return
 	}
-	if r.Method != "GET" && r.Method != "HEAD" {
-		w.WriteHeader(405)
-		return
-	}
-	if strings.HasPrefix(r.URL.Path, "/theme-assets/") {
-		a.serveThemeAsset(w, r)
-		return
-	}
-	a.assets.ServeHTTP(w, r)
+
+	// 5. Static Tokisaki Kurumi WebUI assets
+	a.staticFS.ServeHTTP(w, r)
 }
-func (a *App) api(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "GET" {
-		if (r.URL.Path == "/api/config" || r.URL.Path == "/api/diff") && !requestPrincipal(r).canView(r.URL.Query().Get("id")) {
-			fail(w, http.StatusForbidden, fmt.Errorf("没有此实例的查看权限"))
-			return
-		}
-		switch r.URL.Path {
-		case "/api/export":
-			a.export(w, r)
-			return
-		case "/api/config":
-			v, e := a.store.render(r.URL.Query().Get("id"), true)
-			if e != nil {
-				fail(w, 404, e)
-				return
-			}
-			reply(w, 200, map[string]any{"toml": v.Text, "redacted": true})
-			return
-		case "/api/diff":
-			id := r.URL.Query().Get("id")
-			i, ok := a.store.DB.State.Instance(id)
-			if !ok {
-				fail(w, 404, fmt.Errorf("实例不存在"))
-				return
-			}
-			p := a.procs[id]
-			if p == nil || p.appliedConfig == "" || p.view().Applied == "" {
-				fail(w, 409, fmt.Errorf("该实例尚无可比较的已应用配置；请先成功启动一次"))
-				return
-			}
-			current, err := a.store.render(id, false)
-			if err != nil {
-				fail(w, 400, err)
-				return
-			}
-			reply(w, 200, compareConfig(i.ID, i.Name, a.store.DB.Revision, p.appliedConfig, current.Text, p.appliedSecretDigest != current.SecretDigest))
-			return
-		default:
-			fail(w, 404, fmt.Errorf("接口不存在"))
-			return
-		}
-	}
-	if r.Method != "POST" {
-		w.WriteHeader(405)
-		return
-	}
-	if r.URL.Path == "/api/import/toml" || r.URL.Path == "/api/import/toml/preview" {
-		a.tomlImportAPI(w, r)
-		return
-	}
-	if r.URL.Path == "/api/duplicate" {
-		a.duplicateAPI(w, r)
-		return
-	}
-	if r.URL.Path == "/api/tunnels/batch-enabled" {
-		a.batchTunnelEnabledAPI(w, r)
-		return
-	}
-	if r.URL.Path == "/api/tunnels/batch-delete" {
-		a.batchTunnelDeleteAPI(w, r)
-		return
-	}
-	if r.URL.Path == "/api/tunnels/batch" {
-		a.createTunnelBatchAPI(w, r)
-		return
-	}
-	var req struct {
-		Revision     uint64          `json:"revision"`
-		Kind         string          `json:"kind"`
-		ID           string          `json:"id"`
-		Action       string          `json:"action"`
-		Target       uint64          `json:"target"`
-		HistoryLimit *int            `json:"historyLimit"`
-		Value        json.RawMessage `json:"value"`
-	}
-	if e := decode(w, r, &req); e != nil {
-		fail(w, 400, e)
-		return
-	}
-	if req.Revision != a.store.DB.Revision {
-		fail(w, 409, fmt.Errorf("配置已在其他窗口更新，请刷新后重试"))
-		return
-	}
-	var err error
+
+func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string) {
 	switch r.URL.Path {
-	case "/api/history-settings":
-		if req.HistoryLimit == nil {
-			err = fmt.Errorf("请指定快照保留数量")
-		} else {
-			err = a.store.setHistoryLimit(*req.HistoryLimit)
+	case "/api/state":
+		etag := fmt.Sprintf(`"s-%d"`, a.stateSeq.Load())
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
 		}
-	case "/api/save":
-		st := a.store.DB.State.clone()
-		switch req.Kind {
-		case "instance":
-			var v Instance
-			if err = decodeStrictJSON(req.Value, &v); err != nil {
-				break
+		activeFile, doc := a.store.Snapshot()
+		files, _ := a.store.ListConfigFiles()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"version":            version.Current,
+			"username":           username,
+			"needsPasswordSetup": a.auth.NeedsPasswordSetup(),
+			"activeConfigFile":   activeFile,
+			"configFiles":        files,
+			"config":             doc,
+			"runtime":            a.runtime.Views(doc),
+			"core":               LocateBinaries(a.dataDir),
+		})
+
+	case "/api/account":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			CurrentPassword string `json:"currentPassword"`
+			NewUsername     string `json:"newUsername"`
+			NewPassword     string `json:"newPassword"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := a.auth.UpdateCredentials(req.CurrentPassword, req.NewUsername, req.NewPassword); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":                 true,
+			"username":           a.auth.Username(),
+			"needsPasswordSetup": a.auth.NeedsPasswordSetup(),
+		})
+
+	// ==================== Section 1: Server (frps) & Connection Dashboard ====================
+	case "/api/servers/save":
+		var srv ServerProfile
+		if err := readJSONBody(r, &srv); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if strings.TrimSpace(srv.Name) == "" {
+			writeError(w, http.StatusBadRequest, "转发端配置名称不能为空")
+			return
+		}
+		if srv.BindPort <= 0 || srv.BindPort > 65535 {
+			writeError(w, http.StatusBadRequest, "监听端口需在 1~65535 之间")
+			return
+		}
+		err := a.store.Update(func(doc *ConfigDocument) error {
+			if srv.ID == "" {
+				srv.ID = newShortID("srv")
+				srv.ConnPolicies = make(map[string]ConnPolicy)
+				doc.Servers = append(doc.Servers, srv)
+				return nil
 			}
-			old, exists := st.Instance(v.ID)
-			if exists {
-				// Older editors omit newer protocol fields. Preserve omitted values
-				// while treating an omitted or empty credential as "keep".
-				v = old
-				v.Token = ""
-				if err = json.Unmarshal(req.Value, &v); err != nil {
-					break
-				}
-			}
-			if v.ID == "" {
-				v.ID = randomHex(8)
-			} else if !exists {
-				err = fmt.Errorf("实例不存在")
-				break
-			}
-			if exists && old.Kind != v.Kind {
-				err = fmt.Errorf("已有实例不能改变类型")
-				break
-			}
-			if v.ManagedAccountLogin && (!exists || !old.ManagedAccountLogin) {
-				err = fmt.Errorf("旧版服务端认证方式已停用，不能启用")
-				break
-			}
-			if exists && old.ManagedAccountLogin && !v.ManagedAccountLogin && v.Token == "" {
-				err = fmt.Errorf("切换认证方式时，请明确填写共享连接令牌")
-				break
-			}
-			v.HasToken = false
-			if v.Token == "" {
-				v.Token = old.Token
-			} else {
-				v.Token, err = a.store.encrypt(v.Token)
-				if err != nil {
-					break
-				}
-			}
-			if exists {
-				for j := range st.Instances {
-					if st.Instances[j].ID == v.ID {
-						st.Instances[j] = v
+			for i := range doc.Servers {
+				if doc.Servers[i].ID == srv.ID {
+					if srv.ConnPolicies == nil {
+						srv.ConnPolicies = doc.Servers[i].ConnPolicies
 					}
-				}
-			} else {
-				st.Instances = append(st.Instances, v)
-			}
-		case "tunnel":
-			var edit struct {
-				Tunnel
-				ClearHTTPPassword   bool            `json:"clearHTTPPassword,omitempty"`
-				ClearPluginPassword bool            `json:"clearPluginPassword,omitempty"`
-				RequestHeaders      json.RawMessage `json:"requestHeaders"`
-				ResponseHeaders     json.RawMessage `json:"responseHeaders"`
-			}
-			if err = decodeStrictJSON(req.Value, &edit); err != nil {
-				break
-			}
-			var pluginFields struct {
-				Type     json.RawMessage `json:"pluginType"`
-				User     json.RawMessage `json:"pluginUser"`
-				Password json.RawMessage `json:"pluginPassword"`
-				Clear    json.RawMessage `json:"clearPluginPassword"`
-			}
-			if err = json.Unmarshal(req.Value, &pluginFields); err != nil {
-				break
-			}
-			for _, field := range []json.RawMessage{pluginFields.Type, pluginFields.User, pluginFields.Password, pluginFields.Clear} {
-				if len(field) != 0 && strings.TrimSpace(string(field)) == "null" {
-					err = fmt.Errorf("插件字段不能为 null")
-					break
+					doc.Servers[i] = srv
+					return nil
 				}
 			}
-			if err != nil {
-				break
-			}
-			if !validPluginJSONText(pluginFields.User) || !validPluginJSONText(pluginFields.Password) {
-				err = fmt.Errorf("插件用户名和密码须为有效的 Unicode 文本")
-				break
-			}
-			v := edit.Tunnel
-			old, exists := st.Tunnel(v.ID)
-			if exists {
-				v = old
-				v.Secret = ""
-				v.HTTPPassword = ""
-				v.PluginPassword = ""
-				// Do not let json.Unmarshal reuse and mutate the old header slices.
-				v.RequestHeaders, v.ResponseHeaders = nil, nil
-				if err = json.Unmarshal(req.Value, &v); err != nil {
-					break
-				}
-			}
-			if v.Type == "tcp" || v.Type == "udp" {
-				var fields struct {
-					RemotePort json.RawMessage `json:"remotePort"`
-				}
-				if err = json.Unmarshal(req.Value, &fields); err != nil {
-					break
-				}
-				present := len(fields.RemotePort) != 0
-				if (present && strings.TrimSpace(string(fields.RemotePort)) == "null") || (!present && (!exists || old.Type != v.Type)) {
-					err = fmt.Errorf("请指定远端端口；填 0 可请求动态分配")
-					break
-				}
-			}
-			if v.ID == "" {
-				v.ID = randomHex(8)
-			} else if !exists {
-				err = fmt.Errorf("规则不存在")
-				break
-			}
-			if exists && ((!legacyEditorProtocol(old.Type) && v.Type != old.Type) ||
-				(old.Type == "stcp-visitor" && old.LocalPort < 0 && (v.Type != old.Type || v.LocalPort != old.LocalPort))) {
-				err = fmt.Errorf("当前暂不支持更改此规则的协议类型或回退监听端口")
-				break
-			}
-			if exists {
-				if err = prepareVisitorTransfer(st, old, &v); err != nil {
-					break
-				}
-			}
-			v.RequestHeaders, err = a.store.mergeHTTPHeaders(edit.RequestHeaders, old.RequestHeaders)
-			if err != nil {
-				break
-			}
-			v.ResponseHeaders, err = a.store.mergeHTTPHeaders(edit.ResponseHeaders, old.ResponseHeaders)
-			if err != nil {
-				break
-			}
-			v.HasSecret = false
-			v.HasHTTPPassword = false
-			v.HasPluginPassword = false
-			if !usesPairingSecret(v.Type) {
-				// A previously imported state may contain an unused encrypted
-				// value. Preserve it on same-type edits until explicitly changed.
-				if exists && old.Type == v.Type {
-					v.Secret = old.Secret
-				} else {
-					v.Secret = ""
-				}
-			} else if v.Secret == "" {
-				v.Secret = old.Secret
-			} else {
-				v.Secret, err = a.store.encrypt(v.Secret)
-				if err != nil {
-					break
-				}
-			}
-			if edit.ClearHTTPPassword && v.HTTPPassword != "" {
-				err = fmt.Errorf("不能同时设置和清除 HTTP 密码")
-				break
-			}
-			if exists && old.Type != v.Type && old.HTTPPassword != "" && !edit.ClearHTTPPassword {
-				err = fmt.Errorf("更改协议前请确认清除已保存的 HTTP 密码")
-				break
-			}
-			if edit.ClearHTTPPassword {
-				v.HTTPPassword = ""
-			} else if v.Type != "tcpmux" && v.Type != "http" {
-				if exists && old.Type == v.Type {
-					v.HTTPPassword = old.HTTPPassword
-				} else {
-					v.HTTPPassword = ""
-				}
-			} else if v.HTTPPassword != "" {
-				v.HTTPPassword, err = a.store.encrypt(v.HTTPPassword)
-				if err != nil {
-					break
-				}
-			} else if exists && old.Type == v.Type {
-				v.HTTPPassword = old.HTTPPassword
-			}
-			if edit.ClearPluginPassword && v.PluginPassword != "" {
-				err = fmt.Errorf("不能同时设置和清除插件密码")
-				break
-			}
-			if exists && old.PluginType == socks5PluginType && old.PluginPassword != "" && v.PluginType != old.PluginType && !edit.ClearPluginPassword {
-				err = fmt.Errorf("切换插件目标前请确认清除已保存的插件密码")
-				break
-			}
-			if edit.ClearPluginPassword {
-				v.PluginPassword = ""
-			} else if v.PluginType == socks5PluginType {
-				if v.PluginPassword != "" {
-					v.PluginPassword, err = a.store.encryptPluginPassword(v.PluginPassword)
-					if err != nil {
-						break
+			doc.Servers = append(doc.Servers, srv)
+			return nil
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": srv.ID})
+
+	case "/api/servers/duplicate":
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var newID string
+		err := a.store.Update(func(doc *ConfigDocument) error {
+			for _, s := range doc.Servers {
+				if s.ID == req.ID {
+					cp := s
+					cp.ID = newShortID("srv")
+					cp.Name = s.Name + " (副本)"
+					cp.AutoStart = false
+					if cp.BindPort < 65500 {
+						cp.BindPort++
 					}
-				} else if exists && old.PluginType == socks5PluginType {
-					v.PluginPassword = old.PluginPassword
+					cp.VhostHTTPPort = 0
+					cp.VhostHTTPSPort = 0
+					cp.ConnPolicies = make(map[string]ConnPolicy)
+					doc.Servers = append(doc.Servers, cp)
+					newID = cp.ID
+					return nil
 				}
-			} else if v.PluginPassword != "" {
-				err = fmt.Errorf("未启用 SOCKS5 时不能设置插件密码")
+			}
+			return errors.New("未找到要复制的转发端配置")
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": newID})
+
+	case "/api/servers/delete":
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		_ = a.runtime.StopInstance(req.ID)
+		err := a.store.Update(func(doc *ConfigDocument) error {
+			out := make([]ServerProfile, 0, len(doc.Servers))
+			for _, s := range doc.Servers {
+				if s.ID != req.ID {
+					out = append(out, s)
+				}
+			}
+			doc.Servers = out
+			return nil
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	case "/api/servers/control":
+		var req struct {
+			ID     string `json:"id"`
+			Action string `json:"action"` // start, stop, restart
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		_, doc := a.store.Snapshot()
+		var target *ServerProfile
+		for i := range doc.Servers {
+			if doc.Servers[i].ID == req.ID {
+				target = &doc.Servers[i]
 				break
 			}
-			if exists {
-				for j := range st.Tunnels {
-					if st.Tunnels[j].ID == v.ID {
-						st.Tunnels[j] = v
-					}
-				}
-			} else {
-				st.Tunnels = append(st.Tunnels, v)
-			}
+		}
+		if target == nil {
+			writeError(w, http.StatusNotFound, "未找到该转发端配置")
+			return
+		}
+		var err error
+		switch req.Action {
+		case "start", "restart":
+			err = a.runtime.StartServer(*target)
+		case "stop":
+			err = a.runtime.StopInstance(target.ID)
 		default:
-			err = fmt.Errorf("未知对象")
+			err = errors.New("未知控制动作")
 		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	case "/api/servers/toml":
+		id := r.URL.Query().Get("id")
+		mask := r.URL.Query().Get("mask") == "1"
+		_, doc := a.store.Snapshot()
+		for _, s := range doc.Servers {
+			if s.ID == id {
+				rendered := RenderServerTOML(s, ServerRuntimeInjections{Preview: true, MaskSecrets: mask})
+				writeJSON(w, http.StatusOK, map[string]any{"name": s.Name, "toml": rendered.TOML})
+				return
+			}
+		}
+		writeError(w, http.StatusNotFound, "未找到该转发端配置")
+
+	case "/api/servers/conn-policy":
+		var req struct {
+			ServerID       string `json:"serverId"`
+			ProxyName      string `json:"proxyName"`
+			Enabled        bool   `json:"enabled"`
+			TrafficLimitMB int64  `json:"trafficLimitMB"`
+			SpeedLimitKBps int64  `json:"speedLimitKBps"`
+			ExpiresAt      string `json:"expiresAt"`
+			Note           string `json:"note"`
+			ResetTraffic   bool   `json:"resetTraffic"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.ProxyName = strings.TrimSpace(req.ProxyName)
+		if req.ProxyName == "" {
+			writeError(w, http.StatusBadRequest, "连接名称不能为空")
+			return
+		}
+		if strings.TrimSpace(req.ExpiresAt) != "" {
+			if _, err := time.Parse(time.RFC3339, strings.TrimSpace(req.ExpiresAt)); err != nil {
+				writeError(w, http.StatusBadRequest, "限时截止时间格式无效（需为 ISO8601/RFC3339）")
+				return
+			}
+		}
+		err := a.store.Update(func(doc *ConfigDocument) error {
+			for i := range doc.Servers {
+				if doc.Servers[i].ID == req.ServerID {
+					if doc.Servers[i].ConnPolicies == nil {
+						doc.Servers[i].ConnPolicies = make(map[string]ConnPolicy)
+					}
+					prev := doc.Servers[i].ConnPolicies[req.ProxyName]
+					pol := ConnPolicy{
+						ProxyName:        req.ProxyName,
+						Enabled:          req.Enabled,
+						TrafficLimitMB:   maxInt64(0, req.TrafficLimitMB),
+						SpeedLimitKBps:   maxInt64(0, req.SpeedLimitKBps),
+						ExpiresAt:        strings.TrimSpace(req.ExpiresAt),
+						RecordedInBytes:  prev.RecordedInBytes,
+						RecordedOutBytes: prev.RecordedOutBytes,
+						Note:             strings.TrimSpace(req.Note),
+					}
+					if req.ResetTraffic {
+						pol.RecordedInBytes = 0
+						pol.RecordedOutBytes = 0
+					}
+					doc.Servers[i].ConnPolicies[req.ProxyName] = pol
+					return nil
+				}
+			}
+			return errors.New("未找到对应转发端配置")
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if !req.Enabled {
+			a.runtime.CloseOfflineProxies(req.ServerID)
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	case "/api/servers/conn-delete":
+		var req struct {
+			ServerID  string `json:"serverId"`
+			ProxyName string `json:"proxyName"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		err := a.store.Update(func(doc *ConfigDocument) error {
+			for i := range doc.Servers {
+				if doc.Servers[i].ID == req.ServerID {
+					delete(doc.Servers[i].ConnPolicies, req.ProxyName)
+					return nil
+				}
+			}
+			return errors.New("未找到对应转发端配置")
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	// ==================== Section 2: Client (frpc) & Tunnels ====================
+	case "/api/clients/save":
+		var cli ClientProfile
+		if err := readJSONBody(r, &cli); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if strings.TrimSpace(cli.Name) == "" {
+			writeError(w, http.StatusBadRequest, "客户端配置名称不能为空")
+			return
+		}
+		if strings.TrimSpace(cli.ServerAddr) == "" {
+			writeError(w, http.StatusBadRequest, "远端服务器地址不能为空")
+			return
+		}
+		if cli.ServerPort <= 0 || cli.ServerPort > 65535 {
+			writeError(w, http.StatusBadRequest, "服务器端口需在 1~65535 之间")
+			return
+		}
+		var saved ClientProfile
+		err := a.store.Update(func(doc *ConfigDocument) error {
+			if cli.ID == "" {
+				cli.ID = newShortID("cli")
+				if cli.Tunnels == nil {
+					cli.Tunnels = []TunnelRule{}
+				}
+				doc.Clients = append(doc.Clients, cli)
+				saved = cli
+				return nil
+			}
+			for i := range doc.Clients {
+				if doc.Clients[i].ID == cli.ID {
+					if cli.Tunnels == nil {
+						cli.Tunnels = doc.Clients[i].Tunnels
+					}
+					doc.Clients[i] = cli
+					saved = cli
+					return nil
+				}
+			}
+			doc.Clients = append(doc.Clients, cli)
+			saved = cli
+			return nil
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		_ = a.runtime.ReloadOrRestartClient(saved)
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": saved.ID})
+
+	case "/api/clients/duplicate":
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var newID string
+		err := a.store.Update(func(doc *ConfigDocument) error {
+			for _, c := range doc.Clients {
+				if c.ID == req.ID {
+					raw, _ := json.Marshal(c)
+					var cp ClientProfile
+					_ = json.Unmarshal(raw, &cp)
+					cp.ID = newShortID("cli")
+					cp.Name = c.Name + " (副本)"
+					cp.AutoStart = false
+					for i := range cp.Tunnels {
+						cp.Tunnels[i].ID = newShortID("tun")
+						cp.Tunnels[i].Enabled = false
+					}
+					doc.Clients = append(doc.Clients, cp)
+					newID = cp.ID
+					return nil
+				}
+			}
+			return errors.New("未找到要复制的客户端配置")
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": newID})
+
+	case "/api/clients/delete":
+		var req struct {
+			ID string `json:"id"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		_ = a.runtime.StopInstance(req.ID)
+		err := a.store.Update(func(doc *ConfigDocument) error {
+			out := make([]ClientProfile, 0, len(doc.Clients))
+			for _, c := range doc.Clients {
+				if c.ID != req.ID {
+					out = append(out, c)
+				}
+			}
+			doc.Clients = out
+			return nil
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	case "/api/clients/control":
+		var req struct {
+			ID     string `json:"id"`
+			Action string `json:"action"` // start, stop, restart, reload
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		_, doc := a.store.Snapshot()
+		var target *ClientProfile
+		for i := range doc.Clients {
+			if doc.Clients[i].ID == req.ID {
+				target = &doc.Clients[i]
+				break
+			}
+		}
+		if target == nil {
+			writeError(w, http.StatusNotFound, "未找到该客户端配置")
+			return
+		}
+		var err error
+		switch req.Action {
+		case "start", "restart":
+			err = a.runtime.StartClient(*target)
+		case "reload":
+			err = a.runtime.ReloadOrRestartClient(*target)
+		case "stop":
+			err = a.runtime.StopInstance(target.ID)
+		default:
+			err = errors.New("未知控制动作")
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	case "/api/clients/tunnel-save":
+		var req struct {
+			ClientID string     `json:"clientId"`
+			Tunnel   TunnelRule `json:"tunnel"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		req.Tunnel.Name = strings.TrimSpace(req.Tunnel.Name)
+		if req.Tunnel.Name == "" {
+			writeError(w, http.StatusBadRequest, "隧道规则名称不能为空")
+			return
+		}
+		var updatedCli *ClientProfile
+		err := a.store.Update(func(doc *ConfigDocument) error {
+			for i := range doc.Clients {
+				if doc.Clients[i].ID == req.ClientID {
+					for _, existing := range doc.Clients[i].Tunnels {
+						if existing.Name == req.Tunnel.Name && existing.ID != req.Tunnel.ID {
+							return fmt.Errorf("同一客户端内已存在同名规则 %q", req.Tunnel.Name)
+						}
+					}
+					if req.Tunnel.ID == "" {
+						req.Tunnel.ID = newShortID("tun")
+						doc.Clients[i].Tunnels = append(doc.Clients[i].Tunnels, req.Tunnel)
+					} else {
+						replaced := false
+						for j := range doc.Clients[i].Tunnels {
+							if doc.Clients[i].Tunnels[j].ID == req.Tunnel.ID {
+								doc.Clients[i].Tunnels[j] = req.Tunnel
+								replaced = true
+								break
+							}
+						}
+						if !replaced {
+							doc.Clients[i].Tunnels = append(doc.Clients[i].Tunnels, req.Tunnel)
+						}
+					}
+					cp := doc.Clients[i]
+					updatedCli = &cp
+					return nil
+				}
+			}
+			return errors.New("未找到所属客户端配置")
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if updatedCli != nil {
+			_ = a.runtime.ReloadOrRestartClient(*updatedCli)
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": req.Tunnel.ID})
+
+	case "/api/clients/tunnel-toggle":
+		var req struct {
+			ClientID string `json:"clientId"`
+			TunnelID string `json:"tunnelId"`
+			Enabled  bool   `json:"enabled"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var updatedCli *ClientProfile
+		err := a.store.Update(func(doc *ConfigDocument) error {
+			for i := range doc.Clients {
+				if doc.Clients[i].ID == req.ClientID {
+					for j := range doc.Clients[i].Tunnels {
+						if doc.Clients[i].Tunnels[j].ID == req.TunnelID {
+							doc.Clients[i].Tunnels[j].Enabled = req.Enabled
+							cp := doc.Clients[i]
+							updatedCli = &cp
+							return nil
+						}
+					}
+				}
+			}
+			return errors.New("未找到对应隧道规则")
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if updatedCli != nil {
+			_ = a.runtime.ReloadOrRestartClient(*updatedCli)
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	case "/api/clients/tunnel-delete":
+		var req struct {
+			ClientID string `json:"clientId"`
+			TunnelID string `json:"tunnelId"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var updatedCli *ClientProfile
+		err := a.store.Update(func(doc *ConfigDocument) error {
+			for i := range doc.Clients {
+				if doc.Clients[i].ID == req.ClientID {
+					out := make([]TunnelRule, 0, len(doc.Clients[i].Tunnels))
+					for _, t := range doc.Clients[i].Tunnels {
+						if t.ID != req.TunnelID {
+							out = append(out, t)
+						}
+					}
+					doc.Clients[i].Tunnels = out
+					cp := doc.Clients[i]
+					updatedCli = &cp
+					return nil
+				}
+			}
+			return errors.New("未找到所属客户端配置")
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if updatedCli != nil {
+			_ = a.runtime.ReloadOrRestartClient(*updatedCli)
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	case "/api/clients/toml":
+		id := r.URL.Query().Get("id")
+		mask := r.URL.Query().Get("mask") == "1"
+		_, doc := a.store.Snapshot()
+		for _, c := range doc.Clients {
+			if c.ID == id {
+				rendered := RenderClientTOML(c, ClientRuntimeInjections{Preview: true, MaskSecrets: mask})
+				writeJSON(w, http.StatusOK, map[string]any{"name": c.Name, "toml": rendered.TOML})
+				return
+			}
+		}
+		writeError(w, http.StatusNotFound, "未找到该客户端配置")
+
+	// ==================== Section 3: App Control (Software-Internal Configs, Logs, Update) ====================
+	case "/api/configs/select":
+		var req struct {
+			FileName    string `json:"fileName"`
+			DisplayName string `json:"displayName"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.runtime.StopAll()
+		rt, err := NewRuntimeSupervisor(a.dataDir, a.store, func() { a.stateSeq.Add(1) })
 		if err == nil {
-			err = a.store.commit(st, "保存 "+req.Kind+" 草稿")
+			a.runtime = rt
 		}
-	case "/api/delete":
-		st := a.store.DB.State.clone()
-		found := false
-		if req.Kind == "instance" {
-			if a.closing || a.operations[req.ID] != nil {
-				err = fmt.Errorf("实例操作尚未结束，请稍后重试")
+		doc, err := a.store.SelectOrCreateConfig(req.FileName, req.DisplayName)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.runtime.StartAutoStarts()
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "config": doc})
+
+	case "/api/configs/import-json":
+		var req struct {
+			FileName string          `json:"fileName"`
+			Content  json.RawMessage `json:"content"`
+			Activate bool            `json:"activate"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if req.Activate {
+			a.runtime.StopAll()
+			if rt, err := NewRuntimeSupervisor(a.dataDir, a.store, func() { a.stateSeq.Add(1) }); err == nil {
+				a.runtime = rt
+			}
+		}
+		savedFile, err := a.store.ImportConfigDocument(req.FileName, req.Content, req.Activate)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if req.Activate {
+			a.runtime.StartAutoStarts()
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "fileName": savedFile})
+
+	case "/api/configs/export-json":
+		activeFile, doc := a.store.Snapshot()
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, activeFile))
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(doc)
+
+	case "/api/configs/delete":
+		var req struct {
+			FileName string `json:"fileName"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := a.store.DeleteConfigFile(req.FileName); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	case "/api/configs/import-toml":
+		var req struct {
+			Name string `json:"name"`
+			Kind string `json:"kind"` // "frps", "frpc", or "" (auto-detect)
+			TOML string `json:"toml"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		srv, cli, err := ParseTOMLAsProfile(req.Name, req.Kind, req.TOML)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		err = a.store.Update(func(doc *ConfigDocument) error {
+			if srv != nil {
+				doc.Servers = append(doc.Servers, *srv)
+			}
+			if cli != nil {
+				doc.Clients = append(doc.Clients, *cli)
+			}
+			return nil
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		kindOut := "frpc"
+		if srv != nil {
+			kindOut = "frps"
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kindOut})
+
+	case "/api/logs":
+		id := r.URL.Query().Get("id")
+		lines, _ := a.runtime.Logs(id)
+		writeJSON(w, http.StatusOK, map[string]any{"id": id, "lines": lines})
+
+	case "/api/logs/stream":
+		id := r.URL.Query().Get("id")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "streaming unsupported")
+			return
+		}
+		lines, buf := a.runtime.Logs(id)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		for _, line := range lines {
+			fmt.Fprintf(w, "data: %s\n\n", strings.ReplaceAll(line, "\n", " "))
+		}
+		flusher.Flush()
+		if buf == nil {
+			return
+		}
+		ch, unsub := buf.Subscribe()
+		defer unsub()
+		keepAlive := time.NewTicker(15 * time.Second)
+		defer keepAlive.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case line, open := <-ch:
+				if !open {
+					return
+				}
+				fmt.Fprintf(w, "data: %s\n\n", strings.ReplaceAll(line, "\n", " "))
+				flusher.Flush()
+			case <-keepAlive.C:
+				fmt.Fprint(w, ": ping\n\n")
+				flusher.Flush()
+			}
+		}
+
+	case "/api/update/check":
+		client := &http.Client{Timeout: 6 * time.Second}
+		req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://api.github.com/repos/Presikid/KurumiFrp/releases?per_page=5", nil)
+		req.Header.Set("User-Agent", "KurumiFrp/"+version.Current)
+		req.Header.Set("Accept", "application/vnd.github+json")
+		resp, err := client.Do(req)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"current":    version.Current,
+				"latest":     version.Current,
+				"hasUpdate":  false,
+				"releaseURL": "https://github.com/Presikid/KurumiFrp/releases",
+				"error":      "访问 GitHub Releases 超时或受限，可直接前往发布页查看",
+			})
+			return
+		}
+		defer resp.Body.Close()
+		var releases []struct {
+			TagName string `json:"tag_name"`
+			HTMLURL string `json:"html_url"`
+			Draft   bool   `json:"draft"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&releases)
+		latestTag := "v" + version.Current
+		releaseURL := "https://github.com/Presikid/KurumiFrp/releases"
+		for _, rel := range releases {
+			if !rel.Draft && rel.TagName != "" {
+				latestTag = rel.TagName
+				if rel.HTMLURL != "" {
+					releaseURL = rel.HTMLURL
+				}
 				break
 			}
-			if p := a.procs[req.ID]; p != nil {
-				select {
-				case <-p.done:
-				default:
-					err = fmt.Errorf("请先停止实例并等待其完全退出")
-				}
-				if err != nil {
-					break
-				}
-			}
-			for _, t := range st.Tunnels {
-				if t.InstanceID == req.ID {
-					err = fmt.Errorf("请先删除该实例下的规则")
-					break
-				}
-			}
-			if err != nil {
-				break
-			}
-			for j, i := range st.Instances {
-				if i.ID == req.ID {
-					st.Instances = append(st.Instances[:j], st.Instances[j+1:]...)
-					found = true
-					break
-				}
-			}
-		} else if req.Kind == "tunnel" {
-			for j, t := range st.Tunnels {
-				if t.ID == req.ID {
-					st.Tunnels = append(st.Tunnels[:j], st.Tunnels[j+1:]...)
-					found = true
-					break
-				}
-			}
 		}
-		if !found {
-			err = fmt.Errorf("对象不存在")
-		} else {
-			err = a.store.commit(st, "删除 "+req.Kind+" 草稿")
-			if err != nil && req.Kind == "instance" {
-				err = stateWriteOutcomeError("删除", err)
-			}
-			if err == nil && req.Kind == "instance" {
-				delete(a.procs, req.ID)
-				delete(a.traffic, req.ID)
-				delete(a.startupErrors, req.ID)
-				delete(a.autoStartSuppressed, req.ID)
-				delete(a.generations, req.ID)
-				delete(a.nodeOperationVersions, req.ID)
-				delete(a.scheduleBlocks, req.ID)
-				a.stateCache = nil
-			}
+		latestVer := strings.TrimPrefix(latestTag, "v")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"current":    version.Current,
+			"latest":     latestVer,
+			"hasUpdate":  compareFourSegmentVersion(latestVer, version.Current) > 0,
+			"releaseURL": releaseURL,
+		})
+
+	case "/api/quit":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
 		}
-	case "/api/restore":
-		if err = a.canReplaceStateLocked(); err != nil {
-			break
-		}
-		err = fmt.Errorf("历史版本不存在")
-		for _, h := range a.store.DB.History {
-			if h.Revision == req.Target {
-				st := h.State.clone()
-				if err = a.store.validateStateChange(st); err != nil {
-					break
-				}
-				err = a.store.commitRestoring(st, fmt.Sprintf("恢复草稿版本 %d", h.Revision), true)
-				if err == nil {
-					a.discardStoppedRuntimeLocked()
-				} else {
-					err = stateWriteOutcomeError("恢复", err)
-				}
-				break
-			}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		if a.onShutdown != nil {
+			go func() {
+				time.Sleep(100 * time.Millisecond)
+				a.onShutdown()
+			}()
 		}
 
 	default:
-		fail(w, 404, fmt.Errorf("接口不存在"))
-		return
+		writeError(w, http.StatusNotFound, "未找到请求的 API 路径")
 	}
-	if err != nil {
-		fail(w, 400, err)
-		return
-	}
-	// A removed instance, or one whose auto-start was disabled, no longer has
-	// an applicable automatic-restoration failure.
-	for id := range a.startupErrors {
-		if i, exists := a.store.DB.State.Instance(id); !exists || !i.AutoStart {
-			delete(a.startupErrors, id)
-		}
-	}
-	reply(w, 200, map[string]any{"ok": true, "revision": a.store.DB.Revision})
 }
 
-func (a *App) Done() <-chan struct{} { return a.quit }
+func setSessionCookie(w http.ResponseWriter, sid string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    sid,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(sessionTTL.Seconds()),
+	})
+}
 
-// RequestShutdown wakes long-lived log streams before HTTP shutdown waits.
-func (a *App) RequestShutdown() { a.quitOnce.Do(func() { close(a.quit) }) }
+func clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookie,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+func sameOriginRequest(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
+}
+
+func readJSONBody(r *http.Request, dst any) error {
+	dec := json.NewDecoder(io.LimitReader(r.Body, maxConfigBytes))
+	if err := dec.Decode(dst); err != nil {
+		return fmt.Errorf("解析请求 JSON 失败: %w", err)
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]any{"error": msg})
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func compareFourSegmentVersion(a, b string) int {
+	pa := strings.Split(strings.TrimPrefix(a, "v"), ".")
+	pb := strings.Split(strings.TrimPrefix(b, "v"), ".")
+	for i := 0; i < 4; i++ {
+		var va, vb int
+		if i < len(pa) {
+			fmt.Sscanf(pa[i], "%d", &va)
+		}
+		if i < len(pb) {
+			fmt.Sscanf(pb[i], "%d", &vb)
+		}
+		if va != vb {
+			if va > vb {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
+}

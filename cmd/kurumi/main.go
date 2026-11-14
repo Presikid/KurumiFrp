@@ -6,227 +6,346 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"io"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/Presikid/KurumiFrp/internal/manager"
-	"github.com/Presikid/KurumiFrp/internal/update"
 	"github.com/Presikid/KurumiFrp/internal/version"
-	"github.com/Presikid/KurumiFrp/web"
 )
 
+// distribution is set via -ldflags "-X main.distribution=..." during native packaging.
+// Values: "source" (default), "windows-installed", "linux-system".
+var distribution = "source"
+
 func main() {
-	if e := run(); e != nil {
-		reportDesktopError(e)
-		log.Fatal(e)
+	var (
+		dataFlag       = flag.String("data", "", "数据与配置文件存储目录（默认保存在软件目录内 data 文件夹）")
+		listenFlag     = flag.String("listen", "", "WebUI 监听地址（例如 127.0.0.1:9000 或 0.0.0.0:9000，默认 auto）")
+		openFlag       = flag.Bool("open", false, "启动后自动在系统默认浏览器中打开 WebUI")
+		stopFlag       = flag.Bool("stop", false, "优雅停止当前正在运行的 KurumiFrp 后台进程")
+		checkRunning   = flag.Bool("check-running", false, "检查后台服务是否正在运行")
+		showToken      = flag.Bool("show-token", false, "输出本地 CLI 维护令牌")
+		pathsFlag      = flag.Bool("paths", false, "以 JSON 输出当前软件目录与数据目录路径")
+		versionFlag    = flag.Bool("version", false, "打印版本号")
+		nativeMaint    = flag.String("native-maintenance", "", "安装包生命周期维护命令 (preflight|preflight-existing|init|stop|finish-stop|purge)")
+		installDirFlag = flag.String("install-dir", "", "安装包目标安装目录")
+	)
+	flag.Parse()
+
+	if *versionFlag {
+		fmt.Println(version.Current)
+		return
+	}
+
+	if *nativeMaint != "" {
+		if err := handleNativeMaintenance(*nativeMaint, *installDirFlag); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	dataDir := resolveDataDir(*dataFlag)
+	if *pathsFlag {
+		exe, _ := os.Executable()
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]string{
+			"distribution": distribution,
+			"executable":   exe,
+			"dataDir":      dataDir,
+		})
+		return
+	}
+
+	if *showToken {
+		raw, err := os.ReadFile(filepath.Join(dataDir, "access.token"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println(strings.TrimSpace(string(raw)))
+		return
+	}
+
+	if *checkRunning {
+		if addr, ok := probeExistingServer(dataDir); ok {
+			fmt.Println(addr)
+			return
+		}
+		os.Exit(1)
+	}
+
+	if *stopFlag {
+		if err := stopExistingServer(dataDir); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// If an instance is already running for this dataDir, open browser directly if --open was passed.
+	if existingAddr, ok := probeExistingServer(dataDir); ok {
+		if *openFlag {
+			openWebUIWithTicket(dataDir, existingAddr)
+		}
+		return
+	}
+
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
+	app, err := manager.NewApp(dataDir, stopSignals)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "初始化 KurumiFrp 失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer app.Close()
+
+	ln, actualAddr, browserBaseURL, err := bindListener(*listenFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "绑定 WebUI 端口失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer ln.Close()
+
+	_ = os.WriteFile(filepath.Join(dataDir, "listen.addr"), []byte(browserBaseURL+"\n"), 0o600)
+	app.SetListenAddr(actualAddr)
+
+	srv := &http.Server{
+		Handler:           app,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
+
+	fmt.Printf("KurumiFrp v%s WebUI 已启动: %s (数据目录: %s)\n", version.Current, browserBaseURL, dataDir)
+	if *openFlag {
+		go func() {
+			time.Sleep(150 * time.Millisecond)
+			openWebUIWithTicket(dataDir, browserBaseURL)
+		}()
+	}
+
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		fmt.Fprintf(os.Stderr, "HTTP 服务异常退出: %v\n", err)
+		os.Exit(1)
 	}
 }
-func run() (resultErr error) {
-	defaultData, defaultListen, pathErr := defaultPaths()
-	if pathErr != nil {
-		return pathErr
-	}
-	dir := flag.String("data", defaultData, "private persistent data directory")
-	addr := flag.String("listen", defaultListen, "loopback management listener, or auto for ports 9000..9010")
-	paths := flag.Bool("paths", false, "show resolved native program, data and temporary paths")
-	open := flag.Bool("open", false, "open local WebUI")
-	showVersion := flag.Bool("version", false, "print version and exit")
-	installDir := flag.String("install-dir", "", "installer maintenance target")
-	stop := flag.Bool("stop", false, "stop this data directory's manager and wait for managed instances")
-	check := flag.Bool("check-running", false, "verify the installed manager is responding")
-	archive := flag.String("cleanup-archive", "", "explicit original release archive, verified before deletion")
-	cleanup := flag.String("cleanup-package", "", "remove a verified extracted release payload after installation")
-	token := flag.Bool("show-token", false, "print existing local access token and exit")
-	native := flag.String("native-maintenance", "", "native installer maintenance operation")
-	systemUpdate := flag.Bool("system-update", false, "perform a verified Linux package update")
-	setup := flag.String("cleanup-setup", "", "exact native Setup executable to remove after successful installation")
-	digest := flag.String("cleanup-sha256", "", "expected Setup SHA-256")
-	flag.Parse()
-	if *systemUpdate {
-		if distribution != "linux-system" {
-			return fmt.Errorf("system update requires a Linux system installation")
+
+func resolveDataDir(explicit string) string {
+	if strings.TrimSpace(explicit) != "" {
+		abs, err := filepath.Abs(strings.TrimSpace(explicit))
+		if err == nil {
+			return abs
 		}
-		return update.PerformSystemUpdate()
+		return explicit
 	}
-	if *native != "" {
-		exe, err := os.Executable()
+	if distribution == "linux-system" {
+		return "/opt/kurumifrp/data"
+	}
+	exe, err := os.Executable()
+	if err == nil {
+		exeDir := filepath.Dir(exe)
+		if distribution == "windows-installed" {
+			return filepath.Join(exeDir, "data")
+		}
+		// Portable or source build: keep configs inside ./data or next to binary if writable
+		if st, err := os.Stat(filepath.Join(exeDir, "bundled")); err == nil && st.IsDir() {
+			return filepath.Join(exeDir, "data")
+		}
+	}
+	abs, err := filepath.Abs("./data")
+	if err == nil {
+		return abs
+	}
+	return "./data"
+}
+
+func bindListener(requested string) (net.Listener, string, string, error) {
+	req := strings.TrimSpace(requested)
+	if req != "" && req != "auto" {
+		ln, err := net.Listen("tcp", req)
 		if err != nil {
-			return err
+			return nil, "", "", err
 		}
-		return installedOperation(exe, *native, *installDir)
-	}
-	if *setup != "" {
-		exe, err := os.Executable()
-		if err != nil {
-			return err
+		tcpAddr := ln.Addr().(*net.TCPAddr)
+		callbackAddr := fmt.Sprintf("127.0.0.1:%d", tcpAddr.Port)
+		hostForURL := tcpAddr.IP.String()
+		if tcpAddr.IP.IsUnspecified() || hostForURL == "" {
+			hostForURL = "127.0.0.1"
 		}
-		return removeSetup(*setup, *digest, exe, 90*time.Second)
+		return ln, callbackAddr, fmt.Sprintf("http://%s", net.JoinHostPort(hostForURL, fmt.Sprintf("%d", tcpAddr.Port))), nil
 	}
-	if *cleanup != "" {
-		exe, err := os.Executable()
-		if err != nil {
-			return err
+
+	// Atomic port scan in 9000..9020 without TOCTOU close-reopen race
+	for port := 9000; port <= 9020; port++ {
+		addr := fmt.Sprintf("127.0.0.1:%d", port)
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			return ln, addr, "http://" + addr, nil
 		}
-		return cleanPackage(*cleanup, exe, *archive)
 	}
-	if *showVersion {
-		fmt.Println(version.Current)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, "", "", err
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	return ln, addr, "http://" + addr, nil
+}
+
+func probeExistingServer(dataDir string) (string, bool) {
+	rawAddr, err := os.ReadFile(filepath.Join(dataDir, "listen.addr"))
+	if err != nil {
+		return "", false
+	}
+	baseURL := strings.TrimSpace(string(rawAddr))
+	if !strings.HasPrefix(baseURL, "http://") {
+		return "", false
+	}
+	tokBytes, err := os.ReadFile(filepath.Join(dataDir, "access.token"))
+	if err != nil {
+		return "", false
+	}
+	tok := strings.TrimSpace(string(tokBytes))
+
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/state", nil)
+	if err != nil {
+		return "", false
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", false
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return baseURL, resp.StatusCode == http.StatusOK
+}
+
+func stopExistingServer(dataDir string) error {
+	baseURL, ok := probeExistingServer(dataDir)
+	if !ok {
 		return nil
 	}
-	if *paths {
+	tokBytes, err := os.ReadFile(filepath.Join(dataDir, "access.token"))
+	if err != nil {
+		return nil
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/quit", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tokBytes)))
+	if resp, err := client.Do(req); err == nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, alive := probeExistingServer(dataDir); !alive {
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return errors.New("等待后台服务退出超时")
+}
+
+func openWebUIWithTicket(dataDir, baseURL string) {
+	targetURL := baseURL
+	if tokBytes, err := os.ReadFile(filepath.Join(dataDir, "access.token")); err == nil {
+		client := &http.Client{Timeout: 2 * time.Second}
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/api/browser-ticket", nil)
+		if err == nil {
+			req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tokBytes)))
+			if resp, err := client.Do(req); err == nil {
+				var out struct {
+					Ticket string `json:"ticket"`
+				}
+				_ = json.NewDecoder(resp.Body).Decode(&out)
+				resp.Body.Close()
+				if out.Ticket != "" {
+					targetURL = baseURL + "/launch?ticket=" + out.Ticket
+				}
+			}
+		}
+	}
+	openSystemBrowser(targetURL)
+}
+
+func openSystemBrowser(u string) {
+	if !strings.HasPrefix(u, "http://127.0.0.1:") && !strings.HasPrefix(u, "http://[::1]:") {
+		return
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
+	case "darwin":
+		cmd = exec.Command("open", u)
+	default:
+		cmd = exec.Command("xdg-open", u)
+	}
+	_ = cmd.Start()
+}
+
+func handleNativeMaintenance(action, installDir string) error {
+	dir := strings.TrimSpace(installDir)
+	if dir == "" {
 		exe, err := os.Executable()
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(os.Stdout).Encode(map[string]string{"program": filepath.Dir(exe), "data": defaultData, "temporary": temporaryRoot(defaultData), "distribution": distribution})
+		dir = filepath.Dir(exe)
 	}
-	if distribution == "windows-installed" {
-		if *dir != defaultData {
-			return fmt.Errorf("installed builds keep runtime data under the installation directory; use a source build for custom paths")
-		}
-		// Setup starts the unelevated manager asynchronously. Its read-only
-		// readiness probe may arrive before that account creates its profile.
-		until := time.Now().Add(20 * time.Second)
-		for {
-			err := prepareInstalled(!*stop && !*check && !*token)
-			if err == nil {
-				break
+	dataDir := filepath.Join(dir, "data")
+
+	switch action {
+	case "preflight", "preflight-existing":
+		// Allow any valid non-symlink local directory chosen by the user (e.g., C:\Program Files\KurumiFRP or D:\KurumiFRP).
+		if info, err := os.Lstat(dir); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("不支持符号链接安装目录")
 			}
-			if !*check || !os.IsNotExist(err) || time.Now().After(until) {
-				return err
-			}
-			time.Sleep(100 * time.Millisecond)
 		}
-	}
-	abs, e := filepath.Abs(*dir)
-	if e != nil {
-		return e
-	}
-	if *stop {
-		return stopExisting(abs, 45*time.Second)
-	}
-	if *check {
-		return checkRunning(abs, 20*time.Second)
-	}
-	if err := rejectUninstall(abs); err != nil {
-		return err
-	}
-	if *token {
-		b, e := os.ReadFile(filepath.Join(abs, "access.token"))
-		if e != nil {
-			return e
-		}
-		fmt.Println(string(b))
 		return nil
-	}
-	allowExistingOpen := true
-	if *addr == "auto" {
-		chosen, savedWithLock, err := autoListen(abs)
-		if err != nil {
+	case "init":
+		if err := os.MkdirAll(filepath.Join(dataDir, "configs"), 0o700); err != nil {
 			return err
 		}
-		*addr = chosen
-		allowExistingOpen = savedWithLock
-	}
-	if e = os.MkdirAll(abs, 0700); e != nil {
-		return e
-	}
-	if st, err := os.Lstat(abs); err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("unsafe data directory")
-	}
-	lock := filepath.Join(abs, "manager.lock")
-	f, e := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if e != nil {
-		if *open {
-			if !allowExistingOpen {
-				return fmt.Errorf("无法确认现有工作台地址，请稍后重试并核对工作台状态：%w", e)
-			}
-			if b, err := os.ReadFile(filepath.Join(abs, "access.token")); err == nil {
-				if err = openExisting(*addr, string(b)); err == nil {
-					return nil
-				}
-				var browserErr *browserOpenError
-				if errors.As(err, &browserErr) {
-					return err
-				}
-			}
+		marker := map[string]string{
+			"version":   version.Current,
+			"updatedAt": time.Now().UTC().Format(time.RFC3339),
 		}
-		return fmt.Errorf("data directory locked; verify no old manager/frp process is alive before removing manager.lock")
+		b, _ := json.MarshalIndent(marker, "", "  ")
+		return os.WriteFile(filepath.Join(dir, "native-install.json"), append(b, '\n'), 0o644)
+	case "stop":
+		return stopExistingServer(dataDir)
+	case "finish-stop":
+		return nil
+	case "purge":
+		_ = stopExistingServer(dataDir)
+		_ = os.RemoveAll(dataDir)
+		_ = os.Remove(filepath.Join(dir, "native-install.json"))
+		return nil
+	default:
+		return fmt.Errorf("未知维护命令: %s", action)
 	}
-	_, writeErr := fmt.Fprintln(f, os.Getpid())
-	closeErr := f.Close()
-	if writeErr != nil {
-		return fmt.Errorf("manager lock write failed; startup aborted without removing the lock: %w", writeErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("manager lock close failed; startup aborted without removing the lock: %w", closeErr)
-	}
-	cleanShutdown := true
-	defer func() {
-		if cleanShutdown {
-			_ = os.Remove(lock)
-		}
-	}()
-	if err := rejectUninstall(abs); err != nil {
-		return err
-	}
-	cleanTemp, e := prepareTemporary(abs)
-	if e != nil {
-		return e
-	}
-	defer cleanTemp()
-	app, e := manager.NewWithRuntime(abs, *addr, web.Files, runtimeBackend())
-	if e != nil {
-		return e
-	}
-	app.SetDistribution(distribution)
-	defer func() {
-		if err := app.Close(); err != nil {
-			cleanShutdown = false
-			err = fmt.Errorf("工作台未能完全关闭，已保留 manager.lock；请核对工作台和托管连接状态：%w", err)
-			log.Print(err)
-			resultErr = errors.Join(resultErr, err)
-		}
-	}()
-	listener, e := net.Listen("tcp", *addr)
-	if e != nil {
-		return e
-	}
-	defer listener.Close()
-	if e = saveListen(abs, *addr); e != nil {
-		return e
-	}
-	server := manager.HTTPServer(*addr, app)
-	stopped := make(chan os.Signal, 1)
-	signal.Notify(stopped, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(stopped)
-	errs := make(chan error, 1)
-	go func() { errs <- server.Serve(listener) }()
-	fmt.Printf("KurumiFRP %s\nOpen http://%s\nNew data directories use an empty administrator password. For existing data, see the installation guide.\n", version.Current, *addr)
-	if *open {
-		address := app.BrowserURL()
-		if e := openBrowser(address); e != nil {
-			e = &browserOpenError{address: address, cause: e}
-			log.Print(e)
-			go reportDesktopError(e)
-		}
-	}
-	select {
-	case <-app.Done():
-	case <-stopped:
-	case e = <-errs:
-		if e != nil && e != http.ErrServerClosed {
-			return e
-		}
-	}
-	app.RequestShutdown()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	return server.Shutdown(ctx)
 }
