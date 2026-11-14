@@ -173,7 +173,7 @@
   function renderAll() {
     const d = state.data;
     if (!d) return;
-    $('#app-version').textContent = 'v' + (d.version || '0.9.0');
+    $('#app-version').textContent = 'v' + (d.version || '0.9.1');
     $('#top-active-config').textContent = d.activeConfigFile || 'default.json';
     $('#top-username').textContent = d.username || 'admin';
     $('#acc-username').value = d.username || 'admin';
@@ -536,11 +536,16 @@
       .join('');
 
     const core = d.core || {};
+    const srcTag = core.coreSource === 'data-bin' ? ' · 热更新目录' : '';
     $('#core-status-box').innerHTML = `
-      <div class="kv-row"><span>内置 frps 服务端核心</span><strong>${core.frpsFound ? `已就绪 (v${esc(core.frpsVersion)})` : '未检测到二进制'}</strong></div>
-      <div class="kv-row"><span>内置 frpc 客户端核心</span><strong>${core.frpcFound ? `已就绪 (v${esc(core.frpcVersion)})` : '未检测到二进制'}</strong></div>
+      <div class="kv-row"><span>内置 frps 服务端核心</span><strong>${core.frpsFound ? `已就绪 (v${esc(core.frpsVersion)}${srcTag})` : '未检测到二进制'}</strong></div>
+      <div class="kv-row"><span>内置 frpc 客户端核心</span><strong>${core.frpcFound ? `已就绪 (v${esc(core.frpcVersion)}${srcTag})` : '未检测到二进制'}</strong></div>
       <div class="kv-row"><span>核心检索目录</span><code>${esc(core.bundledDir || './bundled')}</code></div>
     `;
+    const proxyInput = $('#update-proxy-input');
+    if (proxyInput && document.activeElement !== proxyInput) {
+      proxyInput.value = d.updateProxy || '';
+    }
 
     // Populate log instance selector
     const logSel = $('#log-instance-select');
@@ -1325,21 +1330,142 @@
       downloadBlob(`kurumifrp-${state.selectedLogId || 'logs'}.txt`, txt);
     });
 
+    function renderUpdateCheckPanel(res) {
+      const box = $('#update-result-box');
+      box.hidden = false;
+      const appSt = res.app || {};
+      const frpSt = res.frp || {};
+
+      let appDesc = '';
+      let appBtns = '';
+      if (appSt.error) {
+        appDesc = `<strong>KurumiFrp 本体</strong>：${esc(appSt.error)}`;
+        appBtns = `<a href="${esc(appSt.releaseURL || 'https://github.com/Presikid/KurumiFrp/releases')}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">打开发布页</a>`;
+      } else if (appSt.hasUpdate) {
+        appDesc = `<strong>KurumiFrp 本体</strong>：发现新版本 <strong style="color:var(--gold)">v${esc(appSt.latest)}</strong>（当前 v${esc(appSt.current)}）`;
+        if (appSt.canAutoUpdate) {
+          appBtns += `<button type="button" class="btn btn-primary btn-sm" data-act-update-app="${esc(appSt.latest)}">一键无感更新至 v${esc(appSt.latest)}</button>`;
+        } else if (appSt.manualHint) {
+          appDesc += `<div class="muted-text">${esc(appSt.manualHint)}</div>`;
+        }
+        appBtns += `<a href="${esc(appSt.releaseURL)}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">前往下载页</a>`;
+      } else {
+        appDesc = `<strong>KurumiFrp 本体</strong>：已是最新版本 (v${esc(appSt.current)})`;
+      }
+
+      let frpDesc = '';
+      let frpBtns = '';
+      if (frpSt.error) {
+        frpDesc = `<strong>官方 FRP 核心</strong>：${esc(frpSt.error)}`;
+        frpBtns = `<a href="${esc(frpSt.releaseURL || 'https://github.com/fatedier/frp/releases')}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">查看上游</a>`;
+      } else if (frpSt.hasUpdate) {
+        frpDesc = `<strong>官方 FRP 核心</strong>：发现新版本 <strong style="color:var(--gold)">v${esc(frpSt.latest)}</strong>（当前 v${esc(frpSt.current)}）`;
+        if (frpSt.canAutoUpdate) {
+          frpBtns += `<button type="button" class="btn btn-primary btn-sm" data-act-update-frp="${esc(frpSt.latest)}">一键热更新核心至 v${esc(frpSt.latest)}</button>`;
+        }
+      } else {
+        frpDesc = `<strong>官方 FRP 核心</strong>：已是最新原版 (v${esc(frpSt.current)})`;
+        if (frpSt.canAutoUpdate) {
+          frpBtns += `<button type="button" class="btn btn-secondary btn-sm" data-act-update-frp="${esc(frpSt.latest)}">重新校准/重装核心</button>`;
+        }
+      }
+
+      box.innerHTML = `
+        <div class="update-grid">
+          <div class="update-item">
+            <div class="update-item-info">${appDesc}</div>
+            <div class="update-item-actions">${appBtns}</div>
+          </div>
+          <div class="update-item">
+            <div class="update-item-info">${frpDesc}</div>
+            <div class="update-item-actions">${frpBtns}</div>
+          </div>
+        </div>`;
+    }
+
+    $('#btn-save-proxy').addEventListener('click', async () => {
+      const proxyURL = ($('#update-proxy-input').value || '').trim();
+      try {
+        const res = await api('/api/update/settings', { method: 'POST', body: { proxyURL } });
+        $('#update-proxy-input').value = res.proxyURL || '';
+        toast(res.proxyURL ? '已保存下载代理配置' : '已清除代理，恢复系统默认直连');
+        await loadState();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    });
+
     $('#btn-check-update').addEventListener('click', async () => {
       const box = $('#update-result-box');
       box.hidden = false;
-      box.textContent = '正在检查 GitHub Releases 最新版本...';
+      box.textContent = '正在同步检查 KurumiFrp 本体与上游官方 fatedier/frp 最新版本...';
+      const proxyURL = ($('#update-proxy-input').value || '').trim();
       try {
-        const res = await api('/api/update/check');
-        if (res.error) {
-          box.innerHTML = `${esc(res.error)} — <a href="${esc(res.releaseURL)}" target="_blank" rel="noopener" style="color:var(--gold)">打开 GitHub Releases</a>`;
-        } else if (res.hasUpdate) {
-          box.innerHTML = `发现新版本 <strong>v${esc(res.latest)}</strong>（当前 v${esc(res.current)}）：<a href="${esc(res.releaseURL)}" target="_blank" rel="noopener" style="color:var(--gold)">前往下载安装包</a>`;
-        } else {
-          box.innerHTML = `当前已是最新版本 (v${esc(res.current)})。`;
-        }
+        const res = await api('/api/update/check', { method: 'POST', body: { proxyURL } });
+        renderUpdateCheckPanel(res);
       } catch (e) {
         box.textContent = '检查失败：' + e.message;
+      }
+    });
+
+    $('#update-result-box').addEventListener('click', async (ev) => {
+      const frpBtn = ev.target.closest('[data-act-update-frp]');
+      if (frpBtn) {
+        const ver = frpBtn.dataset.actUpdateFrp;
+        frpBtn.disabled = true;
+        frpBtn.textContent = '正在下载并校验 SHA-256...';
+        const proxyURL = ($('#update-proxy-input').value || '').trim();
+        try {
+          const res = await api('/api/update/apply-frp', { method: 'POST', body: { proxyURL } });
+          await loadState();
+          const checkRes = await api('/api/update/check', { method: 'POST', body: { proxyURL } });
+          renderUpdateCheckPanel(checkRes);
+          toast(`官方 FRP 核心已无感热更新至 v${ver}（自动平滑恢复 ${res.restarted || 0} 个运行实例）`);
+        } catch (e) {
+          frpBtn.disabled = false;
+          frpBtn.textContent = `重试热更新核心`;
+          toast(e.message, true);
+        }
+        return;
+      }
+
+      const appBtn = ev.target.closest('[data-act-update-app]');
+      if (appBtn) {
+        const targetVer = appBtn.dataset.actUpdateApp;
+        appBtn.disabled = true;
+        appBtn.textContent = '正在下载新版安装包并校验...';
+        const proxyURL = ($('#update-proxy-input').value || '').trim();
+        try {
+          await api('/api/update/apply-app', { method: 'POST', body: { proxyURL } });
+          state.selfUpdating = true;
+          const box = $('#update-result-box');
+          box.innerHTML = `<div class="update-item-info">⏳ 安装包校验通过！正在后台静默升级至 <strong>v${esc(targetVer)}</strong> 并自动重启服务（若 Windows 弹出管理员授权请点「是」），页面将自动重连...</div>`;
+          const startAt = Date.now();
+          const timer = setInterval(async () => {
+            try {
+              const sess = await fetch('/api/session', { cache: 'no-store' }).then((r) => r.json());
+              if (sess && sess.version === targetVer) {
+                clearInterval(timer);
+                state.selfUpdating = false;
+                toast(`🎉 已无感升级至 KurumiFrp v${targetVer}！`);
+                setTimeout(() => window.location.reload(), 600);
+                return;
+              }
+            } catch (_) {
+              // Expected briefly while daemon restarts
+            }
+            if (Date.now() - startAt > 50000) {
+              clearInterval(timer);
+              state.selfUpdating = false;
+              box.innerHTML = `<div class="update-item-info">等待新版本超时（若刚才取消了 Windows 管理员授权弹窗，可重新点击上方「检查更新」再次升级）。</div>`;
+            }
+          }, 1000);
+        } catch (e) {
+          state.selfUpdating = false;
+          appBtn.disabled = false;
+          appBtn.textContent = `一键无感更新至 v${targetVer}`;
+          toast(e.message, true);
+        }
       }
     });
 
@@ -1367,7 +1493,7 @@
     }
 
     setInterval(() => {
-      if (!$('#workbench').hidden) {
+      if (!$('#workbench').hidden && !state.selfUpdating) {
         loadState(true).catch(() => {});
       }
     }, 4000);

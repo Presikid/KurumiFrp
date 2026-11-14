@@ -196,6 +196,67 @@ func (rs *RuntimeSupervisor) StartAutoStarts() {
 	}
 }
 
+// HotSwapBinaries temporarily stops running frps/frpc instances so binary files are unlocked on Windows,
+// invokes swapFn to atomically replace binaries, and immediately restarts all previously running instances.
+func (rs *RuntimeSupervisor) HotSwapBinaries(swapFn func() error) (int, error) {
+	rs.mu.RLock()
+	activeIDs := make(map[string]bool, len(rs.procs))
+	for id, p := range rs.procs {
+		p.mu.Lock()
+		st := p.state
+		p.mu.Unlock()
+		if st == "running" || st == "starting" {
+			activeIDs[id] = true
+		}
+	}
+	rs.mu.RUnlock()
+
+	var wg sync.WaitGroup
+	for id := range activeIDs {
+		wg.Add(1)
+		go func(instanceID string) {
+			defer wg.Done()
+			_ = rs.StopInstance(instanceID)
+		}(id)
+	}
+	wg.Wait()
+
+	if err := swapFn(); err != nil {
+		// Best-effort recovery using existing binaries if swap failed
+		_, doc := rs.store.Snapshot()
+		for _, srv := range doc.Servers {
+			if activeIDs[srv.ID] {
+				_ = rs.StartServer(srv)
+			}
+		}
+		for _, cli := range doc.Clients {
+			if activeIDs[cli.ID] {
+				_ = rs.StartClient(cli)
+			}
+		}
+		return 0, err
+	}
+
+	restarted := 0
+	_, doc := rs.store.Snapshot()
+	for _, srv := range doc.Servers {
+		if activeIDs[srv.ID] {
+			if err := rs.StartServer(srv); err == nil {
+				restarted++
+			}
+		}
+	}
+	for _, cli := range doc.Clients {
+		if activeIDs[cli.ID] {
+			if err := rs.StartClient(cli); err == nil {
+				restarted++
+			}
+		}
+	}
+	rs.notifyChange()
+	return restarted, nil
+}
+
 // StopAll gracefully terminates all running frps and frpc child processes.
 func (rs *RuntimeSupervisor) StopAll() {
 	select {

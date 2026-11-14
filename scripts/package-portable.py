@@ -18,6 +18,8 @@ if not re.fullmatch(r'(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,
 OUT = ROOT / 'dist-native'
 
 TARGETS = {
+    'amd64': ('amd64', '7', 'softfloat', 'linux_amd64'),
+    'arm64': ('arm64', '7', 'softfloat', 'linux_arm64'),
     'arm': ('arm', '5', 'softfloat', 'linux_arm'),
     'arm_hf': ('arm', '7', 'softfloat', 'linux_arm_hf'),
     'riscv64': ('riscv64', '7', 'softfloat', 'linux_riscv64'),

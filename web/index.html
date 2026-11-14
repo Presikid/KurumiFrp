@@ -56,7 +56,7 @@
       <div class="brand-group">
         <span class="brand-clock">Ⅻ</span>
         <div>
-          <div class="brand-title">KurumiFrp <span id="app-version" class="version-pill">v0.9.0</span></div>
+          <div class="brand-title">KurumiFrp <span id="app-version" class="version-pill">v0.9.1</span></div>
           <div class="brand-sub">当前配置文件：<strong id="top-active-config">default.json</strong></div>
         </div>
       </div>
@@ -193,12 +193,16 @@
             <div class="card">
               <div class="card-header">
                 <div>
-                  <h3>内置官方 FRP 核心与软件状态</h3>
-                  <p class="muted-text">100% 调度原版 fatedier/frp 双端核心，兼容全配置参数。</p>
+                  <h3>内置官方 FRP 核心与无感更新</h3>
+                  <p class="muted-text">支持软件本体静默自更新与原版 fatedier/frp 核心热更新。</p>
                 </div>
-                <button type="button" id="btn-check-update" class="btn btn-secondary btn-sm">检查更新</button>
+                <button type="button" id="btn-check-update" class="btn btn-primary btn-sm">检查更新</button>
               </div>
               <div id="core-status-box" class="kv-list"></div>
+              <div class="proxy-inline-bar top-gap">
+                <input type="text" id="update-proxy-input" placeholder="GitHub 下载代理（可选，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:10808）" />
+                <button type="button" id="btn-save-proxy" class="btn btn-secondary btn-sm">保存代理</button>
+              </div>
               <div id="update-result-box" class="update-note" hidden></div>
               <div class="btn-row top-gap">
                 <button type="button" id="btn-stop-daemon" class="btn btn-danger btn-sm">关闭后台服务进程</button>

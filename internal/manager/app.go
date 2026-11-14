@@ -22,8 +22,11 @@ type App struct {
 	auth       *AuthManager
 	store      *Store
 	runtime    *RuntimeSupervisor
+	updater    *UpdateManager
 	staticFS   http.Handler
 	stateSeq   atomic.Uint64
+	listenSpec string
+	origArgs   []string
 	onShutdown func()
 }
 
@@ -52,6 +55,7 @@ func NewApp(dataDir string, onShutdown func()) (*App, error) {
 		return nil, err
 	}
 	app.runtime = rt
+	app.updater = NewUpdateManager(dataDir, rt, onShutdown)
 
 	subFS, err := fs.Sub(web.Files, ".")
 	if err != nil {
@@ -61,10 +65,16 @@ func NewApp(dataDir string, onShutdown func()) (*App, error) {
 	return app, nil
 }
 
-// SetListenAddr informs RuntimeSupervisor of the local callback port and triggers AutoStart profiles.
+// SetListenAddr informs RuntimeSupervisor of the local callback port, records CLI restart metadata, and triggers AutoStart profiles.
 func (a *App) SetListenAddr(addr string) {
 	a.runtime.SetCallbackAddr(addr)
 	a.runtime.StartAutoStarts()
+}
+
+// SetRuntimeMeta records the bound TCP listener address and CLI arguments for seamless self-updates.
+func (a *App) SetRuntimeMeta(listenSpec string, origArgs []string) {
+	a.listenSpec = listenSpec
+	a.origArgs = append([]string(nil), origArgs...)
 }
 
 // Close gracefully stops all running frpc and frps child processes.
@@ -208,6 +218,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			"config":             doc,
 			"runtime":            a.runtime.Views(doc),
 			"core":               LocateBinaries(a.dataDir),
+			"updateProxy":        a.updater.ProxyURL(),
 		})
 
 	case "/api/account":
@@ -923,46 +934,97 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			}
 		}
 
-	case "/api/update/check":
-		client := &http.Client{Timeout: 6 * time.Second}
-		req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://api.github.com/repos/Presikid/KurumiFrp/releases?per_page=5", nil)
-		req.Header.Set("User-Agent", "KurumiFrp/"+version.Current)
-		req.Header.Set("Accept", "application/vnd.github+json")
-		resp, err := client.Do(req)
-		if err != nil {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"current":    version.Current,
-				"latest":     version.Current,
-				"hasUpdate":  false,
-				"releaseURL": "https://github.com/Presikid/KurumiFrp/releases",
-				"error":      "访问 GitHub Releases 超时或受限，可直接前往发布页查看",
-			})
+	case "/api/update/settings":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		defer resp.Body.Close()
-		var releases []struct {
-			TagName string `json:"tag_name"`
-			HTMLURL string `json:"html_url"`
-			Draft   bool   `json:"draft"`
+		var req struct {
+			ProxyURL string `json:"proxyURL"`
 		}
-		_ = json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&releases)
-		latestTag := "v" + version.Current
-		releaseURL := "https://github.com/Presikid/KurumiFrp/releases"
-		for _, rel := range releases {
-			if !rel.Draft && rel.TagName != "" {
-				latestTag = rel.TagName
-				if rel.HTMLURL != "" {
-					releaseURL = rel.HTMLURL
-				}
-				break
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		saved, err := a.updater.SaveProxyURL(req.ProxyURL)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxyURL": saved})
+
+	case "/api/update/check":
+		var proxyOverride *string
+		if r.Method == http.MethodPost {
+			var req struct {
+				ProxyURL *string `json:"proxyURL"`
+			}
+			if err := readJSONBody(r, &req); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			proxyOverride = req.ProxyURL
+		}
+		res, err := a.updater.CheckAll(r.Context(), proxyOverride)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if proxyOverride != nil {
+			a.bumpState()
+		}
+		writeJSON(w, http.StatusOK, res)
+
+	case "/api/update/apply-frp":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			ProxyURL *string `json:"proxyURL"`
+		}
+		if r.ContentLength > 0 {
+			if err := readJSONBody(r, &req); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
 			}
 		}
-		latestVer := strings.TrimPrefix(latestTag, "v")
+		coreInfo, restarted, err := a.updater.ApplyFRPUpdate(r.Context(), req.ProxyURL)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"current":    version.Current,
-			"latest":     latestVer,
-			"hasUpdate":  compareSemVer(latestVer, version.Current) > 0,
-			"releaseURL": releaseURL,
+			"ok":        true,
+			"core":      coreInfo,
+			"restarted": restarted,
+		})
+
+	case "/api/update/apply-app":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			ProxyURL *string `json:"proxyURL"`
+		}
+		if r.ContentLength > 0 {
+			if err := readJSONBody(r, &req); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		targetVer, err := a.updater.ApplyAppUpdate(r.Context(), req.ProxyURL, a.listenSpec, a.origArgs)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":            true,
+			"restarting":    true,
+			"targetVersion": targetVer,
 		})
 
 	case "/api/quit":
@@ -1045,8 +1107,8 @@ func maxInt64(a, b int64) int64 {
 func compareSemVer(a, b string) int {
 	clean := func(s string) []string {
 		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "v"))
-		if i := strings.IndexAny(s, "-+"); i >= 0 {
-			s = s[:i]
+		if idx := strings.IndexAny(s, "-+"); idx >= 0 {
+			s = s[:idx]
 		}
 		return strings.Split(s, ".")
 	}

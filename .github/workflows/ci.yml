@@ -123,6 +123,7 @@ jobs:
             echo "Release $tag already exists; skipping publication."
             exit 0
           fi
+          (cd dist-native && sha256sum * > SHA256SUMS.txt)
           gh release create "$tag" dist-native/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
