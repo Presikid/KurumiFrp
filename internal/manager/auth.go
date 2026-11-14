@@ -1,487 +1,440 @@
 package manager
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
-	"net/url"
-	"sort"
-	"strconv"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 )
 
-type attempt struct {
-	count         int
-	inFlight      int
-	since         time.Time
-	limitNotified bool
-}
-
 const (
-	maxLoginKeys           = 1000
-	maxLoginFailures       = 10
-	maxGlobalLoginFailures = 200
-	loginWindow            = time.Minute
+	pbkdf2Iterations  = 600000
+	sessionCookie     = "kurumi_session"
+	sessionTTL        = 12 * time.Hour
+	maxSessions       = 64
+	maxAttemptIPs     = 1000
+	maxFailuresPerMin = 10
 )
 
-type auth struct {
-	token             string
-	mu                sync.Mutex
-	rootGate          sync.RWMutex
-	attempts          map[string]attempt
-	globalAttempts    attempt
-	keysLimitNotified bool
-	nextLimitNotice   time.Time
-	onLoginLimit      func(string)
-	sessions          map[string]authSession
-	nextCleanup       time.Time
-	hashSlots                chan struct{}
-	adminPasswordPath        string
-	adminPassword            adminPasswordFile
-	adminPasswordData        []byte
-	adminPasswordGeneration  uint64
-	adminPasswordErr         error
+// adminAccountFile stores the single global administrator's username and PBKDF2-SHA256 password hash.
+type adminAccountFile struct {
+	Version  int    `json:"version"`
+	Username string `json:"username"`
+	Salt     string `json:"salt"`
+	Hash     string `json:"hash"`
 }
 
-type authSession struct {
+type loginAttempt struct {
+	count       int
+	windowStart time.Time
+	lastAttempt time.Time
+}
+
+type sessionEntry struct {
+	username string
+	expires  time.Time
+}
+
+type browserTicket struct {
 	expires time.Time
-	gate    *sync.RWMutex // browser sessions share rootGate
 }
 
-type remoteGrant struct {
-	NodeID     string `json:"nodeId"`
-	InstanceID string `json:"instanceId"`
-	Binding    string `json:"binding"`
-	Control    bool   `json:"control,omitempty"`
+// AuthManager manages single-user username+password authentication, local CLI token, and sessions.
+type AuthManager struct {
+	mu          sync.Mutex
+	accountPath string
+	tokenPath   string
+	localToken  string
+	account     adminAccountFile
+	sessions    map[string]sessionEntry
+	attempts    map[string]loginAttempt
+	tickets     map[string]browserTicket
 }
 
-type principal struct {
-	Name              string        `json:"name"`
-	Role              string        `json:"role"`
-	Account           bool          `json:"account"`
-	PasswordAccount   bool          `json:"passwordAccount,omitempty"`
-	AllowLogs         bool          `json:"allowLogs,omitempty"`
-	OperableInstances []string      `json:"operableInstances,omitempty"`
-	AllowedActions    []string      `json:"allowedActions,omitempty"`
-	ViewConfig        bool          `json:"viewConfig,omitempty"`
-	ViewTraffic       bool          `json:"viewTraffic,omitempty"`
-	LogInstances      []string      `json:"logInstances,omitempty"`
-	RemoteInstances   []remoteGrant `json:"-"`
-	Instances         []string      `json:"-"`
-	AccountID         string        `json:"-"`
-	AccountRevision   uint64        `json:"-"`
-	gate              *sync.RWMutex
-	sessionExpires    time.Time
-	accountExpires    time.Time
-}
-
-func (p principal) admin() bool          { return p.Role == "admin" }
-func (p principal) canReadConfig() bool  { return p.admin() || p.ViewConfig }
-func (p principal) canReadTraffic() bool { return p.admin() || p.ViewTraffic }
-
-func (p principal) canPerformAction(action string) bool {
-	if p.admin() {
-		return true
+// NewAuthManager initializes or migrates the single-user credential file and local control token.
+func NewAuthManager(dataDir string) (*AuthManager, error) {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create data dir: %w", err)
 	}
-	if p.Role != "operator" {
-		return false
+	am := &AuthManager{
+		accountPath: filepath.Join(dataDir, "admin-password.json"),
+		tokenPath:   filepath.Join(dataDir, "access.token"),
+		sessions:    make(map[string]sessionEntry),
+		attempts:    make(map[string]loginAttempt),
+		tickets:     make(map[string]browserTicket),
 	}
-	for _, allowed := range p.AllowedActions {
-		if allowed == action {
-			return true
-		}
-	}
-	return false
-}
-
-func (p principal) canPerformRemoteAction() bool {
-	return p.canPerformAction("start") || p.canPerformAction("stop") || p.canPerformAction("restart")
-}
-func (p principal) canOperate(id string) bool {
-	if p.admin() {
-		return true
-	}
-	if p.Role != "operator" {
-		return false
-	}
-	if !p.canView(id) {
-		return false
-	}
-	for _, allowed := range p.OperableInstances {
-		if allowed == id {
-			return true
-		}
-	}
-	return false
-}
-func (p principal) canReadLogs(id string) bool {
-	if p.admin() {
-		return true
-	}
-	if !p.AllowLogs || !p.canView(id) {
-		return false
-	}
-	for _, allowed := range p.LogInstances {
-		if allowed == id {
-			return true
-		}
-	}
-	return false
-}
-func (p principal) canView(id string) bool {
-	if p.admin() {
-		return true
-	}
-	if id == "" {
-		return false
-	}
-	for _, allowed := range p.Instances {
-		if allowed == id {
-			return true
-		}
-	}
-	return false
-}
-
-func (p principal) canViewRemoteNode(nodeID string) bool {
-	if p.admin() {
-		return true
-	}
-	for _, grant := range p.RemoteInstances {
-		if grant.NodeID == nodeID {
-			return true
-		}
-	}
-	return false
-}
-
-func (p principal) canViewRemoteInstance(nodeID, instanceID, binding string) bool {
-	if p.admin() {
-		return true
-	}
-	if binding == "" {
-		return false
-	}
-	for _, grant := range p.RemoteInstances {
-		if grant.NodeID == nodeID && grant.InstanceID == instanceID && grant.Binding == binding {
-			return true
-		}
-	}
-	return false
-}
-
-func (p principal) remoteControlGrant(nodeID, instanceID string) (remoteGrant, bool) {
-	if p.Role == "operator" {
-		for _, grant := range p.RemoteInstances {
-			if grant.NodeID == nodeID && grant.InstanceID == instanceID && grant.Control {
-				return grant, true
-			}
-		}
-	}
-	return remoteGrant{}, false
-}
-
-func (a *auth) localToken(r *http.Request) bool {
-	header := r.Header.Get("Authorization")
-	if !strings.HasPrefix(header, "Bearer ") {
-		return false
-	}
-	t := strings.TrimPrefix(header, "Bearer ")
-	return t != "" && subtle.ConstantTimeCompare([]byte(t), []byte(a.token)) == 1
-}
-
-func (a *auth) identity(r *http.Request) (principal, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.identityLocked(r)
-}
-
-// identityLocked checks the current session while a.mu is held.
-func (a *auth) identityLocked(r *http.Request) (principal, bool) {
-	if a.localToken(r) {
-		return principal{Name: "本机管理令牌", Role: "admin"}, true
-	}
-	c, e := r.Cookie("kurumi_session")
-	if e != nil {
-		return principal{}, false
-	}
-	session, ok := a.sessions[c.Value]
-	if !ok {
-		return principal{}, false
-	}
-	if !time.Now().Before(session.expires) {
-		delete(a.sessions, c.Value)
-		return principal{}, false
-	}
-	return principal{Name: "本机管理员", Role: "admin", gate: session.gate}, true
-}
-
-// Reservations include in-flight checks so concurrent guesses cannot all
-// pass the limit before their failures are recorded.
-func (a *auth) beginAttempt(key string) error {
-	return a.beginAttemptWithPeer(key, false, "")
-}
-
-func (a *auth) beginAttemptWithPeer(key string, login bool, peer string) error {
-	a.mu.Lock()
-	now := time.Now()
-	a.prune(now)
-	at, known := a.attempts[key]
-	storedAttempt := at
-	if !known || !now.Before(at.since.Add(loginWindow)) {
-		at.count, at.since = 0, now
-		if at.inFlight < maxLoginFailures {
-			at.limitNotified = false
-		}
-	}
-	if a.globalAttempts.since.IsZero() || !now.Before(a.globalAttempts.since.Add(loginWindow)) {
-		a.globalAttempts.count, a.globalAttempts.since, a.globalAttempts.limitNotified = 0, now, false
-	}
-	keyLimited := at.count+at.inFlight >= maxLoginFailures
-	globalLimited := key != "token" && a.globalAttempts.count+a.globalAttempts.inFlight >= maxGlobalLoginFailures
-	keysLimited := !known && key != "token" && len(a.attempts) >= maxLoginKeys
-	if !keyLimited {
-		at.limitNotified = false
-	}
-	if a.globalAttempts.count+a.globalAttempts.inFlight < maxGlobalLoginFailures {
-		a.globalAttempts.limitNotified = false
-	}
-	if len(a.attempts) < maxLoginKeys {
-		a.keysLimitNotified = false
-	}
-	if keyLimited || globalLimited || keysLimited {
-		changed := false
-		if login {
-			if keyLimited && !at.limitNotified {
-				at.limitNotified, changed = true, true
-			}
-			if globalLimited && !a.globalAttempts.limitNotified {
-				a.globalAttempts.limitNotified, changed = true, true
-			}
-			if keysLimited && !a.keysLimitNotified {
-				a.keysLimitNotified, changed = true, true
-			}
-		}
-		if known {
-			// A rejected attempt must not change the existing credential budget.
-			storedAttempt.limitNotified = at.limitNotified
-			a.attempts[key] = storedAttempt
-		}
-		callback, notify := a.reserveLimitNotice(now, changed)
-		a.mu.Unlock()
-		if notify && callback != nil {
-			callback(loginPeerIP(peer))
-		}
-		return fmt.Errorf("尝试过于频繁，请稍后再试")
-	}
-	at.inFlight++
-	if key != "token" {
-		a.globalAttempts.inFlight++
-	}
-	a.attempts[key] = at
-	a.mu.Unlock()
-	return nil
-}
-
-// Called with a.mu held, limiting all login notices to one per minute.
-func (a *auth) reserveLimitNotice(now time.Time, changed bool) (func(string), bool) {
-	notify := changed && !now.Before(a.nextLimitNotice)
-	if notify {
-		a.nextLimitNotice = now.Add(time.Minute)
-	}
-	return a.onLoginLimit, notify
-}
-
-// Only the network peer is used; forwarding headers are never trusted.
-func loginPeerIP(peer string) string {
-	host, _, err := net.SplitHostPort(peer)
+	tok, err := loadOrCreateToken(am.tokenPath)
 	if err != nil {
-		return ""
+		return nil, err
 	}
-	ip, err := netip.ParseAddr(host)
-	if err != nil {
-		return ""
+	am.localToken = tok
+	if err := am.loadOrInitAccount(); err != nil {
+		return nil, err
 	}
-	return ip.WithZone("").Unmap().String()
+	return am, nil
 }
 
-func (a *auth) finishAttempt(key string, failed bool) {
-	a.finishAttemptWithPeer(key, failed, false, "")
-}
-
-func (a *auth) finishAttemptWithPeer(key string, failed, login bool, peer string) {
-	a.mu.Lock()
-	now := time.Now()
-	at := a.attempts[key]
-	if !now.Before(at.since.Add(loginWindow)) {
-		at.count, at.since, at.limitNotified = 0, now, false
-	}
-	if !now.Before(a.globalAttempts.since.Add(loginWindow)) {
-		a.globalAttempts.count, a.globalAttempts.since, a.globalAttempts.limitNotified = 0, now, false
-	}
-	at.inFlight--
-	if key != "token" {
-		a.globalAttempts.inFlight--
-	}
-	changed := false
-	if failed {
-		at.count++
-		if key != "token" {
-			a.globalAttempts.count++
-		}
-		if login && at.count >= maxLoginFailures && !at.limitNotified {
-			at.limitNotified, changed = true, true
-		}
-		if login && key != "token" && a.globalAttempts.count >= maxGlobalLoginFailures && !a.globalAttempts.limitNotified {
-			a.globalAttempts.limitNotified, changed = true, true
+func loadOrCreateToken(path string) (string, error) {
+	if raw, err := os.ReadFile(path); err == nil {
+		t := strings.TrimSpace(string(raw))
+		if len(t) >= 32 {
+			return t, nil
 		}
 	}
-	if at.count == 0 && at.inFlight == 0 {
-		delete(a.attempts, key)
-	} else {
-		a.attempts[key] = at
-	}
-	callback, notify := a.reserveLimitNotice(now, changed)
-	a.mu.Unlock()
-	if notify && callback != nil {
-		callback(loginPeerIP(peer))
-	}
-}
-
-func (a *auth) login(r *http.Request, password *string) (string, error) {
-	if password == nil {
-		return "", fmt.Errorf("登录信息无效")
-	}
-	const key = "admin-password"
-	if err := a.beginAttemptWithPeer(key, true, r.RemoteAddr); err != nil {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
-	failed := false
-	defer func() { a.finishAttemptWithPeer(key, failed, true, r.RemoteAddr) }()
-	var sid string
-	var err error
-	sid, failed, err = a.loginAdminPassword(r, *password)
-	return sid, err
+	tok := hex.EncodeToString(buf)
+	if _, err := writeIfChanged(path, []byte(tok+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return tok, nil
 }
 
-// A newly authenticated browser replaces its old cookie. Plan evictions before
-// changing sessions so a busy session does not log out a failed login's browser.
-func (a *auth) newSessionLocked(r *http.Request, now time.Time) (string, error) {
-	for sid, session := range a.sessions {
-		if !now.Before(session.expires) {
-			delete(a.sessions, sid)
+func (a *AuthManager) loadOrInitAccount() error {
+	raw, err := os.ReadFile(a.accountPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		// Fresh initialization: default username "admin" with empty password until user sets one.
+		salt := make([]byte, 16)
+		if _, err := rand.Read(salt); err != nil {
+			return err
+		}
+		sum := pbkdf2SHA256([]byte(""), salt, pbkdf2Iterations, 32)
+		a.account = adminAccountFile{
+			Version:  2,
+			Username: "admin",
+			Salt:     base64.RawStdEncoding.EncodeToString(salt),
+			Hash:     base64.RawStdEncoding.EncodeToString(sum),
+		}
+		return a.saveAccountLocked()
+	}
+	var acc adminAccountFile
+	if err := json.Unmarshal(raw, &acc); err != nil {
+		return fmt.Errorf("parse admin-password.json: %w", err)
+	}
+	// Smooth backward migration from v0.8 single-password files without username.
+	acc.Username = strings.TrimSpace(acc.Username)
+	if acc.Username == "" {
+		acc.Username = "admin"
+	}
+	if acc.Version < 2 {
+		acc.Version = 2
+	}
+	a.account = acc
+	return a.saveAccountLocked()
+}
+
+func (a *AuthManager) saveAccountLocked() error {
+	b, err := json.MarshalIndent(a.account, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	_, err = writeIfChanged(a.accountPath, b, 0o600)
+	return err
+}
+
+// Username returns the current single administrator's username.
+func (a *AuthManager) Username() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.account.Username
+}
+
+// NeedsPasswordSetup reports whether the administrator password is still empty ("").
+func (a *AuthManager) NeedsPasswordSetup() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ok, err := verifyPasswordRecord(a.account, "")
+	return err == nil && ok
+}
+
+// LocalToken returns the loopback CLI maintenance token.
+func (a *AuthManager) LocalToken() string {
+	return a.localToken
+}
+
+// VerifyLocalToken checks Authorization: Bearer <token> in constant time.
+func (a *AuthManager) VerifyLocalToken(r *http.Request) bool {
+	hdr := strings.TrimSpace(r.Header.Get("Authorization"))
+	const prefix = "Bearer "
+	if !strings.HasPrefix(hdr, prefix) {
+		return false
+	}
+	got := strings.TrimSpace(hdr[len(prefix):])
+	if len(got) != len(a.localToken) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(a.localToken)) == 1
+}
+
+// Authenticated checks whether the HTTP request carries a valid local Bearer token or session cookie.
+func (a *AuthManager) Authenticated(r *http.Request) (string, bool) {
+	if a.VerifyLocalToken(r) {
+		return a.Username(), true
+	}
+	c, err := r.Cookie(sessionCookie)
+	if err != nil || c.Value == "" {
+		return "", false
+	}
+	now := time.Now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.pruneSessionsLocked(now)
+	s, ok := a.sessions[c.Value]
+	if !ok || now.After(s.expires) {
+		delete(a.sessions, c.Value)
+		return "", false
+	}
+	return a.account.Username, true
+}
+
+// Login validates the single-user username and password in constant time and issues a session token.
+func (a *AuthManager) Login(clientIP, username, password string) (string, error) {
+	now := time.Now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.isRateLimitedLocked(clientIP, now) {
+		return "", errors.New("登录尝试过于频繁，请 1 分钟后再试")
+	}
+
+	userOK := constantTimeStringEqual(strings.TrimSpace(username), a.account.Username)
+	passOK, err := verifyPasswordRecord(a.account, password)
+	if err != nil || !userOK || !passOK {
+		a.recordFailureLocked(clientIP, now)
+		return "", errors.New("用户名或密码错误")
+	}
+
+	delete(a.attempts, clientIP)
+	return a.createSessionLocked(now)
+}
+
+// UpdateCredentials updates the single administrator's username and/or password after verifying currentPassword.
+func (a *AuthManager) UpdateCredentials(currentPassword, newUsername, newPassword string) error {
+	newUsername = strings.TrimSpace(newUsername)
+	if len(newUsername) < 1 || len(newUsername) > 64 || strings.ContainsAny(newUsername, " \t\r\n") {
+		return errors.New("用户名长度需在 1~64 个字符之间且不能包含空白字符")
+	}
+	if len(newPassword) > 256 {
+		return errors.New("密码长度不能超过 256 个字符")
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	passOK, err := verifyPasswordRecord(a.account, currentPassword)
+	if err != nil || !passOK {
+		return errors.New("当前密码校验失败")
+	}
+
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return err
+	}
+	sum := pbkdf2SHA256([]byte(newPassword), salt, pbkdf2Iterations, 32)
+	a.account = adminAccountFile{
+		Version:  2,
+		Username: newUsername,
+		Salt:     base64.RawStdEncoding.EncodeToString(salt),
+		Hash:     base64.RawStdEncoding.EncodeToString(sum),
+	}
+	return a.saveAccountLocked()
+}
+
+// Logout invalidates the session cookie if present.
+func (a *AuthManager) Logout(r *http.Request) {
+	c, err := r.Cookie(sessionCookie)
+	if err != nil || c.Value == "" {
+		return
+	}
+	a.mu.Lock()
+	delete(a.sessions, c.Value)
+	a.mu.Unlock()
+}
+
+// IssueBrowserTicket creates a short-lived one-time ticket for --open local browser launch.
+func (a *AuthManager) IssueBrowserTicket() (string, error) {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	ticket := hex.EncodeToString(buf)
+	now := time.Now()
+	a.mu.Lock()
+	for k, v := range a.tickets {
+		if now.After(v.expires) {
+			delete(a.tickets, k)
 		}
 	}
-	removed := make(map[string]bool)
-	held := make(map[*sync.RWMutex]bool)
-	defer func() {
-		for gate := range held {
-			gate.Unlock()
-		}
-	}()
-	reserve := func(sid string) bool {
-		session, exists := a.sessions[sid]
-		if !exists || removed[sid] {
-			return true
-		}
-		gate := session.gate
-		if gate != nil && !held[gate] {
-			// auth.mu is held: never wait for a gate, whose owner may need mu.
-			if !gate.TryLock() {
-				return false
+	a.tickets[ticket] = browserTicket{expires: now.Add(30 * time.Second)}
+	a.mu.Unlock()
+	return ticket, nil
+}
+
+// RedeemBrowserTicket exchanges a valid one-time ticket for a session token.
+func (a *AuthManager) RedeemBrowserTicket(ticket string) (string, bool) {
+	now := time.Now()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t, ok := a.tickets[ticket]
+	delete(a.tickets, ticket)
+	if !ok || now.After(t.expires) {
+		return "", false
+	}
+	tok, err := a.createSessionLocked(now)
+	if err != nil {
+		return "", false
+	}
+	return tok, true
+}
+
+func (a *AuthManager) createSessionLocked(now time.Time) (string, error) {
+	a.pruneSessionsLocked(now)
+	if len(a.sessions) >= maxSessions {
+		var oldestKey string
+		var oldestExp time.Time
+		for k, v := range a.sessions {
+			if oldestKey == "" || v.expires.Before(oldestExp) {
+				oldestKey = k
+				oldestExp = v.expires
 			}
-			held[gate] = true
 		}
-		removed[sid] = true
-		return true
-	}
-	if cookie, err := r.Cookie("kurumi_session"); err == nil {
-		if !reserve(cookie.Value) {
-			return "", fmt.Errorf("当前会话仍有操作进行，请稍后再试")
+		if oldestKey != "" {
+			delete(a.sessions, oldestKey)
 		}
 	}
-	if len(a.sessions)-len(removed) >= 64 {
-		type candidate struct {
-			id      string
-			expires time.Time
-		}
-		var candidates []candidate
-		for sid, session := range a.sessions {
-			if !removed[sid] {
-				candidates = append(candidates, candidate{sid, session.expires})
-			}
-		}
-		sort.Slice(candidates, func(i, j int) bool {
-			return candidates[i].expires.Before(candidates[j].expires)
-		})
-		evicted := false
-		for _, candidate := range candidates {
-			if reserve(candidate.id) {
-				evicted = true
-				break
-			}
-		}
-		if !evicted {
-			return "", fmt.Errorf("会话繁忙，请稍后再试")
-		}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
 	}
-	for sid := range removed {
-		delete(a.sessions, sid)
+	sid := hex.EncodeToString(buf)
+	a.sessions[sid] = sessionEntry{
+		username: a.account.Username,
+		expires:  now.Add(sessionTTL),
 	}
-	sid := randomHex(32)
-	a.sessions[sid] = authSession{expires: now.Add(12 * time.Hour), gate: &a.rootGate}
 	return sid, nil
 }
 
-// prune is called with a.mu held. Both tables have hard capacity limits.
-func (a *auth) prune(now time.Time) {
-	if now.Before(a.nextCleanup) {
-		return
-	}
-	for k, v := range a.attempts {
-		if v.inFlight == 0 && !now.Before(v.since.Add(loginWindow)) {
-			delete(a.attempts, k)
-		}
-	}
-	for k, session := range a.sessions {
-		if !now.Before(session.expires) {
+func (a *AuthManager) pruneSessionsLocked(now time.Time) {
+	for k, v := range a.sessions {
+		if now.After(v.expires) {
 			delete(a.sessions, k)
 		}
 	}
-	a.nextCleanup = now.Add(time.Second)
 }
 
-func (a *auth) logout(r *http.Request) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if c, e := r.Cookie("kurumi_session"); e == nil {
-		delete(a.sessions, c.Value)
+func (a *AuthManager) isRateLimitedLocked(ip string, now time.Time) bool {
+	rec, ok := a.attempts[ip]
+	if !ok {
+		return false
 	}
+	if now.Sub(rec.windowStart) > time.Minute {
+		delete(a.attempts, ip)
+		return false
+	}
+	return rec.count >= maxFailuresPerMin
 }
-func sameOrigin(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		return r.Header.Get("Sec-Fetch-Site") != "cross-site"
+
+func (a *AuthManager) recordFailureLocked(ip string, now time.Time) {
+	if len(a.attempts) >= maxAttemptIPs {
+		var oldestIP string
+		var oldestAt time.Time
+		for k, v := range a.attempts {
+			if now.Sub(v.windowStart) > time.Minute {
+				delete(a.attempts, k)
+				continue
+			}
+			if oldestIP == "" || v.lastAttempt.Before(oldestAt) {
+				oldestIP = k
+				oldestAt = v.lastAttempt
+			}
+		}
+		if len(a.attempts) >= maxAttemptIPs && oldestIP != "" {
+			delete(a.attempts, oldestIP)
+		}
 	}
-	u, e := url.Parse(origin)
-	return e == nil && (u.Scheme == "http" || u.Scheme == "https") && strings.EqualFold(u.Host, r.Host) && u.Path == ""
+	rec, ok := a.attempts[ip]
+	if !ok || now.Sub(rec.windowStart) > time.Minute {
+		a.attempts[ip] = loginAttempt{count: 1, windowStart: now, lastAttempt: now}
+		return
+	}
+	rec.count++
+	rec.lastAttempt = now
+	a.attempts[ip] = rec
 }
-func loopbackListen(addr string) error {
-	h, p, e := net.SplitHostPort(addr)
-	if e != nil {
-		return e
+
+func constantTimeStringEqual(a, b string) bool {
+	ha := sha256.Sum256([]byte(a))
+	hb := sha256.Sum256([]byte(b))
+	return subtle.ConstantTimeCompare(ha[:], hb[:]) == 1
+}
+
+func verifyPasswordRecord(rec adminAccountFile, password string) (bool, error) {
+	salt, err := base64.RawStdEncoding.DecodeString(rec.Salt)
+	if err != nil {
+		return false, err
 	}
-	ip := net.ParseIP(h)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("management listener must be an explicit loopback IP")
+	want, err := base64.RawStdEncoding.DecodeString(rec.Hash)
+	if err != nil {
+		return false, err
 	}
-	n, e := strconv.Atoi(p)
-	if e != nil || n < 1024 || n > 65535 {
-		return fmt.Errorf("management port must be 1024..65535")
+	got := pbkdf2SHA256([]byte(password), salt, pbkdf2Iterations, len(want))
+	return subtle.ConstantTimeCompare(got, want) == 1, nil
+}
+
+// pbkdf2SHA256 implements RFC 2898 PBKDF2-HMAC-SHA256 using only the Go standard library.
+func pbkdf2SHA256(password, salt []byte, iter, keyLen int) []byte {
+	prf := hmac.New(sha256.New, password)
+	hashLen := prf.Size()
+	numBlocks := (keyLen + hashLen - 1) / hashLen
+	var dk []byte
+	var blockBuf [4]byte
+	u := make([]byte, hashLen)
+	t := make([]byte, hashLen)
+
+	for block := 1; block <= numBlocks; block++ {
+		prf.Reset()
+		prf.Write(salt)
+		binary.BigEndian.PutUint32(blockBuf[:], uint32(block))
+		prf.Write(blockBuf[:])
+		u = prf.Sum(u[:0])
+		copy(t, u)
+		for i := 2; i <= iter; i++ {
+			prf.Reset()
+			prf.Write(u)
+			u = prf.Sum(u[:0])
+			for j := range t {
+				t[j] ^= u[j]
+			}
+		}
+		dk = append(dk, t...)
 	}
-	return nil
+	return bytes.Clone(dk[:keyLen])
+}
+
+func clientIPFromRequest(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }

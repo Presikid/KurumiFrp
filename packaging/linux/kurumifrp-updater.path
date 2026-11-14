@@ -1,9 +1,0 @@
-[Unit]
-Description=Watch for authenticated KurumiFRP update requests
-
-[Path]
-PathChanged=/opt/kurumifrp/runtime/update.request
-Unit=kurumifrp-updater.service
-
-[Install]
-WantedBy=multi-user.target

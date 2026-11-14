@@ -1,19 +1,52 @@
-name: Build native packages
+name: CI and Native Packages
+
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
-    paths:
-      - VERSION
-      - 'docs/RELEASE_*.md'
   workflow_dispatch:
+
 permissions:
   contents: read
+
 concurrency:
-  group: kurumi-v2-${{ github.ref }}
-  cancel-in-progress: false
-  queue: max
+  group: kurumi-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  verify:
+    name: Go Vet & Unit Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github
+            cmd
+            internal
+            packaging
+            scripts
+            web
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: stable
+      - name: Format, Vet, Test & Build Check
+        run: |
+          go vet ./...
+          go test -v -race ./...
+          go build -o kurumi-check ./cmd/kurumi
+
   package:
+    name: Package (${{ matrix.os }})
+    needs: [verify]
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     strategy:
       fail-fast: false
       matrix:
@@ -21,30 +54,31 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
           sparse-checkout: |
             .github
             cmd
-            docs
             internal
             packaging
             scripts
-            third_party
             web
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
           go-version: stable
-          cache: false
-      - name: Build universal Windows installer
+      - name: Build Windows Installer with Bundled Official FRP
         if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
           python scripts/package-native.py windows
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Build Linux packages and portable archives
+      - name: Build Linux DEB/RPM & Portable Archives with Bundled Official FRP
         if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           sudo apt-get update
           sudo apt-get install -y rpm
@@ -59,104 +93,38 @@ jobs:
             dist-native/*.rpm
             dist-native/*.tar.gz
           if-no-files-found: error
-  source-macos:
-    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
-    runs-on: macos-15-intel
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          persist-credentials: false
-          sparse-checkout: |
-            .github
-            cmd
-            docs
-            internal
-            packaging
-            scripts
-            third_party
-            web
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
-        with:
-          go-version: stable
-          cache: false
-      - name: Build macOS ARM64 source
-        env:
-          GOOS: darwin
-          GOARCH: arm64
-          CGO_ENABLED: '0'
-        run: go build -o kurumi ./cmd/kurumi
+
   release:
-    needs: [package, source-macos]
+    name: Publish GitHub Release
+    needs: [package]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
           sparse-checkout: |
-            .github
-            cmd
-            docs
-            internal
-            packaging
-            scripts
-            web
+            VERSION
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: native-*
           path: dist-native
           merge-multiple: true
-      - name: Verify package set and publish without overwriting a release
+      - name: Publish Release When VERSION Tag Is New
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="$(cat VERSION)"
-          if [ ! -f "docs/RELEASE_$version.md" ]; then
-            echo "No release notes for $version; package build only."
+          version="$(tr -d '[:space:]' < VERSION)"
+          tag="v${version}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists; skipping publication."
             exit 0
           fi
-          [[ "$version" =~ ^[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}$ ]]
-          IFS=. read -r a b c d <<< "$version"
-          for part in "$a" "$b" "$c" "$d"; do (( 10#$part <= 65535 )); done
-          test -s "dist-native/KurumiFRP-${version}-Setup.exe"
-          for arch in amd64 arm64 armhf riscv64; do
-            test -s "dist-native/kurumifrp_${version}_${arch}.deb"
-          done
-          for arch in x86_64 aarch64; do
-            test -s "dist-native/kurumifrp-${version}-1.${arch}.rpm"
-          done
-          for arch in arm arm_hf riscv64 loong64 mips mipsle mips64 mips64le; do
-            test -s "dist-native/KurumiFRP-${version}-linux-${arch}.tar.gz"
-          done
-          # List releases to include drafts and fail closed on API errors.
-          release_pages="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100")" || { echo '::error::Release lookup failed; publication stopped.'; exit 1; }
-          release_state="$(jq -er --arg tag "v$version" '[.[][] | select(.tag_name == $tag) | .draft] | if length == 0 then "missing" elif any(.[]; . == true) then "draft" elif all(.[]; . == false) then "published" else error("invalid release metadata") end' <<< "$release_pages")" || { echo '::error::Unable to determine release state.'; exit 1; }
-          case "$release_state" in
-            draft) echo "::error::Draft release v$version exists; resolve it manually."; exit 1 ;;
-            published) echo 'Existing release retained; bump VERSION for another release.'; exit 0 ;;
-            missing) ;;
-            *) echo '::error::Unknown release state; publication stopped.'; exit 1 ;;
-          esac
-          tag="v$version"
-          tag_refs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" --jq '.[] | .ref')" || { echo '::error::Tag lookup failed; publication stopped.'; exit 1; }
-          if grep -Fxq "refs/tags/$tag" <<< "$tag_refs"; then
-            # A cancelled run may have created this lightweight tag already.
-            tag_commit="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq 'select(.object.type == "commit") | .object.sha')" || { echo '::error::Tag target lookup failed; publication stopped.'; exit 1; }
-            if [ "$tag_commit" != "$GITHUB_SHA" ]; then
-              echo "::error::Tag $tag is not a lightweight tag at $GITHUB_SHA; resolve it manually."
-              exit 1
-            fi
-            echo "Reusing tag $tag at $GITHUB_SHA."
-          else
-            # Atomically create the tag at this run's commit; never move an existing tag.
-            if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$tag" -f "sha=$GITHUB_SHA" >/dev/null; then
-              echo "::error::Could not create tag $tag at $GITHUB_SHA; publication stopped."
-              exit 1
-            fi
-          fi
-          gh release create "$tag" dist-native/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "KurumiFrp $version" --notes-file "docs/RELEASE_$version.md" --prerelease
-
+          gh release create "$tag" dist-native/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "KurumiFrp $version" \
+            --generate-notes
