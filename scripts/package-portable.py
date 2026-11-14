@@ -13,8 +13,8 @@ import bundled_frp  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = (ROOT / 'VERSION').read_text(encoding='utf-8').strip()
-if not re.fullmatch(r'[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}', VERSION):
-    raise ValueError(f'invalid version: {VERSION}')
+if not re.fullmatch(r'(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})', VERSION):
+    raise ValueError(f'invalid three-segment SemVer (expected MAJOR.MINOR.PATCH): {VERSION}')
 OUT = ROOT / 'dist-native'
 
 TARGETS = {
