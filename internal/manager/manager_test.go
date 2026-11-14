@@ -1,12 +1,19 @@
 package manager
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bytes"
+	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -282,5 +289,161 @@ func TestCompareSemVer(t *testing.T) {
 		if got := compareSemVer(tc.a, tc.b); got != tc.want {
 			t.Fatalf("compareSemVer(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
 		}
+	}
+}
+
+func TestStatelessSessionAndFRPAutoUpdate(t *testing.T) {
+	dir := t.TempDir()
+
+	// Part A: Verify HMAC session cookie survives daemon restart (NewAuthManager reload) and invalidates on Logout / password update
+	am1, err := NewAuthManager(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sid, err := am1.Login("127.0.0.1", "admin", "")
+	if err != nil {
+		t.Fatalf("initial login failed: %v", err)
+	}
+	reqWithCookie := func(c string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: c})
+		return r
+	}
+	if _, ok := am1.Authenticated(reqWithCookie(sid)); !ok {
+		t.Fatal("expected session valid on am1")
+	}
+
+	// Simulate daemon restart during self-update
+	am2, err := NewAuthManager(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := am2.Authenticated(reqWithCookie(sid)); !ok {
+		t.Fatal("expected HMAC session to survive daemon restart seamlessly")
+	}
+	am2.Logout(reqWithCookie(sid))
+	if _, ok := am2.Authenticated(reqWithCookie(sid)); ok {
+		t.Fatal("expected session invalidated after Logout")
+	}
+
+	// Changing password must immediately invalidate pre-restart cookies across fresh reload too
+	sid2, _ := am2.Login("127.0.0.1", "admin", "")
+	if err := am2.UpdateCredentials("", "kurumi", "zafkiel-secret"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := am2.Authenticated(reqWithCookie(sid2)); ok {
+		t.Fatal("expected session invalidated after credential rotation")
+	}
+
+	// Part B: Verify UpdateManager proxy validation & SHA-256 verified official FRP hot-update
+	slug, ext, supported := frpPlatformSlug()
+	if !supported {
+		t.Skip("skipping archive hot-update test on unsupported GOOS/GOARCH")
+	}
+
+	// Build a valid mock frpc + frps executable for the current test OS
+	var mockBin []byte
+	if norm, err := normalizeProxyURL("127.0.0.1:7890"); err != nil || norm != "http://127.0.0.1:7890" {
+		t.Fatalf("normalizeProxyURL got %q, %v", norm, err)
+	}
+	if runtime.GOOS == "windows" {
+		// On Windows, copy cmd.exe / whoami.exe or skip shell-script execution after testing ZIP extraction
+		var zbuf bytes.Buffer
+		zw := zip.NewWriter(&zbuf)
+		for name, body := range map[string][]byte{
+			"frp/frpc.exe": []byte("MZ-mock"),
+			"frp/frps.exe": []byte("MZ-mock"),
+			"frp/LICENSE":  []byte("Apache-2.0"),
+		} {
+			w, _ := zw.Create(name)
+			_, _ = w.Write(body)
+		}
+		_ = zw.Close()
+		c, s, _, err := extractFRPMembers("frp_0.99.0_windows_amd64.zip", zbuf.Bytes())
+		if err != nil || string(c) != "MZ-mock" || string(s) != "MZ-mock" {
+			t.Fatalf("extractFRPMembers windows zip failed: %v", err)
+		}
+		return
+	}
+	mockBin = []byte("#!/bin/sh\necho 0.99.0\n")
+
+	assetName := "frp_0.99.0_" + slug + ext
+	var archiveBuf bytes.Buffer
+	if ext == ".zip" {
+		zw := zip.NewWriter(&archiveBuf)
+		for name, body := range map[string][]byte{
+			"frp_0.99.0/frpc":    mockBin,
+			"frp_0.99.0/frps":    mockBin,
+			"frp_0.99.0/LICENSE": []byte("Apache-2.0"),
+		} {
+			w, _ := zw.Create(name)
+			_, _ = w.Write(body)
+		}
+		_ = zw.Close()
+	} else {
+		gz := gzip.NewWriter(&archiveBuf)
+		tw := tar.NewWriter(gz)
+		for name, body := range map[string][]byte{
+			"frp_0.99.0/frpc":    mockBin,
+			"frp_0.99.0/frps":    mockBin,
+			"frp_0.99.0/LICENSE": []byte("Apache-2.0"),
+		} {
+			_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(body)), Typeflag: tar.TypeReg})
+			_, _ = tw.Write(body)
+		}
+		_ = tw.Close()
+		_ = gz.Close()
+	}
+	archiveBytes := archiveBuf.Bytes()
+	sum := sha256.Sum256(archiveBytes)
+	sumHex := hex.EncodeToString(sum[:])
+
+	var srvURL string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/fatedier/frp/releases/latest":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tag_name": "v0.99.0",
+				"html_url": srvURL + "/rel",
+				"assets": []map[string]any{
+					{"name": assetName, "size": len(archiveBytes), "browser_download_url": srvURL + "/dl/" + assetName},
+					{"name": "frp_sha256_checksums.txt", "size": 100, "browser_download_url": srvURL + "/dl/checksums.txt"},
+				},
+			})
+		case "/repos/Presikid/KurumiFrp/releases":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"tag_name": "v0.9.1", "html_url": srvURL + "/app"},
+			})
+		case "/dl/checksums.txt":
+			_, _ = w.Write([]byte(sumHex + "  " + assetName + "\n"))
+		case "/dl/" + assetName:
+			_, _ = w.Write(archiveBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+	srvURL = ts.URL
+
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := NewRuntimeSupervisor(dir, store, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.StopAll()
+
+	um := NewUpdateManager(dir, rt, nil)
+	um.apiBase = ts.URL
+	um.allowLocal = true
+
+	coreInfo, _, err := um.ApplyFRPUpdate(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ApplyFRPUpdate failed: %v", err)
+	}
+	if !coreInfo.FrpcFound || !coreInfo.FrpsFound || coreInfo.FrpcVersion != "0.99.0" || coreInfo.CoreSource != "data-bin" {
+		t.Fatalf("unexpected updated coreInfo: %+v", coreInfo)
 	}
 }

@@ -71,8 +71,14 @@ Name: "{commonstartup}\KurumiFRP"; Filename: "{app}\kurumi.exe"; Parameters: "--
 [Run]
 Filename: "{app}\kurumi.exe"; Parameters: "--native-maintenance init --install-dir ""{app}"""; Flags: runhidden waituntilterminated
 Filename: "{app}\kurumi.exe"; Parameters: "--open"; Description: "启动 KurumiFRP 并在浏览器打开时崎狂三 WebUI"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{app}\kurumi.exe"; Parameters: "--headless --listen ""{param:LISTENADDR|auto}"""; WorkingDir: "{app}"; Flags: nowait runhidden runasoriginaluser; Check: ShouldRestartHeadless
 
 [Code]
+function ShouldRestartHeadless: Boolean;
+begin
+  Result := ExpandConstant('{param:RESTARTDAEMON|0}') = '1';
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;

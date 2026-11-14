@@ -25,6 +25,13 @@ var (
 	binVerCache = make(map[string]cachedBinVer)
 )
 
+// InvalidateBinaryVersionCache clears cached frpc/frps version strings after hot-updating binaries.
+func InvalidateBinaryVersionCache() {
+	binVerMu.Lock()
+	binVerCache = make(map[string]cachedBinVer)
+	binVerMu.Unlock()
+}
+
 func binaryFileName(base string) string {
 	if runtime.GOOS == "windows" {
 		return base + ".exe"
@@ -32,56 +39,77 @@ func binaryFileName(base string) string {
 	return base
 }
 
-// LocateBinaries resolves bundled or user-placed official frpc and frps executables.
+// LocateBinaries resolves bundled or hot-updated official frpc and frps executables.
+// If both data/bin and bundled exist, it prefers whichever holds the newer SemVer so future Setup.exe upgrades never get shadowed by an older data/bin.
 func LocateBinaries(dataDir string) CoreBinaryInfo {
 	exePath, _ := os.Executable()
 	exeDir := filepath.Dir(exePath)
 
-	candidateDirs := []string{
-		filepath.Join(dataDir, "bin"),
-		filepath.Join(exeDir, "bundled"),
-		filepath.Join(".", "bundled"),
+	dataBinDir := filepath.Join(dataDir, "bin")
+	exeBundledDir := filepath.Join(exeDir, "bundled")
+	cwdBundledDir := filepath.Join(".", "bundled")
+
+	frpcPath, frpcVer, frpcSource, frpcFound := resolveBestBinary(binaryFileName("frpc"), dataBinDir, exeBundledDir, cwdBundledDir)
+	frpsPath, frpsVer, frpsSource, frpsFound := resolveBestBinary(binaryFileName("frps"), dataBinDir, exeBundledDir, cwdBundledDir)
+
+	activeDir := exeBundledDir
+	source := frpsSource
+	if source == "" {
+		source = frpcSource
+	}
+	if source == "data-bin" {
+		activeDir = dataBinDir
+	} else if frpsPath != "" {
+		activeDir = filepath.Dir(frpsPath)
+	} else if frpcPath != "" {
+		activeDir = filepath.Dir(frpcPath)
 	}
 
-	frpcPath, frpcFound := findBinary(binaryFileName("frpc"), candidateDirs)
-	frpsPath, frpsFound := findBinary(binaryFileName("frps"), candidateDirs)
-
-	bundledDir := filepath.Join(exeDir, "bundled")
-	if st, err := os.Stat(filepath.Join(dataDir, "bin")); err == nil && st.IsDir() {
-		bundledDir = filepath.Join(dataDir, "bin")
+	return CoreBinaryInfo{
+		FrpcPath:    frpcPath,
+		FrpcVersion: frpcVer,
+		FrpcFound:   frpcFound,
+		FrpsPath:    frpsPath,
+		FrpsVersion: frpsVer,
+		FrpsFound:   frpsFound,
+		BundledDir:  activeDir,
+		CoreSource:  source,
 	}
-
-	info := CoreBinaryInfo{
-		FrpcPath:   frpcPath,
-		FrpcFound:  frpcFound,
-		FrpsPath:   frpsPath,
-		FrpsFound:  frpsFound,
-		BundledDir: bundledDir,
-	}
-	if frpcFound {
-		info.FrpcVersion = probeBinaryVersion(frpcPath)
-	}
-	if frpsFound {
-		info.FrpsVersion = probeBinaryVersion(frpsPath)
-	}
-	return info
 }
 
-func findBinary(fileName string, dirs []string) (string, bool) {
-	for _, d := range dirs {
-		if d == "" {
-			continue
+func resolveBestBinary(fileName, dataBinDir, exeBundledDir, cwdBundledDir string) (string, string, string, bool) {
+	dataPath, hasData := statFile(filepath.Join(dataBinDir, fileName))
+	bundPath, hasBund := statFile(filepath.Join(exeBundledDir, fileName))
+	if !hasBund {
+		bundPath, hasBund = statFile(filepath.Join(cwdBundledDir, fileName))
+	}
+
+	if hasData && hasBund {
+		dVer := probeBinaryVersion(dataPath)
+		bVer := probeBinaryVersion(bundPath)
+		if bVer != "unknown" && dVer != "unknown" && compareSemVer(bVer, dVer) > 0 {
+			return bundPath, bVer, "bundled", true
 		}
-		full := filepath.Join(d, fileName)
-		if st, err := os.Stat(full); err == nil && !st.IsDir() {
-			if abs, err := filepath.Abs(full); err == nil {
-				return abs, true
-			}
-			return full, true
-		}
+		return dataPath, dVer, "data-bin", true
+	}
+	if hasData {
+		return dataPath, probeBinaryVersion(dataPath), "data-bin", true
+	}
+	if hasBund {
+		return bundPath, probeBinaryVersion(bundPath), "bundled", true
 	}
 	if p, err := exec.LookPath(fileName); err == nil {
-		return p, true
+		return p, probeBinaryVersion(p), "path", true
+	}
+	return "", "", "", false
+}
+
+func statFile(full string) (string, bool) {
+	if st, err := os.Stat(full); err == nil && !st.IsDir() {
+		if abs, err := filepath.Abs(full); err == nil {
+			return abs, true
+		}
+		return full, true
 	}
 	return "", false
 }
@@ -107,6 +135,7 @@ func probeBinaryVersion(binPath string) string {
 		if idx := strings.IndexAny(v, "\r\n"); idx >= 0 {
 			v = strings.TrimSpace(v[:idx])
 		}
+		v = strings.TrimPrefix(v, "v")
 		if v != "" {
 			ver = v
 		}

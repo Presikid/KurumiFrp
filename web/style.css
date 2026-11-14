@@ -876,3 +876,45 @@ code, pre, textarea.mono-input {
     min-height: 220px;
   }
 }
+
+.proxy-inline-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.proxy-inline-bar input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-input);
+  color: var(--text-main);
+  font-size: 12.5px;
+}
+.update-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.update-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--border-subtle);
+}
+.update-item-info {
+  font-size: 13px;
+  line-height: 1.45;
+}
+.update-item-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
