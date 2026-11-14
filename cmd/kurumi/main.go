@@ -136,6 +136,7 @@ func main() {
 	defer ln.Close()
 
 	_ = os.WriteFile(filepath.Join(dataDir, "listen.addr"), []byte(browserBaseURL+"\n"), 0o600)
+	app.SetRuntimeMeta(ln.Addr().String(), os.Args[1:])
 	app.SetListenAddr(actualAddr)
 
 	srv := &http.Server{
