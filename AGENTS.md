@@ -19,3 +19,4 @@
 
 ## 3. 提交与质量校验
 - 每次提交 PR 前必须执行并通过 `gofmt -s -w .`、`go vet ./...` 与 `go test -race ./...`。
+- **标准三段式语义化版本号（SemVer）**：版本号统一维护在根目录 `VERSION` 与 `internal/version/version.go` 中，严格遵循 `MAJOR.MINOR.PATCH` 标准三段式（如 `0.9.0`、`0.9.1`、`1.0.0`），严禁使用 `x.y.z.w` 多段式版本号。

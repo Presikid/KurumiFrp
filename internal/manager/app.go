@@ -961,7 +961,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"current":    version.Current,
 			"latest":     latestVer,
-			"hasUpdate":  compareFourSegmentVersion(latestVer, version.Current) > 0,
+			"hasUpdate":  compareSemVer(latestVer, version.Current) > 0,
 			"releaseURL": releaseURL,
 		})
 
@@ -1042,10 +1042,24 @@ func maxInt64(a, b int64) int64 {
 	return b
 }
 
-func compareFourSegmentVersion(a, b string) int {
-	pa := strings.Split(strings.TrimPrefix(a, "v"), ".")
-	pb := strings.Split(strings.TrimPrefix(b, "v"), ".")
-	for i := 0; i < 4; i++ {
+func compareSemVer(a, b string) int {
+	clean := func(s string) []string {
+		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "v"))
+		if i := strings.IndexAny(s, "-+"); i >= 0 {
+			s = s[:i]
+		}
+		return strings.Split(s, ".")
+	}
+	pa := clean(a)
+	pb := clean(b)
+	n := len(pa)
+	if len(pb) > n {
+		n = len(pb)
+	}
+	if n < 3 {
+		n = 3
+	}
+	for i := 0; i < n; i++ {
 		var va, vb int
 		if i < len(pa) {
 			fmt.Sscanf(pa[i], "%d", &va)

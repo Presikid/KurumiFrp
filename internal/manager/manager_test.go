@@ -266,3 +266,21 @@ func encodeRawBase64(b []byte) string {
 	}
 	return out.String()
 }
+
+func TestCompareSemVer(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"0.9.0", "0.9.0", 0},
+		{"v0.9.1", "0.9.0", 1},
+		{"0.10.0", "0.9.9", 1},
+		{"1.0.0", "0.99.9", 1},
+		{"0.9.0", "0.9.2", -1},
+	}
+	for _, tc := range cases {
+		if got := compareSemVer(tc.a, tc.b); got != tc.want {
+			t.Fatalf("compareSemVer(%q, %q) = %d, want %d", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
