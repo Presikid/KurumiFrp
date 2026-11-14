@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +26,7 @@ const (
 	pbkdf2Iterations  = 600000
 	sessionCookie     = "kurumi_session"
 	sessionTTL        = 12 * time.Hour
-	maxSessions       = 64
+	maxRevoked        = 128
 	maxAttemptIPs     = 1000
 	maxFailuresPerMin = 10
 )
@@ -44,23 +45,18 @@ type loginAttempt struct {
 	lastAttempt time.Time
 }
 
-type sessionEntry struct {
-	username string
-	expires  time.Time
-}
-
 type browserTicket struct {
 	expires time.Time
 }
 
-// AuthManager manages single-user username+password authentication, local CLI token, and sessions.
+// AuthManager manages single-user username+password authentication, local CLI token, and restart-resilient HMAC sessions.
 type AuthManager struct {
 	mu          sync.Mutex
 	accountPath string
 	tokenPath   string
 	localToken  string
 	account     adminAccountFile
-	sessions    map[string]sessionEntry
+	revoked     map[string]time.Time
 	attempts    map[string]loginAttempt
 	tickets     map[string]browserTicket
 }
@@ -73,7 +69,7 @@ func NewAuthManager(dataDir string) (*AuthManager, error) {
 	am := &AuthManager{
 		accountPath: filepath.Join(dataDir, "admin-password.json"),
 		tokenPath:   filepath.Join(dataDir, "access.token"),
-		sessions:    make(map[string]sessionEntry),
+		revoked:     make(map[string]time.Time),
 		attempts:    make(map[string]loginAttempt),
 		tickets:     make(map[string]browserTicket),
 	}
@@ -112,7 +108,6 @@ func (a *AuthManager) loadOrInitAccount() error {
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		// Fresh initialization: default username "admin" with empty password until user sets one.
 		salt := make([]byte, 16)
 		if _, err := rand.Read(salt); err != nil {
 			return err
@@ -130,7 +125,6 @@ func (a *AuthManager) loadOrInitAccount() error {
 	if err := json.Unmarshal(raw, &acc); err != nil {
 		return fmt.Errorf("parse admin-password.json: %w", err)
 	}
-	// Smooth backward migration from v0.8 single-password files without username.
 	acc.Username = strings.TrimSpace(acc.Username)
 	if acc.Username == "" {
 		acc.Username = "admin"
@@ -186,7 +180,7 @@ func (a *AuthManager) VerifyLocalToken(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(a.localToken)) == 1
 }
 
-// Authenticated checks whether the HTTP request carries a valid local Bearer token or session cookie.
+// Authenticated checks whether the HTTP request carries a valid local Bearer token or HMAC-signed session cookie.
 func (a *AuthManager) Authenticated(r *http.Request) (string, bool) {
 	if a.VerifyLocalToken(r) {
 		return a.Username(), true
@@ -198,16 +192,26 @@ func (a *AuthManager) Authenticated(r *http.Request) (string, bool) {
 	now := time.Now()
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.pruneSessionsLocked(now)
-	s, ok := a.sessions[c.Value]
-	if !ok || now.After(s.expires) {
-		delete(a.sessions, c.Value)
+	a.pruneRevokedLocked(now)
+	if _, isRevoked := a.revoked[c.Value]; isRevoked {
+		return "", false
+	}
+	parts := strings.Split(c.Value, ".")
+	if len(parts) != 3 {
+		return "", false
+	}
+	expUnix, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || now.Unix() > expUnix {
+		return "", false
+	}
+	expectedSig := a.signSessionPayloadLocked(parts[0] + "." + parts[1])
+	if len(parts[2]) != len(expectedSig) || subtle.ConstantTimeCompare([]byte(parts[2]), []byte(expectedSig)) != 1 {
 		return "", false
 	}
 	return a.account.Username, true
 }
 
-// Login validates the single-user username and password in constant time and issues a session token.
+// Login validates the single-user username and password in constant time and issues an HMAC-signed session token.
 func (a *AuthManager) Login(clientIP, username, password string) (string, error) {
 	now := time.Now()
 	a.mu.Lock()
@@ -229,6 +233,7 @@ func (a *AuthManager) Login(clientIP, username, password string) (string, error)
 }
 
 // UpdateCredentials updates the single administrator's username and/or password after verifying currentPassword.
+// Because Salt and Hash rotate, all existing browser session tokens are immediately invalidated.
 func (a *AuthManager) UpdateCredentials(currentPassword, newUsername, newPassword string) error {
 	newUsername = strings.TrimSpace(newUsername)
 	if len(newUsername) < 1 || len(newUsername) > 64 || strings.ContainsAny(newUsername, " \t\r\n") {
@@ -257,17 +262,26 @@ func (a *AuthManager) UpdateCredentials(currentPassword, newUsername, newPasswor
 		Salt:     base64.RawStdEncoding.EncodeToString(salt),
 		Hash:     base64.RawStdEncoding.EncodeToString(sum),
 	}
+	a.revoked = make(map[string]time.Time)
 	return a.saveAccountLocked()
 }
 
-// Logout invalidates the session cookie if present.
+// Logout revokes the active session cookie immediately.
 func (a *AuthManager) Logout(r *http.Request) {
 	c, err := r.Cookie(sessionCookie)
 	if err != nil || c.Value == "" {
 		return
 	}
+	now := time.Now()
 	a.mu.Lock()
-	delete(a.sessions, c.Value)
+	a.pruneRevokedLocked(now)
+	if len(a.revoked) >= maxRevoked {
+		for k := range a.revoked {
+			delete(a.revoked, k)
+			break
+		}
+	}
+	a.revoked[c.Value] = now.Add(sessionTTL)
 	a.mu.Unlock()
 }
 
@@ -308,36 +322,28 @@ func (a *AuthManager) RedeemBrowserTicket(ticket string) (string, bool) {
 }
 
 func (a *AuthManager) createSessionLocked(now time.Time) (string, error) {
-	a.pruneSessionsLocked(now)
-	if len(a.sessions) >= maxSessions {
-		var oldestKey string
-		var oldestExp time.Time
-		for k, v := range a.sessions {
-			if oldestKey == "" || v.expires.Before(oldestExp) {
-				oldestKey = k
-				oldestExp = v.expires
-			}
-		}
-		if oldestKey != "" {
-			delete(a.sessions, oldestKey)
-		}
-	}
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
+	nonceBuf := make([]byte, 12)
+	if _, err := rand.Read(nonceBuf); err != nil {
 		return "", err
 	}
-	sid := hex.EncodeToString(buf)
-	a.sessions[sid] = sessionEntry{
-		username: a.account.Username,
-		expires:  now.Add(sessionTTL),
-	}
-	return sid, nil
+	expUnix := now.Add(sessionTTL).Unix()
+	payload := fmt.Sprintf("%d.%s", expUnix, hex.EncodeToString(nonceBuf))
+	sig := a.signSessionPayloadLocked(payload)
+	return payload + "." + sig, nil
 }
 
-func (a *AuthManager) pruneSessionsLocked(now time.Time) {
-	for k, v := range a.sessions {
-		if now.After(v.expires) {
-			delete(a.sessions, k)
+func (a *AuthManager) signSessionPayloadLocked(payload string) string {
+	keySeed := a.localToken + "|" + a.account.Username + "|" + a.account.Salt + "|" + a.account.Hash
+	key := sha256.Sum256([]byte(keySeed))
+	mac := hmac.New(sha256.New, key[:])
+	mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (a *AuthManager) pruneRevokedLocked(now time.Time) {
+	for k, exp := range a.revoked {
+		if now.After(exp) {
+			delete(a.revoked, k)
 		}
 	}
 }

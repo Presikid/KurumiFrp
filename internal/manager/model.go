@@ -163,4 +163,5 @@ type CoreBinaryInfo struct {
 	FrpsVersion string `json:"frpsVersion"`
 	FrpsFound   bool   `json:"frpsFound"`
 	BundledDir  string `json:"bundledDir"`
+	CoreSource  string `json:"coreSource,omitempty"`
 }
