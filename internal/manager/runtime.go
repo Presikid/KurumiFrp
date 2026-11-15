@@ -40,7 +40,6 @@ type ringLogBuffer struct {
 func newRingLogBuffer(secrets []string) *ringLogBuffer {
 	var pairs []string
 	seen := make(map[string]bool)
-	// Sort longer secrets first so overlapping substrings never leak partial secrets.
 	sorted := append([]string(nil), secrets...)
 	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
 	for _, s := range sorted {
@@ -127,15 +126,16 @@ type managedProc struct {
 	done         chan struct{}
 	logs         *ringLogBuffer
 
-	mu          sync.Mutex
-	state       string
-	lastErr     string
-	conns       map[string]ConnLiveItem
-	rateSamples map[string]proxyRateSample
-	tunnelStats []TunnelLiveStatus
+	mu            sync.Mutex
+	state         string
+	lastErr       string
+	conns         map[string]ConnLiveItem
+	rateSamples   map[string]proxyRateSample
+	remoteClients map[string]*remoteClientSession
+	tunnelStats   []TunnelLiveStatus
 }
 
-// RuntimeSupervisor manages official frps & frpc child processes and Connection Dashboard polling.
+// RuntimeSupervisor manages official frps & frpc child processes, Connection Dashboard polling, and Remote Instance Bridges.
 type RuntimeSupervisor struct {
 	mu           sync.RWMutex
 	dataDir      string
@@ -147,9 +147,15 @@ type RuntimeSupervisor struct {
 	onChange     func()
 	stopPollCh   chan struct{}
 	httpClient   *http.Client
+
+	agentLn   net.Listener
+	agentSrv  *http.Server
+	agentPort int
+	bridgeMu  sync.Mutex
+	bridges   map[string]*visitorBridge
 }
 
-// NewRuntimeSupervisor creates the official FRP process supervisor.
+// NewRuntimeSupervisor creates the official FRP process supervisor and local loopback agent server.
 func NewRuntimeSupervisor(dataDir string, store *Store, onChange func()) (*RuntimeSupervisor, error) {
 	rtDir := filepath.Join(dataDir, "runtime")
 	if err := os.MkdirAll(rtDir, 0o700); err != nil {
@@ -164,6 +170,10 @@ func NewRuntimeSupervisor(dataDir string, store *Store, onChange func()) (*Runti
 		onChange:    onChange,
 		stopPollCh:  make(chan struct{}),
 		httpClient:  &http.Client{Timeout: 2 * time.Second},
+		bridges:     make(map[string]*visitorBridge),
+	}
+	if err := rs.startLoopbackAgentServer(); err != nil {
+		return nil, fmt.Errorf("启动本地远控代理服务失败: %w", err)
 	}
 	go rs.pollLoop()
 	return rs, nil
@@ -172,6 +182,12 @@ func NewRuntimeSupervisor(dataDir string, store *Store, onChange func()) (*Runti
 // SetCallbackAddr records the local HTTP listener address so frps HTTP plugins can call back into KurumiFrp.
 func (rs *RuntimeSupervisor) SetCallbackAddr(addr string) {
 	rs.callbackAddr.Store(addr)
+}
+
+// CallbackAddr returns the currently stored local HTTP callback address.
+func (rs *RuntimeSupervisor) CallbackAddr() string {
+	v, _ := rs.callbackAddr.Load().(string)
+	return v
 }
 
 func (rs *RuntimeSupervisor) notifyChange() {
@@ -223,7 +239,6 @@ func (rs *RuntimeSupervisor) HotSwapBinaries(swapFn func() error) (int, error) {
 	wg.Wait()
 
 	if err := swapFn(); err != nil {
-		// Best-effort recovery using existing binaries if swap failed
 		_, doc := rs.store.Snapshot()
 		for _, srv := range doc.Servers {
 			if activeIDs[srv.ID] {
@@ -258,7 +273,7 @@ func (rs *RuntimeSupervisor) HotSwapBinaries(swapFn func() error) (int, error) {
 	return restarted, nil
 }
 
-// StopAll gracefully terminates all running frps and frpc child processes.
+// StopAll gracefully terminates all running frps and frpc child processes and internal visitor bridges.
 func (rs *RuntimeSupervisor) StopAll() {
 	select {
 	case <-rs.stopPollCh:
@@ -281,6 +296,20 @@ func (rs *RuntimeSupervisor) StopAll() {
 		}(id)
 	}
 	wg.Wait()
+	rs.stopLoopbackAgentAndBridges()
+}
+
+// IsInstanceRunning reports whether an frps or frpc instance is currently active.
+func (rs *RuntimeSupervisor) IsInstanceRunning(id string) bool {
+	rs.mu.RLock()
+	p, ok := rs.procs[id]
+	rs.mu.RUnlock()
+	if !ok || p == nil {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.state == "running"
 }
 
 // StartServer verifies and launches an official frps subprocess for srv.
@@ -297,7 +326,7 @@ func (rs *RuntimeSupervisor) StartServer(srv ServerProfile) error {
 	}
 	adminPass := randomHex(16)
 	pluginSecret := randomHex(20)
-	cbAddr, _ := rs.callbackAddr.Load().(string)
+	cbAddr := rs.CallbackAddr()
 
 	rendered := RenderServerTOML(srv, ServerRuntimeInjections{
 		Preview:        false,
@@ -335,10 +364,15 @@ func (rs *RuntimeSupervisor) StartClient(cli ClientProfile) error {
 	adminPass := randomHex(16)
 
 	rendered := RenderClientTOML(cli, ClientRuntimeInjections{
-		Preview:   false,
-		AdminPort: adminPort,
-		AdminUser: "kurumi",
-		AdminPass: adminPass,
+		Preview:    false,
+		AdminPort:  adminPort,
+		AdminUser:  "kurumi",
+		AdminPass:  adminPass,
+		AgentPort:  rs.agentPort,
+		ClientID:   cli.ID,
+		ClientName: cli.Name,
+		CtrlSecret: cli.CtrlSecret,
+		AgentToken: cli.AgentToken,
 	})
 
 	cfgPath := filepath.Join(rs.runtimeDir, cli.ID+".toml")
@@ -378,10 +412,15 @@ func (rs *RuntimeSupervisor) ReloadOrRestartClient(cli ClientProfile) error {
 	}
 
 	rendered := RenderClientTOML(cli, ClientRuntimeInjections{
-		Preview:   false,
-		AdminPort: adminPort,
-		AdminUser: adminUser,
-		AdminPass: adminPass,
+		Preview:    false,
+		AdminPort:  adminPort,
+		AdminUser:  adminUser,
+		AdminPass:  adminPass,
+		AgentPort:  rs.agentPort,
+		ClientID:   cli.ID,
+		ClientName: cli.Name,
+		CtrlSecret: cli.CtrlSecret,
+		AgentToken: cli.AgentToken,
 	})
 	if _, err := writeIfChanged(cfgPath, []byte(rendered.TOML), 0o600); err != nil {
 		return err
@@ -390,7 +429,6 @@ func (rs *RuntimeSupervisor) ReloadOrRestartClient(cli ClientProfile) error {
 		return err
 	}
 
-	// Attempt zero-downtime hot reload via local Admin API first; fall back to clean restart if transport params changed.
 	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/api/reload", adminPort), nil)
 	if err == nil {
 		req.SetBasicAuth(adminUser, adminPass)
@@ -429,20 +467,21 @@ func (rs *RuntimeSupervisor) spawnProcess(id, kind, binPath, cfgPath string, ren
 	}
 
 	proc := &managedProc{
-		id:           id,
-		kind:         kind,
-		cfgPath:      cfgPath,
-		adminPort:    adminPort,
-		adminUser:    adminUser,
-		adminPass:    adminPass,
-		pluginSecret: pluginSecret,
-		cmd:          cmd,
-		startedAt:    time.Now(),
-		done:         make(chan struct{}),
-		logs:         logs,
-		state:        "running",
-		conns:        make(map[string]ConnLiveItem),
-		rateSamples:  make(map[string]proxyRateSample),
+		id:            id,
+		kind:          kind,
+		cfgPath:       cfgPath,
+		adminPort:     adminPort,
+		adminUser:     adminUser,
+		adminPass:     adminPass,
+		pluginSecret:  pluginSecret,
+		cmd:           cmd,
+		startedAt:     time.Now(),
+		done:          make(chan struct{}),
+		logs:          logs,
+		state:         "running",
+		conns:         make(map[string]ConnLiveItem),
+		rateSamples:   make(map[string]proxyRateSample),
+		remoteClients: make(map[string]*remoteClientSession),
 	}
 
 	logs.Append(fmt.Sprintf("[KurumiFrp] 已启动官方 %s 核心 (PID=%d)", kind, cmd.Process.Pid))
@@ -537,6 +576,7 @@ func (rs *RuntimeSupervisor) Views(doc ConfigDocument) map[string]ProcessRuntime
 			view.LastError = p.lastErr
 			view.AdminPort = p.adminPort
 			view.Connections = buildMergedConnections(srv, p.conns)
+			view.RemoteClients = buildRemoteClientSummaries(srv.ID, p)
 			p.mu.Unlock()
 		}
 		out[srv.ID] = view
@@ -580,7 +620,7 @@ func (rs *RuntimeSupervisor) Logs(id string) ([]string, *ringLogBuffer) {
 }
 
 // HandleFRPSPlugin implements the official fatedier/frp HTTP Server Plugin webhook to enforce
-// Connection Dashboard controls: 开关 (Enabled), 限流 (TrafficLimitMB), 限速 (SpeedLimitKBps), and 限时 (ExpiresAt).
+// Connection Dashboard controls AND track connected KurumiFrp client instances for remote management.
 func (rs *RuntimeSupervisor) HandleFRPSPlugin(w http.ResponseWriter, r *http.Request, serverID string) {
 	rs.mu.RLock()
 	proc, ok := rs.procs[serverID]
@@ -609,14 +649,10 @@ func (rs *RuntimeSupervisor) HandleFRPSPlugin(w http.ResponseWriter, r *http.Req
 		op = stringField(reqPayload.Content, "op")
 	}
 
-	proxyName := stringField(reqPayload.Content, "proxy_name")
-	if proxyName == "" {
-		if pMap, ok := reqPayload.Content["proxy_name"].(string); ok {
-			proxyName = pMap
-		}
-	}
+	rs.recordRemoteClientEvent(serverID, proc, op, reqPayload.Content)
 
-	if proxyName != "" && (op == "NewProxy" || op == "NewUserConn") {
+	proxyName := stringField(reqPayload.Content, "proxy_name")
+	if proxyName != "" && !isInternalCtrlProxy(proxyName) && (op == "NewProxy" || op == "NewUserConn") {
 		if reject, reason := rs.evaluateConnPolicy(serverID, proc, proxyName); reject {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"reject":        true,
@@ -646,7 +682,6 @@ func (rs *RuntimeSupervisor) evaluateConnPolicy(serverID string, proc *managedPr
 	}
 	pol, exists := srv.ConnPolicies[proxyName]
 	if !exists {
-		// Auto-register newly discovered connection with Enabled: true on the Connection Dashboard.
 		_ = rs.store.Update(func(d *ConfigDocument) error {
 			for i := range d.Servers {
 				if d.Servers[i].ID == serverID {
@@ -759,9 +794,10 @@ func (rs *RuntimeSupervisor) pollOnce() {
 }
 
 func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) bool {
-	proxyTypes := []string{"tcp", "udp", "http", "https", "stcp", "xtcp", "tcpmux"}
+	proxyTypes := []string{"tcp", "udp", "http", "https", "stcp", "sudp", "xtcp", "tcpmux"}
 	now := time.Now()
 	discovered := make(map[string]ConnLiveItem)
+	ctrlStatus := make(map[string]bool)
 
 	for _, pt := range proxyTypes {
 		url := fmt.Sprintf("http://127.0.0.1:%d/api/proxy/%s", p.adminPort, pt)
@@ -798,6 +834,10 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 			if item.Name == "" {
 				continue
 			}
+			if isInternalCtrlProxy(item.Name) {
+				ctrlStatus[item.Name] = (item.Status == "online")
+				continue
+			}
 			pol, hasPol := srv.ConnPolicies[item.Name]
 			if !hasPol {
 				pol = ConnPolicy{ProxyName: item.Name, Enabled: true}
@@ -823,7 +863,6 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 				at:       now,
 			}
 
-			// Enforce real-time bandwidth speed alert/block status if configured
 			status := item.Status
 			blockReason := ""
 			if !pol.Enabled {
@@ -867,8 +906,17 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 
 	p.mu.Lock()
 	p.conns = discovered
+	for _, sess := range p.remoteClients {
+		if online, seen := ctrlStatus[sess.ctrlProxyName]; seen {
+			sess.ctrlReady = online
+			sess.online = online
+			if online {
+				sess.lastPingAt = now
+			}
+		}
+	}
 	p.mu.Unlock()
-	return len(discovered) > 0
+	return len(discovered) > 0 || len(ctrlStatus) > 0
 }
 
 func (rs *RuntimeSupervisor) pollClientAdmin(p *managedProc) bool {
@@ -890,7 +938,12 @@ func (rs *RuntimeSupervisor) pollClientAdmin(p *managedProc) bool {
 	}
 	var flat []TunnelLiveStatus
 	for _, group := range statusMap {
-		flat = append(flat, group...)
+		for _, item := range group {
+			if isInternalCtrlProxy(item.Name) {
+				continue
+			}
+			flat = append(flat, item)
+		}
 	}
 	sort.Slice(flat, func(i, j int) bool { return flat[i].Name < flat[j].Name })
 
@@ -903,6 +956,9 @@ func (rs *RuntimeSupervisor) pollClientAdmin(p *managedProc) bool {
 func buildMergedConnections(srv ServerProfile, live map[string]ConnLiveItem) []ConnLiveItem {
 	merged := make(map[string]ConnLiveItem)
 	for name, pol := range srv.ConnPolicies {
+		if isInternalCtrlProxy(name) {
+			continue
+		}
 		status := "offline"
 		reason := ""
 		if !pol.Enabled {
@@ -933,7 +989,9 @@ func buildMergedConnections(srv ServerProfile, live map[string]ConnLiveItem) []C
 		}
 	}
 	for name, item := range live {
-		merged[name] = item
+		if !isInternalCtrlProxy(name) {
+			merged[name] = item
+		}
 	}
 	out := make([]ConnLiveItem, 0, len(merged))
 	for _, v := range merged {

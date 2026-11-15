@@ -1,246 +1,242 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-skin="zafkiel-crimson">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>KurumiFrp · 刻刻帝穿透控制台</title>
-  <link rel="stylesheet" href="/style.css" />
-  <script src="/app.js" defer></script>
+  <title>KurumiFrp · 全量 FRP 控制台与跨实例远控中心</title>
+  <link rel="icon" type="image/webp" href="assets/k_51.webp" />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- 登录视图：唯一管理员「用户名 + 密码」认证 -->
-  <section id="login-screen" class="login-screen" hidden>
-    <div class="login-card">
-      <div class="login-art">
-        <picture>
-          <source media="(max-width: 760px)" srcset="/assets/login-mobile.webp" />
-          <img src="/assets/login-desktop.webp" alt="Tokisaki Kurumi" />
-        </picture>
-        <div class="login-art-overlay">
-          <span class="roman-badge">Ⅻ · ZAFKIEL</span>
-          <h2>KurumiFrp</h2>
-          <p>时崎狂三主题 · 官方原版双端内网穿透管理器</p>
-        </div>
+  <!-- Strict Pre-Authentication Gate: Zero panel DOM or state exposure prior to login -->
+  <section id="loginGate" class="yc-login-stage" aria-label="登录验证">
+    <div id="loginBgLayer" class="yc-login-bg-layer"></div>
+    <div class="yc-login-scrim"></div>
+    <div class="yc-login-shell">
+      <div class="yc-login-showcase">
+        <span class="yc-eyebrow">KURUMIFRP · OFFICIAL FRP V1 ENGINE</span>
+        <h1 class="yc-serif-hero">KurumiFrp</h1>
+        <p class="yc-login-lead">
+          原生覆盖 <code>frps</code> 与 <code>frpc</code> 全量配置能力，支持 UI 表单与代码配置文件双向实时同步，以及基于连接关系的跨实例远控与 P2P 隧道编排。
+        </p>
+        <div class="yc-login-slide-caption" id="loginSlideCaption">01 · 午后花房红茶</div>
       </div>
-      <div class="login-panel">
-        <div class="clock-emblem" aria-hidden="true">
-          <svg viewBox="0 0 120 120" class="clock-svg">
-            <circle cx="60" cy="60" r="54" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 3" />
-            <circle cx="60" cy="60" r="44" fill="none" stroke="currentColor" stroke-width="1" opacity="0.65" />
-            <line x1="60" y1="60" x2="60" y2="24" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
-            <line x1="60" y1="60" x2="86" y2="68" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-            <circle cx="60" cy="60" r="3.5" fill="currentColor" />
-          </svg>
+
+      <form id="loginForm" class="yc-login-card" autocomplete="on">
+        <div class="yc-login-card-head">
+          <img src="assets/k_51.webp" alt="Kurumi Avatar" class="yc-login-avatar" />
+          <div>
+            <div class="yc-login-kicker">AUTHENTICATION REQUIRED</div>
+            <h2 class="yc-login-title">控制台安全登录</h2>
+          </div>
         </div>
-        <h1>管理员登录</h1>
-        <p id="login-hint" class="muted-text">请输入管理员用户名与密码进入控制台</p>
-        <form id="login-form" class="stack-form">
-          <label class="field">
-            <span>用户名</span>
-            <input type="text" id="login-username" name="username" autocomplete="username" value="admin" required />
-          </label>
-          <label class="field">
-            <span>密码</span>
-            <input type="password" id="login-password" name="password" autocomplete="current-password" placeholder="首次启动未设密码可直接留空登录" />
-          </label>
-          <div id="login-error" class="error-banner" hidden></div>
-          <button type="submit" class="btn btn-primary btn-block">进入刻刻帝工作台</button>
-        </form>
-      </div>
+        <div id="loginFirstRunHint" class="yc-notice yc-notice-pink" hidden>
+          首次启动默认用户名为 <code>admin</code>，密码留空即可直接登录；进入后可在「应用与画廊 → 账户安全」设置专属密码。
+        </div>
+        <div id="loginErrorBox" class="yc-notice yc-notice-danger" hidden></div>
+
+        <label class="yc-field">
+          <span class="yc-field-label">管理员用户名</span>
+          <input id="loginUsername" name="username" type="text" value="admin" required autocomplete="username" placeholder="admin" />
+        </label>
+        <label class="yc-field">
+          <span class="yc-field-label">登录密码</span>
+          <input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="首次运行可留空" />
+        </label>
+
+        <button id="loginSubmitBtn" type="submit" class="yc-btn yc-btn-primary yc-btn-block">
+          进入 KurumiFrp 控制台
+        </button>
+        <div class="yc-login-foot">
+          <span id="loginVersionBadge">v0.9.4</span>
+          <span>未登录状态下所有实例与配置接口均严格锁定</span>
+        </div>
+      </form>
     </div>
   </section>
 
-  <!-- 主工作台视图：严格对应设计手稿三大版块 -->
-  <div id="workbench" class="workbench" hidden>
-    <header class="topbar">
-      <div class="brand-group">
-        <span class="brand-clock">Ⅻ</span>
-        <div>
-          <div class="brand-title">KurumiFrp <span id="app-version" class="version-pill">v0.9.3</span></div>
-          <div class="brand-sub">当前配置文件：<strong id="top-active-config">default.json</strong></div>
+  <!-- Authenticated Application Shell (Mounted ONLY after session verification) -->
+  <div id="appShell" class="yc-app-shell" hidden>
+    <header class="yc-topbar">
+      <div class="yc-brand" data-nav="home" role="button" tabindex="0">
+        <img src="assets/k_51.webp" alt="KurumiFrp" class="yc-brand-avatar" />
+        <div class="yc-brand-text">
+          <span class="yc-brand-name">KurumiFrp</span>
+          <span id="topVersionBadge" class="yc-brand-ver">v0.9.4</span>
         </div>
       </div>
 
-      <nav class="main-tabs" aria-label="三大功能版块">
-        <button type="button" class="tab-btn active" data-tab="server">
-          <span class="roman">Ⅰ</span> 转发端 Server
-          <span id="badge-servers" class="tab-count">0</span>
+      <nav class="yc-topnav" aria-label="主导航">
+        <button type="button" class="yc-nav-item is-active" data-nav="home">
+          <span class="yc-nav-en">HOME</span>
+          <span class="yc-nav-zh">主舞台</span>
         </button>
-        <button type="button" class="tab-btn" data-tab="client">
-          <span class="roman">Ⅱ</span> 客户端 Client
-          <span id="badge-clients" class="tab-count">0</span>
+        <button type="button" class="yc-nav-item" data-nav="frps">
+          <span class="yc-nav-en">FRPS</span>
+          <span class="yc-nav-zh">服务端</span>
+          <span id="navBadgeFrps" class="yc-nav-pill">0</span>
         </button>
-        <button type="button" class="tab-btn" data-tab="control">
-          <span class="roman">Ⅲ</span> 应用控制 App Control
+        <button type="button" class="yc-nav-item" data-nav="frpc">
+          <span class="yc-nav-en">FRPC</span>
+          <span class="yc-nav-zh">客户端</span>
+          <span id="navBadgeFrpc" class="yc-nav-pill">0</span>
+        </button>
+        <button type="button" class="yc-nav-item" data-nav="topology">
+          <span class="yc-nav-en">TOPOLOGY</span>
+          <span class="yc-nav-zh">远控与P2P</span>
+          <span id="navBadgeRemote" class="yc-nav-pill yc-nav-pill-pink">0</span>
+        </button>
+        <button type="button" class="yc-nav-item" data-nav="system">
+          <span class="yc-nav-en">SYSTEM</span>
+          <span class="yc-nav-zh">应用与画廊</span>
         </button>
       </nav>
 
-      <div class="topbar-actions">
-        <select id="skin-select" class="skin-select" title="切换时崎狂三主题色板">
-          <option value="zafkiel-crimson">刻刻帝 · 绯夜黑金</option>
-          <option value="detective-study">狂三 · 侦探书房</option>
-          <option value="moon-witch">狂三 · 月夜魔女</option>
-          <option value="sunlit-white">狂三 · 白昼礼装</option>
-        </select>
-        <button type="button" id="btn-account-quick" class="btn btn-ghost btn-sm" title="修改唯一管理员账号密码">
-          👤 <span id="top-username">admin</span>
+      <div class="yc-top-actions">
+        <button type="button" id="topSchemeBtn" class="yc-scheme-chip" title="切换独立配置方案">
+          <span class="yc-dot yc-dot-ok"></span>
+          <span id="topSchemeLabel">默认配置方案</span>
         </button>
-        <button type="button" id="btn-logout" class="btn btn-ghost btn-sm">退出登录</button>
+        <span id="topUserBadge" class="yc-user-chip">admin</span>
+        <button type="button" id="logoutBtn" class="yc-btn yc-btn-ghost-dark yc-btn-sm">退出</button>
       </div>
     </header>
 
-    <div id="password-setup-alert" class="setup-banner" hidden>
-      <span>⚠️ 当前处于初始空密码状态，为了保障公网或局域网安全，建议立即设置管理员用户名与登录密码。</span>
-      <button type="button" id="btn-setup-now" class="btn btn-primary btn-sm">立即设置账号密码</button>
-    </div>
+    <main id="mainViewport" class="yc-main-viewport">
+      <!-- View 1: HOME (Yuimi-Chaya Kisara Full-Bleed Stage) -->
+      <section id="viewHome" class="yc-view yc-home-stage">
+        <div id="homeSlidesContainer" class="yc-home-slides"></div>
+        <div class="yc-home-scrim"></div>
 
-    <!-- 狂三主题横幅 -->
-    <section class="hero-strip">
-      <div class="hero-copy">
-        <div class="hero-kicker">TOKISAKI KURUMI · OFFICIAL FRP CONTROLLER</div>
-        <h2 id="hero-heading">转发端 Server 与连接看板</h2>
-        <p id="hero-desc">管理多套互相独立的官方 frps 服务端配置，并在连接看板中实时掌控每条隧道的流量统计、限流、限速、限时与开关。</p>
-      </div>
-      <div class="hero-art-wrap">
-        <picture>
-          <source media="(max-width: 760px)" srcset="/assets/overview-mobile.webp" />
-          <img src="/assets/overview.webp" alt="Kurumi Banner" class="hero-art-img" />
-        </picture>
-      </div>
-    </section>
+        <div class="yc-home-center">
+          <div class="yc-home-kicker">CONNECTION-DRIVEN FRP V1 ORCHESTRATOR</div>
+          <h1 class="yc-home-title">KurumiFrp</h1>
+          <p class="yc-home-subtitle">
+            服务端与客户端分板块精细化治理 · 100% 官方配置参数 UI 原生覆盖 · 实时双向 TOML 同步 · 基于连接的跨实例远控与 P2P 直连
+          </p>
+          <div id="homeMetricsBar" class="yc-home-metrics"></div>
+        </div>
 
-    <main class="main-container">
-      <!-- 版块 Ⅰ：转发端 Server (frps) + 连接看板 -->
-      <section id="panel-server" class="tab-panel">
-        <div class="section-toolbar">
-          <div class="profile-pills" id="server-pills"></div>
-          <div class="toolbar-btns">
-            <button type="button" id="btn-new-server" class="btn btn-primary">+ 新建转发端配置</button>
+        <!-- Filmstrip Drawer when expanded -->
+        <div id="homeFilmstrip" class="yc-home-filmstrip" hidden></div>
+
+        <!-- Bottom-Left Capsule (Yuimi-Chaya signature bottom-left control capsule) -->
+        <div class="yc-home-capsule">
+          <img id="homeCapsuleThumb" src="assets/k_02.webp" alt="Current Slide" class="yc-capsule-thumb" />
+          <div class="yc-capsule-meta">
+            <span id="homeCapsuleIndex" class="yc-capsule-idx">SLIDE 01 / 11</span>
+            <strong id="homeCapsuleTitle" class="yc-capsule-name">午后花房红茶</strong>
+          </div>
+          <div class="yc-capsule-btns">
+            <button type="button" id="homePrevSlideBtn" class="yc-icon-btn" title="上一张插画">‹</button>
+            <button type="button" id="homeNextSlideBtn" class="yc-icon-btn" title="下一张插画">›</button>
+            <button type="button" id="homeStripToggleBtn" class="yc-icon-btn" title="展开/收起壁纸胶片">⊞</button>
           </div>
         </div>
-        <div id="server-workspace"></div>
+
+        <!-- Bottom-Right Rectangular Outlined Buttons (Yuimi-Chaya signature right-corner action bar) -->
+        <div class="yc-home-actions-br">
+          <button type="button" id="homeAutoBtn" class="yc-rect-btn is-on">AUTO 轮播 · ON</button>
+          <button type="button" class="yc-rect-btn" data-nav-jump="frps">FRPS 服务端 →</button>
+          <button type="button" class="yc-rect-btn" data-nav-jump="frpc">FRPC 客户端 →</button>
+          <button type="button" class="yc-rect-btn" data-nav-jump="topology">远控与 P2P →</button>
+        </div>
       </section>
 
-      <!-- 版块 Ⅱ：客户端 Client (frpc) 多独立配置穿透 -->
-      <section id="panel-client" class="tab-panel" hidden>
-        <div class="section-toolbar">
-          <div class="profile-pills" id="client-pills"></div>
-          <div class="toolbar-btns">
-            <button type="button" id="btn-new-client" class="btn btn-primary">+ 新建客户端配置</button>
+      <!-- View 2: FRPS Server Section (Yuimi-Chaya WORKS + BLOG Grid Layout) -->
+      <section id="viewFrps" class="yc-view yc-editorial-page" hidden>
+        <div class="yc-page-hero">
+          <div class="yc-page-hero-copy">
+            <span class="yc-hero-en">FRPS SERVER &amp; CONNECTED CLIENTS</span>
+            <h2 class="yc-hero-zh">FRPS 服务端与接入实例远控</h2>
+            <p class="yc-hero-desc">
+              独立管理本机所有 <code>frps</code> 服务端实例（覆盖监听、虚拟主机、OIDC/Token 鉴权、QUIC/TLS、SSH 隧道网关、HTTP 插件与连接限流看板），并可直接通过已建立的实例连接远控任意接入的 <code>frpc</code> 客户端配置。
+            </p>
+            <div class="yc-hero-toolbar">
+              <button type="button" id="btnNewServer" class="yc-btn yc-btn-primary">+ 新建 FRPS 服务端实例</button>
+              <button type="button" id="btnImportServerToml" class="yc-btn yc-btn-outline">导入 frps.toml</button>
+            </div>
           </div>
+          <div class="yc-page-hero-art" style="background-image: url('assets/k_44.webp');"></div>
         </div>
-        <div id="client-workspace"></div>
+
+        <div class="yc-workspace-container">
+          <aside id="frpsSidebar" class="yc-sidebar"></aside>
+          <div id="frpsMainPane" class="yc-content-pane"></div>
+        </div>
       </section>
 
-      <!-- 版块 Ⅲ：应用控制 App Control (配置文件选择/导入/导出、账号密码、日志与核心状态) -->
-      <section id="panel-control" class="tab-panel" hidden>
-        <div class="control-grid">
-          <!-- 1. 软件内配置文件管理 -->
-          <div class="card">
-            <div class="card-header">
-              <div>
-                <h3>软件内配置文件管理</h3>
-                <p class="muted-text">所有配置文件自包含保存在软件安装目录 <code>data/configs/</code> 内，可随时切换、导入或导出。</p>
-              </div>
-              <div class="btn-row">
-                <button type="button" id="btn-new-config-file" class="btn btn-secondary btn-sm">+ 新建配置方案</button>
-                <button type="button" id="btn-export-json" class="btn btn-primary btn-sm">导出当前配置 (.json)</button>
-              </div>
-            </div>
-            <div id="config-files-list" class="config-file-list"></div>
-            <div class="import-box">
-              <h4>导入配置文件</h4>
-              <div class="btn-row">
-                <label class="btn btn-secondary btn-sm file-btn">
-                  导入 JSON 配置存档
-                  <input type="file" id="input-import-json" accept=".json,application/json" hidden />
-                </label>
-                <button type="button" id="btn-open-import-toml" class="btn btn-secondary btn-sm">导入官方 frps/frpc TOML</button>
-              </div>
+      <!-- View 3: FRPC Client Section -->
+      <section id="viewFrpc" class="yc-view yc-editorial-page" hidden>
+        <div class="yc-page-hero">
+          <div class="yc-page-hero-copy">
+            <span class="yc-hero-en">FRPC CLIENT &amp; FULL TUNNEL STUDIO</span>
+            <h2 class="yc-hero-zh">FRPC 客户端与全功能隧道管理</h2>
+            <p class="yc-hero-desc">
+              每个 <code>frpc</code> 实例严格遵循连接权限边界，仅管理自身配置与隧道规则；原生支持全部 8 种隧道协议、端口段批量映射、全部 10 种官方客户端插件、负载均衡、健康检查、访问端（Visitor）及 UI ⇄ TOML 双向实时同步。
+            </p>
+            <div class="yc-hero-toolbar">
+              <button type="button" id="btnNewClient" class="yc-btn yc-btn-primary">+ 新建 FRPC 客户端实例</button>
+              <button type="button" id="btnImportClientToml" class="yc-btn yc-btn-outline">导入 frpc.toml</button>
             </div>
           </div>
-
-          <!-- 2. 唯一管理员用户名与密码 & 核心信息 -->
-          <div class="stack-col">
-            <div class="card">
-              <div class="card-header">
-                <div>
-                  <h3>唯一管理员账户设置</h3>
-                  <p class="muted-text">简易单用户「用户名 + 密码」保护，无多余权限组负担。</p>
-                </div>
-              </div>
-              <form id="account-form" class="stack-form compact-form">
-                <div class="form-row-2">
-                  <label class="field">
-                    <span>管理员用户名</span>
-                    <input type="text" id="acc-username" required maxlength="64" />
-                  </label>
-                  <label class="field">
-                    <span>当前密码</span>
-                    <input type="password" id="acc-current-pass" placeholder="初始未设密码可留空" />
-                  </label>
-                </div>
-                <label class="field">
-                  <span>新登录密码</span>
-                  <input type="password" id="acc-new-pass" placeholder="输入新密码（留空则置为空密码）" />
-                </label>
-                <div class="btn-row">
-                  <button type="submit" class="btn btn-primary btn-sm">保存用户名与密码</button>
-                </div>
-              </form>
-            </div>
-
-            <div class="card">
-              <div class="card-header">
-                <div>
-                  <h3>内置官方 FRP 核心与无感更新</h3>
-                  <p class="muted-text">支持软件本体静默自更新与原版 fatedier/frp 核心热更新。</p>
-                </div>
-                <button type="button" id="btn-check-update" class="btn btn-primary btn-sm">检查更新</button>
-              </div>
-              <div id="core-status-box" class="kv-list"></div>
-              <div class="proxy-inline-bar top-gap">
-                <input type="text" id="update-proxy-input" placeholder="留空自动跟随电脑默认系统代理，也可手动填写覆盖" />
-                <button type="button" id="btn-save-proxy" class="btn btn-secondary btn-sm">保存代理</button>
-              </div>
-              <div id="update-result-box" class="update-note" hidden></div>
-              <div class="btn-row top-gap">
-                <button type="button" id="btn-stop-daemon" class="btn btn-danger btn-sm">关闭后台服务进程</button>
-              </div>
-            </div>
-          </div>
+          <div class="yc-page-hero-art" style="background-image: url('assets/k_46.webp');"></div>
         </div>
 
-        <!-- 3. 实时运行日志中心 -->
-        <div class="card top-gap">
-          <div class="card-header">
-            <div class="log-header-left">
-              <h3>实例运行日志（自动脱敏）</h3>
-              <select id="log-instance-select" class="input-select"></select>
-            </div>
-            <div class="btn-row">
-              <button type="button" id="btn-refresh-logs" class="btn btn-secondary btn-sm">刷新日志</button>
-              <button type="button" id="btn-download-logs" class="btn btn-secondary btn-sm">导出日志 (.txt)</button>
-            </div>
+        <div class="yc-workspace-container">
+          <aside id="frpcSidebar" class="yc-sidebar"></aside>
+          <div id="frpcMainPane" class="yc-content-pane"></div>
+        </div>
+      </section>
+
+      <!-- View 4: TOPOLOGY (Connection-Based Remote Control & P2P Coordinator) -->
+      <section id="viewTopology" class="yc-view yc-editorial-page" hidden>
+        <div class="yc-page-hero">
+          <div class="yc-page-hero-copy">
+            <span class="yc-hero-en">INSTANCE LINK TOPOLOGY &amp; P2P MESH</span>
+            <h2 class="yc-hero-zh">跨实例连接拓扑与 P2P 协同中心</h2>
+            <p class="yc-hero-desc">
+              基于真实的 <code>frpc → frps</code> 实例连接关系自动构建控制平面：服务端可跨公网/NAT 直接管理已连入的客户端实例配置，并协同多台无公网 IP 主机（如家里电脑 C 与朋友电脑 E）一键打通 <code>XTCP</code> 点对点直连隧道。
+            </p>
           </div>
-          <pre id="log-viewer" class="log-viewer">暂无运行日志，请先启动任一转发端或客户端配置。</pre>
+          <div class="yc-page-hero-art" style="background-image: url('assets/k_41.webp');"></div>
+        </div>
+
+        <div class="yc-workspace-container">
+          <aside id="topologySidebar" class="yc-sidebar"></aside>
+          <div id="topologyMainPane" class="yc-content-pane"></div>
+        </div>
+      </section>
+
+      <!-- View 5: SYSTEM & CURATED KURUMI GALLERY -->
+      <section id="viewSystem" class="yc-view yc-editorial-page" hidden>
+        <div class="yc-page-hero">
+          <div class="yc-page-hero-copy">
+            <span class="yc-hero-en">APPLICATION CONTROL &amp; CURATED GALLERY</span>
+            <h2 class="yc-hero-zh">应用控制、无缝热更新与精选画廊</h2>
+            <p class="yc-hero-desc">
+              管理多套独立工作区配置方案、一键校验并热更新上游官方 <code>fatedier/frp</code> 核心与 <code>KurumiFrp</code> 本体、鉴赏已筛选保留的全部 35 张时崎狂三精选插画，并维护单用户登录凭据。
+            </p>
+          </div>
+          <div class="yc-page-hero-art" style="background-image: url('assets/k_45.webp');"></div>
+        </div>
+
+        <div class="yc-workspace-container">
+          <aside id="systemSidebar" class="yc-sidebar"></aside>
+          <div id="systemMainPane" class="yc-content-pane"></div>
         </div>
       </section>
     </main>
   </div>
 
-  <!-- 通用模态弹窗 -->
-  <dialog id="modal-dialog" class="modal-dialog">
-    <div class="modal-box">
-      <div class="modal-head">
-        <h3 id="modal-title">配置编辑</h3>
-        <button type="button" id="modal-close" class="icon-close" aria-label="关闭">✕</button>
-      </div>
-      <div id="modal-body" class="modal-body"></div>
-    </div>
-  </dialog>
+  <!-- Universal Modal Container (Tunnel Editor, TOML Import, Policy Editor, Lightbox, Confirmations) -->
+  <div id="modalBackdrop" class="yc-modal-backdrop" hidden>
+    <div id="modalDialog" class="yc-modal-dialog" role="dialog" aria-modal="true"></div>
+  </div>
 
-  <!-- 轻提示 Toast -->
-  <div id="toast-container" class="toast-container"></div>
+  <!-- Toast Stack -->
+  <div id="toastStack" class="yc-toast-stack" aria-live="polite"></div>
+
+  <script src="app.js"></script>
 </body>
 </html>
