@@ -123,3 +123,14 @@ func executePlatformSelfUpdate(pkgPath, currentExePath, _ string, origArgs []str
 	}()
 	return nil
 }
+
+func detectPlatformSystemProxy() string {
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"} {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			if norm, err := normalizeProxyURL(v); err == nil {
+				return norm
+			}
+		}
+	}
+	return ""
+}

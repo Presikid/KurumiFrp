@@ -62,6 +62,7 @@ func newRingLogBuffer(secrets []string) *ringLogBuffer {
 }
 
 func (b *ringLogBuffer) Append(line string) {
+	line = stripANSI(line)
 	if b.replacer != nil {
 		line = b.replacer.Replace(line)
 	}
@@ -990,4 +991,31 @@ func stringField(m map[string]any, key string) string {
 		return s
 	}
 	return ""
+}
+
+func stripANSI(s string) string {
+	var out strings.Builder
+	out.Grow(len(s))
+	n := len(s)
+	for i := 0; i < n; i++ {
+		if s[i] == 0x1b && i+1 < n && s[i+1] == '[' {
+			i += 2
+			for i < n && ((s[i] >= '0' && s[i] <= '9') || s[i] == ';') {
+				i++
+			}
+			continue
+		}
+		if s[i] == '[' && i+2 < n && s[i+1] >= '0' && s[i+1] <= '9' {
+			j := i + 1
+			for j < n && ((s[j] >= '0' && s[j] <= '9') || s[j] == ';') {
+				j++
+			}
+			if j < n && s[j] == 'm' && j-i <= 8 {
+				i = j
+				continue
+			}
+		}
+		out.WriteByte(s[i])
+	}
+	return out.String()
 }

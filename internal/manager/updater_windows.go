@@ -7,13 +7,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"unsafe"
 )
 
 var (
-	updShell32           = syscall.NewLazyDLL("shell32.dll")
-	updProcShellExecuteW = updShell32.NewProc("ShellExecuteW")
+	updShell32            = syscall.NewLazyDLL("shell32.dll")
+	updProcShellExecuteW  = updShell32.NewProc("ShellExecuteW")
+	updAdvapi32           = syscall.NewLazyDLL("advapi32.dll")
+	updProcRegOpenKeyExW  = updAdvapi32.NewProc("RegOpenKeyExW")
+	updProcRegQueryValExW = updAdvapi32.NewProc("RegQueryValueExW")
+	updProcRegCloseKey    = updAdvapi32.NewProc("RegCloseKey")
 )
 
 func canPlatformSelfUpdateApp(_ string) (bool, string, string) {
@@ -79,4 +84,68 @@ func winShellExec(verbStr, fileStr, paramsStr, dirStr string) error {
 		return fmt.Errorf("启动静默升级程序失败 (code=%d): %v", r, callErr)
 	}
 	return nil
+}
+
+// detectPlatformSystemProxy dynamically reads Windows current-user system proxy (set by NekoBox, Clash, v2rayN, or Windows Settings).
+func detectPlatformSystemProxy() string {
+	subKey, err := syscall.UTF16PtrFromString(`Software\Microsoft\Windows\CurrentVersion\Internet Settings`)
+	if err != nil {
+		return ""
+	}
+	var hKey uintptr
+	const keyQueryValue = 0x0001
+	r0, _, _ := updProcRegOpenKeyExW.Call(
+		uintptr(syscall.HKEY_CURRENT_USER),
+		uintptr(unsafe.Pointer(subKey)),
+		0,
+		keyQueryValue,
+		uintptr(unsafe.Pointer(&hKey)),
+	)
+	if r0 != 0 || hKey == 0 {
+		return ""
+	}
+	defer updProcRegCloseKey.Call(hKey)
+
+	enableName, _ := syscall.UTF16PtrFromString("ProxyEnable")
+	var valType uint32
+	var enableVal uint32
+	dwSize := uint32(4)
+	r1, _, _ := updProcRegQueryValExW.Call(
+		hKey,
+		uintptr(unsafe.Pointer(enableName)),
+		0,
+		uintptr(unsafe.Pointer(&valType)),
+		uintptr(unsafe.Pointer(&enableVal)),
+		uintptr(unsafe.Pointer(&dwSize)),
+	)
+	if r1 != 0 || enableVal == 0 {
+		return ""
+	}
+
+	srvName, _ := syscall.UTF16PtrFromString("ProxyServer")
+	var byteLen uint32
+	r2, _, _ := updProcRegQueryValExW.Call(
+		hKey,
+		uintptr(unsafe.Pointer(srvName)),
+		0,
+		uintptr(unsafe.Pointer(&valType)),
+		0,
+		uintptr(unsafe.Pointer(&byteLen)),
+	)
+	if r2 != 0 || byteLen == 0 || byteLen > 4096 {
+		return ""
+	}
+	u16Buf := make([]uint16, (byteLen+1)/2+1)
+	r3, _, _ := updProcRegQueryValExW.Call(
+		hKey,
+		uintptr(unsafe.Pointer(srvName)),
+		0,
+		uintptr(unsafe.Pointer(&valType)),
+		uintptr(unsafe.Pointer(&u16Buf[0])),
+		uintptr(unsafe.Pointer(&byteLen)),
+	)
+	if r3 != 0 {
+		return ""
+	}
+	return parseWinINETProxyString(strings.TrimSpace(syscall.UTF16ToString(u16Buf)))
 }

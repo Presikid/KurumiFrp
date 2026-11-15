@@ -173,7 +173,7 @@
   function renderAll() {
     const d = state.data;
     if (!d) return;
-    $('#app-version').textContent = 'v' + (d.version || '0.9.2');
+    $('#app-version').textContent = 'v' + (d.version || '0.9.3');
     $('#top-active-config').textContent = d.activeConfigFile || 'default.json';
     $('#top-username').textContent = d.username || 'admin';
     $('#acc-username').value = d.username || 'admin';
@@ -543,8 +543,13 @@
       <div class="kv-row"><span>核心检索目录</span><code>${esc(core.bundledDir || './bundled')}</code></div>
     `;
     const proxyInput = $('#update-proxy-input');
-    if (proxyInput && document.activeElement !== proxyInput) {
-      proxyInput.value = d.updateProxy || '';
+    if (proxyInput) {
+      proxyInput.placeholder = d.systemProxy
+        ? `留空自动使用当前系统代理 (${d.systemProxy})，也可手动覆盖`
+        : '留空自动跟随电脑默认系统代理，或手动填如 http://127.0.0.1:2080';
+      if (document.activeElement !== proxyInput) {
+        proxyInput.value = d.updateProxy || '';
+      }
     }
 
     // Populate log instance selector

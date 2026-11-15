@@ -219,6 +219,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			"runtime":            a.runtime.Views(doc),
 			"core":               LocateBinaries(a.dataDir),
 			"updateProxy":        a.updater.ProxyURL(),
+			"systemProxy":        a.updater.DetectedSystemProxy(),
 		})
 
 	case "/api/account":
