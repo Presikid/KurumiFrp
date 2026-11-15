@@ -280,7 +280,7 @@ func TestCompareSemVer(t *testing.T) {
 		want int
 	}{
 		{"0.9.0", "0.9.0", 0},
-		{"v0.9.1", "0.9.0", 1},
+		{"0.9.2", "0.9.0", 1},
 		{"0.10.0", "0.9.9", 1},
 		{"1.0.0", "0.99.9", 1},
 		{"0.9.0", "0.9.2", -1},
@@ -412,7 +412,7 @@ func TestStatelessSessionAndFRPAutoUpdate(t *testing.T) {
 			})
 		case "/repos/Presikid/KurumiFrp/releases":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"tag_name": "v0.9.1", "html_url": srvURL + "/app"},
+				{"tag_name": "0.9.2", "html_url": srvURL + "/app"},
 			})
 		case "/dl/checksums.txt":
 			_, _ = w.Write([]byte(sumHex + "  " + assetName + "\n"))

@@ -173,7 +173,7 @@
   function renderAll() {
     const d = state.data;
     if (!d) return;
-    $('#app-version').textContent = 'v' + (d.version || '0.9.1');
+    $('#app-version').textContent = 'v' + (d.version || '0.9.2');
     $('#top-active-config').textContent = d.activeConfigFile || 'default.json';
     $('#top-username').textContent = d.username || 'admin';
     $('#acc-username').value = d.username || 'admin';
