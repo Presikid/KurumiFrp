@@ -164,8 +164,12 @@ func (u *UpdateManager) httpClient(proxyStr string, timeout time.Duration) (*htt
 		ResponseHeaderTimeout: 30 * time.Second,
 		IdleConnTimeout:       30 * time.Second,
 	}
-	if proxyStr != "" {
-		pu, err := url.Parse(proxyStr)
+	effectiveProxy := proxyStr
+	if effectiveProxy == "" && !u.allowLocal {
+		effectiveProxy = detectPlatformSystemProxy()
+	}
+	if effectiveProxy != "" {
+		pu, err := url.Parse(effectiveProxy)
 		if err != nil {
 			return nil, err
 		}
@@ -774,4 +778,58 @@ func replaceFileAtomic(tmpPath, dstPath string, perm os.FileMode) error {
 		_ = os.Remove(dstPath)
 	}
 	return os.Rename(tmpPath, dstPath)
+}
+
+// DetectedSystemProxy returns the currently active OS default proxy URL (e.g. Windows WinINET system proxy), if any.
+func (u *UpdateManager) DetectedSystemProxy() string {
+	return detectPlatformSystemProxy()
+}
+
+// parseWinINETProxyString converts Windows Internet Settings ProxyServer strings
+// (such as "127.0.0.1:2080" or "https=127.0.0.1:2080;http=127.0.0.1:2080;socks=127.0.0.1:1080")
+// into a standard proxy URL understood by Go net/http.Transport.
+func parseWinINETProxyString(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if !strings.Contains(s, "=") && !strings.Contains(s, ";") {
+		norm, err := normalizeProxyURL(s)
+		if err == nil {
+			return norm
+		}
+		return ""
+	}
+	kv := make(map[string]string)
+	for _, part := range strings.Split(s, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if eq := strings.IndexByte(part, '='); eq > 0 {
+			k := strings.ToLower(strings.TrimSpace(part[:eq]))
+			v := strings.TrimSpace(part[eq+1:])
+			if v != "" {
+				kv[k] = v
+			}
+		} else if kv["default"] == "" {
+			kv["default"] = part
+		}
+	}
+	for _, key := range []string{"https", "http", "default"} {
+		if v := kv[key]; v != "" {
+			if norm, err := normalizeProxyURL(v); err == nil {
+				return norm
+			}
+		}
+	}
+	if v := kv["socks"]; v != "" {
+		if !strings.Contains(v, "://") {
+			v = "socks5://" + v
+		}
+		if norm, err := normalizeProxyURL(v); err == nil {
+			return norm
+		}
+	}
+	return ""
 }

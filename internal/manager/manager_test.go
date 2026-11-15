@@ -280,7 +280,7 @@ func TestCompareSemVer(t *testing.T) {
 		want int
 	}{
 		{"0.9.0", "0.9.0", 0},
-		{"0.9.2", "0.9.0", 1},
+		{"v0.9.3", "0.9.0", 1},
 		{"0.10.0", "0.9.9", 1},
 		{"1.0.0", "0.99.9", 1},
 		{"0.9.0", "0.9.2", -1},
@@ -412,7 +412,7 @@ func TestStatelessSessionAndFRPAutoUpdate(t *testing.T) {
 			})
 		case "/repos/Presikid/KurumiFrp/releases":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"tag_name": "0.9.2", "html_url": srvURL + "/app"},
+				{"tag_name": "v0.9.3", "html_url": srvURL + "/app"},
 			})
 		case "/dl/checksums.txt":
 			_, _ = w.Write([]byte(sumHex + "  " + assetName + "\n"))
@@ -445,5 +445,24 @@ func TestStatelessSessionAndFRPAutoUpdate(t *testing.T) {
 	}
 	if !coreInfo.FrpcFound || !coreInfo.FrpsFound || coreInfo.FrpcVersion != "0.99.0" || coreInfo.CoreSource != "data-bin" {
 		t.Fatalf("unexpected updated coreInfo: %+v", coreInfo)
+	}
+}
+
+func TestWinINETProxyParserAndANSIClean(t *testing.T) {
+	cases := map[string]string{
+		"":                      "",
+		"127.0.0.1:2080":        "http://127.0.0.1:2080",
+		"http://127.0.0.1:7890": "http://127.0.0.1:7890",
+		"http=127.0.0.1:2080;https=127.0.0.1:2081": "http://127.0.0.1:2081",
+		"socks=127.0.0.1:10808":                    "socks5://127.0.0.1:10808",
+	}
+	for raw, want := range cases {
+		if got := parseWinINETProxyString(raw); got != want {
+			t.Fatalf("parseWinINETProxyString(%q) = %q, want %q", raw, got, want)
+		}
+	}
+	dirty := "\x1b[1;34m2026-11-15 [I] ok\x1b[0m and [0m[1;34mplain"
+	if cleaned := stripANSI(dirty); strings.Contains(cleaned, "1;34m") || strings.Contains(cleaned, "[0m") {
+		t.Fatalf("stripANSI left escape codes: %q", cleaned)
 	}
 }
