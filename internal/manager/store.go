@@ -108,6 +108,7 @@ func (s *Store) initOrLoad() error {
 			fullPath = filepath.Join(s.configsDir, target)
 		} else {
 			doc := s.tryMigrateLegacyOrDefault()
+			normalizeDocument(&doc, doc.Name)
 			s.activeFile = "default.json"
 			s.doc = doc
 			if err := s.saveActiveLocked(); err != nil {
@@ -122,6 +123,7 @@ func (s *Store) initOrLoad() error {
 	}
 	s.activeFile = target
 	s.doc = doc
+	_ = s.saveActiveLocked()
 	return s.saveMetaLocked()
 }
 
@@ -260,6 +262,12 @@ func normalizeDocument(doc *ConfigDocument, fallbackName string) {
 		}
 		if doc.Clients[i].Protocol == "" {
 			doc.Clients[i].Protocol = "tcp"
+		}
+		if strings.TrimSpace(doc.Clients[i].CtrlSecret) == "" {
+			doc.Clients[i].CtrlSecret = randomTokenHex(16)
+		}
+		if strings.TrimSpace(doc.Clients[i].AgentToken) == "" {
+			doc.Clients[i].AgentToken = randomTokenHex(20)
 		}
 		if doc.Clients[i].Tunnels == nil {
 			doc.Clients[i].Tunnels = []TunnelRule{}
@@ -501,6 +509,12 @@ func newShortID(prefix string) string {
 	var b [6]byte
 	_, _ = rand.Read(b[:])
 	return prefix + "-" + hex.EncodeToString(b[:])
+}
+
+func randomTokenHex(nBytes int) string {
+	b := make([]byte, nBytes)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func nonEmptyID(v, prefix string) string {

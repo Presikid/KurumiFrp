@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,7 +23,6 @@ import (
 func TestSingleUserAuthAndLegacyMigration(t *testing.T) {
 	dir := t.TempDir()
 
-	// Simulate legacy v0.8 admin-password.json without username field
 	salt := []byte("0123456789abcdef")
 	hash := pbkdf2SHA256([]byte("oldpass123"), salt, pbkdf2Iterations, 32)
 	legacyJSON := `{"version":1,"salt":"MDEyMzQ1Njc4OWFiY2RlZg","hash":"` + encodeRawBase64(hash) + `"}`
@@ -49,7 +49,6 @@ func TestSingleUserAuthAndLegacyMigration(t *testing.T) {
 		t.Fatalf("expected valid login, got err=%v", err)
 	}
 
-	// Update single user's username and password
 	if err := auth.UpdateCredentials("oldpass123", "kurumi", "zafkiel777"); err != nil {
 		t.Fatalf("UpdateCredentials failed: %v", err)
 	}
@@ -58,6 +57,23 @@ func TestSingleUserAuthAndLegacyMigration(t *testing.T) {
 	}
 	if _, err := auth.Login("127.0.0.1", "kurumi", "zafkiel777"); err != nil {
 		t.Fatalf("expected login with updated credentials to succeed: %v", err)
+	}
+}
+
+func TestStrictPreLoginAPIGate(t *testing.T) {
+	dir := t.TempDir()
+	app, err := NewApp(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+
+	// Unauthenticated request to /api/state MUST be strictly rejected with 401
+	req := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 before login, got %d", rec.Code)
 	}
 }
 
@@ -79,7 +95,6 @@ func TestStoreMultiConfigAndZeroWearWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Switch to second independent config file inside software folder
 	docB, err := store.SelectOrCreateConfig("backup-plan", "备用方案 B")
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +108,6 @@ func TestStoreMultiConfigAndZeroWearWrite(t *testing.T) {
 		t.Fatalf("expected 2 config files, got %d (err=%v)", len(files), err)
 	}
 
-	// Verify writeIfChanged skips identical writes
 	testFile := filepath.Join(dir, "wear-check.txt")
 	wrote, err := writeIfChanged(testFile, []byte("kurumi"), 0o600)
 	if err != nil || !wrote {
@@ -105,49 +119,109 @@ func TestStoreMultiConfigAndZeroWearWrite(t *testing.T) {
 	}
 }
 
-func TestTOMLRenderEscapingAndImport(t *testing.T) {
+func TestTOMLRenderEscapingAndBidirectionalRoundTrip(t *testing.T) {
+	tcpMuxVal := true
+	srv := ServerProfile{
+		ID:                    "srv-full",
+		Name:                  "云服务器 A",
+		BindAddr:              "0.0.0.0",
+		BindPort:              7000,
+		KCPBindPort:           7000,
+		QUICBindPort:          7002,
+		VhostHTTPPort:         8080,
+		VhostHTTPSPort:        8443,
+		TCPMuxHTTPConnectPort: 1337,
+		SubDomainHost:         "tunnel.example.com",
+		SSHGatewayBindPort:    2200,
+		AuthMethod:            "token",
+		AuthToken:             "super-secret",
+		AuthAdditionalScopes:  []string{"HeartBeats", "NewWorkConns"},
+		MaxPoolCount:          12,
+		TCPMux:                &tcpMuxVal,
+		AllowPorts:            "9000-10000,25565",
+	}
+	srvTOML := RenderServerTOML(srv, ServerRuntimeInjections{Preview: true, MaskSecrets: true})
+	updSrv, err := ApplyTOMLToServer(srv, strings.Replace(srvTOML.TOML, "bindPort = 7000", "bindPort = 7001", 1))
+	if err != nil {
+		t.Fatalf("ApplyTOMLToServer failed: %v", err)
+	}
+	if updSrv.BindPort != 7001 || updSrv.AuthToken != "super-secret" || updSrv.SSHGatewayBindPort != 2200 || updSrv.AllowPorts != "9000-10000,25565" {
+		t.Fatalf("unexpected round-tripped server profile: %+v", updSrv)
+	}
+
 	cli := ClientProfile{
-		ID:         "cli-1",
-		Name:       "家里 NAS",
-		ServerAddr: "frp.example.com",
-		ServerPort: 7000,
-		AuthToken:  `tok"with\special`,
-		Protocol:   "quic",
-		TLSEnable:  true,
+		ID:                "cli-1",
+		Name:              "家里 NAS",
+		ServerAddr:        "frp.example.com",
+		ServerPort:        7000,
+		User:              "home",
+		AuthToken:         `tok"with\special`,
+		Protocol:          "quic",
+		TLSEnable:         true,
+		NatHoleSTUNServer: "stun.easyvoip.com:3478",
+		ProxyURL:          "http://127.0.0.1:7890",
+		CtrlSecret:        "ctrlsec123",
+		AgentToken:        "agenttok456",
+		Metadatas:         map[string]string{"zone": "shanghai"},
 		Tunnels: []TunnelRule{
 			{
-				ID:               "tun-1",
-				Name:             "nas-web",
-				Type:             "http",
-				Enabled:          true,
-				LocalIP:          "127.0.0.1",
-				LocalPort:        5000,
-				CustomDomains:    []string{"nas.example.com"},
-				BandwidthLimitKB: 2048,
+				ID:                        "tun-1",
+				Name:                      "nas-web",
+				Type:                      "http",
+				Enabled:                   true,
+				LocalIP:                   "127.0.0.1",
+				LocalPort:                 5000,
+				CustomDomains:             []string{"nas.example.com"},
+				BandwidthLimitKB:          2048,
+				ProxyProtocolVersion:      "v2",
+				LoadBalancerGroup:         "web-ha",
+				HealthCheckType:           "http",
+				HealthCheckPath:           "/healthz",
+				HealthCheckTimeoutSeconds: 3,
+				HealthCheckHeaders:        map[string]string{"X-Probe": "1"},
+				RequestHeaders:            map[string]string{"X-Real-Env": "home"},
 			},
 			{
-				ID:             "tun-2",
-				Name:           "p2p-visitor",
-				Mode:           "visitor",
-				Type:           "xtcp",
-				Enabled:        true,
-				ServerName:     "remote-desktop",
-				SecretKey:      "sec123",
-				LocalIP:        "127.0.0.1",
-				LocalPort:      13389,
-				KeepTunnelOpen: true,
+				ID:                "tun-2",
+				Name:              "p2p-visitor",
+				Mode:              "visitor",
+				Type:              "xtcp",
+				Enabled:           true,
+				ServerName:        "remote-desktop",
+				ServerUser:        "peer-e",
+				SecretKey:         "sec123",
+				LocalIP:           "127.0.0.1",
+				LocalPort:         13389,
+				VisitorProtocol:   "quic",
+				KeepTunnelOpen:    true,
+				FallbackTo:        "rdp-stcp-fb",
+				FallbackTimeoutMs: 600,
+			},
+			{
+				ID:              "tun-3",
+				Name:            "batch-ports",
+				Mode:            "proxy",
+				Type:            "tcp",
+				Enabled:         true,
+				LocalIP:         "127.0.0.1",
+				PortRangeLocal:  "6000-6005",
+				PortRangeRemote: "16000-16005",
 			},
 		},
 	}
 
 	res := RenderClientTOML(cli, ClientRuntimeInjections{
-		Preview:   false,
-		AdminPort: 17400,
-		AdminUser: "kurumi",
-		AdminPass: "adm123",
+		Preview:    false,
+		AdminPort:  17400,
+		AdminUser:  "kurumi",
+		AdminPass:  "adm123",
+		AgentPort:  18900,
+		ClientID:   cli.ID,
+		ClientName: cli.Name,
+		CtrlSecret: cli.CtrlSecret,
+		AgentToken: cli.AgentToken,
 	})
 
-	// Ensure environment variable value does NOT contain outer literal quotes (BUG-01 regression check)
 	foundTokenEnv := false
 	for _, kv := range res.Env {
 		if strings.HasPrefix(kv, "KURUMI_AUTH_TOKEN_1=") {
@@ -164,17 +238,201 @@ func TestTOMLRenderEscapingAndImport(t *testing.T) {
 	if !foundTokenEnv {
 		t.Fatal("missing KURUMI_AUTH_TOKEN_1 in rendered env")
 	}
-	if !strings.Contains(res.TOML, "[[visitors]]") || !strings.Contains(res.TOML, `transport.bandwidthLimit = "2048KB"`) {
-		t.Fatalf("missing expected blocks in TOML:\n%s", res.TOML)
+	if !strings.Contains(res.TOML, "[[visitors]]") || !strings.Contains(res.TOML, `transport.bandwidthLimit = "2048KB"`) || !strings.Contains(res.TOML, "__kurumi_ctrl_cli-1") {
+		t.Fatalf("missing expected blocks in runtime TOML:\n%s", res.TOML)
 	}
 
-	preview := RenderClientTOML(cli, ClientRuntimeInjections{Preview: true})
-	_, importedCli, err := ParseTOMLAsProfile("导入测试", "frpc", preview.TOML)
-	if err != nil || importedCli == nil {
-		t.Fatalf("ParseTOMLAsProfile failed: %v", err)
+	preview := RenderClientTOML(cli, ClientRuntimeInjections{Preview: true, MaskSecrets: true})
+	updCli, err := ApplyTOMLToClient(cli, preview.TOML)
+	if err != nil {
+		t.Fatalf("ApplyTOMLToClient failed: %v", err)
 	}
-	if importedCli.ServerAddr != "frp.example.com" || len(importedCli.Tunnels) != 2 {
-		t.Fatalf("unexpected imported client profile: %+v", importedCli)
+	if updCli.ServerAddr != "frp.example.com" || updCli.AuthToken != `tok"with\special` || len(updCli.Tunnels) != 3 {
+		t.Fatalf("unexpected round-tripped client profile: %+v", updCli)
+	}
+	if updCli.Tunnels[0].HealthCheckPath != "/healthz" || updCli.Tunnels[1].FallbackTo != "rdp-stcp-fb" || updCli.Tunnels[2].PortRangeLocal != "6000-6005" {
+		t.Fatalf("tunnel details lost during TOML round-trip: %+v", updCli.Tunnels)
+	}
+}
+
+func TestABCDECrossInstanceRemoteControlAndP2PScenario(t *testing.T) {
+	ctx := context.Background()
+
+	// Host A: Cloud Server running frps A
+	dirA := t.TempDir()
+	storeA, err := NewStore(dirA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = storeA.Update(func(d *ConfigDocument) error {
+		d.Servers = append(d.Servers, ServerProfile{ID: "srv-A", Name: "云服务器 A", BindPort: 7000, AuthToken: "shared-tok"})
+		return nil
+	})
+	rtA, err := NewRuntimeSupervisor(dirA, storeA, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rtA.StopAll()
+	rtA.mu.Lock()
+	rtA.procs["srv-A"] = &managedProc{
+		id:            "srv-A",
+		kind:          "frps",
+		pluginSecret:  "plug-a",
+		state:         "running",
+		conns:         make(map[string]ConnLiveItem),
+		remoteClients: make(map[string]*remoteClientSession),
+	}
+	rtA.mu.Unlock()
+
+	// Helper simulating an independent remote machine (B, C, D, E) connecting its frpc to Server A
+	setupRemoteHost := func(hostLabel string, extraSrv *ServerProfile, cli ClientProfile) (*Store, *RuntimeSupervisor) {
+		hDir := t.TempDir()
+		hStore, sErr := NewStore(hDir)
+		if sErr != nil {
+			t.Fatal(sErr)
+		}
+		var savedCli ClientProfile
+		_ = hStore.Update(func(d *ConfigDocument) error {
+			if extraSrv != nil {
+				d.Servers = append(d.Servers, *extraSrv)
+			}
+			d.Clients = append(d.Clients, cli)
+			return nil
+		})
+		_, doc := hStore.Snapshot()
+		savedCli = doc.Clients[0]
+
+		hRT, rErr := NewRuntimeSupervisor(hDir, hStore, nil)
+		if rErr != nil {
+			t.Fatal(rErr)
+		}
+		t.Cleanup(func() { hRT.StopAll() })
+
+		// Simulate frpc Login + NewProxy (__kurumi_ctrl_<id>) arriving at Server A's frps HTTP plugin
+		loginBody, _ := json.Marshal(map[string]any{
+			"content": map[string]any{
+				"user":           savedCli.User,
+				"hostname":       hostLabel,
+				"os":             runtime.GOOS,
+				"arch":           runtime.GOARCH,
+				"client_address": "100.64.0.10:52000",
+				"metas": map[string]any{
+					"kurumi_client_id":   savedCli.ID,
+					"kurumi_client_name": savedCli.Name,
+					"kurumi_ctrl_proxy":  internalCtrlProxyPrefix + savedCli.ID,
+					"kurumi_ctrl_key":    savedCli.CtrlSecret,
+					"kurumi_agent_token": savedCli.AgentToken,
+				},
+			},
+		})
+		req := httptest.NewRequest(http.MethodPost, "/internal/frps-plugin/srv-A?token=plug-a&op=Login", bytes.NewReader(loginBody))
+		rec := httptest.NewRecorder()
+		rtA.HandleFRPSPlugin(rec, req, "srv-A")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("Login plugin failed for %s: %d", hostLabel, rec.Code)
+		}
+
+		// Point test session's STCP bridge target to remote host's loopback agent server (simulating STCP tunnel transport)
+		rtA.mu.RLock()
+		procA := rtA.procs["srv-A"]
+		rtA.mu.RUnlock()
+		procA.mu.Lock()
+		procA.remoteClients[savedCli.ID].ctrlReady = true
+		procA.remoteClients[savedCli.ID].directAgentURL = fmt.Sprintf("http://127.0.0.1:%d", hRT.agentPort)
+		procA.mu.Unlock()
+
+		return hStore, hRT
+	}
+
+	// B: School PC (NAT, frpc -> A)
+	storeB, _ := setupRemoteHost("school-pc-B", nil, ClientProfile{
+		ID: "cli-B", Name: "学校电脑 B", ServerAddr: "203.0.113.10", ServerPort: 7000, User: "school", AuthToken: "shared-tok",
+	})
+	// C: Home PC (NAT, frpc -> A)
+	storeC, _ := setupRemoteHost("home-pc-C", nil, ClientProfile{
+		ID: "cli-C", Name: "家里电脑 C", ServerAddr: "203.0.113.10", ServerPort: 7000, User: "home", AuthToken: "shared-tok",
+	})
+	// D: Company PC (runs BOTH local frps srv-D AND frpc cli-D -> A mapping UDP 6768 -> 10000)
+	storeD, _ := setupRemoteHost("company-pc-D", &ServerProfile{
+		ID: "srv-D", Name: "公司独立服务端 D", BindPort: 7100, AuthToken: "company-private-secret",
+	}, ClientProfile{
+		ID: "cli-D", Name: "公司电脑客户端 D", ServerAddr: "203.0.113.10", ServerPort: 7000, User: "office", AuthToken: "shared-tok",
+		Tunnels: []TunnelRule{{ID: "tun-d1", Name: "udp-6768", Mode: "proxy", Type: "udp", Enabled: true, LocalIP: "127.0.0.1", LocalPort: 6768, RemotePort: 10000}},
+	})
+	// E: Friend PC (NAT, frpc -> A)
+	storeE, _ := setupRemoteHost("friend-pc-E", nil, ClientProfile{
+		ID: "cli-E", Name: "朋友家电脑 E", ServerAddr: "203.0.113.10", ServerPort: 7000, User: "friend", AuthToken: "shared-tok",
+	})
+
+	// 1. Verify Server A sees all 4 connected frpc instances (B, C, D, E)
+	_, docA := storeA.Snapshot()
+	viewsA := rtA.Views(docA)
+	if got := len(viewsA["srv-A"].RemoteClients); got != 4 {
+		t.Fatalf("expected 4 connected remote clients on Server A, got %d", got)
+	}
+
+	// 2. Scenario Step: From Server A's WebUI, remotely map School PC B's port 7777 -> A's port 9999!
+	snapB, err := rtA.FetchRemoteClient(ctx, "srv-A", "cli-B")
+	if err != nil {
+		t.Fatalf("FetchRemoteClient(cli-B) failed: %v", err)
+	}
+	profB := snapB.Profile
+	profB.Tunnels = append(profB.Tunnels, TunnelRule{
+		Name: "school-7777", Mode: "proxy", Type: "tcp", Enabled: true, LocalIP: "127.0.0.1", LocalPort: 7777, RemotePort: 9999,
+	})
+	if _, _, err := rtA.SaveRemoteClient(ctx, "srv-A", "cli-B", profB, false); err != nil {
+		t.Fatalf("SaveRemoteClient(cli-B) failed: %v", err)
+	}
+	_, verifyDocB := storeB.Snapshot()
+	if len(verifyDocB.Clients[0].Tunnels) != 1 || verifyDocB.Clients[0].Tunnels[0].LocalPort != 7777 || verifyDocB.Clients[0].Tunnels[0].RemotePort != 9999 {
+		t.Fatalf("School PC B did not receive 7777->9999 mapping: %+v", verifyDocB.Clients[0].Tunnels)
+	}
+
+	// 3. Verify Isolation on Company PC D: Server A can inspect cli-D (UDP 6768->10000) but CANNOT see or alter srv-D!
+	snapD, err := rtA.FetchRemoteClient(ctx, "srv-A", "cli-D")
+	if err != nil || len(snapD.Profile.Tunnels) != 1 || snapD.Profile.Tunnels[0].RemotePort != 10000 {
+		t.Fatalf("unexpected cli-D snapshot: %+v, err=%v", snapD, err)
+	}
+	_, verifyDocD := storeD.Snapshot()
+	if verifyDocD.Servers[0].AuthToken != "company-private-secret" {
+		t.Fatal("Company PC D's independent frps server must remain completely untouched")
+	}
+
+	// 4. Scenario Step: Orchestrate P2P between Home PC C (controlled remotely via Server A) and Friend PC E (configured locally on E)!
+	p2pRes, err := rtA.OrchestrateRemoteP2P(ctx, P2PPairRequest{
+		ServerID:           "srv-A",
+		TunnelBaseName:     "ce-game-p2p",
+		P2PType:            "xtcp",
+		SecretKey:          "kurumi-p2p-key",
+		HostClientID:       "cli-C",
+		HostLocalIP:        "127.0.0.1",
+		HostLocalPort:      25565,
+		VisitorBindPort:    15565,
+		KeepTunnelOpen:     true,
+		EnableSTCPFallback: true,
+	})
+	if err != nil {
+		t.Fatalf("OrchestrateRemoteP2P failed: %v", err)
+	}
+	_, verifyDocC := storeC.Snapshot()
+	if len(verifyDocC.Clients[0].Tunnels) != 2 {
+		t.Fatalf("expected XTCP + STCP fallback tunnels pushed to Home PC C, got %+v", verifyDocC.Clients[0].Tunnels)
+	}
+
+	// Friend E applies the generated visitor TOML snippet in E's own local WebUI
+	snippet, _ := p2pRes["visitorTomlSnippet"].(string)
+	_ = storeE.Update(func(d *ConfigDocument) error {
+		curPreview := RenderClientTOML(d.Clients[0], ClientRuntimeInjections{Preview: true, MaskSecrets: false})
+		updE, pErr := ApplyTOMLToClient(d.Clients[0], curPreview.TOML+"\n"+snippet)
+		if pErr != nil {
+			t.Fatalf("Friend E local TOML apply failed: %v", pErr)
+		}
+		d.Clients[0] = updE
+		return nil
+	})
+	_, verifyDocE := storeE.Snapshot()
+	if len(verifyDocE.Clients[0].Tunnels) != 2 || verifyDocE.Clients[0].Tunnels[1].ServerUser != "home" {
+		t.Fatalf("Friend PC E visitor tunnels did not pair properly with C's user 'home': %+v", verifyDocE.Clients[0].Tunnels)
 	}
 }
 
@@ -191,10 +449,10 @@ func TestConnectionDashboardPluginEnforcement(t *testing.T) {
 			Name:     "公网节点 A",
 			BindPort: 7000,
 			ConnPolicies: map[string]ConnPolicy{
-				"disabled-ssh":  {ProxyName: "disabled-ssh", Enabled: false},
-				"expired-web":   {ProxyName: "expired-web", Enabled: true, ExpiresAt: pastTime},
-				"capped-rdp":    {ProxyName: "capped-rdp", Enabled: true, TrafficLimitMB: 1, RecordedInBytes: 2 * 1024 * 1024},
-				"healthy- game": {ProxyName: "healthy-game", Enabled: true, TrafficLimitMB: 100},
+				"disabled-ssh": {ProxyName: "disabled-ssh", Enabled: false},
+				"expired-web":  {ProxyName: "expired-web", Enabled: true, ExpiresAt: pastTime},
+				"capped-rdp":   {ProxyName: "capped-rdp", Enabled: true, TrafficLimitMB: 1, RecordedInBytes: 2 * 1024 * 1024},
+				"healthy-game": {ProxyName: "healthy-game", Enabled: true, TrafficLimitMB: 100},
 			},
 		})
 		return nil
@@ -209,14 +467,14 @@ func TestConnectionDashboardPluginEnforcement(t *testing.T) {
 	}
 	defer rt.StopAll()
 
-	// Register a mock running server entry to test webhook handler directly
 	rt.mu.Lock()
 	rt.procs["srv-guard"] = &managedProc{
-		id:           "srv-guard",
-		kind:         "frps",
-		pluginSecret: "sec999",
-		state:        "running",
-		conns:        make(map[string]ConnLiveItem),
+		id:            "srv-guard",
+		kind:          "frps",
+		pluginSecret:  "sec999",
+		state:         "running",
+		conns:         make(map[string]ConnLiveItem),
+		remoteClients: make(map[string]*remoteClientSession),
 	}
 	rt.mu.Unlock()
 
@@ -228,6 +486,7 @@ func TestConnectionDashboardPluginEnforcement(t *testing.T) {
 		{"expired-web", true},
 		{"capped-rdp", true},
 		{"brand-new-proxy", false},
+		{"__kurumi_ctrl_cli-test", false},
 	}
 
 	for _, tc := range cases {
@@ -280,7 +539,7 @@ func TestCompareSemVer(t *testing.T) {
 		want int
 	}{
 		{"0.9.0", "0.9.0", 0},
-		{"v0.9.3", "0.9.0", 1},
+		{"v0.9.4", "0.9.3", 1},
 		{"0.10.0", "0.9.9", 1},
 		{"1.0.0", "0.99.9", 1},
 		{"0.9.0", "0.9.2", -1},
@@ -295,7 +554,6 @@ func TestCompareSemVer(t *testing.T) {
 func TestStatelessSessionAndFRPAutoUpdate(t *testing.T) {
 	dir := t.TempDir()
 
-	// Part A: Verify HMAC session cookie survives daemon restart (NewAuthManager reload) and invalidates on Logout / password update
 	am1, err := NewAuthManager(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -313,7 +571,6 @@ func TestStatelessSessionAndFRPAutoUpdate(t *testing.T) {
 		t.Fatal("expected session valid on am1")
 	}
 
-	// Simulate daemon restart during self-update
 	am2, err := NewAuthManager(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -326,7 +583,6 @@ func TestStatelessSessionAndFRPAutoUpdate(t *testing.T) {
 		t.Fatal("expected session invalidated after Logout")
 	}
 
-	// Changing password must immediately invalidate pre-restart cookies across fresh reload too
 	sid2, _ := am2.Login("127.0.0.1", "admin", "")
 	if err := am2.UpdateCredentials("", "kurumi", "zafkiel-secret"); err != nil {
 		t.Fatal(err)
@@ -335,19 +591,16 @@ func TestStatelessSessionAndFRPAutoUpdate(t *testing.T) {
 		t.Fatal("expected session invalidated after credential rotation")
 	}
 
-	// Part B: Verify UpdateManager proxy validation & SHA-256 verified official FRP hot-update
 	slug, ext, supported := frpPlatformSlug()
 	if !supported {
 		t.Skip("skipping archive hot-update test on unsupported GOOS/GOARCH")
 	}
 
-	// Build a valid mock frpc + frps executable for the current test OS
 	var mockBin []byte
 	if norm, err := normalizeProxyURL("127.0.0.1:7890"); err != nil || norm != "http://127.0.0.1:7890" {
 		t.Fatalf("normalizeProxyURL got %q, %v", norm, err)
 	}
 	if runtime.GOOS == "windows" {
-		// On Windows, copy cmd.exe / whoami.exe or skip shell-script execution after testing ZIP extraction
 		var zbuf bytes.Buffer
 		zw := zip.NewWriter(&zbuf)
 		for name, body := range map[string][]byte{
@@ -412,7 +665,7 @@ func TestStatelessSessionAndFRPAutoUpdate(t *testing.T) {
 			})
 		case "/repos/Presikid/KurumiFrp/releases":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"tag_name": "v0.9.3", "html_url": srvURL + "/app"},
+				{"tag_name": "v0.9.4", "html_url": srvURL + "/app"},
 			})
 		case "/dl/checksums.txt":
 			_, _ = w.Write([]byte(sumHex + "  " + assetName + "\n"))

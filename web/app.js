@@ -1,1508 +1,4328 @@
-/* KurumiFrp v0.9 WebUI Controller — Pure Vanilla JS, Zero Bloat */
+/* ==========================================================================
+   KurumiFrp v0.9.4 Frontend Application (Vanilla ES2022, Zero External Deps)
+   - Strict Pre-Login Authentication Gate
+   - Yuimi-Chaya Layout: Kisara Full-Bleed Stage + WORKS/BLOG Editorial Grid
+   - 100% Native Official fatedier/frp v1 UI Controls + Live Bidirectional TOML
+   - Connection-Based frps -> frpc Remote Control & XTCP/STCP P2P Orchestrator
+   ========================================================================== */
 (function () {
-  'use strict';
+  "use strict";
 
-  const state = {
-    tab: 'server',
-    selectedServerId: '',
-    selectedClientId: '',
-    selectedLogId: '',
-    etag: '',
-    data: null,
-    logStream: null,
+  // Strictly only the 35 user-approved Kurumi illustrations (25 rejected IDs excluded)
+  const KURUMI_ASSETS = [
+    { id: "02", cat: "16:9", src: "assets/k_02.webp", title: "午后花房红茶" },
+    { id: "03", cat: "16:9", src: "assets/k_03.webp", title: "放学后夕阳教室" },
+    { id: "06", cat: "16:9", src: "assets/k_06.webp", title: "樱花铁道口白裙" },
+    { id: "07", cat: "16:9", src: "assets/k_07.webp", title: "雨夜霓虹咖啡馆" },
+    { id: "08", cat: "16:9", src: "assets/k_08.webp", title: "晴光花窗纯白礼拜堂" },
+    { id: "09", cat: "16:9", src: "assets/k_09.webp", title: "银月彼岸花海" },
+    { id: "10", cat: "16:9", src: "assets/k_10.webp", title: "午后书桌与小黑猫" },
+    { id: "12", cat: "16:9", src: "assets/k_12.webp", title: "极简双屏工作台" },
+    { id: "13", cat: "16:9", src: "assets/k_13.webp", title: "晴空碧海白石露台" },
+    { id: "15", cat: "16:9", src: "assets/k_15.webp", title: "清晨阳光床畔" },
+    { id: "16", cat: "16:9", src: "assets/k_16.webp", title: "暮色钟楼露台" },
+
+    { id: "17", cat: "3:4", src: "assets/k_17.webp", title: "粉绒披肩挥手Q版", sticker: true },
+    { id: "23", cat: "3:4", src: "assets/k_23.webp", title: "玫瑰庭院女仆红茶" },
+    { id: "25", cat: "3:4", src: "assets/k_25.webp", title: "冬夜初雪红格围巾" },
+    { id: "26", cat: "3:4", src: "assets/k_26.webp", title: "碧海晴空草帽白裙" },
+    { id: "27", cat: "3:4", src: "assets/k_27.webp", title: "猫耳卫衣与黑猫玩偶" },
+    { id: "30", cat: "3:4", src: "assets/k_30.webp", title: "樱花鸟居绯袴巫女" },
+    { id: "33", cat: "3:4", src: "assets/k_33.webp", title: "草莓蛋糕甜点围裙" },
+    { id: "34", cat: "3:4", src: "assets/k_34.webp", title: "星夜漫天祈愿灯" },
+    { id: "35", cat: "3:4", src: "assets/k_35.webp", title: "原画风轻提双马尾" },
+    { id: "36", cat: "3:4", src: "assets/k_36.webp", title: "阳光花店玫瑰花束" },
+    { id: "37", cat: "3:4", src: "assets/k_37.webp", title: "白金室内乐小提琴" },
+
+    { id: "41", cat: "4:3", src: "assets/k_41.webp", title: "星夜红线P2P拓扑" },
+    { id: "43", cat: "4:3", src: "assets/k_43.webp", title: "黄昏海景电车耳机" },
+    { id: "44", cat: "4:3", src: "assets/k_44.webp", title: "阳光白木图书馆书梯" },
+    { id: "45", cat: "4:3", src: "assets/k_45.webp", title: "露台马卡龙玫瑰茶歇" },
+    { id: "46", cat: "4:3", src: "assets/k_46.webp", title: "夏日缘侧水手服弹珠汽水" },
+
+    { id: "47", cat: "1:1", src: "assets/k_47.webp", title: "水彩抱枕轻甜插画" },
+    { id: "51", cat: "1:1", src: "assets/k_51.webp", title: "金瞳小黑猫治愈头像" },
+    { id: "53", cat: "1:1", src: "assets/k_53.webp", title: "Q版贴纸 · 怀表守护", sticker: true },
+    { id: "54", cat: "1:1", src: "assets/k_54.webp", title: "Q版贴纸 · 极客敲代码", sticker: true },
+    { id: "55", cat: "1:1", src: "assets/k_55.webp", title: "Q版贴纸 · 双手捧脸凝视", sticker: true },
+    { id: "56", cat: "1:1", src: "assets/k_56.webp", title: "Q版贴纸 · 毛毯热可可待机", sticker: true },
+    { id: "58", cat: "1:1", src: "assets/k_58.webp", title: "Q版贴纸 · 红丝线P2P直连", sticker: true },
+    { id: "59", cat: "1:1", src: "assets/k_59.webp", title: "Q版贴纸 · 鼓腮离线提示", sticker: true }
+  ];
+
+  const HERO_SLIDES = KURUMI_ASSETS.filter((a) => a.cat === "16:9");
+  const PORTRAIT_COVERS = KURUMI_ASSETS.filter((a) => a.cat === "3:4" && !a.sticker);
+
+  const STATE = {
+    authenticated: false,
+    username: "admin",
+    needsPasswordSetup: false,
+    version: "0.9.4",
+    etag: "",
+    activeView: "home", // home | frps | frpc | topology | system
+    slideIdx: 0,
+    autoPlay: true,
+    filmstripOpen: false,
+    loginSlideIdx: 0,
+
+    // Backend data
+    activeConfigFile: "default.json",
+    configFiles: [],
+    servers: [],
+    clients: [],
+    runtime: {},
+    core: {},
+    updateProxy: "",
+    systemProxy: "",
+    lastUpdateCheck: null,
+
+    // Selection & editing states
+    selectedServerId: "",
+    frpsMode: "local", // "local" | "remoteClient"
+    frpsSubTab: "studio", // "studio" | "conns" | "remotes" | "logs"
+    serverDraft: null,
+    serverDraftDirty: false,
+    openServerAccs: { s1: true, s2: true, s3: false, s4: false, s5: false, s6: false, s7: false },
+
+    // Remote connected client inspected via FRPS
+    remoteTarget: null, // { serverId, clientId }
+    remoteSnapshot: null, // { summary, profile, runtime, toml, logs }
+    remoteClientDraft: null,
+    remoteSubTab: "tunnels", // "tunnels" | "studio" | "logs"
+    remoteAllowUpstream: false,
+
+    // Local FRPC selection
+    selectedClientId: "",
+    frpcSubTab: "tunnels", // "tunnels" | "studio" | "logs"
+    tunnelFilter: "all", // "all" | "port" | "web" | "p2p" | "visitor"
+    clientDraft: null,
+    clientDraftDirty: false,
+    openClientAccs: { c1: true, c2: false, c3: true, c4: false, c5: false },
+
+    // Topology & P2P
+    topologyTab: "mesh", // "mesh" | "p2pWizard" | "scenarios"
+    lastP2PResult: null,
+
+    // System & Gallery
+    systemTab: "schemes", // "schemes" | "updates" | "gallery" | "security"
+    galleryCat: "all"
   };
 
-  const TAB_META = {
-    server: {
-      title: '转发端 Server 与连接看板',
-      desc: '管理多套互相独立的官方 frps 服务端配置，并在连接看板中实时掌控每条隧道的流量统计、限流、限速、限时与开关。',
-    },
-    client: {
-      title: '客户端 Client 多配置穿透管理',
-      desc: '从零创建与管理多套独立 frpc 客户端配置，支持全类型穿透、P2P 打洞、官方插件与不断流无感热重载。',
-    },
-    control: {
-      title: '应用控制 App Control',
-      desc: '在软件目录内自包含选择、导入或导出配置文件，管理唯一管理员用户名密码、查看脱敏日志与核心状态。',
-    },
-  };
+  let homeSlideTimer = null;
+  let loginSlideTimer = null;
+  let statePollTimer = null;
+  let activeLogES = null;
 
-  const $ = (sel, root = document) => root.querySelector(sel);
-  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  // ==================== Helpers ====================
+  function $(id) {
+    return document.getElementById(id);
+  }
 
-  function esc(val) {
-    return String(val ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
+  function esc(v) {
+    return String(v == null ? "" : v)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function deepClone(obj) {
+    return JSON.parse(JSON.stringify(obj == null ? null : obj));
+  }
+
+  function pad2(n) {
+    return String(n).padStart(2, "0");
+  }
+
+  function randomSecret(len) {
+    const chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let out = "";
+    for (let i = 0; i < (len || 16); i++) {
+      out += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return out;
   }
 
   function formatBytes(bytes) {
-    const n = Number(bytes || 0);
-    if (n < 1024) return n + ' B';
-    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-    if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(2) + ' MB';
-    return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+    const b = Number(bytes || 0);
+    if (b < 1024) return b + " B";
+    if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
+    if (b < 1024 * 1024 * 1024) return (b / (1024 * 1024)).toFixed(2) + " MB";
+    return (b / (1024 * 1024 * 1024)).toFixed(2) + " GB";
   }
 
-  function formatRate(bps) {
-    const n = Number(bps || 0);
-    if (n <= 0) return '0 B/s';
-    return formatBytes(n) + '/s';
+  function coverForIndex(coverId, idx) {
+    if (coverId) {
+      const found = KURUMI_ASSETS.find((a) => "k_" + a.id === coverId || a.id === coverId || a.src === coverId);
+      if (found) return found.src;
+    }
+    return PORTRAIT_COVERS[idx % PORTRAIT_COVERS.length].src;
   }
 
-  function toast(msg) {
-    const box = $('#toast-container');
-    const el = document.createElement('div');
-    el.className = 'toast';
+  function toast(msg, isErr) {
+    const stack = $("toastStack");
+    if (!stack) return;
+    const el = document.createElement("div");
+    el.className = "yc-toast" + (isErr ? " is-err" : "");
     el.textContent = msg;
-    box.appendChild(el);
-    setTimeout(() => el.remove(), 3200);
+    stack.appendChild(el);
+    setTimeout(() => {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    }, 3600);
   }
 
-  function downloadBlob(fileName, text, mime = 'text/plain;charset=utf-8') {
-    const url = URL.createObjectURL(new Blob([text], { type: mime }));
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  function copyText(text, label) {
+    const done = () => toast((label || "内容") + " 已复制到剪贴板");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+    } else {
+      fallbackCopy(text, done);
+    }
   }
 
-  async function api(path, opts = {}) {
-    const headers = Object.assign({}, opts.headers || {});
-    let body = opts.body;
-    if (body && typeof body === 'object' && !(body instanceof FormData)) {
-      headers['Content-Type'] = 'application/json';
-      body = JSON.stringify(body);
+  function fallbackCopy(text, cb) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+      if (cb) cb();
+    } catch (_e) {
+      toast("复制失败，请手动选中复制", true);
     }
-    const resp = await fetch(path, Object.assign({}, opts, { headers, body }));
-    if (resp.status === 304) return { notModified: true };
-    if (resp.status === 401 && path !== '/api/login' && path !== '/api/session') {
-      showLoginScreen();
-      throw new Error('请先登录');
+    document.body.removeChild(ta);
+  }
+
+  async function apiFetch(path, opts) {
+    const options = Object.assign({ method: "GET", headers: {} }, opts || {});
+    if (options.body && typeof options.body === "object" && !(options.body instanceof FormData)) {
+      options.headers["Content-Type"] = "application/json";
+      options.body = JSON.stringify(options.body);
     }
-    const data = await resp.json().catch(() => ({}));
+    const resp = await fetch(path, options);
+    if (resp.status === 401 && path !== "/api/login" && path !== "/api/session") {
+      enterLoginGate("登录会话已过期，请重新验证身份");
+      throw new Error("未登录或会话已失效");
+    }
+    if (resp.status === 304) {
+      return { notModified: true };
+    }
+    const ct = resp.headers.get("Content-Type") || "";
+    const data = ct.includes("application/json") ? await resp.json() : await resp.text();
     if (!resp.ok) {
-      throw new Error(data.error || `请求失败 (${resp.status})`);
+      const errMsg = data && typeof data === "object" && data.error ? data.error : "请求失败 (" + resp.status + ")";
+      throw new Error(errMsg);
     }
-    const etag = resp.headers.get('ETag');
-    if (etag) state.etag = etag;
+    if (path === "/api/state") {
+      const et = resp.headers.get("ETag");
+      if (et) STATE.etag = et;
+    }
     return data;
   }
 
-  function canSilentRender() {
-    const dlg = $('#modal-dialog');
-    if (dlg && dlg.open) return false;
-    const active = document.activeElement;
-    if (active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)) {
-      return false;
-    }
-    const sel = window.getSelection ? window.getSelection() : null;
-    if (sel && sel.toString().length > 0) {
-      return false;
-    }
-    return true;
+  // ==================== Modal Helper (Zero alert/confirm/prompt) ====================
+  function openModal(html, onMount, maxWidthPx) {
+    const backdrop = $("modalBackdrop");
+    const dialog = $("modalDialog");
+    dialog.style.width = maxWidthPx ? "min(" + maxWidthPx + "px, 96vw)" : "min(920px, 96vw)";
+    dialog.innerHTML = html;
+    backdrop.hidden = false;
+    const closeBtns = dialog.querySelectorAll("[data-modal-close]");
+    closeBtns.forEach((b) => b.addEventListener("click", closeModal));
+    if (onMount) onMount(dialog);
   }
 
-  /* ==================== Skin & Navigation ==================== */
-  function initSkin() {
-    const saved = localStorage.getItem('kurumi_skin') || 'zafkiel-crimson';
-    document.documentElement.setAttribute('data-skin', saved);
-    const select = $('#skin-select');
-    if (select) {
-      select.value = saved;
-      select.addEventListener('change', () => {
-        document.documentElement.setAttribute('data-skin', select.value);
-        localStorage.setItem('kurumi_skin', select.value);
-      });
-    }
+  function closeModal() {
+    const backdrop = $("modalBackdrop");
+    if (backdrop) backdrop.hidden = true;
+    $("modalDialog").innerHTML = "";
   }
 
-  function switchTab(tab) {
-    state.tab = tab;
-    $$('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
-    $('#panel-server').hidden = tab !== 'server';
-    $('#panel-client').hidden = tab !== 'client';
-    $('#panel-control').hidden = tab !== 'control';
-    const meta = TAB_META[tab] || TAB_META.server;
-    $('#hero-heading').textContent = meta.title;
-    $('#hero-desc').textContent = meta.desc;
-    if (tab === 'control') {
-      refreshLogsOnce();
-    }
+  function confirmModal(title, desc, confirmText, onConfirm) {
+    openModal(
+      `<div class="yc-modal-head">
+         <h3 class="yc-modal-title">${esc(title)}</h3>
+         <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-modal-close>关闭</button>
+       </div>
+       <p style="margin:0;font-size:14px;line-height:1.7;color:var(--yc-muted);">${esc(desc)}</p>
+       <div class="yc-modal-foot">
+         <button type="button" class="yc-btn yc-btn-outline" data-modal-close>取消</button>
+         <button type="button" id="modalConfirmActBtn" class="yc-btn yc-btn-danger">${esc(confirmText || "确认执行")}</button>
+       </div>`,
+      (dlg) => {
+        dlg.querySelector("#modalConfirmActBtn").addEventListener("click", async () => {
+          closeModal();
+          await onConfirm();
+        });
+      },
+      480
+    );
   }
 
-  /* ==================== Auth Flow ==================== */
-  function showLoginScreen(sessionInfo) {
-    closeLogStream();
-    $('#workbench').hidden = true;
-    $('#login-screen').hidden = false;
-    if (sessionInfo && sessionInfo.defaultUsername) {
-      $('#login-username').value = sessionInfo.defaultUsername;
-    }
-    if (sessionInfo && sessionInfo.needsPasswordSetup) {
-      $('#login-hint').textContent = '首次启动尚未设置密码：保持默认用户名 admin、密码留空即可进入并在应用控制中设置密码。';
-    } else {
-      $('#login-hint').textContent = '请输入唯一管理员用户名与密码进入控制台';
-    }
+  // ==================== Deterministic Client-Side Live TOML Generator ====================
+  function tq(s) {
+    return JSON.stringify(String(s == null ? "" : s));
+  }
+  function tArr(arr) {
+    const clean = (arr || []).map((x) => String(x || "").trim()).filter(Boolean);
+    return "[" + clean.map(tq).join(", ") + "]";
+  }
+  function dotKey(k) {
+    const s = String(k || "").trim();
+    return /^[a-zA-Z0-9_-]+$/.test(s) ? s : tq(s);
   }
 
-  function showWorkbench() {
-    $('#login-screen').hidden = true;
-    $('#workbench').hidden = false;
-  }
+  function renderServerTOMLLive(srv) {
+    if (!srv) return "";
+    const lines = ["# Generated by KurumiFrp (Official frps TOML v1)"];
+    lines.push(`bindAddr = ${tq(srv.bindAddr || "0.0.0.0")}`);
+    lines.push(`bindPort = ${Number(srv.bindPort) || 7000}`);
+    if (Number(srv.kcpBindPort) > 0) lines.push(`kcpBindPort = ${Number(srv.kcpBindPort)}`);
+    if (Number(srv.quicBindPort) > 0) lines.push(`quicBindPort = ${Number(srv.quicBindPort)}`);
+    if (srv.proxyBindAddr) lines.push(`proxyBindAddr = ${tq(srv.proxyBindAddr.trim())}`);
+    if (Number(srv.vhostHTTPPort) > 0) lines.push(`vhostHTTPPort = ${Number(srv.vhostHTTPPort)}`);
+    if (Number(srv.vhostHTTPSPort) > 0) lines.push(`vhostHTTPSPort = ${Number(srv.vhostHTTPSPort)}`);
+    if (Number(srv.vhostHTTPTimeout) > 0) lines.push(`vhostHTTPTimeout = ${Number(srv.vhostHTTPTimeout)}`);
+    if (Number(srv.tcpmuxHTTPConnectPort) > 0) lines.push(`tcpmuxHTTPConnectPort = ${Number(srv.tcpmuxHTTPConnectPort)}`);
+    if (srv.tcpmuxPassthrough) lines.push(`tcpmuxPassthrough = true`);
+    if (srv.subDomainHost) lines.push(`subDomainHost = ${tq(srv.subDomainHost.trim())}`);
+    if (srv.custom404Page) lines.push(`custom404Page = ${tq(srv.custom404Page.trim())}`);
 
-  /* ==================== Main State Refresh & Render ==================== */
-  async function loadState(silent = false) {
-    const headers = {};
-    if (silent && state.etag) {
-      headers['If-None-Match'] = state.etag;
+    if (Number(srv.maxPortsPerClient) > 0) lines.push(`maxPortsPerClient = ${Number(srv.maxPortsPerClient)}`);
+    if (Number(srv.userConnTimeout) > 0) lines.push(`userConnTimeout = ${Number(srv.userConnTimeout)}`);
+    if (Number(srv.udpPacketSize) > 0) lines.push(`udpPacketSize = ${Number(srv.udpPacketSize)}`);
+    if (Number(srv.natholeAnalysisDataReserveHours) > 0) {
+      lines.push(`natholeAnalysisDataReserveHours = ${Number(srv.natholeAnalysisDataReserveHours)}`);
     }
-    const res = await api('/api/state', { headers });
-    if (res.notModified) return;
-    state.data = res;
-    if (!silent || canSilentRender()) {
-      renderAll();
-    }
-  }
-
-  function renderAll() {
-    const d = state.data;
-    if (!d) return;
-    $('#app-version').textContent = 'v' + (d.version || '0.9.3');
-    $('#top-active-config').textContent = d.activeConfigFile || 'default.json';
-    $('#top-username').textContent = d.username || 'admin';
-    $('#acc-username').value = d.username || 'admin';
-    $('#password-setup-alert').hidden = !d.needsPasswordSetup;
-
-    const servers = (d.config && d.config.servers) || [];
-    const clients = (d.config && d.config.clients) || [];
-    $('#badge-servers').textContent = String(servers.length);
-    $('#badge-clients').textContent = String(clients.length);
-
-    if (servers.length > 0 && !servers.some((s) => s.id === state.selectedServerId)) {
-      state.selectedServerId = servers[0].id;
-    }
-    if (clients.length > 0 && !clients.some((c) => c.id === state.selectedClientId)) {
-      state.selectedClientId = clients[0].id;
+    if (typeof srv.detailedErrorsToClient === "boolean") {
+      lines.push(`detailedErrorsToClient = ${srv.detailedErrorsToClient}`);
     }
 
-    renderServerSection(servers, d.runtime || {});
-    renderClientSection(clients, d.runtime || {});
-    renderControlSection(d);
-  }
+    if (srv.logLevel) lines.push(`log.level = ${tq(srv.logLevel)}`);
+    if (Number(srv.logMaxDays) > 0) lines.push(`log.maxDays = ${Number(srv.logMaxDays)}`);
+    if (srv.disablePrintColor) lines.push(`log.disablePrintColor = true`);
 
-  /* ==================== Section 1: Server (frps) & Connection Dashboard ==================== */
-  function renderServerSection(servers, runtimeMap) {
-    const pills = $('#server-pills');
-    const box = $('#server-workspace');
-    if (!servers.length) {
-      pills.innerHTML = '';
-      box.innerHTML = `
-        <div class="card empty-state">
-          <img src="/assets/empty-welcome.webp" alt="Empty Server" />
-          <h4>尚未创建转发端 (frps) 配置文件</h4>
-          <p class="muted-text">点击右上角「+ 新建转发端配置」即可创建独立的服务端配置文件 A / B / C，并启用实时连接看板。</p>
-        </div>`;
-      return;
+    if (Number(srv.maxPoolCount) > 0) lines.push(`transport.maxPoolCount = ${Number(srv.maxPoolCount)}`);
+    if (typeof srv.tcpMux === "boolean") lines.push(`transport.tcpMux = ${srv.tcpMux}`);
+    if (Number(srv.tcpMuxKeepaliveInterval) > 0) lines.push(`transport.tcpMuxKeepaliveInterval = ${Number(srv.tcpMuxKeepaliveInterval)}`);
+    if (Number(srv.tcpKeepalive) !== 0 && srv.tcpKeepalive != null && srv.tcpKeepalive !== "") {
+      lines.push(`transport.tcpKeepalive = ${Number(srv.tcpKeepalive)}`);
+    }
+    if (Number(srv.heartbeatTimeout) !== 0 && srv.heartbeatTimeout != null && srv.heartbeatTimeout !== "") {
+      lines.push(`transport.heartbeatTimeout = ${Number(srv.heartbeatTimeout)}`);
+    }
+    if (Number(srv.quicKeepalivePeriod) > 0) lines.push(`transport.quic.keepalivePeriod = ${Number(srv.quicKeepalivePeriod)}`);
+    if (Number(srv.quicMaxIdleTimeout) > 0) lines.push(`transport.quic.maxIdleTimeout = ${Number(srv.quicMaxIdleTimeout)}`);
+    if (Number(srv.quicMaxIncomingStreams) > 0) lines.push(`transport.quic.maxIncomingStreams = ${Number(srv.quicMaxIncomingStreams)}`);
+    if (srv.tlsForce) lines.push(`transport.tls.force = true`);
+    if (srv.tlsCertFile) lines.push(`transport.tls.certFile = ${tq(srv.tlsCertFile.trim())}`);
+    if (srv.tlsKeyFile) lines.push(`transport.tls.keyFile = ${tq(srv.tlsKeyFile.trim())}`);
+    if (srv.tlsTrustedCaFile) lines.push(`transport.tls.trustedCaFile = ${tq(srv.tlsTrustedCaFile.trim())}`);
+
+    if (Number(srv.sshGatewayBindPort) > 0) {
+      lines.push(`sshTunnelGateway.bindPort = ${Number(srv.sshGatewayBindPort)}`);
+      if (srv.sshPrivateKeyFile) lines.push(`sshTunnelGateway.privateKeyFile = ${tq(srv.sshPrivateKeyFile.trim())}`);
+      if (srv.sshAutoGenPrivateKeyPath) lines.push(`sshTunnelGateway.autoGenPrivateKeyPath = ${tq(srv.sshAutoGenPrivateKeyPath.trim())}`);
+      if (srv.sshAuthorizedKeysFile) lines.push(`sshTunnelGateway.authorizedKeysFile = ${tq(srv.sshAuthorizedKeysFile.trim())}`);
     }
 
-    pills.innerHTML = servers
-      .map((s) => {
-        const rt = runtimeMap[s.id] || { state: 'stopped' };
-        const active = s.id === state.selectedServerId ? 'active' : '';
-        return `<button type="button" class="pill-btn ${active}" data-select-server="${esc(s.id)}">
-          <span class="dot ${esc(rt.state)}"></span>
-          <span>${esc(s.name)}</span>
-          <small class="muted-text">:${esc(s.bindPort)}</small>
-        </button>`;
-      })
-      .join('');
-
-    const srv = servers.find((s) => s.id === state.selectedServerId) || servers[0];
-    const rt = runtimeMap[srv.id] || { state: 'stopped', running: false, connections: [] };
-    const conns = rt.connections || [];
-
-    const statusBadge = rt.running
-      ? `<span class="badge badge-ok">● 运行中 (PID ${esc(rt.pid)})</span>`
-      : rt.state === 'error'
-      ? `<span class="badge badge-danger">● 异常退出</span>`
-      : `<span class="badge badge-off">○ 已停止</span>`;
-
-    box.innerHTML = `
-      <div class="card">
-        <div class="card-header">
-          <div>
-            <h3>${esc(srv.name)} ${statusBadge}</h3>
-            <p class="muted-text">独立转发端配置 · 支持总参数编辑与原版 frps 全配置导出</p>
-            ${rt.lastError ? `<div class="error-banner" style="margin-top:8px">${esc(rt.lastError)}</div>` : ''}
-          </div>
-          <div class="btn-row">
-            ${
-              rt.running
-                ? `<button type="button" class="btn btn-secondary btn-sm" data-srv-ctrl="restart" data-id="${esc(srv.id)}">重启服务</button>
-                   <button type="button" class="btn btn-danger btn-sm" data-srv-ctrl="stop" data-id="${esc(srv.id)}">停止服务</button>`
-                : `<button type="button" class="btn btn-primary btn-sm" data-srv-ctrl="start" data-id="${esc(srv.id)}">▶ 启动转发端</button>`
-            }
-            <button type="button" class="btn btn-secondary btn-sm" data-srv-edit="${esc(srv.id)}">编辑总参数</button>
-            <button type="button" class="btn btn-secondary btn-sm" data-srv-toml="${esc(srv.id)}">预览/导出 TOML</button>
-            <button type="button" class="btn btn-ghost btn-sm" data-srv-dup="${esc(srv.id)}">复制独立配置</button>
-            <button type="button" class="btn btn-danger btn-sm" data-srv-del="${esc(srv.id)}">删除</button>
-          </div>
-        </div>
-
-        <div class="summary-grid">
-          <div class="stat-tile">
-            <div class="label">监听地址与主端口</div>
-            <div class="value">${esc(srv.bindAddr || '0.0.0.0')}:${esc(srv.bindPort)}</div>
-          </div>
-          <div class="stat-tile">
-            <div class="label">HTTP / HTTPS 虚拟主机端口</div>
-            <div class="value">${srv.vhostHTTPPort || '-'} / ${srv.vhostHTTPSPort || '-'}</div>
-          </div>
-          <div class="stat-tile">
-            <div class="label">KCP / QUIC 端口</div>
-            <div class="value">${srv.kcpBindPort || '-'} / ${srv.quicBindPort || '-'}</div>
-          </div>
-          <div class="stat-tile">
-            <div class="label">开放端口范围 / 自启动</div>
-            <div class="value">${esc(srv.allowPorts || '全部允许')} · ${srv.autoStart ? '随软件自启' : '手动启动'}</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card top-gap">
-        <div class="card-header">
-          <div>
-            <h3>连接看板 (Connection Dashboard)</h3>
-            <p class="muted-text">针对接入本转发端的每条连接独立管控：流量统计、限流、限速、限时与开关。</p>
-          </div>
-          <button type="button" class="btn btn-secondary btn-sm" data-add-conn-policy="${esc(srv.id)}">+ 预设连接管控规则</button>
-        </div>
-
-        ${
-          conns.length === 0
-            ? `<div class="empty-state">
-                 <img src="/assets/empty-search.webp" alt="No Connections" />
-                 <h4>暂无活跃连接或预设管控项</h4>
-                 <p class="muted-text">客户端连入后将自动出现在此看板中，也可点击右上角预先为指定代理名称配置限流、限速、限时或开关。</p>
-               </div>`
-            : `<div class="table-wrap">
-                 <table class="data-table">
-                   <thead>
-                     <tr>
-                       <th>连接名称</th>
-                       <th>类型 / 状态</th>
-                       <th>当前连接数</th>
-                       <th>实时速率 (入 / 出)</th>
-                       <th>累计流量统计</th>
-                       <th>限流上限</th>
-                       <th>限速阈值</th>
-                       <th>限时截止</th>
-                       <th>开关</th>
-                       <th>操作</th>
-                     </tr>
-                   </thead>
-                   <tbody>
-                     ${conns
-                       .map((c) => {
-                         const stBadge =
-                           c.status === 'online'
-                             ? `<span class="badge badge-ok">在线</span>`
-                             : c.status === 'blocked'
-                             ? `<span class="badge badge-danger">拦截: ${esc(c.BlockReason || c.blockReason || '受限')}</span>`
-                             : `<span class="badge badge-off">离线</span>`;
-                         const totalBytes = (c.totalInBytes || 0) + (c.totalOutBytes || 0);
-                         const expText = c.expiresAt ? new Date(c.expiresAt).toLocaleString() : '不限时';
-                         return `<tr>
-                           <td><strong>${esc(c.proxyName)}</strong>${c.note ? `<br><small class="muted-text">${esc(c.note)}</small>` : ''}</td>
-                           <td><code>${esc(c.proxyType || '-')}</code> ${stBadge}</td>
-                           <td>${esc(c.curConns || 0)}</td>
-                           <td>↓ ${formatRate(c.speedInBps)}<br>↑ ${formatRate(c.speedOutBps)}</td>
-                           <td>共 ${formatBytes(totalBytes)}<br><small class="muted-text">入 ${formatBytes(c.totalInBytes)} / 出 ${formatBytes(c.totalOutBytes)}</small></td>
-                           <td>${c.trafficLimitMB > 0 ? esc(c.trafficLimitMB) + ' MB' : '不限'}</td>
-                           <td>${c.speedLimitKBps > 0 ? esc(c.speedLimitKBps) + ' KB/s' : '不限'}</td>
-                           <td>${esc(expText)}</td>
-                           <td>
-                             <button type="button" class="switch-btn ${c.enabled ? 'on' : ''}" data-conn-toggle="${esc(srv.id)}" data-proxy="${esc(c.proxyName)}" data-next="${!c.enabled}">
-                               ${c.enabled ? '已开启' : '已关闭'}
-                             </button>
-                           </td>
-                           <td>
-                             <div class="btn-row">
-                               <button type="button" class="btn btn-secondary btn-sm" data-conn-edit="${esc(srv.id)}" data-proxy="${esc(c.proxyName)}">限流/限速/限时</button>
-                               <button type="button" class="btn btn-ghost btn-sm" data-conn-del="${esc(srv.id)}" data-proxy="${esc(c.proxyName)}">移除</button>
-                             </div>
-                           </td>
-                         </tr>`;
-                       })
-                       .join('')}
-                   </tbody>
-                 </table>
-               </div>`
-        }
-      </div>`;
-  }
-
-  /* ==================== Section 2: Client (frpc) & Tunnels ==================== */
-  function renderClientSection(clients, runtimeMap) {
-    const pills = $('#client-pills');
-    const box = $('#client-workspace');
-    if (!clients.length) {
-      pills.innerHTML = '';
-      box.innerHTML = `
-        <div class="card empty-state">
-          <img src="/assets/empty-welcome.webp" alt="Empty Client" />
-          <h4>尚未创建客户端 (frpc) 配置文件</h4>
-          <p class="muted-text">点击右上角「+ 新建客户端配置」从头配置你的第一个穿透实例（支持 A / B / C / D 多套独立配置）。</p>
-        </div>`;
-      return;
+    const scopes = (srv.authAdditionalScopes || []).filter(Boolean);
+    if (srv.authMethod === "oidc" || (!srv.authMethod && srv.oidcIssuer)) {
+      lines.push(`auth.method = "oidc"`);
+      if (scopes.length) lines.push(`auth.additionalScopes = ${tArr(scopes)}`);
+      if (srv.oidcIssuer) lines.push(`auth.oidc.issuer = ${tq(srv.oidcIssuer.trim())}`);
+      if (srv.oidcAudience) lines.push(`auth.oidc.audience = ${tq(srv.oidcAudience.trim())}`);
+      if (srv.oidcSkipExpiryCheck) lines.push(`auth.oidc.skipExpiryCheck = true`);
+      if (srv.oidcSkipIssuerCheck) lines.push(`auth.oidc.skipIssuerCheck = true`);
+    } else if (srv.authTokenSourceFile) {
+      lines.push(`auth.method = "token"`);
+      if (scopes.length) lines.push(`auth.additionalScopes = ${tArr(scopes)}`);
+      lines.push(`auth.tokenSource.type = "file"`);
+      lines.push(`auth.tokenSource.file.path = ${tq(srv.authTokenSourceFile.trim())}`);
+    } else if (srv.authToken) {
+      lines.push(`auth.method = "token"`);
+      if (scopes.length) lines.push(`auth.additionalScopes = ${tArr(scopes)}`);
+      lines.push(`auth.token = ${tq(srv.authToken)}`);
     }
 
-    pills.innerHTML = clients
-      .map((c) => {
-        const rt = runtimeMap[c.id] || { state: 'stopped' };
-        const active = c.id === state.selectedClientId ? 'active' : '';
-        return `<button type="button" class="pill-btn ${active}" data-select-client="${esc(c.id)}">
-          <span class="dot ${esc(rt.state)}"></span>
-          <span>${esc(c.name)}</span>
-          <small class="muted-text">${(c.tunnels || []).length} 条规则</small>
-        </button>`;
-      })
-      .join('');
-
-    const cli = clients.find((c) => c.id === state.selectedClientId) || clients[0];
-    const rt = runtimeMap[cli.id] || { state: 'stopped', running: false, tunnelStats: [] };
-    const liveByName = {};
-    (rt.tunnelStats || []).forEach((st) => {
-      liveByName[st.name] = st;
-      if (cli.user && st.name.startsWith(cli.user + '.')) {
-        liveByName[st.name.slice(cli.user.length + 1)] = st;
-      }
-    });
-
-    const statusBadge = rt.running
-      ? `<span class="badge badge-ok">● 运行中 (PID ${esc(rt.pid)})</span>`
-      : rt.state === 'error'
-      ? `<span class="badge badge-danger">● 启动失败</span>`
-      : `<span class="badge badge-off">○ 已停止</span>`;
-
-    const tunnels = cli.tunnels || [];
-
-    box.innerHTML = `
-      <div class="card">
-        <div class="card-header">
-          <div>
-            <h3>${esc(cli.name)} ${statusBadge}</h3>
-            <p class="muted-text">远端服务器：<code>${esc(cli.serverAddr)}:${esc(cli.serverPort)}</code> · 传输协议：<code>${esc((cli.protocol || 'tcp').toUpperCase())}</code> · TLS：${cli.tlsEnable ? '开启' : '关闭'}</p>
-            ${rt.lastError ? `<div class="error-banner" style="margin-top:8px">${esc(rt.lastError)}</div>` : ''}
-          </div>
-          <div class="btn-row">
-            ${
-              rt.running
-                ? `<button type="button" class="btn btn-primary btn-sm" data-cli-ctrl="reload" data-id="${esc(cli.id)}">↻ 热重载配置</button>
-                   <button type="button" class="btn btn-danger btn-sm" data-cli-ctrl="stop" data-id="${esc(cli.id)}">停止客户端</button>`
-                : `<button type="button" class="btn btn-primary btn-sm" data-cli-ctrl="start" data-id="${esc(cli.id)}">▶ 启动客户端</button>`
-            }
-            <button type="button" class="btn btn-secondary btn-sm" data-cli-edit="${esc(cli.id)}">服务器与全局参数</button>
-            <button type="button" class="btn btn-secondary btn-sm" data-cli-toml="${esc(cli.id)}">预览/导出 TOML</button>
-            <button type="button" class="btn btn-ghost btn-sm" data-cli-dup="${esc(cli.id)}">复制独立配置</button>
-            <button type="button" class="btn btn-danger btn-sm" data-cli-del="${esc(cli.id)}">删除</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="card top-gap">
-        <div class="card-header">
-          <div>
-            <h3>穿透规则与访问端列表 (${tunnels.length})</h3>
-            <p class="muted-text">修改或开关任意规则时，运行中的客户端会自动通过官方 reload 无感热更新，不中断其他正常隧道。</p>
-          </div>
-          <button type="button" class="btn btn-primary btn-sm" data-tun-add="${esc(cli.id)}">+ 添加穿透规则</button>
-        </div>
-
-        ${
-          tunnels.length === 0
-            ? `<div class="empty-state">
-                 <img src="/assets/empty-search.webp" alt="No Tunnels" />
-                 <h4>当前客户端配置暂无穿透规则</h4>
-                 <p class="muted-text">点击右上角「+ 添加穿透规则」可配置 TCP / UDP / HTTP(S) / STCP / XTCP 打洞或本地静态文件/SOCKS5 插件。</p>
-               </div>`
-            : `<div class="table-wrap">
-                 <table class="data-table">
-                   <thead>
-                     <tr>
-                       <th>规则名称</th>
-                       <th>模式 / 协议</th>
-                       <th>本地目标 / 插件</th>
-                       <th>远端暴露端口 / 域名</th>
-                       <th>限速 / 传输</th>
-                       <th>实时连接状态</th>
-                       <th>开关</th>
-                       <th>操作</th>
-                     </tr>
-                   </thead>
-                   <tbody>
-                     ${tunnels
-                       .map((t) => {
-                         const live = liveByName[t.name];
-                         let liveHTML = `<span class="badge badge-off">未运行</span>`;
-                         if (rt.running) {
-                           if (!t.enabled) {
-                             liveHTML = `<span class="badge badge-off">已停用</span>`;
-                           } else if (live && live.status === 'running') {
-                             liveHTML = `<span class="badge badge-ok">已贯通</span>`;
-                           } else if (live && live.err) {
-                             liveHTML = `<span class="badge badge-danger" title="${esc(live.err)}">失败: ${esc(live.err)}</span>`;
-                           } else {
-                             liveHTML = `<span class="badge badge-off">连接中...</span>`;
-                           }
-                         }
-                         const localDesc = t.plugin
-                           ? `插件 <code>${esc(t.plugin)}</code>`
-                           : `${esc(t.localIP || '127.0.0.1')}:${esc(t.localPort || 0)}`;
-                         let remoteDesc = '-';
-                         if (t.mode === 'visitor') {
-                           remoteDesc = `访问目标 <code>${esc(t.serverName)}</code>`;
-                         } else if (t.type === 'tcp' || t.type === 'udp') {
-                           remoteDesc = `远端端口 <code>:${esc(t.remotePort)}</code>`;
-                         } else if ((t.customDomains && t.customDomains.length) || t.subDomain) {
-                           remoteDesc = esc([...(t.customDomains || []), t.subDomain ? `*.${t.subDomain}` : ''].filter(Boolean).join(', '));
-                         } else if (t.secretKey) {
-                           remoteDesc = '密钥私密穿透';
-                         }
-                         const feat = [
-                           t.bandwidthLimitKB > 0 ? `${t.bandwidthLimitKB} KB/s` : '',
-                           t.useEncryption ? '加密' : '',
-                           t.useCompression ? '压缩' : '',
-                         ]
-                           .filter(Boolean)
-                           .join(' · ') || '默认';
-
-                         return `<tr>
-                           <td><strong>${esc(t.name)}</strong></td>
-                           <td><code>${esc((t.type || 'tcp').toUpperCase())}</code>${t.mode === 'visitor' ? ' <small>(Visitor)</small>' : ''}</td>
-                           <td>${localDesc}</td>
-                           <td>${remoteDesc}</td>
-                           <td>${esc(feat)}</td>
-                           <td>${liveHTML}</td>
-                           <td>
-                             <button type="button" class="switch-btn ${t.enabled ? 'on' : ''}" data-tun-toggle="${esc(cli.id)}" data-tun-id="${esc(t.id)}" data-next="${!t.enabled}">
-                               ${t.enabled ? '启用' : '停用'}
-                             </button>
-                           </td>
-                           <td>
-                             <div class="btn-row">
-                               <button type="button" class="btn btn-secondary btn-sm" data-tun-edit="${esc(cli.id)}" data-tun-id="${esc(t.id)}">编辑</button>
-                               <button type="button" class="btn btn-danger btn-sm" data-tun-del="${esc(cli.id)}" data-tun-id="${esc(t.id)}">删除</button>
-                             </div>
-                           </td>
-                         </tr>`;
-                       })
-                       .join('')}
-                   </tbody>
-                 </table>
-               </div>`
-        }
-      </div>`;
-  }
-
-  /* ==================== Section 3: App Control ==================== */
-  function renderControlSection(d) {
-    const files = d.configFiles || [];
-    $('#config-files-list').innerHTML = files
-      .map(
-        (f) => `
-        <div class="config-item ${f.active ? 'active' : ''}">
-          <div>
-            <strong>${esc(f.displayName)}</strong> <code>(${esc(f.fileName)})</code>
-            ${f.active ? '<span class="badge badge-ok">当前使用中</span>' : ''}
-            <div class="muted-text">转发端 ${f.serverCount} 个 · 客户端 ${f.clientCount} 个 · ${formatBytes(f.sizeBytes)}</div>
-          </div>
-          <div class="btn-row">
-            ${
-              f.active
-                ? ''
-                : `<button type="button" class="btn btn-primary btn-sm" data-cfg-select="${esc(f.fileName)}">切换至此配置</button>
-                   <button type="button" class="btn btn-danger btn-sm" data-cfg-del="${esc(f.fileName)}">删除</button>`
-            }
-          </div>
-        </div>`
-      )
-      .join('');
-
-    const core = d.core || {};
-    const srcTag = core.coreSource === 'data-bin' ? ' · 热更新目录' : '';
-    $('#core-status-box').innerHTML = `
-      <div class="kv-row"><span>内置 frps 服务端核心</span><strong>${core.frpsFound ? `已就绪 (v${esc(core.frpsVersion)}${srcTag})` : '未检测到二进制'}</strong></div>
-      <div class="kv-row"><span>内置 frpc 客户端核心</span><strong>${core.frpcFound ? `已就绪 (v${esc(core.frpcVersion)}${srcTag})` : '未检测到二进制'}</strong></div>
-      <div class="kv-row"><span>核心检索目录</span><code>${esc(core.bundledDir || './bundled')}</code></div>
-    `;
-    const proxyInput = $('#update-proxy-input');
-    if (proxyInput) {
-      proxyInput.placeholder = d.systemProxy
-        ? `留空自动使用当前系统代理 (${d.systemProxy})，也可手动覆盖`
-        : '留空自动跟随电脑默认系统代理，或手动填如 http://127.0.0.1:2080';
-      if (document.activeElement !== proxyInput) {
-        proxyInput.value = d.updateProxy || '';
-      }
+    if (srv.extraToml && srv.extraToml.trim()) {
+      lines.push("", "# Custom full-parameter TOML", srv.extraToml.trim());
     }
 
-    // Populate log instance selector
-    const logSel = $('#log-instance-select');
-    const items = [
-      ...((d.config && d.config.servers) || []).map((s) => ({ id: s.id, label: `[转发端] ${s.name}` })),
-      ...((d.config && d.config.clients) || []).map((c) => ({ id: c.id, label: `[客户端] ${c.name}` })),
-    ];
-    if (items.length && !items.some((x) => x.id === state.selectedLogId)) {
-      state.selectedLogId = items[0].id;
-    }
-    logSel.innerHTML = items.length
-      ? items.map((it) => `<option value="${esc(it.id)}" ${it.id === state.selectedLogId ? 'selected' : ''}>${esc(it.label)}</option>`).join('')
-      : `<option value="">暂无实例</option>`;
-  }
-
-  /* ==================== Logs & SSE ==================== */
-  function closeLogStream() {
-    if (state.logStream) {
-      state.logStream.close();
-      state.logStream = null;
-    }
-  }
-
-  async function refreshLogsOnce() {
-    closeLogStream();
-    const id = state.selectedLogId;
-    const viewer = $('#log-viewer');
-    if (!id) {
-      viewer.textContent = '暂无可查看日志的配置实例。';
-      return;
-    }
-    try {
-      const res = await api(`/api/logs?id=${encodeURIComponent(id)}`);
-      const lines = res.lines || [];
-      viewer.textContent = lines.length ? lines.join('\n') : '该实例暂未产生运行日志。';
-      viewer.scrollTop = viewer.scrollHeight;
-
-      const es = new EventSource(`/api/logs/stream?id=${encodeURIComponent(id)}`);
-      let linesArr = lines.slice();
-      es.onmessage = (ev) => {
-        if (!ev.data) return;
-        linesArr.push(ev.data);
-        if (linesArr.length > 500) linesArr = linesArr.slice(-500);
-        const sel = window.getSelection ? window.getSelection() : null;
-        if (!sel || sel.toString().length === 0) {
-          viewer.textContent = linesArr.join('\n');
-          viewer.scrollTop = viewer.scrollHeight;
-        }
-      };
-      state.logStream = es;
-    } catch (e) {
-      viewer.textContent = '读取日志失败：' + e.message;
-    }
-  }
-
-  /* ==================== Modals ==================== */
-  function openModal(title, html, onMount) {
-    $('#modal-title').textContent = title;
-    const body = $('#modal-body');
-    body.innerHTML = html;
-    const dlg = $('#modal-dialog');
-    if (!dlg.open) dlg.showModal();
-    if (onMount) onMount(body, () => dlg.close());
-  }
-
-  function openServerModal(existing) {
-    const s = existing || {
-      id: '',
-      name: '转发端配置 ' + String.fromCharCode(65 + (((state.data?.config?.servers || []).length) % 26)),
-      bindAddr: '0.0.0.0',
-      bindPort: 7000,
-      vhostHTTPPort: 0,
-      vhostHTTPSPort: 0,
-      kcpBindPort: 0,
-      quicBindPort: 0,
-      subDomainHost: '',
-      authToken: '',
-      allowPorts: '',
-      maxPoolCount: 0,
-      maxPortsPerClient: 0,
-      tlsForce: false,
-      autoStart: false,
-      extraToml: '',
-    };
-    openModal(existing ? `编辑转发端总参数 · ${s.name}` : '新建独立转发端 (frps) 配置', `
-      <form id="modal-srv-form" class="stack-form">
-        <div class="form-row-2">
-          <label class="field"><span>配置名称</span><input type="text" name="name" value="${esc(s.name)}" required /></label>
-          <label class="field"><span>认证密钥 (auth.token)</span><input type="text" name="authToken" value="${esc(s.authToken || '')}" placeholder="建议设置高强度连接密钥" /></label>
-        </div>
-        <div class="form-row-3">
-          <label class="field"><span>绑定地址 (bindAddr)</span><input type="text" name="bindAddr" value="${esc(s.bindAddr || '0.0.0.0')}" required /></label>
-          <label class="field"><span>服务端口 (bindPort)</span><input type="number" name="bindPort" value="${esc(s.bindPort || 7000)}" min="1" max="65535" required /></label>
-          <label class="field"><span>开放端口范围 (allowPorts)</span><input type="text" name="allowPorts" value="${esc(s.allowPorts || '')}" placeholder="如 10000-20000,3389" /></label>
-        </div>
-        <div class="form-row-2">
-          <label class="field"><span>HTTP 虚拟主机端口 (可选)</span><input type="number" name="vhostHTTPPort" value="${esc(s.vhostHTTPPort || 0)}" min="0" max="65535" /></label>
-          <label class="field"><span>HTTPS 虚拟主机端口 (可选)</span><input type="number" name="vhostHTTPSPort" value="${esc(s.vhostHTTPSPort || 0)}" min="0" max="65535" /></label>
-        </div>
-        <div class="form-row-3">
-          <label class="field"><span>KCP 绑定端口 (可选)</span><input type="number" name="kcpBindPort" value="${esc(s.kcpBindPort || 0)}" min="0" max="65535" /></label>
-          <label class="field"><span>QUIC 绑定端口 (可选)</span><input type="number" name="quicBindPort" value="${esc(s.quicBindPort || 0)}" min="0" max="65535" /></label>
-          <label class="field"><span>子域名后缀 (subDomainHost)</span><input type="text" name="subDomainHost" value="${esc(s.subDomainHost || '')}" placeholder="如 frp.example.com" /></label>
-        </div>
-        <div class="form-row-2">
-          <label class="field"><span>最大连接池 (maxPoolCount)</span><input type="number" name="maxPoolCount" value="${esc(s.maxPoolCount || 0)}" min="0" /></label>
-          <label class="field"><span>单客户端最大端口数</span><input type="number" name="maxPortsPerClient" value="${esc(s.maxPortsPerClient || 0)}" min="0" /></label>
-        </div>
-        <div class="btn-row">
-          <label class="check-inline"><input type="checkbox" name="tlsForce" ${s.tlsForce ? 'checked' : ''} /> 强制要求客户端启用 TLS 加密</label>
-          <label class="check-inline"><input type="checkbox" name="autoStart" ${s.autoStart ? 'checked' : ''} /> 随 KurumiFrp 启动时自动运行</label>
-        </div>
-        <label class="field">
-          <span>附加官方全参数 TOML（可选，原样追加至 frps.toml）</span>
-          <textarea name="extraToml" class="mono-input" placeholder="# 可填写任意官方 frps 高级配置项">${esc(s.extraToml || '')}</textarea>
-        </label>
-        <div class="btn-row">
-          <button type="submit" class="btn btn-primary">保存配置</button>
-        </div>
-      </form>
-    `, (root, close) => {
-      $('#modal-srv-form', root).addEventListener('submit', async (ev) => {
-        ev.preventDefault();
-        const fd = new FormData(ev.target);
-        const payload = {
-          id: s.id,
-          name: fd.get('name'),
-          bindAddr: fd.get('bindAddr'),
-          bindPort: Number(fd.get('bindPort') || 7000),
-          vhostHTTPPort: Number(fd.get('vhostHTTPPort') || 0),
-          vhostHTTPSPort: Number(fd.get('vhostHTTPSPort') || 0),
-          kcpBindPort: Number(fd.get('kcpBindPort') || 0),
-          quicBindPort: Number(fd.get('quicBindPort') || 0),
-          subDomainHost: fd.get('subDomainHost'),
-          authToken: fd.get('authToken'),
-          allowPorts: fd.get('allowPorts'),
-          maxPoolCount: Number(fd.get('maxPoolCount') || 0),
-          maxPortsPerClient: Number(fd.get('maxPortsPerClient') || 0),
-          tlsForce: fd.get('tlsForce') === 'on',
-          autoStart: fd.get('autoStart') === 'on',
-          extraToml: fd.get('extraToml'),
-        };
-        const res = await api('/api/servers/save', { method: 'POST', body: payload });
-        state.selectedServerId = res.id || s.id;
-        close();
-        toast('转发端配置已保存');
-        await loadState();
-      });
-    });
-  }
-
-  function openConnPolicyModal(serverId, existingConn) {
-    const c = existingConn || {
-      proxyName: '',
-      enabled: true,
-      trafficLimitMB: 0,
-      speedLimitKBps: 0,
-      expiresAt: '',
-      note: '',
-    };
-    const localDT = c.expiresAt ? new Date(c.expiresAt).toISOString().slice(0, 16) : '';
-    openModal(c.proxyName ? `连接看板管控 · ${c.proxyName}` : '预设连接看板管控规则', `
-      <form id="modal-conn-form" class="stack-form">
-        <div class="form-row-2">
-          <label class="field">
-            <span>连接代理名称 (proxyName)</span>
-            <input type="text" name="proxyName" value="${esc(c.proxyName)}" ${c.proxyName ? 'readonly' : 'required'} placeholder="如 ssh 或 user.nas" />
-          </label>
-          <label class="field">
-            <span>备注说明</span>
-            <input type="text" name="note" value="${esc(c.note || '')}" placeholder="如：朋友联机临时通道" />
-          </label>
-        </div>
-        <div class="form-row-2">
-          <label class="field">
-            <span>限流上限 (MB，0 表示不限流)</span>
-            <input type="number" name="trafficLimitMB" value="${esc(c.trafficLimitMB || 0)}" min="0" />
-          </label>
-          <label class="field">
-            <span>限速阈值 (KB/s，0 表示不限速)</span>
-            <input type="number" name="speedLimitKBps" value="${esc(c.speedLimitKBps || 0)}" min="0" />
-          </label>
-        </div>
-        <label class="field">
-          <span>限时截止时间（留空表示长期有效）</span>
-          <input type="datetime-local" id="conn-exp-input" name="expiresLocal" value="${esc(localDT)}" />
-        </label>
-        <div class="btn-row">
-          <button type="button" class="btn btn-ghost btn-sm" data-quick-hours="1">+1 小时</button>
-          <button type="button" class="btn btn-ghost btn-sm" data-quick-hours="24">+24 小时</button>
-          <button type="button" class="btn btn-ghost btn-sm" data-quick-hours="168">+7 天</button>
-          <button type="button" class="btn btn-ghost btn-sm" data-quick-hours="0">清除限时</button>
-        </div>
-        <div class="btn-row">
-          <label class="check-inline"><input type="checkbox" name="enabled" ${c.enabled !== false ? 'checked' : ''} /> 允许该连接通过 (开关开启)</label>
-          <label class="check-inline"><input type="checkbox" name="resetTraffic" /> 同时清零累计流量基线</label>
-        </div>
-        <div class="btn-row">
-          <button type="submit" class="btn btn-primary">应用连接看板规则</button>
-        </div>
-      </form>
-    `, (root, close) => {
-      $$('[data-quick-hours]', root).forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const hrs = Number(btn.dataset.quickHours);
-          const inp = $('#conn-exp-input', root);
-          if (hrs <= 0) {
-            inp.value = '';
-          } else {
-            const d = new Date(Date.now() + hrs * 3600 * 1000 - new Date().getTimezoneOffset() * 60000);
-            inp.value = d.toISOString().slice(0, 16);
+    if (srv.allowPorts && srv.allowPorts.trim()) {
+      const parts = srv.allowPorts.split(",").map((s) => s.trim()).filter(Boolean);
+      if (parts.length) lines.push("");
+      parts.forEach((p) => {
+        const dash = p.indexOf("-");
+        if (dash > 0) {
+          const a = parseInt(p.slice(0, dash), 10);
+          const b = parseInt(p.slice(dash + 1), 10);
+          if (a > 0 && b >= a) {
+            lines.push("[[allowPorts]]", a === b ? `single = ${a}` : `start = ${a}\nend = ${b}`);
           }
-        });
-      });
-
-      $('#modal-conn-form', root).addEventListener('submit', async (ev) => {
-        ev.preventDefault();
-        const fd = new FormData(ev.target);
-        const expLocal = fd.get('expiresLocal');
-        const expiresAt = expLocal ? new Date(expLocal).toISOString() : '';
-        await api('/api/servers/conn-policy', {
-          method: 'POST',
-          body: {
-            serverId,
-            proxyName: fd.get('proxyName'),
-            enabled: fd.get('enabled') === 'on',
-            trafficLimitMB: Number(fd.get('trafficLimitMB') || 0),
-            speedLimitKBps: Number(fd.get('speedLimitKBps') || 0),
-            expiresAt,
-            note: fd.get('note'),
-            resetTraffic: fd.get('resetTraffic') === 'on',
-          },
-        });
-        close();
-        toast('连接看板规则已生效');
-        await loadState();
-      });
-    });
-  }
-
-  function openClientModal(existing) {
-    const c = existing || {
-      id: '',
-      name: '客户端配置 ' + String.fromCharCode(65 + (((state.data?.config?.clients || []).length) % 26)),
-      serverAddr: '',
-      serverPort: 7000,
-      user: '',
-      authToken: '',
-      protocol: 'tcp',
-      poolCount: 1,
-      tlsEnable: true,
-      tlsServerName: '',
-      natHoleSTUNServer: '',
-      autoStart: false,
-      loginFailExit: false,
-      extraToml: '',
-    };
-    openModal(existing ? `编辑客户端参数 · ${c.name}` : '新建独立客户端 (frpc) 配置', `
-      <form id="modal-cli-form" class="stack-form">
-        <div class="form-row-2">
-          <label class="field"><span>客户端配置名称</span><input type="text" name="name" value="${esc(c.name)}" required /></label>
-          <label class="field"><span>用户前缀 (user，可选)</span><input type="text" name="user" value="${esc(c.user || '')}" placeholder="避免多人共用服务端时规则重名" /></label>
-        </div>
-        <div class="form-row-2">
-          <label class="field"><span>远端 frps 服务器地址</span><input type="text" name="serverAddr" value="${esc(c.serverAddr)}" placeholder="公网 IP 或域名" required /></label>
-          <label class="field"><span>远端服务器端口 (serverPort)</span><input type="number" name="serverPort" value="${esc(c.serverPort || 7000)}" min="1" max="65535" required /></label>
-        </div>
-        <div class="form-row-3">
-          <label class="field"><span>认证密钥 (auth.token)</span><input type="text" name="authToken" value="${esc(c.authToken || '')}" /></label>
-          <label class="field">
-            <span>底层传输协议</span>
-            <select name="protocol">
-              ${['tcp', 'quic', 'kcp', 'websocket', 'wss']
-                .map((p) => `<option value="${p}" ${(c.protocol || 'tcp') === p ? 'selected' : ''}>${p.toUpperCase()}</option>`)
-                .join('')}
-            </select>
-          </label>
-          <label class="field"><span>连接池数量 (poolCount)</span><input type="number" name="poolCount" value="${esc(c.poolCount || 1)}" min="0" max="64" /></label>
-        </div>
-        <div class="form-row-2">
-          <label class="field"><span>TLS ServerName (可选)</span><input type="text" name="tlsServerName" value="${esc(c.tlsServerName || '')}" /></label>
-          <label class="field"><span>P2P 打洞 STUN 服务 (可选)</span><input type="text" name="natHoleSTUNServer" value="${esc(c.natHoleSTUNServer || '')}" placeholder="默认使用官方内置 STUN" /></label>
-        </div>
-        <div class="btn-row">
-          <label class="check-inline"><input type="checkbox" name="tlsEnable" ${c.tlsEnable ? 'checked' : ''} /> 启用传输层 TLS 加密</label>
-          <label class="check-inline"><input type="checkbox" name="autoStart" ${c.autoStart ? 'checked' : ''} /> 随 KurumiFrp 自动启动</label>
-        </div>
-        <label class="field">
-          <span>附加官方全参数 TOML（可选，原样写入 frpc.toml 顶部）</span>
-          <textarea name="extraToml" class="mono-input" placeholder="# 可自由附加任意官方 frpc 全局参数">${esc(c.extraToml || '')}</textarea>
-        </label>
-        <div class="btn-row">
-          <button type="submit" class="btn btn-primary">保存客户端配置</button>
-        </div>
-      </form>
-    `, (root, close) => {
-      $('#modal-cli-form', root).addEventListener('submit', async (ev) => {
-        ev.preventDefault();
-        const fd = new FormData(ev.target);
-        const res = await api('/api/clients/save', {
-          method: 'POST',
-          body: {
-            id: c.id,
-            name: fd.get('name'),
-            serverAddr: fd.get('serverAddr'),
-            serverPort: Number(fd.get('serverPort') || 7000),
-            user: fd.get('user'),
-            authToken: fd.get('authToken'),
-            protocol: fd.get('protocol'),
-            poolCount: Number(fd.get('poolCount') || 0),
-            tlsEnable: fd.get('tlsEnable') === 'on',
-            tlsServerName: fd.get('tlsServerName'),
-            natHoleSTUNServer: fd.get('natHoleSTUNServer'),
-            autoStart: fd.get('autoStart') === 'on',
-            loginFailExit: false,
-            extraToml: fd.get('extraToml'),
-            tunnels: c.tunnels,
-          },
-        });
-        state.selectedClientId = res.id || c.id;
-        close();
-        toast('客户端配置已保存');
-        await loadState();
-      });
-    });
-  }
-
-  function openTunnelModal(clientId, existingTun) {
-    const t = existingTun || {
-      id: '',
-      name: '',
-      mode: 'proxy',
-      type: 'tcp',
-      enabled: true,
-      localIP: '127.0.0.1',
-      localPort: 8080,
-      remotePort: 18080,
-      customDomains: [],
-      subDomain: '',
-      secretKey: '',
-      serverName: '',
-      bandwidthLimitKB: 0,
-      useEncryption: false,
-      useCompression: true,
-      plugin: '',
-      pluginLocalPath: '',
-      pluginUser: '',
-      pluginPassword: '',
-      extraToml: '',
-    };
-    openModal(existingTun ? `编辑穿透规则 · ${t.name}` : '添加穿透规则 / P2P 访问端', `
-      <form id="modal-tun-form" class="stack-form">
-        <div class="form-row-3">
-          <label class="field"><span>规则名称</span><input type="text" name="name" value="${esc(t.name)}" placeholder="如 rdp-home 或 web-blog" required /></label>
-          <label class="field">
-            <span>工作模式</span>
-            <select name="mode" id="tun-mode">
-              <option value="proxy" ${(t.mode || 'proxy') === 'proxy' ? 'selected' : ''}>常规暴露端 (Proxy)</option>
-              <option value="visitor" ${t.mode === 'visitor' ? 'selected' : ''}>私密/P2P 访问端 (Visitor)</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>穿透协议类型</span>
-            <select name="type" id="tun-type">
-              ${['tcp', 'udp', 'http', 'https', 'stcp', 'xtcp', 'sudp', 'tcpmux']
-                .map((tp) => `<option value="${tp}" ${(t.type || 'tcp') === tp ? 'selected' : ''}>${tp.toUpperCase()}</option>`)
-                .join('')}
-            </select>
-          </label>
-        </div>
-
-        <div class="form-row-3">
-          <label class="field"><span>本地地址 / Visitor 绑定地址</span><input type="text" name="localIP" value="${esc(t.localIP || '127.0.0.1')}" /></label>
-          <label class="field"><span>本地端口 / Visitor 监听端口</span><input type="number" name="localPort" value="${esc(t.localPort || 0)}" min="0" max="65535" /></label>
-          <label class="field"><span>远端端口 (TCP/UDP 必填)</span><input type="number" name="remotePort" value="${esc(t.remotePort || 0)}" min="0" max="65535" /></label>
-        </div>
-
-        <div class="form-row-2">
-          <label class="field"><span>自定义域名 (HTTP/HTTPS，逗号分隔)</span><input type="text" name="customDomains" value="${esc((t.customDomains || []).join(', '))}" placeholder="blog.example.com" /></label>
-          <label class="field"><span>子域名前缀 (subdomain)</span><input type="text" name="subDomain" value="${esc(t.subDomain || '')}" placeholder="nas" /></label>
-        </div>
-
-        <div class="form-row-2">
-          <label class="field"><span>私密/P2P 密钥 (STCP/XTCP/SUDP secretKey)</span><input type="text" name="secretKey" value="${esc(t.secretKey || '')}" /></label>
-          <label class="field"><span>目标服务名 (仅 Visitor 模式填写 serverName)</span><input type="text" name="serverName" value="${esc(t.serverName || '')}" placeholder="对端暴露的规则名" /></label>
-        </div>
-
-        <div class="form-row-3">
-          <label class="field">
-            <span>官方客户端插件 (可选)</span>
-            <select name="plugin">
-              <option value="" ${!t.plugin ? 'selected' : ''}>不使用插件 (转发本地端口)</option>
-              <option value="static_file" ${t.plugin === 'static_file' ? 'selected' : ''}>static_file (本地静态文件共享)</option>
-              <option value="socks5" ${t.plugin === 'socks5' ? 'selected' : ''}>socks5 (SOCKS5 代理跳板)</option>
-              <option value="http_proxy" ${t.plugin === 'http_proxy' ? 'selected' : ''}>http_proxy (HTTP 代理)</option>
-              <option value="unix_domain_socket" ${t.plugin === 'unix_domain_socket' ? 'selected' : ''}>unix_domain_socket</option>
-              <option value="https2http" ${t.plugin === 'https2http' ? 'selected' : ''}>https2http</option>
-            </select>
-          </label>
-          <label class="field"><span>插件路径 / 目标地址 (可选)</span><input type="text" name="pluginLocalPath" value="${esc(t.pluginLocalPath || t.pluginLocalAddr || '')}" placeholder="如 D:/Share 或 /var/run/docker.sock" /></label>
-          <label class="field"><span>单隧道限速 (KB/s，0 不限)</span><input type="number" name="bandwidthLimitKB" value="${esc(t.bandwidthLimitKB || 0)}" min="0" /></label>
-        </div>
-
-        <div class="form-row-2">
-          <label class="field"><span>插件或 HTTP 认证用户名 (可选)</span><input type="text" name="pluginUser" value="${esc(t.pluginUser || t.httpUser || '')}" /></label>
-          <label class="field"><span>插件或 HTTP 认证密码 (可选)</span><input type="text" name="pluginPassword" value="${esc(t.pluginPassword || t.httpPassword || '')}" /></label>
-        </div>
-
-        <div class="btn-row">
-          <label class="check-inline"><input type="checkbox" name="enabled" ${t.enabled !== false ? 'checked' : ''} /> 立即启用该规则</label>
-          <label class="check-inline"><input type="checkbox" name="useEncryption" ${t.useEncryption ? 'checked' : ''} /> 流量加密</label>
-          <label class="check-inline"><input type="checkbox" name="useCompression" ${t.useCompression ? 'checked' : ''} /> 流量压缩</label>
-          <label class="check-inline"><input type="checkbox" name="keepTunnelOpen" ${t.keepTunnelOpen ? 'checked' : ''} /> XTCP 保持打洞常驻</label>
-        </div>
-
-        <label class="field">
-          <span>单规则附加 TOML 参数（可选）</span>
-          <textarea name="extraToml" class="mono-input" placeholder="# 如 hostHeaderRewrite = &quot;127.0.0.1&quot;">${esc(t.extraToml || '')}</textarea>
-        </label>
-
-        <div class="btn-row">
-          <button type="submit" class="btn btn-primary">保存规则</button>
-        </div>
-      </form>
-    `, (root, close) => {
-      $('#modal-tun-form', root).addEventListener('submit', async (ev) => {
-        ev.preventDefault();
-        const fd = new FormData(ev.target);
-        const plug = fd.get('plugin');
-        const plugPath = fd.get('pluginLocalPath');
-        const domains = String(fd.get('customDomains') || '')
-          .split(',')
-          .map((x) => x.trim())
-          .filter(Boolean);
-
-        const tunnel = {
-          id: t.id,
-          name: fd.get('name'),
-          mode: fd.get('mode'),
-          type: fd.get('type'),
-          enabled: fd.get('enabled') === 'on',
-          localIP: fd.get('localIP'),
-          localPort: Number(fd.get('localPort') || 0),
-          remotePort: Number(fd.get('remotePort') || 0),
-          customDomains: domains,
-          subDomain: fd.get('subDomain'),
-          secretKey: fd.get('secretKey'),
-          serverName: fd.get('serverName'),
-          bandwidthLimitKB: Number(fd.get('bandwidthLimitKB') || 0),
-          useEncryption: fd.get('useEncryption') === 'on',
-          useCompression: fd.get('useCompression') === 'on',
-          keepTunnelOpen: fd.get('keepTunnelOpen') === 'on',
-          plugin: plug,
-          pluginLocalPath: plug === 'https2http' ? '' : plugPath,
-          pluginLocalAddr: plug === 'https2http' ? plugPath : '',
-          pluginUser: plug ? fd.get('pluginUser') : '',
-          pluginPassword: plug ? fd.get('pluginPassword') : '',
-          httpUser: !plug ? fd.get('pluginUser') : '',
-          httpPassword: !plug ? fd.get('pluginPassword') : '',
-          extraToml: fd.get('extraToml'),
-        };
-
-        await api('/api/clients/tunnel-save', {
-          method: 'POST',
-          body: { clientId, tunnel },
-        });
-        close();
-        toast('隧道规则已保存');
-        await loadState();
-      });
-    });
-  }
-
-  async function openTOMLPreviewModal(kind, id) {
-    const endpoint = kind === 'frps' ? `/api/servers/toml?id=${encodeURIComponent(id)}` : `/api/clients/toml?id=${encodeURIComponent(id)}`;
-    const res = await api(endpoint);
-    const fileName = `${res.name || kind}-${kind}.toml`;
-    openModal(`标准官方 ${kind}.toml 预览 · ${res.name}`, `
-      <div class="stack-form">
-        <pre class="log-viewer">${esc(res.toml)}</pre>
-        <div class="btn-row">
-          <button type="button" id="btn-dl-toml" class="btn btn-primary btn-sm">下载 ${esc(fileName)}</button>
-          <button type="button" id="btn-cp-toml" class="btn btn-secondary btn-sm">复制内容</button>
-        </div>
-      </div>
-    `, (root) => {
-      $('#btn-dl-toml', root).addEventListener('click', () => downloadBlob(fileName, res.toml));
-      $('#btn-cp-toml', root).addEventListener('click', async () => {
-        await navigator.clipboard.writeText(res.toml);
-        toast('TOML 配置已复制到剪贴板');
-      });
-    });
-  }
-
-  /* ==================== Event Bindings ==================== */
-  function bindEvents() {
-    $('#modal-close').addEventListener('click', () => $('#modal-dialog').close());
-
-    $$('.tab-btn').forEach((btn) => {
-      btn.addEventListener('click', () => switchTab(btn.dataset.tab));
-    });
-
-    $('#btn-account-quick').addEventListener('click', () => {
-      switchTab('control');
-      $('#acc-new-pass').focus();
-    });
-
-    $('#btn-setup-now').addEventListener('click', () => {
-      switchTab('control');
-      $('#acc-new-pass').focus();
-    });
-
-    $('#login-form').addEventListener('submit', async (ev) => {
-      ev.preventDefault();
-      const errBox = $('#login-error');
-      errBox.hidden = true;
-      try {
-        await api('/api/login', {
-          method: 'POST',
-          body: {
-            username: $('#login-username').value,
-            password: $('#login-password').value,
-          },
-        });
-        $('#login-password').value = '';
-        showWorkbench();
-        await loadState();
-      } catch (e) {
-        errBox.textContent = e.message;
-        errBox.hidden = false;
-      }
-    });
-
-    $('#btn-logout').addEventListener('click', async () => {
-      await api('/api/logout', { method: 'POST' }).catch(() => {});
-      const sess = await api('/api/session').catch(() => ({}));
-      showLoginScreen(sess);
-    });
-
-    $('#btn-new-server').addEventListener('click', () => openServerModal(null));
-    $('#btn-new-client').addEventListener('click', () => openClientModal(null));
-
-    // Delegated clicks inside main container
-    document.body.addEventListener('click', async (ev) => {
-      const btn = ev.target.closest('button');
-      if (!btn) return;
-      try {
-        if (btn.dataset.selectServer) {
-          state.selectedServerId = btn.dataset.selectServer;
-          renderAll();
-        } else if (btn.dataset.srvCtrl) {
-          await api('/api/servers/control', { method: 'POST', body: { id: btn.dataset.id, action: btn.dataset.srvCtrl } });
-          toast('转发端指令已执行');
-          await loadState();
-        } else if (btn.dataset.srvEdit) {
-          const srv = (state.data?.config?.servers || []).find((x) => x.id === btn.dataset.srvEdit);
-          if (srv) openServerModal(srv);
-        } else if (btn.dataset.srvToml) {
-          await openTOMLPreviewModal('frps', btn.dataset.srvToml);
-        } else if (btn.dataset.srvDup) {
-          const res = await api('/api/servers/duplicate', { method: 'POST', body: { id: btn.dataset.srvDup } });
-          state.selectedServerId = res.id;
-          toast('已复制为独立转发端配置');
-          await loadState();
-        } else if (btn.dataset.srvDel) {
-          if (!confirm('确认删除该转发端配置吗？')) return;
-          await api('/api/servers/delete', { method: 'POST', body: { id: btn.dataset.srvDel } });
-          toast('转发端配置已删除');
-          await loadState();
-        } else if (btn.dataset.addConnPolicy) {
-          openConnPolicyModal(btn.dataset.addConnPolicy, null);
-        } else if (btn.dataset.connToggle) {
-          const srvId = btn.dataset.connToggle;
-          const pName = btn.dataset.proxy;
-          const rt = state.data?.runtime?.[srvId];
-          const cur = (rt?.connections || []).find((x) => x.proxyName === pName) || {};
-          await api('/api/servers/conn-policy', {
-            method: 'POST',
-            body: {
-              serverId: srvId,
-              proxyName: pName,
-              enabled: btn.dataset.next === 'true',
-              trafficLimitMB: cur.trafficLimitMB || 0,
-              speedLimitKBps: cur.speedLimitKBps || 0,
-              expiresAt: cur.expiresAt || '',
-              note: cur.note || '',
-            },
-          });
-          toast('连接开关状态已更新');
-          await loadState();
-        } else if (btn.dataset.connEdit) {
-          const srvId = btn.dataset.connEdit;
-          const pName = btn.dataset.proxy;
-          const rt = state.data?.runtime?.[srvId];
-          const cur = (rt?.connections || []).find((x) => x.proxyName === pName);
-          openConnPolicyModal(srvId, cur);
-        } else if (btn.dataset.connDel) {
-          await api('/api/servers/conn-delete', {
-            method: 'POST',
-            body: { serverId: btn.dataset.connDel, proxyName: btn.dataset.proxy },
-          });
-          toast('连接规则已移除');
-          await loadState();
-        } else if (btn.dataset.selectClient) {
-          state.selectedClientId = btn.dataset.selectClient;
-          renderAll();
-        } else if (btn.dataset.cliCtrl) {
-          await api('/api/clients/control', { method: 'POST', body: { id: btn.dataset.id, action: btn.dataset.cliCtrl } });
-          toast('客户端指令已执行');
-          await loadState();
-        } else if (btn.dataset.cliEdit) {
-          const cli = (state.data?.config?.clients || []).find((x) => x.id === btn.dataset.cliEdit);
-          if (cli) openClientModal(cli);
-        } else if (btn.dataset.cliToml) {
-          await openTOMLPreviewModal('frpc', btn.dataset.cliToml);
-        } else if (btn.dataset.cliDup) {
-          const res = await api('/api/clients/duplicate', { method: 'POST', body: { id: btn.dataset.cliDup } });
-          state.selectedClientId = res.id;
-          toast('已复制为独立客户端配置');
-          await loadState();
-        } else if (btn.dataset.cliDel) {
-          if (!confirm('确认删除该客户端配置及其下属规则吗？')) return;
-          await api('/api/clients/delete', { method: 'POST', body: { id: btn.dataset.cliDel } });
-          toast('客户端配置已删除');
-          await loadState();
-        } else if (btn.dataset.tunAdd) {
-          openTunnelModal(btn.dataset.tunAdd, null);
-        } else if (btn.dataset.tunToggle) {
-          await api('/api/clients/tunnel-toggle', {
-            method: 'POST',
-            body: {
-              clientId: btn.dataset.tunToggle,
-              tunnelId: btn.dataset.tunId,
-              enabled: btn.dataset.next === 'true',
-            },
-          });
-          await loadState();
-        } else if (btn.dataset.tunEdit) {
-          const cli = (state.data?.config?.clients || []).find((x) => x.id === btn.dataset.tunEdit);
-          const tun = (cli?.tunnels || []).find((x) => x.id === btn.dataset.tunId);
-          if (tun) openTunnelModal(cli.id, tun);
-        } else if (btn.dataset.tunDel) {
-          if (!confirm('确认删除这条穿透规则吗？')) return;
-          await api('/api/clients/tunnel-delete', {
-            method: 'POST',
-            body: { clientId: btn.dataset.tunDel, tunnelId: btn.dataset.tunId },
-          });
-          toast('穿透规则已删除');
-          await loadState();
-        } else if (btn.dataset.cfgSelect) {
-          await api('/api/configs/select', { method: 'POST', body: { fileName: btn.dataset.cfgSelect } });
-          toast('已切换软件内活动配置文件');
-          await loadState();
-        } else if (btn.dataset.cfgDel) {
-          if (!confirm(`确认从软件目录删除配置文件 ${btn.dataset.cfgDel} 吗？`)) return;
-          await api('/api/configs/delete', { method: 'POST', body: { fileName: btn.dataset.cfgDel } });
-          toast('配置文件已删除');
-          await loadState();
+        } else {
+          const n = parseInt(p, 10);
+          if (n > 0) lines.push("[[allowPorts]]", `single = ${n}`);
         }
-      } catch (e) {
-        toast('操作失败：' + e.message);
-      }
-    });
-
-    // App Control actions
-    $('#btn-new-config-file').addEventListener('click', () => {
-      openModal('新建软件内独立配置文件', `
-        <form id="modal-new-cfg" class="stack-form">
-          <label class="field"><span>文件标识名 (保存于 data/configs/)</span><input type="text" name="fileName" placeholder="如 home-server 或 gaming" required /></label>
-          <label class="field"><span>显示名称</span><input type="text" name="displayName" placeholder="如 家里服务器方案" required /></label>
-          <div class="btn-row"><button type="submit" class="btn btn-primary">创建并切换</button></div>
-        </form>
-      `, (root, close) => {
-        $('#modal-new-cfg', root).addEventListener('submit', async (ev) => {
-          ev.preventDefault();
-          const fd = new FormData(ev.target);
-          await api('/api/configs/select', {
-            method: 'POST',
-            body: { fileName: fd.get('fileName'), displayName: fd.get('displayName') },
-          });
-          close();
-          toast('已创建并切换至新配置文件');
-          await loadState();
-        });
       });
-    });
-
-    $('#btn-export-json').addEventListener('click', () => {
-      window.location.href = '/api/configs/export-json';
-    });
-
-    $('#input-import-json').addEventListener('change', async (ev) => {
-      const file = ev.target.files && ev.target.files[0];
-      if (!file) return;
-      try {
-        const text = await file.text();
-        const parsed = JSON.parse(text);
-        await api('/api/configs/import-json', {
-          method: 'POST',
-          body: { fileName: file.name, content: parsed, activate: true },
-        });
-        toast('配置文件已导入并激活');
-        await loadState();
-      } catch (e) {
-        toast('导入 JSON 失败：' + e.message);
-      } finally {
-        ev.target.value = '';
-      }
-    });
-
-    $('#btn-open-import-toml').addEventListener('click', () => {
-      openModal('导入官方标准 frps.toml / frpc.toml', `
-        <form id="modal-imp-toml" class="stack-form">
-          <div class="form-row-2">
-            <label class="field"><span>导入后配置名称</span><input type="text" name="name" placeholder="如 阿里云转发端" required /></label>
-            <label class="field">
-              <span>配置类型</span>
-              <select name="kind">
-                <option value="">自动识别 (frpc / frps)</option>
-                <option value="frpc">客户端 (frpc.toml)</option>
-                <option value="frps">转发端 (frps.toml)</option>
-              </select>
-            </label>
-          </div>
-          <label class="field">
-            <span>粘贴或选择本地 .toml 内容（未映射的高级字段将自动完整保留在附加参数中）</span>
-            <textarea name="toml" id="imp-toml-text" class="mono-input" rows="8" required placeholder="serverAddr = &quot;1.2.3.4&quot;&#10;serverPort = 7000"></textarea>
-          </label>
-          <div class="btn-row">
-            <label class="btn btn-secondary btn-sm file-btn">读取本地 .toml 文件<input type="file" id="pick-toml-file" accept=".toml,.ini,.txt" hidden /></label>
-            <button type="submit" class="btn btn-primary">解析并导入</button>
-          </div>
-        </form>
-      `, (root, close) => {
-        $('#pick-toml-file', root).addEventListener('change', async (e) => {
-          const f = e.target.files && e.target.files[0];
-          if (f) $('#imp-toml-text', root).value = await f.text();
-        });
-        $('#modal-imp-toml', root).addEventListener('submit', async (ev) => {
-          ev.preventDefault();
-          const fd = new FormData(ev.target);
-          const res = await api('/api/configs/import-toml', {
-            method: 'POST',
-            body: { name: fd.get('name'), kind: fd.get('kind'), toml: fd.get('toml') },
-          });
-          close();
-          toast('TOML 配置已导入');
-          await loadState();
-          switchTab(res.kind === 'frps' ? 'server' : 'client');
-        });
-      });
-    });
-
-    $('#account-form').addEventListener('submit', async (ev) => {
-      ev.preventDefault();
-      try {
-        await api('/api/account', {
-          method: 'POST',
-          body: {
-            currentPassword: $('#acc-current-pass').value,
-            newUsername: $('#acc-username').value,
-            newPassword: $('#acc-new-pass').value,
-          },
-        });
-        $('#acc-current-pass').value = '';
-        $('#acc-new-pass').value = '';
-        toast('唯一管理员用户名与密码已更新');
-        await loadState();
-      } catch (e) {
-        toast('修改失败：' + e.message);
-      }
-    });
-
-    $('#log-instance-select').addEventListener('change', (ev) => {
-      state.selectedLogId = ev.target.value;
-      refreshLogsOnce();
-    });
-
-    $('#btn-refresh-logs').addEventListener('click', () => refreshLogsOnce());
-    $('#btn-download-logs').addEventListener('click', () => {
-      const txt = $('#log-viewer').textContent || '';
-      downloadBlob(`kurumifrp-${state.selectedLogId || 'logs'}.txt`, txt);
-    });
-
-    function renderUpdateCheckPanel(res) {
-      const box = $('#update-result-box');
-      box.hidden = false;
-      const appSt = res.app || {};
-      const frpSt = res.frp || {};
-
-      let appDesc = '';
-      let appBtns = '';
-      if (appSt.error) {
-        appDesc = `<strong>KurumiFrp 本体</strong>：${esc(appSt.error)}`;
-        appBtns = `<a href="${esc(appSt.releaseURL || 'https://github.com/Presikid/KurumiFrp/releases')}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">打开发布页</a>`;
-      } else if (appSt.hasUpdate) {
-        appDesc = `<strong>KurumiFrp 本体</strong>：发现新版本 <strong style="color:var(--gold)">v${esc(appSt.latest)}</strong>（当前 v${esc(appSt.current)}）`;
-        if (appSt.canAutoUpdate) {
-          appBtns += `<button type="button" class="btn btn-primary btn-sm" data-act-update-app="${esc(appSt.latest)}">一键无感更新至 v${esc(appSt.latest)}</button>`;
-        } else if (appSt.manualHint) {
-          appDesc += `<div class="muted-text">${esc(appSt.manualHint)}</div>`;
-        }
-        appBtns += `<a href="${esc(appSt.releaseURL)}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">前往下载页</a>`;
-      } else {
-        appDesc = `<strong>KurumiFrp 本体</strong>：已是最新版本 (v${esc(appSt.current)})`;
-      }
-
-      let frpDesc = '';
-      let frpBtns = '';
-      if (frpSt.error) {
-        frpDesc = `<strong>官方 FRP 核心</strong>：${esc(frpSt.error)}`;
-        frpBtns = `<a href="${esc(frpSt.releaseURL || 'https://github.com/fatedier/frp/releases')}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm">查看上游</a>`;
-      } else if (frpSt.hasUpdate) {
-        frpDesc = `<strong>官方 FRP 核心</strong>：发现新版本 <strong style="color:var(--gold)">v${esc(frpSt.latest)}</strong>（当前 v${esc(frpSt.current)}）`;
-        if (frpSt.canAutoUpdate) {
-          frpBtns += `<button type="button" class="btn btn-primary btn-sm" data-act-update-frp="${esc(frpSt.latest)}">一键热更新核心至 v${esc(frpSt.latest)}</button>`;
-        }
-      } else {
-        frpDesc = `<strong>官方 FRP 核心</strong>：已是最新原版 (v${esc(frpSt.current)})`;
-        if (frpSt.canAutoUpdate) {
-          frpBtns += `<button type="button" class="btn btn-secondary btn-sm" data-act-update-frp="${esc(frpSt.latest)}">重新校准/重装核心</button>`;
-        }
-      }
-
-      box.innerHTML = `
-        <div class="update-grid">
-          <div class="update-item">
-            <div class="update-item-info">${appDesc}</div>
-            <div class="update-item-actions">${appBtns}</div>
-          </div>
-          <div class="update-item">
-            <div class="update-item-info">${frpDesc}</div>
-            <div class="update-item-actions">${frpBtns}</div>
-          </div>
-        </div>`;
     }
 
-    $('#btn-save-proxy').addEventListener('click', async () => {
-      const proxyURL = ($('#update-proxy-input').value || '').trim();
-      try {
-        const res = await api('/api/update/settings', { method: 'POST', body: { proxyURL } });
-        $('#update-proxy-input').value = res.proxyURL || '';
-        toast(res.proxyURL ? '已保存下载代理配置' : '已清除代理，恢复系统默认直连');
-        await loadState();
-      } catch (e) {
-        toast(e.message, true);
-      }
+    (srv.httpPlugins || []).forEach((hp) => {
+      if (!hp || !hp.name || !hp.addr) return;
+      lines.push("", "[[httpPlugins]]");
+      lines.push(`name = ${tq(hp.name.trim())}`);
+      lines.push(`addr = ${tq(hp.addr.trim())}`);
+      lines.push(`path = ${tq((hp.path || "/handler").trim())}`);
+      if (hp.ops && hp.ops.length) lines.push(`ops = ${tArr(hp.ops)}`);
+      if (hp.tlsVerify) lines.push(`tlsVerify = true`);
     });
 
-    $('#btn-check-update').addEventListener('click', async () => {
-      const box = $('#update-result-box');
-      box.hidden = false;
-      box.textContent = '正在同步检查 KurumiFrp 本体与上游官方 fatedier/frp 最新版本...';
-      const proxyURL = ($('#update-proxy-input').value || '').trim();
-      try {
-        const res = await api('/api/update/check', { method: 'POST', body: { proxyURL } });
-        renderUpdateCheckPanel(res);
-      } catch (e) {
-        box.textContent = '检查失败：' + e.message;
+    return lines.join("\n") + "\n";
+  }
+
+  function renderClientTOMLLive(cli) {
+    if (!cli) return "";
+    const lines = ["# Generated by KurumiFrp (Official frpc TOML v1)"];
+    lines.push(`serverAddr = ${tq(cli.serverAddr || "127.0.0.1")}`);
+    lines.push(`serverPort = ${Number(cli.serverPort) || 7000}`);
+    lines.push(`loginFailExit = ${Boolean(cli.loginFailExit)}`);
+    if (cli.user) lines.push(`user = ${tq(cli.user.trim())}`);
+    if (cli.startProxies && cli.startProxies.filter(Boolean).length) lines.push(`start = ${tArr(cli.startProxies)}`);
+    if (cli.includes && cli.includes.filter(Boolean).length) lines.push(`includes = ${tArr(cli.includes)}`);
+    if (cli.dnsServer) lines.push(`dnsServer = ${tq(cli.dnsServer.trim())}`);
+    if (cli.natHoleStunServer) lines.push(`natHoleStunServer = ${tq(cli.natHoleStunServer.trim())}`);
+    if (Number(cli.udpPacketSize) > 0) lines.push(`udpPacketSize = ${Number(cli.udpPacketSize)}`);
+
+    const hasVNet = Boolean(cli.virtualNetAddr) || (cli.tunnels || []).some((t) => t.enabled && t.plugin === "virtual_net");
+    if (hasVNet) {
+      lines.push(`featureGates = { VirtualNet = true }`);
+      if (cli.virtualNetAddr) lines.push(`virtualNet.address = ${tq(cli.virtualNetAddr.trim())}`);
+    }
+
+    if (cli.logLevel) lines.push(`log.level = ${tq(cli.logLevel)}`);
+    if (Number(cli.logMaxDays) > 0) lines.push(`log.maxDays = ${Number(cli.logMaxDays)}`);
+    if (cli.disablePrintColor) lines.push(`log.disablePrintColor = true`);
+
+    const proto = (cli.protocol || "tcp").toLowerCase().trim();
+    if (proto && proto !== "tcp") lines.push(`transport.protocol = ${tq(proto)}`);
+    if (Number(cli.poolCount) > 0) lines.push(`transport.poolCount = ${Number(cli.poolCount)}`);
+    if (Number(cli.dialServerTimeout) > 0) lines.push(`transport.dialServerTimeout = ${Number(cli.dialServerTimeout)}`);
+    if (Number(cli.dialServerKeepAlive) !== 0 && cli.dialServerKeepAlive != null && cli.dialServerKeepAlive !== "") {
+      lines.push(`transport.dialServerKeepAlive = ${Number(cli.dialServerKeepAlive)}`);
+    }
+    if (cli.connectServerLocalIP) lines.push(`transport.connectServerLocalIP = ${tq(cli.connectServerLocalIP.trim())}`);
+    if (cli.proxyURL) lines.push(`transport.proxyURL = ${tq(cli.proxyURL.trim())}`);
+    if (typeof cli.tcpMux === "boolean") lines.push(`transport.tcpMux = ${cli.tcpMux}`);
+    if (Number(cli.tcpMuxKeepaliveInterval) > 0) lines.push(`transport.tcpMuxKeepaliveInterval = ${Number(cli.tcpMuxKeepaliveInterval)}`);
+    if (Number(cli.heartbeatInterval) > 0) lines.push(`transport.heartbeatInterval = ${Number(cli.heartbeatInterval)}`);
+    if (Number(cli.heartbeatTimeout) > 0) lines.push(`transport.heartbeatTimeout = ${Number(cli.heartbeatTimeout)}`);
+    if (Number(cli.quicKeepalivePeriod) > 0) lines.push(`transport.quic.keepalivePeriod = ${Number(cli.quicKeepalivePeriod)}`);
+    if (Number(cli.quicMaxIdleTimeout) > 0) lines.push(`transport.quic.maxIdleTimeout = ${Number(cli.quicMaxIdleTimeout)}`);
+    if (Number(cli.quicMaxIncomingStreams) > 0) lines.push(`transport.quic.maxIncomingStreams = ${Number(cli.quicMaxIncomingStreams)}`);
+
+    lines.push(`transport.tls.enable = ${Boolean(cli.tlsEnable)}`);
+    if (cli.tlsDisableCustomFirstByte) lines.push(`transport.tls.disableCustomTLSFirstByte = true`);
+    if (cli.tlsServerName) lines.push(`transport.tls.serverName = ${tq(cli.tlsServerName.trim())}`);
+    if (cli.tlsCertFile) lines.push(`transport.tls.certFile = ${tq(cli.tlsCertFile.trim())}`);
+    if (cli.tlsKeyFile) lines.push(`transport.tls.keyFile = ${tq(cli.tlsKeyFile.trim())}`);
+    if (cli.tlsTrustedCaFile) lines.push(`transport.tls.trustedCaFile = ${tq(cli.tlsTrustedCaFile.trim())}`);
+
+    const scopes = (cli.authAdditionalScopes || []).filter(Boolean);
+    if (cli.authMethod === "oidc" || (!cli.authMethod && cli.oidcTokenEndpointURL)) {
+      lines.push(`auth.method = "oidc"`);
+      if (scopes.length) lines.push(`auth.additionalScopes = ${tArr(scopes)}`);
+      if (cli.oidcClientId) lines.push(`auth.oidc.clientID = ${tq(cli.oidcClientId.trim())}`);
+      if (cli.oidcClientSecret) lines.push(`auth.oidc.clientSecret = ${tq(cli.oidcClientSecret)}`);
+      if (cli.oidcAudience) lines.push(`auth.oidc.audience = ${tq(cli.oidcAudience.trim())}`);
+      if (cli.oidcScope) lines.push(`auth.oidc.scope = ${tq(cli.oidcScope.trim())}`);
+      if (cli.oidcTokenEndpointURL) lines.push(`auth.oidc.tokenEndpointURL = ${tq(cli.oidcTokenEndpointURL.trim())}`);
+      Object.keys(cli.oidcAdditionalParams || {}).sort().forEach((k) => {
+        if (k.trim()) lines.push(`auth.oidc.additionalEndpointParams.${dotKey(k)} = ${tq(cli.oidcAdditionalParams[k])}`);
+      });
+    } else if (cli.authTokenSourceFile) {
+      lines.push(`auth.method = "token"`);
+      if (scopes.length) lines.push(`auth.additionalScopes = ${tArr(scopes)}`);
+      lines.push(`auth.tokenSource.type = "file"`);
+      lines.push(`auth.tokenSource.file.path = ${tq(cli.authTokenSourceFile.trim())}`);
+    } else if (cli.authToken) {
+      lines.push(`auth.method = "token"`);
+      if (scopes.length) lines.push(`auth.additionalScopes = ${tArr(scopes)}`);
+      lines.push(`auth.token = ${tq(cli.authToken)}`);
+    }
+
+    Object.keys(cli.metadatas || {}).sort().forEach((k) => {
+      if (k.trim() && !k.startsWith("kurumi_")) {
+        lines.push(`metadatas.${dotKey(k)} = ${tq(cli.metadatas[k])}`);
       }
     });
+    if (cli.clientId) lines.push(`metadatas.client_id = ${tq(cli.clientId.trim())}`);
 
-    $('#update-result-box').addEventListener('click', async (ev) => {
-      const frpBtn = ev.target.closest('[data-act-update-frp]');
-      if (frpBtn) {
-        const ver = frpBtn.dataset.actUpdateFrp;
-        frpBtn.disabled = true;
-        frpBtn.textContent = '正在下载并校验 SHA-256...';
-        const proxyURL = ($('#update-proxy-input').value || '').trim();
-        try {
-          const res = await api('/api/update/apply-frp', { method: 'POST', body: { proxyURL } });
-          await loadState();
-          const checkRes = await api('/api/update/check', { method: 'POST', body: { proxyURL } });
-          renderUpdateCheckPanel(checkRes);
-          toast(`官方 FRP 核心已无感热更新至 v${ver}（自动平滑恢复 ${res.restarted || 0} 个运行实例）`);
-        } catch (e) {
-          frpBtn.disabled = false;
-          frpBtn.textContent = `重试热更新核心`;
-          toast(e.message, true);
+    if (cli.extraToml && cli.extraToml.trim()) {
+      lines.push("", "# Custom global full-parameter TOML", cli.extraToml.trim());
+    }
+
+    (cli.tunnels || []).forEach((tun) => {
+      if (!tun || !tun.enabled) return;
+      const typ = (tun.type || "tcp").toLowerCase().trim();
+      if ((tun.mode || "proxy") === "visitor") {
+        lines.push("", "[[visitors]]");
+        lines.push(`name = ${tq(tun.name || "")}`);
+        lines.push(`type = ${tq(typ)}`);
+        lines.push(`serverName = ${tq(tun.serverName || "")}`);
+        if (tun.serverUser) lines.push(`serverUser = ${tq(tun.serverUser.trim())}`);
+        if (tun.secretKey) lines.push(`secretKey = ${tq(tun.secretKey)}`);
+        lines.push(`bindAddr = ${tq(tun.localIP || "127.0.0.1")}`);
+        lines.push(`bindPort = ${Number(tun.localPort || 0)}`);
+        if (tun.useEncryption) lines.push(`transport.useEncryption = true`);
+        if (tun.useCompression) lines.push(`transport.useCompression = true`);
+        if (typ === "xtcp") {
+          if (tun.visitorProtocol) lines.push(`protocol = ${tq(tun.visitorProtocol)}`);
+          if (tun.keepTunnelOpen) lines.push(`keepTunnelOpen = true`);
+          if (Number(tun.maxRetriesAnHour) > 0) lines.push(`maxRetriesAnHour = ${Number(tun.maxRetriesAnHour)}`);
+          if (Number(tun.minRetryInterval) > 0) lines.push(`minRetryInterval = ${Number(tun.minRetryInterval)}`);
+          if (tun.fallbackTo) lines.push(`fallbackTo = ${tq(tun.fallbackTo.trim())}`);
+          if (Number(tun.fallbackTimeoutMs) > 0) lines.push(`fallbackTimeoutMs = ${Number(tun.fallbackTimeoutMs)}`);
         }
+        if (tun.extraToml && tun.extraToml.trim()) lines.push(tun.extraToml.trim());
         return;
       }
 
-      const appBtn = ev.target.closest('[data-act-update-app]');
-      if (appBtn) {
-        const targetVer = appBtn.dataset.actUpdateApp;
-        appBtn.disabled = true;
-        appBtn.textContent = '正在下载新版安装包并校验...';
-        const proxyURL = ($('#update-proxy-input').value || '').trim();
-        try {
-          await api('/api/update/apply-app', { method: 'POST', body: { proxyURL } });
-          state.selfUpdating = true;
-          const box = $('#update-result-box');
-          box.innerHTML = `<div class="update-item-info">⏳ 安装包校验通过！正在后台静默升级至 <strong>v${esc(targetVer)}</strong> 并自动重启服务（若 Windows 弹出管理员授权请点「是」），页面将自动重连...</div>`;
-          const startAt = Date.now();
-          const timer = setInterval(async () => {
-            try {
-              const sess = await fetch('/api/session', { cache: 'no-store' }).then((r) => r.json());
-              if (sess && sess.version === targetVer) {
-                clearInterval(timer);
-                state.selfUpdating = false;
-                toast(`🎉 已无感升级至 KurumiFrp v${targetVer}！`);
-                setTimeout(() => window.location.reload(), 600);
-                return;
-              }
-            } catch (_) {
-              // Expected briefly while daemon restarts
-            }
-            if (Date.now() - startAt > 50000) {
-              clearInterval(timer);
-              state.selfUpdating = false;
-              box.innerHTML = `<div class="update-item-info">等待新版本超时（若刚才取消了 Windows 管理员授权弹窗，可重新点击上方「检查更新」再次升级）。</div>`;
-            }
-          }, 1000);
-        } catch (e) {
-          state.selfUpdating = false;
-          appBtn.disabled = false;
-          appBtn.textContent = `一键无感更新至 v${targetVer}`;
-          toast(e.message, true);
+      if ((typ === "tcp" || typ === "udp") && tun.portRangeLocal && tun.portRangeRemote) {
+        lines.push("", `{{- range $_, $v := parseNumberRangePair ${tq(tun.portRangeLocal.trim())} ${tq(tun.portRangeRemote.trim())} }}`);
+        lines.push("[[proxies]]");
+        lines.push(`name = "${(tun.name || "range").replace(/"/g, '\\"')}-{{ $v.First }}"`);
+        lines.push(`type = ${tq(typ)}`);
+        lines.push(`localIP = ${tq(tun.localIP || "127.0.0.1")}`);
+        lines.push("localPort = {{ $v.First }}");
+        lines.push("remotePort = {{ $v.Second }}");
+        appendProxyCommonTOML(lines, tun);
+        lines.push("{{- end }}");
+        return;
+      }
+
+      lines.push("", "[[proxies]]");
+      lines.push(`name = ${tq(tun.name || "")}`);
+      lines.push(`type = ${tq(typ)}`);
+      if (!tun.plugin) {
+        lines.push(`localIP = ${tq(tun.localIP || "127.0.0.1")}`);
+        if (Number(tun.localPort) > 0) lines.push(`localPort = ${Number(tun.localPort)}`);
+      }
+      if (typ === "tcp" || typ === "udp") {
+        if (Number(tun.remotePort) > 0) lines.push(`remotePort = ${Number(tun.remotePort)}`);
+      } else if (typ === "http" || typ === "https" || typ === "tcpmux") {
+        if (typ === "tcpmux") lines.push(`multiplexer = ${tq(tun.multiplexer || "httpconnect")}`);
+        if (tun.customDomains && tun.customDomains.filter(Boolean).length) lines.push(`customDomains = ${tArr(tun.customDomains)}`);
+        if (tun.subDomain) lines.push(`subdomain = ${tq(tun.subDomain.trim())}`);
+        if (typ === "http" || typ === "tcpmux") {
+          if (tun.routeByHTTPUser) lines.push(`routeByHTTPUser = ${tq(tun.routeByHTTPUser.trim())}`);
+          if (tun.httpUser) {
+            lines.push(`httpUser = ${tq(tun.httpUser.trim())}`);
+            lines.push(`httpPassword = ${tq(tun.httpPassword || "")}`);
+          }
+        }
+        if (typ === "http") {
+          if (tun.locations && tun.locations.filter(Boolean).length) lines.push(`locations = ${tArr(tun.locations)}`);
+          if (tun.hostHeaderRewrite) lines.push(`hostHeaderRewrite = ${tq(tun.hostHeaderRewrite.trim())}`);
+          Object.keys(tun.requestHeaders || {}).sort().forEach((k) => {
+            if (k.trim()) lines.push(`requestHeaders.set.${dotKey(k)} = ${tq(tun.requestHeaders[k])}`);
+          });
+          Object.keys(tun.responseHeaders || {}).sort().forEach((k) => {
+            if (k.trim()) lines.push(`responseHeaders.set.${dotKey(k)} = ${tq(tun.responseHeaders[k])}`);
+          });
+        }
+      } else if (typ === "stcp" || typ === "sudp" || typ === "xtcp") {
+        if (tun.secretKey) lines.push(`secretKey = ${tq(tun.secretKey)}`);
+        if (tun.allowUsers && tun.allowUsers.filter(Boolean).length) lines.push(`allowUsers = ${tArr(tun.allowUsers)}`);
+      }
+
+      appendProxyCommonTOML(lines, tun);
+
+      if (tun.plugin) {
+        const pt = tun.plugin.trim();
+        lines.push(`plugin.type = ${tq(pt)}`);
+        if (pt === "static_file") {
+          lines.push(`plugin.localPath = ${tq(tun.pluginLocalPath || "")}`);
+          if (tun.pluginStripPrefix) lines.push(`plugin.stripPrefix = ${tq(tun.pluginStripPrefix)}`);
+          if (tun.pluginUser) {
+            lines.push(`plugin.httpUser = ${tq(tun.pluginUser)}`);
+            lines.push(`plugin.httpPassword = ${tq(tun.pluginPassword || "")}`);
+          }
+        } else if (pt === "socks5") {
+          if (tun.pluginUser) {
+            lines.push(`plugin.username = ${tq(tun.pluginUser)}`);
+            lines.push(`plugin.password = ${tq(tun.pluginPassword || "")}`);
+          }
+        } else if (pt === "http_proxy") {
+          if (tun.pluginUser) {
+            lines.push(`plugin.httpUser = ${tq(tun.pluginUser)}`);
+            lines.push(`plugin.httpPassword = ${tq(tun.pluginPassword || "")}`);
+          }
+        } else if (pt === "unix_domain_socket") {
+          lines.push(`plugin.unixPath = ${tq(tun.pluginLocalPath || "")}`);
+        } else if (pt === "virtual_net") {
+          lines.push(`plugin.address = ${tq(tun.pluginLocalAddr || "")}`);
+        } else if (pt === "https2http" || pt === "https2https" || pt === "http2https" || pt === "http2http" || pt === "tls2raw") {
+          lines.push(`plugin.localAddr = ${tq(tun.pluginLocalAddr || "")}`);
+          if (tun.pluginHostHeaderRewrite && pt !== "tls2raw") lines.push(`plugin.hostHeaderRewrite = ${tq(tun.pluginHostHeaderRewrite)}`);
+          if ((pt === "https2http" || pt === "https2https" || pt === "tls2raw") && tun.pluginCrtPath) {
+            lines.push(`plugin.crtPath = ${tq(tun.pluginCrtPath)}`);
+            if (tun.pluginKeyPath) lines.push(`plugin.keyPath = ${tq(tun.pluginKeyPath)}`);
+          }
+          if ((pt === "https2http" || pt === "https2https") && typeof tun.pluginEnableHTTP2 === "boolean") {
+            lines.push(`plugin.enableHTTP2 = ${tun.pluginEnableHTTP2}`);
+          }
+          Object.keys(tun.pluginHeaders || {}).sort().forEach((k) => {
+            if (k.trim()) lines.push(`plugin.requestHeaders.set.${dotKey(k)} = ${tq(tun.pluginHeaders[k])}`);
+          });
         }
       }
+      if (tun.extraToml && tun.extraToml.trim()) lines.push(tun.extraToml.trim());
+      if (tun.healthCheckType === "http" && tun.healthCheckHeaders) {
+        Object.keys(tun.healthCheckHeaders).sort().forEach((hk) => {
+          if (hk.trim()) {
+            lines.push("[[proxies.healthCheck.httpHeaders]]", `name = ${tq(hk)}`, `value = ${tq(tun.healthCheckHeaders[hk])}`);
+          }
+        });
+      }
     });
 
-    $('#btn-stop-daemon').addEventListener('click', async () => {
-      if (!confirm('确认关闭 KurumiFrp 后台进程并停止所有正在运行的穿透实例吗？')) return;
-      await api('/api/quit', { method: 'POST' });
-      toast('后台服务正在优雅退出...');
+    return lines.join("\n") + "\n";
+  }
+
+  function appendProxyCommonTOML(lines, tun) {
+    const bw = (tun.bandwidthLimit || "").trim() || (Number(tun.bandwidthLimitKB) > 0 ? Number(tun.bandwidthLimitKB) + "KB" : "");
+    if (bw) {
+      lines.push(`transport.bandwidthLimit = ${tq(bw)}`);
+      lines.push(`transport.bandwidthLimitMode = ${tq(tun.bandwidthLimitMode === "server" ? "server" : "client")}`);
+    }
+    if (tun.useEncryption) lines.push(`transport.useEncryption = true`);
+    if (tun.useCompression) lines.push(`transport.useCompression = true`);
+    if (tun.proxyProtocolVersion === "v1" || tun.proxyProtocolVersion === "v2") {
+      lines.push(`transport.proxyProtocolVersion = ${tq(tun.proxyProtocolVersion)}`);
+    }
+    if (tun.loadBalancerGroup) {
+      lines.push(`loadBalancer.group = ${tq(tun.loadBalancerGroup.trim())}`);
+      if (tun.loadBalancerGroupKey) lines.push(`loadBalancer.groupKey = ${tq(tun.loadBalancerGroupKey)}`);
+    }
+    if (tun.healthCheckType === "tcp" || tun.healthCheckType === "http") {
+      lines.push(`healthCheck.type = ${tq(tun.healthCheckType)}`);
+      if (Number(tun.healthCheckTimeoutSeconds) > 0) lines.push(`healthCheck.timeoutSeconds = ${Number(tun.healthCheckTimeoutSeconds)}`);
+      if (Number(tun.healthCheckMaxFailed) > 0) lines.push(`healthCheck.maxFailed = ${Number(tun.healthCheckMaxFailed)}`);
+      if (Number(tun.healthCheckIntervalSeconds) > 0) lines.push(`healthCheck.intervalSeconds = ${Number(tun.healthCheckIntervalSeconds)}`);
+      if (tun.healthCheckType === "http" && tun.healthCheckPath) lines.push(`healthCheck.path = ${tq(tun.healthCheckPath)}`);
+    }
+    Object.keys(tun.metadatas || {}).sort().forEach((k) => {
+      if (k.trim()) lines.push(`metadatas.${dotKey(k)} = ${tq(tun.metadatas[k])}`);
+    });
+    Object.keys(tun.annotations || {}).sort().forEach((k) => {
+      if (k.trim()) lines.push(`annotations.${dotKey(k)} = ${tq(tun.annotations[k])}`);
     });
   }
 
-  /* ==================== Bootstrap ==================== */
-  async function boot() {
-    initSkin();
-    bindEvents();
+  // ==================== 1. Strict Login Gate & Session Boot ====================
+  function updateLoginWallpaper() {
+    const slide = HERO_SLIDES[STATE.loginSlideIdx % HERO_SLIDES.length];
+    const bg = $("loginBgLayer");
+    const cap = $("loginSlideCaption");
+    if (bg && slide) bg.style.backgroundImage = `url('${slide.src}')`;
+    if (cap && slide) cap.textContent = `${pad2((STATE.loginSlideIdx % HERO_SLIDES.length) + 1)} · ${slide.title}`;
+  }
+
+  function enterLoginGate(errMsg) {
+    STATE.authenticated = false;
+    stopLogStream();
+    if (statePollTimer) {
+      clearInterval(statePollTimer);
+      statePollTimer = null;
+    }
+    if (homeSlideTimer) {
+      clearInterval(homeSlideTimer);
+      homeSlideTimer = null;
+    }
+    $("appShell").hidden = true;
+    $("loginGate").hidden = false;
+    updateLoginWallpaper();
+    if (!loginSlideTimer) {
+      loginSlideTimer = setInterval(() => {
+        STATE.loginSlideIdx = (STATE.loginSlideIdx + 1) % HERO_SLIDES.length;
+        updateLoginWallpaper();
+      }, 6500);
+    }
+    const errBox = $("loginErrorBox");
+    if (errMsg) {
+      errBox.textContent = errMsg;
+      errBox.hidden = false;
+    } else {
+      errBox.hidden = true;
+    }
+  }
+
+  async function enterAuthenticatedApp() {
+    STATE.authenticated = true;
+    if (loginSlideTimer) {
+      clearInterval(loginSlideTimer);
+      loginSlideTimer = null;
+    }
+    $("loginGate").hidden = true;
+    $("appShell").hidden = false;
+    initHomeStageDOM();
+    startHomeCarouselTimer();
+    STATE.etag = "";
+    await refreshState(true);
+    if (statePollTimer) clearInterval(statePollTimer);
+    statePollTimer = setInterval(() => {
+      refreshState(false).catch(() => {});
+    }, 3500);
+  }
+
+  async function bootSession() {
+    updateLoginWallpaper();
     try {
-      const sess = await api('/api/session');
-      if (!sess.authenticated) {
-        showLoginScreen(sess);
+      const sess = await apiFetch("/api/session");
+      STATE.version = sess.version || "0.9.4";
+      STATE.needsPasswordSetup = Boolean(sess.needsPasswordSetup);
+      $("loginVersionBadge").textContent = "v" + STATE.version;
+      $("topVersionBadge").textContent = "v" + STATE.version;
+      if (sess.defaultUsername) $("loginUsername").value = sess.defaultUsername;
+      $("loginFirstRunHint").hidden = !STATE.needsPasswordSetup;
+
+      if (sess.authenticated) {
+        STATE.username = sess.username || "admin";
+        await enterAuthenticatedApp();
       } else {
-        showWorkbench();
-        await loadState();
+        enterLoginGate("");
       }
-    } catch (_) {
-      showLoginScreen({});
+    } catch (err) {
+      enterLoginGate("连接本地服务失败: " + err.message);
+    }
+  }
+
+  // ==================== 2. State Synchronization (Focus-Safe) ====================
+  function isEditingActiveInput() {
+    const ae = document.activeElement;
+    if (!ae) return false;
+    const tag = ae.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+      return $("appShell") && $("appShell").contains(ae);
+    }
+    return false;
+  }
+
+  async function refreshState(forceRender) {
+    if (!STATE.authenticated) return;
+    const headers = {};
+    if (!forceRender && STATE.etag) {
+      headers["If-None-Match"] = STATE.etag;
+    }
+    const res = await apiFetch("/api/state", { headers });
+    if (res && res.notModified) return;
+
+    STATE.version = res.version || STATE.version;
+    STATE.username = res.username || STATE.username;
+    STATE.needsPasswordSetup = Boolean(res.needsPasswordSetup);
+    STATE.activeConfigFile = res.activeConfigFile || "default.json";
+    STATE.configFiles = res.configFiles || [];
+    const doc = res.config || { servers: [], clients: [] };
+    STATE.servers = doc.servers || [];
+    STATE.clients = doc.clients || [];
+    STATE.runtime = res.runtime || {};
+    STATE.core = res.core || {};
+    STATE.updateProxy = res.updateProxy || "";
+    STATE.systemProxy = res.systemProxy || "";
+
+    if (!STATE.selectedServerId || !STATE.servers.some((s) => s.id === STATE.selectedServerId)) {
+      STATE.selectedServerId = STATE.servers[0] ? STATE.servers[0].id : "";
+      STATE.serverDraft = null;
+      STATE.serverDraftDirty = false;
+    }
+    if (!STATE.selectedClientId || !STATE.clients.some((c) => c.id === STATE.selectedClientId)) {
+      STATE.selectedClientId = STATE.clients[0] ? STATE.clients[0].id : "";
+      STATE.clientDraft = null;
+      STATE.clientDraftDirty = false;
     }
 
-    setInterval(() => {
-      if (!$('#workbench').hidden && !state.selfUpdating) {
-        loadState(true).catch(() => {});
-      }
-    }, 4000);
+    if (!STATE.serverDraftDirty && STATE.selectedServerId) {
+      const s = STATE.servers.find((x) => x.id === STATE.selectedServerId);
+      if (s) STATE.serverDraft = deepClone(s);
+    }
+    if (!STATE.clientDraftDirty && STATE.selectedClientId) {
+      const c = STATE.clients.find((x) => x.id === STATE.selectedClientId);
+      if (c) STATE.clientDraft = deepClone(c);
+    }
+
+    renderTopBar();
+    renderHomeMetrics();
+
+    if (forceRender || (!isEditingActiveInput() && $("modalBackdrop").hidden)) {
+      renderActiveView();
+    }
   }
 
-  boot();
+  function countAllRemoteClients() {
+    let total = 0;
+    STATE.servers.forEach((s) => {
+      const rt = STATE.runtime[s.id];
+      if (rt && rt.remoteClients) total += rt.remoteClients.length;
+    });
+    return total;
+  }
+
+  function renderTopBar() {
+    $("topVersionBadge").textContent = "v" + STATE.version;
+    $("topUserBadge").textContent = STATE.username;
+    const activeCfg = STATE.configFiles.find((f) => f.active);
+    $("topSchemeLabel").textContent = activeCfg ? activeCfg.displayName : STATE.activeConfigFile;
+    $("navBadgeFrps").textContent = String(STATE.servers.length);
+    $("navBadgeFrpc").textContent = String(STATE.clients.length);
+    $("navBadgeRemote").textContent = String(countAllRemoteClients());
+
+    document.querySelectorAll(".yc-nav-item[data-nav]").forEach((btn) => {
+      btn.classList.toggle("is-active", btn.dataset.nav === STATE.activeView);
+    });
+  }
+
+  function switchView(viewName) {
+    STATE.activeView = viewName;
+    stopLogStream();
+    renderTopBar();
+    $("viewHome").hidden = viewName !== "home";
+    $("viewFrps").hidden = viewName !== "frps";
+    $("viewFrpc").hidden = viewName !== "frpc";
+    $("viewTopology").hidden = viewName !== "topology";
+    $("viewSystem").hidden = viewName !== "system";
+    renderActiveView();
+  }
+
+  function renderActiveView() {
+    if (STATE.activeView === "home") {
+      renderHomeMetrics();
+    } else if (STATE.activeView === "frps") {
+      renderFrpsWorkspace();
+    } else if (STATE.activeView === "frpc") {
+      renderFrpcWorkspace();
+    } else if (STATE.activeView === "topology") {
+      renderTopologyWorkspace();
+    } else if (STATE.activeView === "system") {
+      renderSystemWorkspace();
+    }
+  }
+
+  // ==================== 3. View 1: HOME Full-Viewport Stage ====================
+  function initHomeStageDOM() {
+    const container = $("homeSlidesContainer");
+    if (!container || container.children.length > 0) return;
+    container.innerHTML = HERO_SLIDES.map(
+      (s, i) => `<div class="yc-home-slide${i === STATE.slideIdx ? " is-active" : ""}" data-slide-idx="${i}" style="background-image:url('${s.src}');"></div>`
+    ).join("");
+    renderHomeFilmstrip();
+    syncHomeSlideIndicators();
+  }
+
+  function syncHomeSlideIndicators() {
+    const idx = ((STATE.slideIdx % HERO_SLIDES.length) + HERO_SLIDES.length) % HERO_SLIDES.length;
+    STATE.slideIdx = idx;
+    const slide = HERO_SLIDES[idx];
+    document.querySelectorAll("#homeSlidesContainer .yc-home-slide").forEach((el, i) => {
+      el.classList.toggle("is-active", i === idx);
+    });
+    $("homeCapsuleThumb").src = slide.src;
+    $("homeCapsuleIndex").textContent = `SLIDE ${pad2(idx + 1)} / ${pad2(HERO_SLIDES.length)}`;
+    $("homeCapsuleTitle").textContent = slide.title;
+    document.querySelectorAll("#homeFilmstrip .yc-film-item").forEach((el, i) => {
+      el.classList.toggle("is-active", i === idx);
+    });
+  }
+
+  function renderHomeFilmstrip() {
+    const strip = $("homeFilmstrip");
+    if (!strip) return;
+    strip.innerHTML = HERO_SLIDES.map(
+      (s, i) => `
+      <button type="button" class="yc-film-item${i === STATE.slideIdx ? " is-active" : ""}" data-pick-slide="${i}">
+        <img src="${s.src}" alt="${esc(s.title)}" />
+        <span>${pad2(i + 1)} · ${esc(s.title)}</span>
+      </button>`
+    ).join("");
+    strip.querySelectorAll("[data-pick-slide]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        STATE.slideIdx = Number(btn.dataset.pickSlide);
+        syncHomeSlideIndicators();
+      });
+    });
+  }
+
+  function startHomeCarouselTimer() {
+    if (homeSlideTimer) clearInterval(homeSlideTimer);
+    homeSlideTimer = setInterval(() => {
+      if (STATE.autoPlay && STATE.activeView === "home") {
+        STATE.slideIdx = (STATE.slideIdx + 1) % HERO_SLIDES.length;
+        syncHomeSlideIndicators();
+      }
+    }, 6200);
+  }
+
+  function renderHomeMetrics() {
+    const bar = $("homeMetricsBar");
+    if (!bar) return;
+    const runningSrvs = STATE.servers.filter((s) => STATE.runtime[s.id] && STATE.runtime[s.id].running).length;
+    const runningClis = STATE.clients.filter((c) => STATE.runtime[c.id] && STATE.runtime[c.id].running).length;
+    const remoteCnt = countAllRemoteClients();
+    let totalTunnels = 0;
+    STATE.clients.forEach((c) => {
+      totalTunnels += (c.tunnels || []).filter((t) => t.enabled).length;
+    });
+
+    bar.innerHTML = `
+      <button type="button" class="yc-metric-pill" data-metric-jump="frps">
+        <span class="m-val">${runningSrvs} / ${STATE.servers.length}</span>
+        <span class="m-lbl">在线 FRPS 服务端实例</span>
+      </button>
+      <button type="button" class="yc-metric-pill" data-metric-jump="frpc">
+        <span class="m-val">${runningClis} / ${STATE.clients.length}</span>
+        <span class="m-lbl">在线本机 FRPC 实例</span>
+      </button>
+      <button type="button" class="yc-metric-pill" data-metric-jump="topology">
+        <span class="m-val">${remoteCnt}</span>
+        <span class="m-lbl">已连接可远控客户端</span>
+      </button>
+      <button type="button" class="yc-metric-pill" data-metric-jump="frpc">
+        <span class="m-val">${totalTunnels}</span>
+        <span class="m-lbl">本机已启用隧道规则</span>
+      </button>`;
+    bar.querySelectorAll("[data-metric-jump]").forEach((b) => {
+      b.addEventListener("click", () => switchView(b.dataset.metricJump));
+    });
+  }
+
+  // ==================== 4. View 2: FRPS Server & Connected Client Remote Control ====================
+  function renderFrpsWorkspace() {
+    const sb = $("frpsSidebar");
+    const main = $("frpsMainPane");
+    if (!sb || !main) return;
+
+    // Build Left Directory Sidebar: Local FRPS instances + Connected Remote FRPC instances underneath!
+    let dirHTML = `
+      <div class="yc-side-box">
+        <div class="yc-side-heading">
+          <span>FRPS 服务端目录 (${STATE.servers.length})</span>
+          <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" id="sideAddSrvBtn">+ 新建</button>
+        </div>
+        <div class="yc-dir-list">`;
+
+    if (STATE.servers.length === 0) {
+      dirHTML += `<div style="padding:12px 6px;font-size:12.5px;color:var(--yc-muted);">暂无服务端实例，点击右上「+ 新建」建立第一个 frps。</div>`;
+    } else {
+      STATE.servers.forEach((srv, idx) => {
+        const rt = STATE.runtime[srv.id] || {};
+        const isSel = STATE.frpsMode === "local" && STATE.selectedServerId === srv.id;
+        const cover = coverForIndex(srv.coverAsset, idx);
+        dirHTML += `
+          <button type="button" class="yc-dir-item${isSel ? " is-active" : ""}" data-select-srv="${esc(srv.id)}">
+            <img src="${cover}" alt="" class="yc-dir-thumb" />
+            <div class="yc-dir-meta">
+              <div class="yc-dir-title">
+                <span class="yc-dot ${rt.running ? "yc-dot-ok" : ""}"></span>
+                <span>${pad2(idx + 1)} · ${esc(srv.name)}</span>
+              </div>
+              <div class="yc-dir-sub">${esc(srv.bindAddr || "0.0.0.0")}:${srv.bindPort || 7000} · ${rt.running ? "运行中" : "已停止"}</div>
+            </div>
+          </button>`;
+
+        // Connected Remote Clients under this FRPS!
+        const remotes = rt.remoteClients || [];
+        remotes.forEach((rc) => {
+          const isRemSel =
+            STATE.frpsMode === "remoteClient" &&
+            STATE.remoteTarget &&
+            STATE.remoteTarget.serverId === srv.id &&
+            STATE.remoteTarget.clientId === rc.clientId;
+          dirHTML += `
+            <button type="button" class="yc-dir-item${isRemSel ? " is-active" : ""}" style="padding-left:22px;" data-select-remote="${esc(srv.id)}::${esc(rc.clientId)}">
+              <img src="assets/k_47.webp" alt="" class="yc-dir-thumb" style="width:32px;height:38px;" />
+              <div class="yc-dir-meta">
+                <div class="yc-dir-title" style="font-size:12.5px;">
+                  <span class="yc-dot ${rc.online ? "yc-dot-ok" : "yc-dot-err"}"></span>
+                  <span>↳ ${esc(rc.clientName)}</span>
+                </div>
+                <div class="yc-dir-sub">通过连接远控 · ${rc.frpUser ? "user:" + esc(rc.frpUser) : "直连"}</div>
+              </div>
+            </button>`;
+        });
+      });
+    }
+    dirHTML += `</div></div>`;
+    sb.innerHTML = dirHTML;
+
+    const sideAddBtn = sb.querySelector("#sideAddSrvBtn");
+    if (sideAddBtn) sideAddBtn.addEventListener("click", createBlankServer);
+    sb.querySelectorAll("[data-select-srv]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        stopLogStream();
+        STATE.frpsMode = "local";
+        STATE.selectedServerId = btn.dataset.selectSrv;
+        const found = STATE.servers.find((x) => x.id === STATE.selectedServerId);
+        STATE.serverDraft = found ? deepClone(found) : null;
+        STATE.serverDraftDirty = false;
+        renderFrpsWorkspace();
+      });
+    });
+    sb.querySelectorAll("[data-select-remote]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const [sid, cid] = btn.dataset.selectRemote.split("::");
+        openRemoteClientConsole(sid, cid);
+      });
+    });
+
+    if (STATE.frpsMode === "remoteClient" && STATE.remoteTarget) {
+      renderRemoteClientPane(main);
+      return;
+    }
+
+    if (!STATE.selectedServerId || !STATE.serverDraft) {
+      main.innerHTML = `
+        <div class="yc-card yc-empty-state">
+          <img src="assets/k_53.webp" alt="" class="yc-empty-sticker" />
+          <h3 style="margin:0 0 8px;color:var(--yc-indigo-ink);">尚未创建本机 FRPS 服务端实例</h3>
+          <p style="margin:0 0 18px;font-size:13.5px;">本机有公网 IP（如云服务器 A 或公司电脑 D）时，可在此建立 frps 实例等待客户端接入并直接远控已连接客户端。</p>
+          <button type="button" class="yc-btn yc-btn-primary" id="emptyCreateSrvBtn">+ 立即创建第一个 FRPS 实例</button>
+        </div>`;
+      main.querySelector("#emptyCreateSrvBtn").addEventListener("click", createBlankServer);
+      return;
+    }
+
+    const srvIdx = Math.max(0, STATE.servers.findIndex((s) => s.id === STATE.selectedServerId));
+    const srv = STATE.serverDraft;
+    const rt = STATE.runtime[srv.id] || { state: "stopped", connections: [], remoteClients: [] };
+    const coverSrc = coverForIndex(srv.coverAsset, srvIdx);
+
+    let html = `
+      <div class="yc-profile-hero-card">
+        <div class="yc-framed-portrait">
+          <img src="${coverSrc}" alt="${esc(srv.name)}" />
+          <span class="yc-portrait-num">${pad2(srvIdx + 1)}</span>
+        </div>
+        <div>
+          <div class="yc-profile-head-row">
+            <div class="yc-profile-title-wrap">
+              <h3 class="yc-profile-title">${esc(srv.name)}</h3>
+              <span class="yc-tag ${rt.running ? "yc-tag-ok" : ""}">${rt.running ? "运行中 · PID " + (rt.pid || "-") : "已停止"}</span>
+              ${srv.autoStart ? `<span class="yc-tag yc-tag-pink">随软件自启</span>` : ""}
+              ${STATE.serverDraftDirty ? `<span class="yc-tag yc-tag-warn">有未保存修改</span>` : ""}
+            </div>
+            <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" id="srvPickCoverBtn">更换卡片狂三立绘</button>
+          </div>
+          <div class="yc-profile-kv-row">
+            <span>监听地址: <code>${esc(srv.bindAddr || "0.0.0.0")}:${srv.bindPort || 7000}</code></span>
+            ${srv.vhostHTTPPort ? `<span>HTTP Vhost: <code>:${srv.vhostHTTPPort}</code></span>` : ""}
+            ${srv.vhostHTTPSPort ? `<span>HTTPS Vhost: <code>:${srv.vhostHTTPSPort}</code></span>` : ""}
+            ${srv.kcpBindPort ? `<span>KCP: <code>:${srv.kcpBindPort}</code></span>` : ""}
+            ${srv.quicBindPort ? `<span>QUIC: <code>:${srv.quicBindPort}</code></span>` : ""}
+            <span>已接入可远控客户端: <strong>${(rt.remoteClients || []).length}</strong> 台</span>
+            <span>活跃映射连接: <strong>${(rt.connections || []).length}</strong> 条</span>
+          </div>
+          ${rt.lastError ? `<div class="yc-notice yc-notice-danger" style="margin:8px 0;">最近错误：${esc(rt.lastError)}</div>` : ""}
+          <div class="yc-profile-actions">
+            ${
+              rt.running
+                ? `<button type="button" class="yc-btn yc-btn-indigo" data-srv-ctrl="restart">重启实例</button>
+                   <button type="button" class="yc-btn yc-btn-danger" data-srv-ctrl="stop">停止实例</button>`
+                : `<button type="button" class="yc-btn yc-btn-primary" data-srv-ctrl="start">▶ 启动 FRPS 实例</button>`
+            }
+            <button type="button" class="yc-btn yc-btn-primary" id="srvQuickSaveBtn">保存配置${rt.running ? "并生效" : ""}</button>
+            <button type="button" class="yc-btn yc-btn-outline" id="srvDupBtn">复制副本</button>
+            <button type="button" class="yc-btn yc-btn-danger" id="srvDelBtn">删除实例</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="yc-subtabs">
+        <button type="button" class="yc-subtab${STATE.frpsSubTab === "studio" ? " is-active" : ""}" data-srv-tab="studio">
+          全量参数配置 ⇄ 实时双向 TOML
+        </button>
+        <button type="button" class="yc-subtab${STATE.frpsSubTab === "remotes" ? " is-active" : ""}" data-srv-tab="remotes">
+          已接入客户端远控 (${(rt.remoteClients || []).length})
+        </button>
+        <button type="button" class="yc-subtab${STATE.frpsSubTab === "conns" ? " is-active" : ""}" data-srv-tab="conns">
+          连接管控看板 · 限流/限速/限时/开关 (${(rt.connections || []).length})
+        </button>
+        <button type="button" class="yc-subtab${STATE.frpsSubTab === "logs" ? " is-active" : ""}" data-srv-tab="logs">
+          实时运行日志
+        </button>
+      </div>
+      <div id="frpsSubBody"></div>`;
+
+    main.innerHTML = html;
+
+    main.querySelector("#srvPickCoverBtn").addEventListener("click", () => {
+      openCoverPickerModal(srv.coverAsset, (picked) => {
+        srv.coverAsset = picked;
+        STATE.serverDraftDirty = true;
+        renderFrpsWorkspace();
+      });
+    });
+    main.querySelectorAll("[data-srv-ctrl]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        try {
+          if (STATE.serverDraftDirty) await saveCurrentServerDraft(true);
+          await apiFetch("/api/servers/control", { method: "POST", body: { id: srv.id, action: b.dataset.srvCtrl } });
+          toast("已执行 FRPS 动作：" + b.dataset.srvCtrl);
+          await refreshState(true);
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    });
+    main.querySelector("#srvQuickSaveBtn").addEventListener("click", () => saveCurrentServerDraft(false));
+    main.querySelector("#srvDupBtn").addEventListener("click", async () => {
+      try {
+        const out = await apiFetch("/api/servers/duplicate", { method: "POST", body: { id: srv.id } });
+        STATE.selectedServerId = out.id;
+        STATE.serverDraftDirty = false;
+        toast("已复制 FRPS 服务端配置副本");
+        await refreshState(true);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    main.querySelector("#srvDelBtn").addEventListener("click", () => {
+      confirmModal("删除 FRPS 服务端实例", `确定删除「${srv.name}」吗？运行中的进程会先优雅停止。`, "确认删除", async () => {
+        try {
+          await apiFetch("/api/servers/delete", { method: "POST", body: { id: srv.id } });
+          STATE.selectedServerId = "";
+          STATE.serverDraft = null;
+          STATE.serverDraftDirty = false;
+          toast("已删除 FRPS 实例");
+          await refreshState(true);
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    });
+    main.querySelectorAll("[data-srv-tab]").forEach((b) => {
+      b.addEventListener("click", () => {
+        stopLogStream();
+        STATE.frpsSubTab = b.dataset.srvTab;
+        renderFrpsWorkspace();
+      });
+    });
+
+    const subBody = main.querySelector("#frpsSubBody");
+    if (STATE.frpsSubTab === "studio") {
+      renderServerStudioSubTab(subBody, srv);
+    } else if (STATE.frpsSubTab === "remotes") {
+      renderServerRemoteClientsSubTab(subBody, srv, rt.remoteClients || []);
+    } else if (STATE.frpsSubTab === "conns") {
+      renderServerConnsSubTab(subBody, srv, rt.connections || []);
+    } else if (STATE.frpsSubTab === "logs") {
+      renderInstanceLogsBox(subBody, srv.id, rt.running);
+    }
+  }
+
+  function renderAccordion(accKey, openMap, stepCode, title, innerHTML) {
+    const open = Boolean(openMap[accKey]);
+    return `
+      <div class="yc-accordion${open ? " is-open" : ""}" data-acc-key="${accKey}">
+        <button type="button" class="yc-acc-header" data-acc-toggle="${accKey}">
+          <span class="yc-acc-title-group">
+            <span class="yc-acc-step">${esc(stepCode)}</span>
+            <span class="yc-acc-title">${esc(title)}</span>
+          </span>
+          <span class="yc-acc-chevron">⌄</span>
+        </button>
+        <div class="yc-acc-body">${innerHTML}</div>
+      </div>`;
+  }
+
+  function renderServerStudioSubTab(container, srv) {
+    const scopes = srv.authAdditionalScopes || [];
+    const plugins = srv.httpPlugins || [];
+    const triBoolVal = (v) => (typeof v === "boolean" ? String(v) : "");
+
+    const leftHTML = `
+      <div class="yc-form-stack" id="srvFormStack">
+        ${renderAccordion(
+          "s1",
+          STATE.openServerAccs,
+          "01",
+          "基础标识与核心监听端口 (Bind & Listeners)",
+          `<div class="yc-grid-2">
+             <label class="yc-field">
+               <span class="yc-field-label">实例显示名称 <span class="yc-field-hint">必填</span></span>
+               <input type="text" data-sf="name" value="${esc(srv.name || "")}" placeholder="云服务器 A" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">备注说明 <span class="yc-field-hint">可选</span></span>
+               <input type="text" data-sf="note" value="${esc(srv.note || "")}" placeholder="公网主转发中枢" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">监听地址 <span class="yc-field-hint">bindAddr</span></span>
+               <input type="text" data-sf="bindAddr" value="${esc(srv.bindAddr || "0.0.0.0")}" placeholder="0.0.0.0" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">主监听端口 <span class="yc-field-hint">bindPort</span></span>
+               <input type="number" data-sf-num="bindPort" value="${srv.bindPort || 7000}" min="1" max="65535" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">KCP 监听端口 (UDP) <span class="yc-field-hint">kcpBindPort</span></span>
+               <input type="number" data-sf-num="kcpBindPort" value="${srv.kcpBindPort || ""}" placeholder="留空不启用" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">QUIC 监听端口 (UDP) <span class="yc-field-hint">quicBindPort</span></span>
+               <input type="number" data-sf-num="quicBindPort" value="${srv.quicBindPort || ""}" placeholder="留空不启用" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">代理对外监听地址 <span class="yc-field-hint">proxyBindAddr</span></span>
+               <input type="text" data-sf="proxyBindAddr" value="${esc(srv.proxyBindAddr || "")}" placeholder="默认跟随 bindAddr" />
+             </label>
+           </div>
+           <div class="yc-check-row">
+             <label class="yc-switch-label">
+               <input type="checkbox" data-sf-bool="autoStart" ${srv.autoStart ? "checked" : ""} />
+               <span>KurumiFrp 启动时自动拉起此服务端实例</span>
+             </label>
+           </div>`
+        )}
+
+        ${renderAccordion(
+          "s2",
+          STATE.openServerAccs,
+          "02",
+          "虚拟主机与多路复用 (Vhost HTTP / HTTPS / TCPMux)",
+          `<div class="yc-grid-2">
+             <label class="yc-field">
+               <span class="yc-field-label">HTTP 虚拟主机端口 <span class="yc-field-hint">vhostHTTPPort</span></span>
+               <input type="number" data-sf-num="vhostHTTPPort" value="${srv.vhostHTTPPort || ""}" placeholder="如 80 或 8080" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">HTTPS 虚拟主机端口 <span class="yc-field-hint">vhostHTTPSPort</span></span>
+               <input type="number" data-sf-num="vhostHTTPSPort" value="${srv.vhostHTTPSPort || ""}" placeholder="如 443 或 8443" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">Vhost 响应超时(秒) <span class="yc-field-hint">vhostHTTPTimeout</span></span>
+               <input type="number" data-sf-num="vhostHTTPTimeout" value="${srv.vhostHTTPTimeout || ""}" placeholder="默认 60" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">TCPMux HTTP CONNECT 端口 <span class="yc-field-hint">tcpmuxHTTPConnectPort</span></span>
+               <input type="number" data-sf-num="tcpmuxHTTPConnectPort" value="${srv.tcpmuxHTTPConnectPort || ""}" placeholder="如 1337" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">泛解析二级域名后缀 <span class="yc-field-hint">subDomainHost</span></span>
+               <input type="text" data-sf="subDomainHost" value="${esc(srv.subDomainHost || "")}" placeholder="如 frp.example.com" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">自定义 404 页面路径 <span class="yc-field-hint">custom404Page</span></span>
+               <input type="text" data-sf="custom404Page" value="${esc(srv.custom404Page || "")}" placeholder="/etc/frp/404.html" />
+             </label>
+           </div>
+           <div class="yc-check-row">
+             <label class="yc-switch-label">
+               <input type="checkbox" data-sf-bool="tcpmuxPassthrough" ${srv.tcpmuxPassthrough ? "checked" : ""} />
+               <span>启用 TCPMux 透传 (tcpmuxPassthrough)</span>
+             </label>
+           </div>`
+        )}
+
+        ${renderAccordion(
+          "s3",
+          STATE.openServerAccs,
+          "03",
+          "客户端鉴权认证 (Token / TokenSource 文件 / OIDC)",
+          `<div class="yc-grid-2">
+             <label class="yc-field">
+               <span class="yc-field-label">鉴权方式 <span class="yc-field-hint">auth.method</span></span>
+               <select data-sf="authMethod">
+                 <option value="token" ${(srv.authMethod || "token") === "token" ? "selected" : ""}>token (共享密钥 / 密钥文件)</option>
+                 <option value="oidc" ${srv.authMethod === "oidc" ? "selected" : ""}>oidc (OpenID Connect 令牌验证)</option>
+               </select>
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">
+                 <span>连接令牌 <span class="yc-field-hint">auth.token</span></span>
+                 <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" style="padding:1px 7px;font-size:11px;" id="genSrvTokenBtn">随机生成</button>
+               </span>
+               <input type="text" data-sf="authToken" value="${esc(srv.authToken || "")}" placeholder="客户端须一致的鉴权密钥" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">从外部文件读取 Token <span class="yc-field-hint">auth.tokenSource.file.path</span></span>
+               <input type="text" data-sf="authTokenSourceFile" value="${esc(srv.authTokenSourceFile || "")}" placeholder="留空则直接使用上方 auth.token" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">OIDC 签发方地址 <span class="yc-field-hint">auth.oidc.issuer</span></span>
+               <input type="text" data-sf="oidcIssuer" value="${esc(srv.oidcIssuer || "")}" placeholder="https://idp.example.com/" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">OIDC 受众标识 <span class="yc-field-hint">auth.oidc.audience</span></span>
+               <input type="text" data-sf="oidcAudience" value="${esc(srv.oidcAudience || "")}" placeholder="frps-cluster" />
+             </label>
+           </div>
+           <div class="yc-check-row">
+             <label class="yc-switch-label">
+               <input type="checkbox" data-sf-scope="HeartBeats" ${scopes.includes("HeartBeats") ? "checked" : ""} />
+               <span>附加鉴权范围: HeartBeats (心跳包签名)</span>
+             </label>
+             <label class="yc-switch-label">
+               <input type="checkbox" data-sf-scope="NewWorkConns" ${scopes.includes("NewWorkConns") ? "checked" : ""} />
+               <span>附加鉴权范围: NewWorkConns (工作连接签名)</span>
+             </label>
+             <label class="yc-switch-label">
+               <input type="checkbox" data-sf-bool="oidcSkipExpiryCheck" ${srv.oidcSkipExpiryCheck ? "checked" : ""} />
+               <span>OIDC 跳过过期校验</span>
+             </label>
+             <label class="yc-switch-label">
+               <input type="checkbox" data-sf-bool="oidcSkipIssuerCheck" ${srv.oidcSkipIssuerCheck ? "checked" : ""} />
+               <span>OIDC 跳过签发者校验</span>
+             </label>
+           </div>`
+        )}
+
+        ${renderAccordion(
+          "s4",
+          STATE.openServerAccs,
+          "04",
+          "传输层、多路复用、QUIC 调优与强制 TLS 证书",
+          `<div class="yc-grid-3">
+             <label class="yc-field">
+               <span class="yc-field-label">单隧道最大连接池 <span class="yc-field-hint">maxPoolCount</span></span>
+               <input type="number" data-sf-num="maxPoolCount" value="${srv.maxPoolCount || ""}" placeholder="默认 5" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">TCP 多路复用 <span class="yc-field-hint">transport.tcpMux</span></span>
+               <select data-sf-tri="tcpMux">
+                 <option value="" ${triBoolVal(srv.tcpMux) === "" ? "selected" : ""}>默认 (开启)</option>
+                 <option value="true" ${triBoolVal(srv.tcpMux) === "true" ? "selected" : ""}>显式开启 (true)</option>
+                 <option value="false" ${triBoolVal(srv.tcpMux) === "false" ? "selected" : ""}>关闭 (false)</option>
+               </select>
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">Mux 保活间隔(秒) <span class="yc-field-hint">tcpMuxKeepaliveInterval</span></span>
+               <input type="number" data-sf-num="tcpMuxKeepaliveInterval" value="${srv.tcpMuxKeepaliveInterval || ""}" placeholder="默认 30" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">TCP Keepalive(秒) <span class="yc-field-hint">tcpKeepalive</span></span>
+               <input type="number" data-sf-num="tcpKeepalive" value="${srv.tcpKeepalive || ""}" placeholder="默认 7200" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">心跳超时(秒) <span class="yc-field-hint">heartbeatTimeout</span></span>
+               <input type="number" data-sf-num="heartbeatTimeout" value="${srv.heartbeatTimeout || ""}" placeholder="默认 90" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">QUIC 保活周期(秒) <span class="yc-field-hint">quic.keepalivePeriod</span></span>
+               <input type="number" data-sf-num="quicKeepalivePeriod" value="${srv.quicKeepalivePeriod || ""}" placeholder="默认 10" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">QUIC 空闲超时(秒) <span class="yc-field-hint">quic.maxIdleTimeout</span></span>
+               <input type="number" data-sf-num="quicMaxIdleTimeout" value="${srv.quicMaxIdleTimeout || ""}" placeholder="默认 30" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">QUIC 最大并发流 <span class="yc-field-hint">quic.maxIncomingStreams</span></span>
+               <input type="number" data-sf-num="quicMaxIncomingStreams" value="${srv.quicMaxIncomingStreams || ""}" placeholder="默认 100000" />
+             </label>
+           </div>
+           <div class="yc-grid-3" style="margin-top:12px;">
+             <label class="yc-field">
+               <span class="yc-field-label">TLS 证书文件 <span class="yc-field-hint">tls.certFile</span></span>
+               <input type="text" data-sf="tlsCertFile" value="${esc(srv.tlsCertFile || "")}" placeholder="/path/to/server.crt" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">TLS 私钥文件 <span class="yc-field-hint">tls.keyFile</span></span>
+               <input type="text" data-sf="tlsKeyFile" value="${esc(srv.tlsKeyFile || "")}" placeholder="/path/to/server.key" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">受信任客户端 CA <span class="yc-field-hint">tls.trustedCaFile</span></span>
+               <input type="text" data-sf="tlsTrustedCaFile" value="${esc(srv.tlsTrustedCaFile || "")}" placeholder="启用 mTLS 时填写" />
+             </label>
+           </div>
+           <div class="yc-check-row">
+             <label class="yc-switch-label">
+               <input type="checkbox" data-sf-bool="tlsForce" ${srv.tlsForce ? "checked" : ""} />
+               <span>仅接受 TLS 加密客户端连接 (transport.tls.force = true)</span>
+             </label>
+           </div>`
+        )}
+
+        ${renderAccordion(
+          "s5",
+          STATE.openServerAccs,
+          "05",
+          "SSH 隧道网关 (sshTunnelGateway · 免安装客户端直通)",
+          `<div class="yc-grid-2">
+             <label class="yc-field">
+               <span class="yc-field-label">SSH 网关监听端口 <span class="yc-field-hint">sshTunnelGateway.bindPort</span></span>
+               <input type="number" data-sf-num="sshGatewayBindPort" value="${srv.sshGatewayBindPort || ""}" placeholder="如 2200 (留空关闭)" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">主机私钥路径 <span class="yc-field-hint">privateKeyFile</span></span>
+               <input type="text" data-sf="sshPrivateKeyFile" value="${esc(srv.sshPrivateKeyFile || "")}" placeholder="可选自定义私钥" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">自动生成私钥路径 <span class="yc-field-hint">autoGenPrivateKeyPath</span></span>
+               <input type="text" data-sf="sshAutoGenPrivateKeyPath" value="${esc(srv.sshAutoGenPrivateKeyPath || "")}" placeholder="./.autogen_ssh_key" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">授权公钥列表文件 <span class="yc-field-hint">authorizedKeysFile</span></span>
+               <input type="text" data-sf="sshAuthorizedKeysFile" value="${esc(srv.sshAuthorizedKeysFile || "")}" placeholder="~/.ssh/authorized_keys" />
+             </label>
+           </div>`
+        )}
+
+        ${renderAccordion(
+          "s6",
+          STATE.openServerAccs,
+          "06",
+          "端口白名单、客户端配额与 NAT 打洞分析",
+          `<div class="yc-grid-2">
+             <label class="yc-field">
+               <span class="yc-field-label">允许开放端口范围 <span class="yc-field-hint">allowPorts</span></span>
+               <input type="text" data-sf="allowPorts" value="${esc(srv.allowPorts || "")}" placeholder="如 2000-3000,3001,9999,10000" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">单客户端最大代理数 <span class="yc-field-hint">maxPortsPerClient</span></span>
+               <input type="number" data-sf-num="maxPortsPerClient" value="${srv.maxPortsPerClient || ""}" placeholder="0 表示不限制" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">用户连接等待超时(秒) <span class="yc-field-hint">userConnTimeout</span></span>
+               <input type="number" data-sf-num="userConnTimeout" value="${srv.userConnTimeout || ""}" placeholder="默认 10" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">UDP 数据包大小(字节) <span class="yc-field-hint">udpPacketSize</span></span>
+               <input type="number" data-sf-num="udpPacketSize" value="${srv.udpPacketSize || ""}" placeholder="默认 1500" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">打洞分析保留时长(小时) <span class="yc-field-hint">natholeAnalysisDataReserveHours</span></span>
+               <input type="number" data-sf-num="natholeAnalysisDataReserveHours" value="${srv.natholeAnalysisDataReserveHours || ""}" placeholder="默认 168" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">向客户端返回详细错误 <span class="yc-field-hint">detailedErrorsToClient</span></span>
+               <select data-sf-tri="detailedErrorsToClient">
+                 <option value="" ${triBoolVal(srv.detailedErrorsToClient) === "" ? "selected" : ""}>默认 (true)</option>
+                 <option value="true" ${triBoolVal(srv.detailedErrorsToClient) === "true" ? "selected" : ""}>开启 (true)</option>
+                 <option value="false" ${triBoolVal(srv.detailedErrorsToClient) === "false" ? "selected" : ""}>隐藏内部细节 (false)</option>
+               </select>
+             </label>
+           </div>`
+        )}
+
+        ${renderAccordion(
+          "s7",
+          STATE.openServerAccs,
+          "07",
+          "日志级别、自定义 HTTP Server Plugins 与附加 TOML",
+          `<div class="yc-grid-3">
+             <label class="yc-field">
+               <span class="yc-field-label">日志级别 <span class="yc-field-hint">log.level</span></span>
+               <select data-sf="logLevel">
+                 <option value="" ${!srv.logLevel ? "selected" : ""}>默认 (info)</option>
+                 <option value="trace" ${srv.logLevel === "trace" ? "selected" : ""}>trace</option>
+                 <option value="debug" ${srv.logLevel === "debug" ? "selected" : ""}>debug</option>
+                 <option value="info" ${srv.logLevel === "info" ? "selected" : ""}>info</option>
+                 <option value="warn" ${srv.logLevel === "warn" ? "selected" : ""}>warn</option>
+                 <option value="error" ${srv.logLevel === "error" ? "selected" : ""}>error</option>
+               </select>
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">日志保留天数 <span class="yc-field-hint">log.maxDays</span></span>
+               <input type="number" data-sf-num="logMaxDays" value="${srv.logMaxDays || ""}" placeholder="默认 3" />
+             </label>
+             <label class="yc-field" style="justify-content:flex-end;">
+               <label class="yc-switch-label">
+                 <input type="checkbox" data-sf-bool="disablePrintColor" ${srv.disablePrintColor ? "checked" : ""} />
+                 <span>禁用终端颜色码</span>
+               </label>
+             </label>
+           </div>
+
+           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--yc-border);">
+             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+               <strong style="font-size:13px;">自定义服务端 HTTP 插件 ([[httpPlugins]])</strong>
+               <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" id="addSrvHttpPluginBtn">+ 添加 HTTP 插件</button>
+             </div>
+             <div id="srvHttpPluginsList" style="display:flex;flex-direction:column;gap:10px;">
+               ${
+                 plugins.length === 0
+                   ? `<div style="font-size:12px;color:var(--yc-muted);">KurumiFrp 运行时已自动挂载内置连接管控与远控握手插件，如有额外外部鉴权服务可在此追加。</div>`
+                   : plugins
+                       .map(
+                         (hp, idx) => `
+                   <div style="padding:10px;border:1px solid var(--yc-border);border-radius:8px;background:#faf9fd;">
+                     <div class="yc-grid-3">
+                       <input type="text" placeholder="插件名称" data-hp-idx="${idx}" data-hp-k="name" value="${esc(hp.name || "")}" />
+                       <input type="text" placeholder="127.0.0.1:9001" data-hp-idx="${idx}" data-hp-k="addr" value="${esc(hp.addr || "")}" />
+                       <div style="display:flex;gap:6px;">
+                         <input type="text" placeholder="/handler" data-hp-idx="${idx}" data-hp-k="path" value="${esc(hp.path || "/handler")}" />
+                         <button type="button" class="yc-btn yc-btn-danger yc-btn-sm" data-hp-del="${idx}">删</button>
+                       </div>
+                     </div>
+                     <div class="yc-check-row" style="margin-top:6px;font-size:12px;">
+                       ${["Login", "NewProxy", "CloseProxy", "Ping", "NewWorkConn", "NewUserConn"]
+                         .map(
+                           (op) => `
+                         <label class="yc-switch-label" style="font-size:12px;">
+                           <input type="checkbox" data-hp-op="${idx}::${op}" ${(hp.ops || []).includes(op) ? "checked" : ""} />
+                           <span>${op}</span>
+                         </label>`
+                         )
+                         .join("")}
+                     </div>
+                   </div>`
+                       )
+                       .join("")
+               }
+             </div>
+           </div>
+
+           <label class="yc-field" style="margin-top:14px;">
+             <span class="yc-field-label">自定义附加 TOML 原文 <span class="yc-field-hint">extraToml</span></span>
+             <textarea rows="3" data-sf="extraToml" placeholder="# 可填写任意实验性或自定义顶层参数">${esc(srv.extraToml || "")}</textarea>
+           </label>`
+        )}
+      </div>`;
+
+    const liveToml = renderServerTOMLLive(srv);
+    const rightHTML = `
+      <div class="yc-toml-studio">
+        <div class="yc-toml-head">
+          <div class="yc-toml-title">
+            <span class="yc-dot yc-dot-ok"></span>
+            <span>frps.toml · 双向实时代码编辑器</span>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button type="button" class="yc-btn yc-btn-ghost-dark yc-btn-sm" id="srvTomlCopyBtn">复制</button>
+            <button type="button" class="yc-btn yc-btn-ghost-dark yc-btn-sm" id="srvTomlParseBtn" title="将下方修改后的 TOML 解析同步回左侧表单">← 解析同步至表单</button>
+            <button type="button" class="yc-btn yc-btn-primary yc-btn-sm" id="srvTomlSaveBtn">保存并应用 TOML</button>
+          </div>
+        </div>
+        <textarea id="srvTomlTextarea" class="yc-toml-editor" spellcheck="false">${esc(liveToml)}</textarea>
+        <div class="yc-toml-foot">
+          <span>修改左侧任一控件会自动实时更新此文件；也可直接编辑代码并一键反向同步至 UI。</span>
+        </div>
+      </div>`;
+
+    container.innerHTML = `<div class="yc-studio-split">${leftHTML}${rightHTML}</div>`;
+
+    const syncTomlPreview = () => {
+      STATE.serverDraftDirty = true;
+      const ta = container.querySelector("#srvTomlTextarea");
+      if (ta && document.activeElement !== ta) {
+        ta.value = renderServerTOMLLive(srv);
+      }
+    };
+
+    container.querySelectorAll("[data-acc-toggle]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const k = btn.dataset.accToggle;
+        STATE.openServerAccs[k] = !STATE.openServerAccs[k];
+        btn.closest(".yc-accordion").classList.toggle("is-open", STATE.openServerAccs[k]);
+      });
+    });
+
+    container.querySelectorAll("[data-sf]").forEach((el) => {
+      el.addEventListener("input", () => {
+        srv[el.dataset.sf] = el.value;
+        syncTomlPreview();
+      });
+    });
+    container.querySelectorAll("[data-sf-num]").forEach((el) => {
+      el.addEventListener("input", () => {
+        const v = el.value.trim();
+        srv[el.dataset.sfNum] = v === "" ? 0 : parseInt(v, 10) || 0;
+        syncTomlPreview();
+      });
+    });
+    container.querySelectorAll("[data-sf-bool]").forEach((el) => {
+      el.addEventListener("change", () => {
+        srv[el.dataset.sfBool] = el.checked;
+        syncTomlPreview();
+      });
+    });
+    container.querySelectorAll("[data-sf-tri]").forEach((el) => {
+      el.addEventListener("change", () => {
+        const v = el.value;
+        if (v === "") delete srv[el.dataset.sfTri];
+        else srv[el.dataset.sfTri] = v === "true";
+        syncTomlPreview();
+      });
+    });
+    container.querySelectorAll("[data-sf-scope]").forEach((el) => {
+      el.addEventListener("change", () => {
+        const set = new Set(srv.authAdditionalScopes || []);
+        if (el.checked) set.add(el.dataset.sfScope);
+        else set.delete(el.dataset.sfScope);
+        srv.authAdditionalScopes = Array.from(set);
+        syncTomlPreview();
+      });
+    });
+
+    const genBtn = container.querySelector("#genSrvTokenBtn");
+    if (genBtn) {
+      genBtn.addEventListener("click", () => {
+        srv.authToken = randomSecret(20);
+        const inp = container.querySelector('[data-sf="authToken"]');
+        if (inp) inp.value = srv.authToken;
+        syncTomlPreview();
+      });
+    }
+
+    const addHpBtn = container.querySelector("#addSrvHttpPluginBtn");
+    if (addHpBtn) {
+      addHpBtn.addEventListener("click", () => {
+        srv.httpPlugins = srv.httpPlugins || [];
+        srv.httpPlugins.push({ name: "custom-plugin-" + (srv.httpPlugins.length + 1), addr: "127.0.0.1:9001", path: "/handler", ops: ["Login", "NewProxy"] });
+        STATE.serverDraftDirty = true;
+        renderServerStudioSubTab(container, srv);
+      });
+    }
+    container.querySelectorAll("[data-hp-k]").forEach((el) => {
+      el.addEventListener("input", () => {
+        const idx = Number(el.dataset.hpIdx);
+        if (srv.httpPlugins && srv.httpPlugins[idx]) {
+          srv.httpPlugins[idx][el.dataset.hpK] = el.value;
+          syncTomlPreview();
+        }
+      });
+    });
+    container.querySelectorAll("[data-hp-op]").forEach((el) => {
+      el.addEventListener("change", () => {
+        const [idxStr, op] = el.dataset.hpOp.split("::");
+        const hp = srv.httpPlugins && srv.httpPlugins[Number(idxStr)];
+        if (!hp) return;
+        const set = new Set(hp.ops || []);
+        if (el.checked) set.add(op);
+        else set.delete(op);
+        hp.ops = Array.from(set);
+        syncTomlPreview();
+      });
+    });
+    container.querySelectorAll("[data-hp-del]").forEach((el) => {
+      el.addEventListener("click", () => {
+        srv.httpPlugins.splice(Number(el.dataset.hpDel), 1);
+        STATE.serverDraftDirty = true;
+        renderServerStudioSubTab(container, srv);
+      });
+    });
+
+    container.querySelector("#srvTomlCopyBtn").addEventListener("click", () => {
+      copyText(container.querySelector("#srvTomlTextarea").value, "frps.toml");
+    });
+    container.querySelector("#srvTomlParseBtn").addEventListener("click", async () => {
+      try {
+        const raw = container.querySelector("#srvTomlTextarea").value;
+        const out = await apiFetch("/api/toml/parse", { method: "POST", body: { kind: "frps", prevServer: srv, toml: raw } });
+        STATE.serverDraft = out.server;
+        STATE.serverDraftDirty = true;
+        toast("已从 TOML 代码反向解析并更新左侧全部 UI 控件");
+        renderFrpsWorkspace();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    container.querySelector("#srvTomlSaveBtn").addEventListener("click", async () => {
+      try {
+        const raw = container.querySelector("#srvTomlTextarea").value;
+        const out = await apiFetch("/api/servers/save-toml", { method: "POST", body: { id: srv.id, toml: raw } });
+        STATE.serverDraft = out.server;
+        STATE.serverDraftDirty = false;
+        toast("已保存并应用 frps.toml 配置");
+        await refreshState(true);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  }
+
+  async function saveCurrentServerDraft(silent) {
+    if (!STATE.serverDraft) return;
+    try {
+      const out = await apiFetch("/api/servers/save", { method: "POST", body: STATE.serverDraft });
+      STATE.selectedServerId = out.id;
+      STATE.serverDraftDirty = false;
+      if (!silent) toast("FRPS 服务端配置已保存");
+      await refreshState(true);
+    } catch (err) {
+      toast(err.message, true);
+      throw err;
+    }
+  }
+
+  async function createBlankServer() {
+    const usedPorts = new Set(STATE.servers.map((s) => s.bindPort));
+    let port = 7000;
+    while (usedPorts.has(port)) port += 10;
+    const cover = PORTRAIT_COVERS[STATE.servers.length % PORTRAIT_COVERS.length];
+    try {
+      const out = await apiFetch("/api/servers/save", {
+        method: "POST",
+        body: {
+          name: "转发服务端 " + String.fromCharCode(65 + (STATE.servers.length % 26)),
+          coverAsset: "k_" + cover.id,
+          bindAddr: "0.0.0.0",
+          bindPort: port,
+          authMethod: "token",
+          authToken: randomSecret(16),
+          autoStart: false
+        }
+      });
+      STATE.frpsMode = "local";
+      STATE.selectedServerId = out.id;
+      STATE.serverDraftDirty = false;
+      toast("已新建 FRPS 服务端实例");
+      await refreshState(true);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  // ==================== FRPS Sub-Tab: Connected Remote Clients ====================
+  function renderServerRemoteClientsSubTab(container, srv, remotes) {
+    if (remotes.length === 0) {
+      container.innerHTML = `
+        <div class="yc-card yc-empty-state">
+          <img src="assets/k_56.webp" alt="" class="yc-empty-sticker" />
+          <h4 style="margin:0 0 8px;color:var(--yc-indigo-ink);">当前尚无 KurumiFrp 客户端连接到「${esc(srv.name)}」</h4>
+          <p style="margin:0 auto;max-width:560px;font-size:13px;line-height:1.7;">
+            当任意电脑（如学校电脑 B、家里电脑 C、公司客户端 D、朋友电脑 E）安装 KurumiFrp 并启动一个指向 <code>${esc(srv.bindAddr === "0.0.0.0" ? "<本机公网IP>" : srv.bindAddr)}:${srv.bindPort}</code> 的 <code>frpc</code> 实例后，它会自动出现在此处，无需开放任何额外端口即可直接远控其配置与 P2P 规则。
+          </p>
+        </div>`;
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="yc-cards-grid">
+        ${remotes
+          .map(
+            (rc, idx) => `
+          <div class="yc-work-card">
+            <div class="yc-work-cover">
+              <img src="${PORTRAIT_COVERS[(idx + 2) % PORTRAIT_COVERS.length].src}" alt="${esc(rc.clientName)}" />
+              <span class="w-num">${pad2(idx + 1)}</span>
+            </div>
+            <div class="yc-work-body">
+              <div>
+                <h4 class="yc-work-title">
+                  <span>${esc(rc.clientName)}</span>
+                  <span class="yc-tag ${rc.online ? "yc-tag-ok" : "yc-tag-danger"}">${rc.online ? "已连接 · 可远控" : "离线"}</span>
+                </h4>
+                <div class="yc-work-route">
+                  主机: ${esc(rc.hostname || "-")} (${esc(rc.os || "-")}/${esc(rc.arch || "-")}) · 来源: ${esc(rc.remoteAddr || "NAT")}
+                </div>
+                <div class="yc-tag-row">
+                  ${rc.frpUser ? `<span class="yc-tag yc-tag-pink">user: ${esc(rc.frpUser)}</span>` : `<span class="yc-tag">无前缀用户</span>`}
+                  <span class="yc-tag">活跃映射: ${rc.proxyCount || 0}</span>
+                  ${rc.appVersion ? `<span class="yc-tag">v${esc(rc.appVersion)}</span>` : ""}
+                </div>
+              </div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button type="button" class="yc-btn yc-btn-primary yc-btn-sm" data-open-rc="${esc(srv.id)}::${esc(rc.clientId)}">
+                  远控编辑配置 &amp; 隧道
+                </button>
+                <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-reload-rc="${esc(srv.id)}::${esc(rc.clientId)}">
+                  热重载
+                </button>
+                <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-p2p-rc="${esc(srv.id)}::${esc(rc.clientId)}">
+                  发起 P2P
+                </button>
+              </div>
+            </div>
+          </div>`
+          )
+          .join("")}
+      </div>`;
+
+    container.querySelectorAll("[data-open-rc]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const [sid, cid] = b.dataset.openRc.split("::");
+        openRemoteClientConsole(sid, cid);
+      });
+    });
+    container.querySelectorAll("[data-reload-rc]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        const [sid, cid] = b.dataset.reloadRc.split("::");
+        try {
+          await apiFetch("/api/remote/client/reload", { method: "POST", body: { serverId: sid, clientId: cid } });
+          toast("已通过实例连接触发远端客户端无缝热重载");
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    });
+    container.querySelectorAll("[data-p2p-rc]").forEach((b) => {
+      b.addEventListener("click", () => {
+        STATE.topologyTab = "p2pWizard";
+        switchView("topology");
+      });
+    });
+  }
+
+  // ==================== FRPS Sub-Tab: Connection Dashboard ====================
+  function renderServerConnsSubTab(container, srv, conns) {
+    if (conns.length === 0) {
+      container.innerHTML = `
+        <div class="yc-card yc-empty-state">
+          <img src="assets/k_55.webp" alt="" class="yc-empty-sticker" />
+          <h4 style="margin:0 0 8px;">暂无活跃或已登记的客户端代理连接</h4>
+          <p style="margin:0;font-size:13px;">当客户端将端口映射到此服务端时，所有隧道会自动收录于此，支持实时流量统计、一键开关、限流(MB)、限速(KB/s)与到期时间管控。</p>
+        </div>`;
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="yc-card">
+        <div class="yc-table-wrap">
+          <table class="yc-table">
+            <thead>
+              <tr>
+                <th>代理名称</th>
+                <th>协议</th>
+                <th>状态</th>
+                <th>当前连接</th>
+                <th>累计入 / 出站</th>
+                <th>实时速率</th>
+                <th>管控策略 (限流/限速/限时)</th>
+                <th>开关与操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${conns
+                .map((c) => {
+                  const isOk = c.status === "online";
+                  const isBlocked = c.status === "blocked";
+                  const polParts = [];
+                  if (c.trafficLimitMB > 0) polParts.push("限流 " + c.trafficLimitMB + "MB");
+                  if (c.speedLimitKBps > 0) polParts.push("限速 " + c.speedLimitKBps + "KB/s");
+                  if (c.expiresAt) polParts.push("限时 " + c.expiresAt.slice(0, 16).replace("T", " "));
+                  return `
+                    <tr>
+                      <td><strong>${esc(c.proxyName)}</strong>${c.note ? `<div style="font-size:11px;color:var(--yc-muted);">${esc(c.note)}</div>` : ""}</td>
+                      <td><code>${esc(c.proxyType || "-")}</code></td>
+                      <td>
+                        <span class="yc-tag ${isOk ? "yc-tag-ok" : isBlocked ? "yc-tag-danger" : ""}">${esc(c.status)}</span>
+                        ${c.blockReason ? `<div style="font-size:11px;color:var(--yc-danger);margin-top:3px;">${esc(c.blockReason)}</div>` : ""}
+                      </td>
+                      <td>${c.curConns || 0}</td>
+                      <td style="font-family:var(--yc-mono);font-size:12px;">↓ ${formatBytes(c.totalInBytes)} / ↑ ${formatBytes(c.totalOutBytes)}</td>
+                      <td style="font-family:var(--yc-mono);font-size:12px;">${formatBytes((c.speedInBps || 0) + (c.speedOutBps || 0))}/s</td>
+                      <td>${polParts.length ? polParts.map((p) => `<span class="yc-tag yc-tag-pink">${esc(p)}</span>`).join(" ") : `<span style="color:var(--yc-subtle);">无限制</span>`}</td>
+                      <td>
+                        <div style="display:flex;gap:6px;align-items:center;">
+                          <button type="button" class="yc-btn ${c.enabled ? "yc-btn-outline" : "yc-btn-primary"} yc-btn-sm" data-conn-toggle="${esc(c.proxyName)}">
+                            ${c.enabled ? "阻断" : "放行"}
+                          </button>
+                          <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-conn-edit="${esc(c.proxyName)}">策略</button>
+                        </div>
+                      </td>
+                    </tr>`;
+                })
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+
+    container.querySelectorAll("[data-conn-toggle]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const item = conns.find((x) => x.proxyName === btn.dataset.connToggle);
+        if (!item) return;
+        try {
+          await apiFetch("/api/servers/conn-policy", {
+            method: "POST",
+            body: {
+              serverId: srv.id,
+              proxyName: item.proxyName,
+              enabled: !item.enabled,
+              trafficLimitMB: item.trafficLimitMB || 0,
+              speedLimitKBps: item.speedLimitKBps || 0,
+              expiresAt: item.expiresAt || "",
+              note: item.note || ""
+            }
+          });
+          toast((!item.enabled ? "已放行连接: " : "已阻断连接: ") + item.proxyName);
+          await refreshState(true);
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    });
+
+    container.querySelectorAll("[data-conn-edit]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const item = conns.find((x) => x.proxyName === btn.dataset.connEdit);
+        if (item) openConnPolicyModal(srv.id, item);
+      });
+    });
+  }
+
+  function openConnPolicyModal(serverId, item) {
+    const localDT = item.expiresAt ? item.expiresAt.slice(0, 16) : "";
+    openModal(
+      `<div class="yc-modal-head">
+         <h3 class="yc-modal-title">连接管控策略 · ${esc(item.proxyName)}</h3>
+         <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-modal-close>关闭</button>
+       </div>
+       <div class="yc-grid-2">
+         <label class="yc-field">
+           <span class="yc-field-label">流量配额上限 (MB) <span class="yc-field-hint">0 为不限流</span></span>
+           <input id="polTrafficMB" type="number" min="0" value="${item.trafficLimitMB || 0}" />
+         </label>
+         <label class="yc-field">
+           <span class="yc-field-label">速率阈值 (KB/s) <span class="yc-field-hint">0 为不限速</span></span>
+           <input id="polSpeedKB" type="number" min="0" value="${item.speedLimitKBps || 0}" />
+         </label>
+         <label class="yc-field">
+           <span class="yc-field-label">到期自动阻断时间 <span class="yc-field-hint">留空长期有效</span></span>
+           <input id="polExpires" type="datetime-local" value="${esc(localDT)}" />
+         </label>
+         <label class="yc-field">
+           <span class="yc-field-label">策略备注</span>
+           <input id="polNote" type="text" value="${esc(item.note || "")}" placeholder="如：临时远程协助" />
+         </label>
+       </div>
+       <div class="yc-check-row" style="margin-top:10px;">
+         <label class="yc-switch-label">
+           <input id="polEnabled" type="checkbox" ${item.enabled ? "checked" : ""} />
+           <span>允许该连接转发 (连接总开关)</span>
+         </label>
+         <label class="yc-switch-label">
+           <input id="polResetTraffic" type="checkbox" />
+           <span>同时清零历史累计统计流量</span>
+         </label>
+       </div>
+       <div class="yc-modal-foot">
+         <button type="button" class="yc-btn yc-btn-outline" data-modal-close>取消</button>
+         <button type="button" id="polSaveBtn" class="yc-btn yc-btn-primary">保存策略</button>
+       </div>`,
+      (dlg) => {
+        dlg.querySelector("#polSaveBtn").addEventListener("click", async () => {
+          const dtRaw = dlg.querySelector("#polExpires").value.trim();
+          const iso = dtRaw ? new Date(dtRaw).toISOString() : "";
+          try {
+            await apiFetch("/api/servers/conn-policy", {
+              method: "POST",
+              body: {
+                serverId,
+                proxyName: item.proxyName,
+                enabled: dlg.querySelector("#polEnabled").checked,
+                trafficLimitMB: parseInt(dlg.querySelector("#polTrafficMB").value, 10) || 0,
+                speedLimitKBps: parseInt(dlg.querySelector("#polSpeedKB").value, 10) || 0,
+                expiresAt: iso,
+                note: dlg.querySelector("#polNote").value,
+                resetTraffic: dlg.querySelector("#polResetTraffic").checked
+              }
+            });
+            closeModal();
+            toast("连接策略已更新");
+            await refreshState(true);
+          } catch (err) {
+            toast(err.message, true);
+          }
+        });
+      },
+      560
+    );
+  }
+
+  // ==================== Remote Client Inspector (Inside FRPS via Connection!) ====================
+  async function openRemoteClientConsole(serverId, clientId) {
+    stopLogStream();
+    STATE.activeView = "frps";
+    STATE.frpsMode = "remoteClient";
+    STATE.remoteTarget = { serverId, clientId };
+    renderTopBar();
+    $("viewHome").hidden = true;
+    $("viewFrps").hidden = false;
+    $("viewFrpc").hidden = true;
+    $("viewTopology").hidden = true;
+    $("viewSystem").hidden = true;
+
+    try {
+      const snap = await apiFetch(`/api/remote/client?serverId=${encodeURIComponent(serverId)}&clientId=${encodeURIComponent(clientId)}`);
+      STATE.remoteSnapshot = snap;
+      STATE.remoteClientDraft = deepClone(snap.profile);
+      renderFrpsWorkspace();
+    } catch (err) {
+      toast("拉取远端客户端配置失败: " + err.message, true);
+      STATE.frpsMode = "local";
+      renderFrpsWorkspace();
+    }
+  }
+
+  function renderRemoteClientPane(main) {
+    const snap = STATE.remoteSnapshot;
+    const cli = STATE.remoteClientDraft;
+    const parentSrv = STATE.servers.find((s) => s.id === STATE.remoteTarget.serverId);
+    if (!snap || !cli) {
+      main.innerHTML = `<div class="yc-card">正在通过连接通道读取远端客户端配置…</div>`;
+      return;
+    }
+
+    main.innerHTML = `
+      <div class="yc-remote-banner">
+        <div>
+          <div style="font-size:11px;letter-spacing:0.16em;color:#ff9ec0;font-weight:700;">CONNECTION-SCOPED REMOTE MANAGEMENT</div>
+          <div style="font-size:16px;font-weight:700;margin-top:3px;">
+            正在通过服务端「${esc(parentSrv ? parentSrv.name : STATE.remoteTarget.serverId)}」连接远控客户端实例：「${esc(cli.name)}」
+          </div>
+          <div style="font-size:12.5px;color:rgba(248,245,255,0.8);margin-top:4px;">
+            远端主机: ${esc(snap.summary.hostname || "-")} · 来源地址: ${esc(snap.summary.remoteAddr || "NAT")} · 仅限管理当前已接入的这一个 frpc 实例配置
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button type="button" class="yc-btn yc-btn-ghost-dark yc-btn-sm" id="rcRefreshBtn">刷新快照</button>
+          <button type="button" class="yc-btn yc-btn-ghost-dark yc-btn-sm" id="rcHotReloadBtn">远端热重载</button>
+          <button type="button" class="yc-btn yc-btn-primary yc-btn-sm" id="rcBackSrvBtn">← 返回服务端本身配置</button>
+        </div>
+      </div>
+
+      <div class="yc-subtabs">
+        <button type="button" class="yc-subtab${STATE.remoteSubTab === "tunnels" ? " is-active" : ""}" data-rc-tab="tunnels">
+          远端隧道与访问端管理 (${(cli.tunnels || []).length})
+        </button>
+        <button type="button" class="yc-subtab${STATE.remoteSubTab === "studio" ? " is-active" : ""}" data-rc-tab="studio">
+          远端全局参数 ⇄ 实时双向 frpc.toml
+        </button>
+        <button type="button" class="yc-subtab${STATE.remoteSubTab === "logs" ? " is-active" : ""}" data-rc-tab="logs">
+          远端实例运行日志
+        </button>
+      </div>
+      <div id="remoteSubBody"></div>`;
+
+    main.querySelector("#rcBackSrvBtn").addEventListener("click", () => {
+      STATE.frpsMode = "local";
+      renderFrpsWorkspace();
+    });
+    main.querySelector("#rcRefreshBtn").addEventListener("click", () => {
+      openRemoteClientConsole(STATE.remoteTarget.serverId, STATE.remoteTarget.clientId);
+    });
+    main.querySelector("#rcHotReloadBtn").addEventListener("click", async () => {
+      try {
+        await apiFetch("/api/remote/client/reload", { method: "POST", body: STATE.remoteTarget });
+        toast("远端客户端实例已完成热重载");
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    main.querySelectorAll("[data-rc-tab]").forEach((b) => {
+      b.addEventListener("click", () => {
+        STATE.remoteSubTab = b.dataset.rcTab;
+        renderRemoteClientPane(main);
+      });
+    });
+
+    const sub = main.querySelector("#remoteSubBody");
+    const remoteCallbacks = {
+      isRemote: true,
+      runtimeView: snap.runtime || {},
+      onSaveClient: async (updatedCli) => {
+        const res = await apiFetch("/api/remote/client/save", {
+          method: "POST",
+          body: {
+            serverId: STATE.remoteTarget.serverId,
+            clientId: STATE.remoteTarget.clientId,
+            profile: updatedCli,
+            allowUpstreamChange: STATE.remoteAllowUpstream
+          }
+        });
+        STATE.remoteClientDraft = deepClone(res.profile);
+        STATE.remoteSnapshot.profile = deepClone(res.profile);
+        STATE.remoteSnapshot.toml = res.toml;
+        toast("已通过连接远控下发并热重载远端客户端配置！");
+        await refreshState(true);
+      },
+      onSaveClientTOML: async (rawToml) => {
+        const res = await apiFetch("/api/remote/client/save-toml", {
+          method: "POST",
+          body: {
+            serverId: STATE.remoteTarget.serverId,
+            clientId: STATE.remoteTarget.clientId,
+            toml: rawToml,
+            allowUpstreamChange: STATE.remoteAllowUpstream
+          }
+        });
+        STATE.remoteClientDraft = deepClone(res.profile);
+        STATE.remoteSnapshot.profile = deepClone(res.profile);
+        STATE.remoteSnapshot.toml = res.toml;
+        toast("已向远端客户端下发 frpc.toml 并完成热重载！");
+        await refreshState(true);
+      }
+    };
+
+    if (STATE.remoteSubTab === "tunnels") {
+      renderClientTunnelsSection(sub, cli, remoteCallbacks);
+    } else if (STATE.remoteSubTab === "studio") {
+      renderClientStudioSection(sub, cli, remoteCallbacks);
+    } else {
+      const lines = snap.logs || [];
+      sub.innerHTML = `
+        <div class="yc-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <strong>远端客户端最近日志 (${lines.length} 行 · 敏感密钥已自动脱敏)</strong>
+          </div>
+          <div class="yc-log-box">${lines.length ? esc(lines.join("\n")) : "暂无远端日志输出"}</div>
+        </div>`;
+    }
+  }
+
+  // ==================== 5. View 3: Local FRPC Client & Full Tunnel Studio ====================
+  function renderFrpcWorkspace() {
+    const sb = $("frpcSidebar");
+    const main = $("frpcMainPane");
+    if (!sb || !main) return;
+
+    sb.innerHTML = `
+      <div class="yc-side-box">
+        <div class="yc-side-heading">
+          <span>本机 FRPC 客户端 (${STATE.clients.length})</span>
+          <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" id="sideAddCliBtn">+ 新建</button>
+        </div>
+        <div class="yc-dir-list">
+          ${
+            STATE.clients.length === 0
+              ? `<div style="padding:12px 6px;font-size:12.5px;color:var(--yc-muted);">暂无客户端实例，点击「+ 新建」连接远端 frps。</div>`
+              : STATE.clients
+                  .map((cli, idx) => {
+                    const rt = STATE.runtime[cli.id] || {};
+                    const isSel = cli.id === STATE.selectedClientId;
+                    return `
+                      <button type="button" class="yc-dir-item${isSel ? " is-active" : ""}" data-select-cli="${esc(cli.id)}">
+                        <img src="${coverForIndex(cli.coverAsset, idx + 3)}" alt="" class="yc-dir-thumb" />
+                        <div class="yc-dir-meta">
+                          <div class="yc-dir-title">
+                            <span class="yc-dot ${rt.running ? "yc-dot-ok" : ""}"></span>
+                            <span>${pad2(idx + 1)} · ${esc(cli.name)}</span>
+                          </div>
+                          <div class="yc-dir-sub">→ ${esc(cli.serverAddr)}:${cli.serverPort} · ${(cli.tunnels || []).length} 条规则</div>
+                        </div>
+                      </button>`;
+                  })
+                  .join("")
+          }
+        </div>
+      </div>
+      <div class="yc-side-box" style="font-size:12px;line-height:1.65;color:var(--yc-muted);">
+        <strong style="color:var(--yc-indigo-ink);display:block;margin-bottom:4px;">连接权限说明</strong>
+        每个 <code>frpc</code> 实例仅管理本实例自身的配置文件与隧道；当它连接到某台运行 KurumiFrp 的 <code>frps</code> 服务端后，该服务端可通过此连接对本实例进行远控协同。
+      </div>`;
+
+    sb.querySelector("#sideAddCliBtn").addEventListener("click", createBlankClient);
+    sb.querySelectorAll("[data-select-cli]").forEach((b) => {
+      b.addEventListener("click", () => {
+        stopLogStream();
+        STATE.selectedClientId = b.dataset.selectCli;
+        const found = STATE.clients.find((x) => x.id === STATE.selectedClientId);
+        STATE.clientDraft = found ? deepClone(found) : null;
+        STATE.clientDraftDirty = false;
+        renderFrpcWorkspace();
+      });
+    });
+
+    if (!STATE.selectedClientId || !STATE.clientDraft) {
+      main.innerHTML = `
+        <div class="yc-card yc-empty-state">
+          <img src="assets/k_54.webp" alt="" class="yc-empty-sticker" />
+          <h3 style="margin:0 0 8px;color:var(--yc-indigo-ink);">尚未创建本机 FRPC 客户端实例</h3>
+          <p style="margin:0 0 18px;font-size:13.5px;">无公网 IP 主机（如学校电脑 B、家里电脑 C、朋友电脑 E）或需级联上报的主机（如公司电脑 D）可建立 frpc 实例接入公网 frps。</p>
+          <button type="button" class="yc-btn yc-btn-primary" id="emptyCreateCliBtn">+ 立即创建第一个 FRPC 实例</button>
+        </div>`;
+      main.querySelector("#emptyCreateCliBtn").addEventListener("click", createBlankClient);
+      return;
+    }
+
+    const cliIdx = Math.max(0, STATE.clients.findIndex((c) => c.id === STATE.selectedClientId));
+    const cli = STATE.clientDraft;
+    const rt = STATE.runtime[cli.id] || { state: "stopped", tunnelStats: [] };
+    const coverSrc = coverForIndex(cli.coverAsset, cliIdx + 3);
+    const remoteAllowed = cli.remoteCtrlEnabled !== false;
+
+    main.innerHTML = `
+      <div class="yc-profile-hero-card">
+        <div class="yc-framed-portrait">
+          <img src="${coverSrc}" alt="${esc(cli.name)}" />
+          <span class="yc-portrait-num">${pad2(cliIdx + 1)}</span>
+        </div>
+        <div>
+          <div class="yc-profile-head-row">
+            <div class="yc-profile-title-wrap">
+              <h3 class="yc-profile-title">${esc(cli.name)}</h3>
+              <span class="yc-tag ${rt.running ? "yc-tag-ok" : ""}">${rt.running ? "已连接运行中 · PID " + (rt.pid || "-") : "未启动"}</span>
+              <span class="yc-tag yc-tag-pink">${esc((cli.protocol || "tcp").toUpperCase())}</span>
+              ${remoteAllowed ? `<span class="yc-tag">已开启服务端连接远控</span>` : `<span class="yc-tag yc-tag-warn">仅本地管理</span>`}
+              ${STATE.clientDraftDirty ? `<span class="yc-tag yc-tag-warn">有未保存修改</span>` : ""}
+            </div>
+            <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" id="cliPickCoverBtn">更换卡片狂三立绘</button>
+          </div>
+          <div class="yc-profile-kv-row">
+            <span>目标服务端: <code>${esc(cli.serverAddr)}:${cli.serverPort}</code></span>
+            ${cli.user ? `<span>客户端用户前缀: <code>${esc(cli.user)}</code></span>` : ""}
+            <span>已配置规则: <strong>${(cli.tunnels || []).length}</strong> 条 (启用 ${(cli.tunnels || []).filter((t) => t.enabled).length} 条)</span>
+          </div>
+          ${rt.lastError ? `<div class="yc-notice yc-notice-danger" style="margin:8px 0;">最近错误：${esc(rt.lastError)}</div>` : ""}
+          <div class="yc-profile-actions">
+            ${
+              rt.running
+                ? `<button type="button" class="yc-btn yc-btn-primary" data-cli-ctrl="reload">⚡ 零中断热重载</button>
+                   <button type="button" class="yc-btn yc-btn-indigo" data-cli-ctrl="restart">重启进程</button>
+                   <button type="button" class="yc-btn yc-btn-danger" data-cli-ctrl="stop">停止实例</button>`
+                : `<button type="button" class="yc-btn yc-btn-primary" data-cli-ctrl="start">▶ 启动并连接 FRPS</button>`
+            }
+            <button type="button" class="yc-btn yc-btn-outline" id="cliSaveAllBtn">保存全局配置</button>
+            <button type="button" class="yc-btn yc-btn-outline" id="cliDupBtn">复制副本</button>
+            <button type="button" class="yc-btn yc-btn-danger" id="cliDelBtn">删除实例</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="yc-subtabs">
+        <button type="button" class="yc-subtab${STATE.frpcSubTab === "tunnels" ? " is-active" : ""}" data-cli-tab="tunnels">
+          隧道与访问端管理 · 全 8 类协议 &amp; 插件 (${(cli.tunnels || []).length})
+        </button>
+        <button type="button" class="yc-subtab${STATE.frpcSubTab === "studio" ? " is-active" : ""}" data-cli-tab="studio">
+          客户端全局参数 ⇄ 实时双向 frpc.toml
+        </button>
+        <button type="button" class="yc-subtab${STATE.frpcSubTab === "logs" ? " is-active" : ""}" data-cli-tab="logs">
+          实时运行日志
+        </button>
+      </div>
+      <div id="frpcSubBody"></div>`;
+
+    main.querySelector("#cliPickCoverBtn").addEventListener("click", () => {
+      openCoverPickerModal(cli.coverAsset, (picked) => {
+        cli.coverAsset = picked;
+        STATE.clientDraftDirty = true;
+        renderFrpcWorkspace();
+      });
+    });
+
+    main.querySelectorAll("[data-cli-ctrl]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        try {
+          if (STATE.clientDraftDirty) await saveLocalClientProfile(cli, true);
+          await apiFetch("/api/clients/control", { method: "POST", body: { id: cli.id, action: b.dataset.cliCtrl } });
+          toast("已执行客户端动作: " + b.dataset.cliCtrl);
+          await refreshState(true);
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    });
+
+    main.querySelector("#cliSaveAllBtn").addEventListener("click", () => saveLocalClientProfile(cli, false));
+    main.querySelector("#cliDupBtn").addEventListener("click", async () => {
+      try {
+        const out = await apiFetch("/api/clients/duplicate", { method: "POST", body: { id: cli.id } });
+        STATE.selectedClientId = out.id;
+        STATE.clientDraftDirty = false;
+        toast("已复制客户端实例副本");
+        await refreshState(true);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    main.querySelector("#cliDelBtn").addEventListener("click", () => {
+      confirmModal("删除 FRPC 客户端实例", `确定删除「${cli.name}」及其名下所有隧道规则吗？`, "确认删除", async () => {
+        try {
+          await apiFetch("/api/clients/delete", { method: "POST", body: { id: cli.id } });
+          STATE.selectedClientId = "";
+          STATE.clientDraft = null;
+          STATE.clientDraftDirty = false;
+          toast("已删除 FRPC 实例");
+          await refreshState(true);
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    });
+
+    main.querySelectorAll("[data-cli-tab]").forEach((b) => {
+      b.addEventListener("click", () => {
+        stopLogStream();
+        STATE.frpcSubTab = b.dataset.cliTab;
+        renderFrpcWorkspace();
+      });
+    });
+
+    const localCallbacks = {
+      isRemote: false,
+      runtimeView: rt,
+      onSaveClient: async (updatedCli) => {
+        await saveLocalClientProfile(updatedCli, false);
+      },
+      onSaveClientTOML: async (rawToml) => {
+        const out = await apiFetch("/api/clients/save-toml", { method: "POST", body: { id: cli.id, toml: rawToml } });
+        STATE.clientDraft = deepClone(out.client);
+        STATE.clientDraftDirty = false;
+        toast("已保存并热重载 frpc.toml！");
+        await refreshState(true);
+      }
+    };
+
+    const sub = main.querySelector("#frpcSubBody");
+    if (STATE.frpcSubTab === "tunnels") {
+      renderClientTunnelsSection(sub, cli, localCallbacks);
+    } else if (STATE.frpcSubTab === "studio") {
+      renderClientStudioSection(sub, cli, localCallbacks);
+    } else {
+      renderInstanceLogsBox(sub, cli.id, rt.running);
+    }
+  }
+
+  async function saveLocalClientProfile(cliObj, silent) {
+    try {
+      const out = await apiFetch("/api/clients/save", { method: "POST", body: cliObj });
+      STATE.selectedClientId = out.id;
+      STATE.clientDraftDirty = false;
+      if (!silent) toast("FRPC 客户端配置已保存并自动同步热重载");
+      await refreshState(true);
+    } catch (err) {
+      toast(err.message, true);
+      throw err;
+    }
+  }
+
+  async function createBlankClient() {
+    const firstSrv = STATE.servers[0];
+    const cover = PORTRAIT_COVERS[(STATE.clients.length + 3) % PORTRAIT_COVERS.length];
+    try {
+      const out = await apiFetch("/api/clients/save", {
+        method: "POST",
+        body: {
+          name: "客户端实例 " + String.fromCharCode(66 + (STATE.clients.length % 25)),
+          coverAsset: "k_" + cover.id,
+          serverAddr: firstSrv ? (firstSrv.bindAddr === "0.0.0.0" ? "127.0.0.1" : firstSrv.bindAddr) : "127.0.0.1",
+          serverPort: firstSrv ? firstSrv.bindPort : 7000,
+          authMethod: "token",
+          authToken: firstSrv ? firstSrv.authToken || "" : "",
+          protocol: "tcp",
+          tlsEnable: true,
+          tunnels: []
+        }
+      });
+      STATE.selectedClientId = out.id;
+      STATE.clientDraftDirty = false;
+      toast("已新建 FRPC 客户端实例");
+      await refreshState(true);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  // ==================== Shared Client Tunnel Studio (Used by Both Local FRPC & Remote FRPS->FRPC!) ====================
+  function renderClientTunnelsSection(container, cli, ctxCallbacks) {
+    const allTunnels = cli.tunnels || [];
+    const liveMap = {};
+    ((ctxCallbacks.runtimeView && ctxCallbacks.runtimeView.tunnelStats) || []).forEach((s) => {
+      liveMap[s.name] = s;
+      const dot = s.name.indexOf(".");
+      if (dot >= 0) liveMap[s.name.slice(dot + 1)] = s;
+    });
+
+    const filtered = allTunnels.filter((t) => {
+      const mode = t.mode || "proxy";
+      const tp = (t.type || "tcp").toLowerCase();
+      if (STATE.tunnelFilter === "visitor") return mode === "visitor";
+      if (STATE.tunnelFilter === "port") return mode !== "visitor" && (tp === "tcp" || tp === "udp");
+      if (STATE.tunnelFilter === "web") return mode !== "visitor" && (tp === "http" || tp === "https" || tp === "tcpmux");
+      if (STATE.tunnelFilter === "p2p") return tp === "xtcp" || tp === "stcp" || tp === "sudp";
+      return true;
+    });
+
+    container.innerHTML = `
+      <div class="yc-card" style="padding:16px 20px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${[
+              ["all", "全部规则 (" + allTunnels.length + ")"],
+              ["port", "TCP / UDP 端口映射"],
+              ["web", "HTTP / HTTPS / TCPMUX"],
+              ["p2p", "XTCP / STCP / SUDP 私密与P2P"],
+              ["visitor", "Visitors 访问发起端"]
+            ]
+              .map(
+                ([k, lbl]) => `
+              <button type="button" class="yc-btn ${STATE.tunnelFilter === k ? "yc-btn-indigo" : "yc-btn-outline"} yc-btn-sm" data-tun-filter="${k}">
+                ${esc(lbl)}
+              </button>`
+              )
+              .join("")}
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="yc-btn yc-btn-primary yc-btn-sm" id="btnAddProxyRule">+ 新增映射隧道 (Proxy)</button>
+            <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" id="btnAddVisitorRule">+ 新增访问发起端 / P2P (Visitor)</button>
+          </div>
+        </div>
+      </div>
+
+      ${
+        filtered.length === 0
+          ? `<div class="yc-card yc-empty-state">
+               <img src="assets/k_58.webp" alt="" class="yc-empty-sticker" />
+               <h4 style="margin:0 0 8px;color:var(--yc-indigo-ink);">当前筛选下暂无隧道规则</h4>
+               <p style="margin:0;font-size:13px;">点击右上「+ 新增映射隧道」暴露本机端口/网站/内置插件服务，或「+ 新增访问发起端」发起 XTCP P2P 点对点直连。</p>
+             </div>`
+          : `<div class="yc-cards-grid">
+               ${filtered
+                 .map((t, idx) => {
+                   const isVis = (t.mode || "proxy") === "visitor";
+                   const tp = (t.type || "tcp").toUpperCase();
+                   const live = liveMap[t.name];
+                   let routeDesc = "";
+                   if (isVis) {
+                     routeDesc = `本机监听 ${t.localIP || "127.0.0.1"}:${t.localPort} ⇄ 对端 [${t.serverUser ? t.serverUser + "." : ""}${t.serverName || "?"}]`;
+                   } else if (t.portRangeLocal && t.portRangeRemote) {
+                     routeDesc = `批量端口段 ${t.localIP || "127.0.0.1"}:${t.portRangeLocal} → 远端 :${t.portRangeRemote}`;
+                   } else if (t.plugin) {
+                     routeDesc = `插件 [${t.plugin}] → ${t.remotePort ? "远端 :" + t.remotePort : (t.customDomains || []).join(",") || t.subDomain || tp}`;
+                   } else if (tp === "HTTP" || tp === "HTTPS" || tp === "TCPMUX") {
+                     routeDesc = `${t.localIP || "127.0.0.1"}:${t.localPort || "-"} → ${(t.customDomains || []).join(", ") || (t.subDomain ? t.subDomain + ".*" : "域名路由")}`;
+                   } else if (tp === "XTCP" || tp === "STCP" || tp === "SUDP") {
+                     routeDesc = `本地服务 ${t.localIP || "127.0.0.1"}:${t.localPort || "-"} → 私密/P2P 标识 [${t.name}]`;
+                   } else {
+                     routeDesc = `${t.localIP || "127.0.0.1"}:${t.localPort || "-"} → 服务端端口 :${t.remotePort || "随机"}`;
+                   }
+
+                   return `
+                     <div class="yc-work-card">
+                       <div class="yc-work-cover">
+                         <img src="${PORTRAIT_COVERS[(idx + 5) % PORTRAIT_COVERS.length].src}" alt="" />
+                         <span class="w-num">${pad2(idx + 1)}</span>
+                       </div>
+                       <div class="yc-work-body">
+                         <div>
+                           <h4 class="yc-work-title">
+                             <span>${esc(t.name)}</span>
+                             <span class="yc-tag ${!t.enabled ? "" : live && live.status === "running" ? "yc-tag-ok" : "yc-tag-pink"}">
+                               ${!t.enabled ? "已停用" : live ? live.status : "就绪"}
+                             </span>
+                           </h4>
+                           <div class="yc-work-route">${esc(routeDesc)}</div>
+                           <div class="yc-tag-row">
+                             <span class="yc-tag yc-tag-pink">${isVis ? "VISITOR · " + tp : tp}</span>
+                             ${t.plugin ? `<span class="yc-tag">插件: ${esc(t.plugin)}</span>` : ""}
+                             ${t.useEncryption ? `<span class="yc-tag">加密</span>` : ""}
+                             ${t.useCompression ? `<span class="yc-tag">压缩</span>` : ""}
+                             ${t.bandwidthLimit || t.bandwidthLimitKB ? `<span class="yc-tag">限速 ${esc(t.bandwidthLimit || t.bandwidthLimitKB + "KB")}</span>` : ""}
+                             ${t.loadBalancerGroup ? `<span class="yc-tag">LB: ${esc(t.loadBalancerGroup)}</span>` : ""}
+                             ${t.healthCheckType ? `<span class="yc-tag">HC: ${esc(t.healthCheckType)}</span>` : ""}
+                             ${t.fallbackTo ? `<span class="yc-tag">回退: ${esc(t.fallbackTo)}</span>` : ""}
+                           </div>
+                           ${live && live.err ? `<div style="font-size:11.5px;color:var(--yc-danger);margin-bottom:6px;">${esc(live.err)}</div>` : ""}
+                         </div>
+                         <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                           <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-tun-toggle="${idx}">
+                             ${t.enabled ? "暂停" : "启用"}
+                           </button>
+                           <button type="button" class="yc-btn yc-btn-primary yc-btn-sm" data-tun-edit="${esc(t.id || t.name)}">编辑全参数</button>
+                           <button type="button" class="yc-btn yc-btn-danger yc-btn-sm" data-tun-del="${esc(t.id || t.name)}">删除</button>
+                         </div>
+                       </div>
+                     </div>`;
+                 })
+                 .join("")}
+             </div>`
+      }`;
+
+    container.querySelectorAll("[data-tun-filter]").forEach((b) => {
+      b.addEventListener("click", () => {
+        STATE.tunnelFilter = b.dataset.tunFilter;
+        renderClientTunnelsSection(container, cli, ctxCallbacks);
+      });
+    });
+
+    container.querySelector("#btnAddProxyRule").addEventListener("click", () => {
+      openFullTunnelModal(
+        cli,
+        {
+          id: "",
+          name: "proxy-" + ((cli.tunnels || []).length + 1),
+          mode: "proxy",
+          type: "tcp",
+          enabled: true,
+          localIP: "127.0.0.1",
+          localPort: 7777,
+          remotePort: 9999
+        },
+        ctxCallbacks
+      );
+    });
+
+    container.querySelector("#btnAddVisitorRule").addEventListener("click", () => {
+      openFullTunnelModal(
+        cli,
+        {
+          id: "",
+          name: "p2p-visitor-" + ((cli.tunnels || []).length + 1),
+          mode: "visitor",
+          type: "xtcp",
+          enabled: true,
+          localIP: "127.0.0.1",
+          localPort: 17777,
+          keepTunnelOpen: true,
+          useEncryption: true,
+          useCompression: true
+        },
+        ctxCallbacks
+      );
+    });
+
+    container.querySelectorAll("[data-tun-toggle]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        const target = filtered[Number(b.dataset.tunToggle)];
+        if (!target) return;
+        target.enabled = !target.enabled;
+        try {
+          await ctxCallbacks.onSaveClient(cli);
+        } catch (_e) {}
+      });
+    });
+
+    container.querySelectorAll("[data-tun-edit]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const key = b.dataset.tunEdit;
+        const found = (cli.tunnels || []).find((x) => (x.id || x.name) === key);
+        if (found) openFullTunnelModal(cli, deepClone(found), ctxCallbacks);
+      });
+    });
+
+    container.querySelectorAll("[data-tun-del]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const key = b.dataset.tunDel;
+        const found = (cli.tunnels || []).find((x) => (x.id || x.name) === key);
+        if (!found) return;
+        confirmModal("删除隧道规则", `确定删除规则「${found.name}」吗？`, "确认删除", async () => {
+          cli.tunnels = (cli.tunnels || []).filter((x) => (x.id || x.name) !== key);
+          try {
+            await ctxCallbacks.onSaveClient(cli);
+          } catch (_e) {}
+        });
+      });
+    });
+  }
+
+  // ==================== Full-Featured Official FRP v1 Tunnel & Visitor Modal ====================
+  function mapToLines(m) {
+    return Object.keys(m || {})
+      .map((k) => `${k}=${m[k]}`)
+      .join("\n");
+  }
+  function linesToMap(txt) {
+    const out = {};
+    String(txt || "")
+      .split("\n")
+      .forEach((line) => {
+        const idx = line.indexOf("=");
+        if (idx > 0) {
+          const k = line.slice(0, idx).trim();
+          const v = line.slice(idx + 1).trim();
+          if (k) out[k] = v;
+        }
+      });
+    return out;
+  }
+
+  function openFullTunnelModal(cli, tunDraft, ctxCallbacks) {
+    const renderBody = (dlg) => {
+      const isVis = (tunDraft.mode || "proxy") === "visitor";
+      const tp = (tunDraft.type || "tcp").toLowerCase();
+      const plug = tunDraft.plugin || "";
+      const bwStr = tunDraft.bandwidthLimit || (tunDraft.bandwidthLimitKB ? tunDraft.bandwidthLimitKB + "KB" : "");
+
+      dlg.innerHTML = `
+        <div class="yc-modal-head">
+          <h3 class="yc-modal-title">${tunDraft.id ? "编辑隧道规则 · " + esc(tunDraft.name) : "新建全功能隧道 / 访问端规则"}</h3>
+          <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-modal-close>关闭</button>
+        </div>
+
+        <div class="yc-grid-3" style="margin-bottom:14px;">
+          <label class="yc-field">
+            <span class="yc-field-label">规则角色模式</span>
+            <select id="tmMode">
+              <option value="proxy" ${!isVis ? "selected" : ""}>[[proxies]] 暴露本机/内网服务</option>
+              <option value="visitor" ${isVis ? "selected" : ""}>[[visitors]] 访问端 / P2P 发起端</option>
+            </select>
+          </label>
+          <label class="yc-field">
+            <span class="yc-field-label">隧道协议类型 <span class="yc-field-hint">type</span></span>
+            <select id="tmType">
+              ${(isVis
+                ? [
+                    ["xtcp", "xtcp (P2P 点对点直连打洞)"],
+                    ["stcp", "stcp (安全私密 TCP 访问端)"],
+                    ["sudp", "sudp (安全私密 UDP 访问端)"]
+                  ]
+                : [
+                    ["tcp", "tcp (端口转发 / 支持端口段)"],
+                    ["udp", "udp (UDP 转发 / 支持端口段)"],
+                    ["http", "http (域名路由 / Header 改写)"],
+                    ["https", "https (TLS 域名透传)"],
+                    ["tcpmux", "tcpmux (HTTP CONNECT 复用)"],
+                    ["xtcp", "xtcp (P2P 点对点被访问端)"],
+                    ["stcp", "stcp (安全私密 TCP 服务端)"],
+                    ["sudp", "sudp (安全私密 UDP 服务端)"]
+                  ]
+              )
+                .map(([v, l]) => `<option value="${v}" ${tp === v ? "selected" : ""}>${l}</option>`)
+                .join("")}
+            </select>
+          </label>
+          <label class="yc-field">
+            <span class="yc-field-label">规则唯一名称 <span class="yc-field-hint">name</span></span>
+            <input id="tmName" type="text" value="${esc(tunDraft.name || "")}" placeholder="如 school-7777" />
+          </label>
+        </div>
+
+        ${
+          isVis
+            ? `<!-- Visitor Configuration -->
+               <div class="yc-card" style="padding:16px;background:#faf9fe;margin-bottom:14px;">
+                 <strong style="display:block;margin-bottom:10px;font-size:13.5px;">访问端连接目标与 P2P 高级打洞参数</strong>
+                 <div class="yc-grid-3">
+                   <label class="yc-field">
+                     <span class="yc-field-label">对端隧道名 <span class="yc-field-hint">serverName</span></span>
+                     <input id="tmServerName" type="text" value="${esc(tunDraft.serverName || "")}" placeholder="被访问端代理名称" />
+                   </label>
+                   <label class="yc-field">
+                     <span class="yc-field-label">对端客户端用户名 <span class="yc-field-hint">serverUser</span></span>
+                     <input id="tmServerUser" type="text" value="${esc(tunDraft.serverUser || "")}" placeholder="对端设置了 user 时必填" />
+                   </label>
+                   <label class="yc-field">
+                     <span class="yc-field-label">共享密钥 <span class="yc-field-hint">secretKey</span></span>
+                     <input id="tmSecretKey" type="text" value="${esc(tunDraft.secretKey || "")}" placeholder="需与被访问端一致" />
+                   </label>
+                   <label class="yc-field">
+                     <span class="yc-field-label">本地绑定地址 <span class="yc-field-hint">bindAddr</span></span>
+                     <input id="tmLocalIP" type="text" value="${esc(tunDraft.localIP || "127.0.0.1")}" />
+                   </label>
+                   <label class="yc-field">
+                     <span class="yc-field-label">本地监听端口 <span class="yc-field-hint">bindPort (-1 为纯回退)</span></span>
+                     <input id="tmLocalPort" type="number" value="${tunDraft.localPort != null ? tunDraft.localPort : 17777}" />
+                   </label>
+                   ${
+                     tp === "xtcp"
+                       ? `<label class="yc-field">
+                            <span class="yc-field-label">底层打洞协议 <span class="yc-field-hint">protocol</span></span>
+                            <select id="tmVisitorProto">
+                              <option value="" ${!tunDraft.visitorProtocol ? "selected" : ""}>默认 (quic)</option>
+                              <option value="quic" ${tunDraft.visitorProtocol === "quic" ? "selected" : ""}>quic</option>
+                              <option value="kcp" ${tunDraft.visitorProtocol === "kcp" ? "selected" : ""}>kcp</option>
+                            </select>
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">每小时重试上限 <span class="yc-field-hint">maxRetriesAnHour</span></span>
+                            <input id="tmMaxRetries" type="number" value="${tunDraft.maxRetriesAnHour || ""}" placeholder="默认 8" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">重试最小间隔(秒) <span class="yc-field-hint">minRetryInterval</span></span>
+                            <input id="tmMinRetry" type="number" value="${tunDraft.minRetryInterval || ""}" placeholder="默认 90" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">打洞失败回退 Visitor 名 <span class="yc-field-hint">fallbackTo</span></span>
+                            <input id="tmFallbackTo" type="text" value="${esc(tunDraft.fallbackTo || "")}" placeholder="关联的 stcp visitor 名称" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">回退超时(毫秒) <span class="yc-field-hint">fallbackTimeoutMs</span></span>
+                            <input id="tmFallbackMs" type="number" value="${tunDraft.fallbackTimeoutMs || ""}" placeholder="如 500" />
+                          </label>`
+                       : ""
+                   }
+                 </div>
+                 <div class="yc-check-row">
+                   ${
+                     tp === "xtcp"
+                       ? `<label class="yc-switch-label"><input id="tmKeepOpen" type="checkbox" ${tunDraft.keepTunnelOpen ? "checked" : ""} /><span>保持 P2P 隧道常驻保活 (keepTunnelOpen)</span></label>`
+                       : ""
+                   }
+                   <label class="yc-switch-label"><input id="tmEnc" type="checkbox" ${tunDraft.useEncryption ? "checked" : ""} /><span>传输加密</span></label>
+                   <label class="yc-switch-label"><input id="tmComp" type="checkbox" ${tunDraft.useCompression ? "checked" : ""} /><span>传输压缩</span></label>
+                 </div>
+               </div>`
+            : `<!-- Proxy Configuration -->
+               <div class="yc-card" style="padding:16px;background:#faf9fe;margin-bottom:14px;">
+                 <strong style="display:block;margin-bottom:10px;font-size:13.5px;">1. 本地目标、服务端映射与内置客户端插件 ([proxies.plugin])</strong>
+                 <div class="yc-grid-3">
+                   <label class="yc-field">
+                     <span class="yc-field-label">内置客户端插件 <span class="yc-field-hint">全部 10 种</span></span>
+                     <select id="tmPlugin">
+                       <option value="" ${plug === "" ? "selected" : ""}>不使用插件 (直接转发 localIP:localPort)</option>
+                       <option value="static_file" ${plug === "static_file" ? "selected" : ""}>static_file (本地静态文件服务)</option>
+                       <option value="http_proxy" ${plug === "http_proxy" ? "selected" : ""}>http_proxy (正向 HTTP 代理)</option>
+                       <option value="socks5" ${plug === "socks5" ? "selected" : ""}>socks5 (正向 SOCKS5 代理)</option>
+                       <option value="https2http" ${plug === "https2http" ? "selected" : ""}>https2http (HTTPS 转本地 HTTP)</option>
+                       <option value="https2https" ${plug === "https2https" ? "selected" : ""}>https2https (HTTPS 转本地 HTTPS)</option>
+                       <option value="http2https" ${plug === "http2https" ? "selected" : ""}>http2https (HTTP 转本地 HTTPS)</option>
+                       <option value="http2http" ${plug === "http2http" ? "selected" : ""}>http2http (HTTP Host 改写转发)</option>
+                       <option value="tls2raw" ${plug === "tls2raw" ? "selected" : ""}>tls2raw (TLS 解密转原始流)</option>
+                       <option value="unix_domain_socket" ${plug === "unix_domain_socket" ? "selected" : ""}>unix_domain_socket (Unix 套接字)</option>
+                       <option value="virtual_net" ${plug === "virtual_net" ? "selected" : ""}>virtual_net (实验性虚拟网卡 TUN)</option>
+                     </select>
+                   </label>
+                   ${
+                     plug === ""
+                       ? `<label class="yc-field">
+                            <span class="yc-field-label">内网目标 IP <span class="yc-field-hint">localIP</span></span>
+                            <input id="tmLocalIP" type="text" value="${esc(tunDraft.localIP || "127.0.0.1")}" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">内网目标端口 <span class="yc-field-hint">localPort</span></span>
+                            <input id="tmLocalPort" type="number" value="${tunDraft.localPort || ""}" placeholder="如 7777" />
+                          </label>`
+                       : `<label class="yc-field">
+                            <span class="yc-field-label">插件路径 / 套接字 <span class="yc-field-hint">localPath / unixPath</span></span>
+                            <input id="tmPlugPath" type="text" value="${esc(tunDraft.pluginLocalPath || "")}" placeholder="/var/www 或 /tmp/docker.sock" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">插件后端地址 / 网段 <span class="yc-field-hint">localAddr / address</span></span>
+                            <input id="tmPlugAddr" type="text" value="${esc(tunDraft.pluginLocalAddr || "")}" placeholder="127.0.0.1:8080 或 100.86.1.1/24" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">URL 去前缀 <span class="yc-field-hint">stripPrefix</span></span>
+                            <input id="tmPlugPrefix" type="text" value="${esc(tunDraft.pluginStripPrefix || "")}" placeholder="static_file 可选" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">插件认证用户名 <span class="yc-field-hint">user / httpUser</span></span>
+                            <input id="tmPlugUser" type="text" value="${esc(tunDraft.pluginUser || "")}" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">插件认证密码 <span class="yc-field-hint">password</span></span>
+                            <input id="tmPlugPass" type="text" value="${esc(tunDraft.pluginPassword || "")}" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">插件证书 / 私钥 <span class="yc-field-hint">crtPath | keyPath</span></span>
+                            <div style="display:flex;gap:4px;">
+                              <input id="tmPlugCrt" type="text" value="${esc(tunDraft.pluginCrtPath || "")}" placeholder="crtPath" />
+                              <input id="tmPlugKey" type="text" value="${esc(tunDraft.pluginKeyPath || "")}" placeholder="keyPath" />
+                            </div>
+                          </label>`
+                   }
+
+                   ${
+                     tp === "tcp" || tp === "udp"
+                       ? `<label class="yc-field">
+                            <span class="yc-field-label">服务端映射端口 <span class="yc-field-hint">remotePort</span></span>
+                            <input id="tmRemotePort" type="number" value="${tunDraft.remotePort || ""}" placeholder="如 9999 / 10000" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">批量本地端口段(可选) <span class="yc-field-hint">parseNumberRangePair</span></span>
+                            <input id="tmRangeLocal" type="text" value="${esc(tunDraft.portRangeLocal || "")}" placeholder="如 6000-6006,6007" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">批量远端端口段(可选) <span class="yc-field-hint">与本地段一一对应</span></span>
+                            <input id="tmRangeRemote" type="text" value="${esc(tunDraft.portRangeRemote || "")}" placeholder="如 16000-16006,16007" />
+                          </label>`
+                       : ""
+                   }
+
+                   ${
+                     tp === "http" || tp === "https" || tp === "tcpmux"
+                       ? `<label class="yc-field">
+                            <span class="yc-field-label">自定义域名(逗号分隔) <span class="yc-field-hint">customDomains</span></span>
+                            <input id="tmDomains" type="text" value="${esc((tunDraft.customDomains || []).join(", "))}" placeholder="app.example.com" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">二级子域名 <span class="yc-field-hint">subdomain</span></span>
+                            <input id="tmSubDomain" type="text" value="${esc(tunDraft.subDomain || "")}" placeholder="blog" />
+                          </label>
+                          ${
+                            tp === "http"
+                              ? `<label class="yc-field">
+                                   <span class="yc-field-label">URL 路径路由(逗号分隔) <span class="yc-field-hint">locations</span></span>
+                                   <input id="tmLocations" type="text" value="${esc((tunDraft.locations || []).join(", "))}" placeholder="/, /api" />
+                                 </label>
+                                 <label class="yc-field">
+                                   <span class="yc-field-label">Host 请求头改写 <span class="yc-field-hint">hostHeaderRewrite</span></span>
+                                   <input id="tmHostRewrite" type="text" value="${esc(tunDraft.hostHeaderRewrite || "")}" placeholder="127.0.0.1" />
+                                 </label>`
+                              : ""
+                          }
+                          <label class="yc-field">
+                            <span class="yc-field-label">HTTP Basic 用户名 <span class="yc-field-hint">httpUser</span></span>
+                            <input id="tmHttpUser" type="text" value="${esc(tunDraft.httpUser || "")}" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">HTTP Basic 密码 <span class="yc-field-hint">httpPassword</span></span>
+                            <input id="tmHttpPass" type="text" value="${esc(tunDraft.httpPassword || "")}" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">按用户分流标识 <span class="yc-field-hint">routeByHTTPUser</span></span>
+                            <input id="tmRouteUser" type="text" value="${esc(tunDraft.routeByHTTPUser || "")}" />
+                          </label>`
+                       : ""
+                   }
+
+                   ${
+                     tp === "stcp" || tp === "sudp" || tp === "xtcp"
+                       ? `<label class="yc-field">
+                            <span class="yc-field-label">私密/P2P 共享密钥 <span class="yc-field-hint">secretKey</span></span>
+                            <input id="tmSecretKey" type="text" value="${esc(tunDraft.secretKey || randomSecret(12))}" />
+                          </label>
+                          <label class="yc-field">
+                            <span class="yc-field-label">允许访问的用户(逗号分隔) <span class="yc-field-hint">allowUsers</span></span>
+                            <input id="tmAllowUsers" type="text" value="${esc((tunDraft.allowUsers || []).join(", "))}" placeholder="留空仅同用户, * 允许全部" />
+                          </label>`
+                       : ""
+                   }
+                 </div>
+               </div>
+
+               <div class="yc-card" style="padding:16px;background:#ffffff;margin-bottom:14px;">
+                 <strong style="display:block;margin-bottom:10px;font-size:13.5px;">2. 带宽限速、Proxy Protocol、负载均衡与健康检查</strong>
+                 <div class="yc-grid-3">
+                   <label class="yc-field">
+                     <span class="yc-field-label">隧道限速 <span class="yc-field-hint">如 512KB 或 5MB</span></span>
+                     <input id="tmBwLimit" type="text" value="${esc(bwStr)}" placeholder="留空不限速" />
+                   </label>
+                   <label class="yc-field">
+                     <span class="yc-field-label">限速执行端 <span class="yc-field-hint">bandwidthLimitMode</span></span>
+                     <select id="tmBwMode">
+                       <option value="client" ${(tunDraft.bandwidthLimitMode || "client") === "client" ? "selected" : ""}>client (客户端限速)</option>
+                       <option value="server" ${tunDraft.bandwidthLimitMode === "server" ? "selected" : ""}>server (服务端限速)</option>
+                     </select>
+                   </label>
+                   <label class="yc-field">
+                     <span class="yc-field-label">传递真实源 IP <span class="yc-field-hint">proxyProtocolVersion</span></span>
+                     <select id="tmProxyProto">
+                       <option value="" ${!tunDraft.proxyProtocolVersion ? "selected" : ""}>不启用</option>
+                       <option value="v1" ${tunDraft.proxyProtocolVersion === "v1" ? "selected" : ""}>v1</option>
+                       <option value="v2" ${tunDraft.proxyProtocolVersion === "v2" ? "selected" : ""}>v2</option>
+                     </select>
+                   </label>
+                   <label class="yc-field">
+                     <span class="yc-field-label">负载均衡分组名 <span class="yc-field-hint">loadBalancer.group</span></span>
+                     <input id="tmLbGroup" type="text" value="${esc(tunDraft.loadBalancerGroup || "")}" placeholder="如 web-cluster" />
+                   </label>
+                   <label class="yc-field">
+                     <span class="yc-field-label">负载均衡分组密钥 <span class="yc-field-hint">loadBalancer.groupKey</span></span>
+                     <input id="tmLbKey" type="text" value="${esc(tunDraft.loadBalancerGroupKey || "")}" />
+                   </label>
+                   <label class="yc-field">
+                     <span class="yc-field-label">本地健康检查 <span class="yc-field-hint">healthCheck.type</span></span>
+                     <select id="tmHcType">
+                       <option value="" ${!tunDraft.healthCheckType ? "selected" : ""}>关闭</option>
+                       <option value="tcp" ${tunDraft.healthCheckType === "tcp" ? "selected" : ""}>tcp 端口探测</option>
+                       <option value="http" ${tunDraft.healthCheckType === "http" ? "selected" : ""}>http 状态码探测</option>
+                     </select>
+                   </label>
+                   <label class="yc-field">
+                     <span class="yc-field-label">HTTP 探测路径 <span class="yc-field-hint">healthCheck.path</span></span>
+                     <input id="tmHcPath" type="text" value="${esc(tunDraft.healthCheckPath || "")}" placeholder="/healthz" />
+                   </label>
+                   <label class="yc-field">
+                     <span class="yc-field-label">探测间隔 / 超时(秒) <span class="yc-field-hint">interval | timeout</span></span>
+                     <div style="display:flex;gap:4px;">
+                       <input id="tmHcInt" type="number" value="${tunDraft.healthCheckIntervalSeconds || ""}" placeholder="间隔10" />
+                       <input id="tmHcTo" type="number" value="${tunDraft.healthCheckTimeoutSeconds || ""}" placeholder="超时3" />
+                     </div>
+                   </label>
+                   <label class="yc-field">
+                     <span class="yc-field-label">连续失败摘除次数 <span class="yc-field-hint">maxFailed</span></span>
+                     <input id="tmHcFail" type="number" value="${tunDraft.healthCheckMaxFailed || ""}" placeholder="默认 3" />
+                   </label>
+                 </div>
+                 <div class="yc-check-row">
+                   <label class="yc-switch-label"><input id="tmEnc" type="checkbox" ${tunDraft.useEncryption ? "checked" : ""} /><span>启用隧道加密 (useEncryption)</span></label>
+                   <label class="yc-switch-label"><input id="tmComp" type="checkbox" ${tunDraft.useCompression ? "checked" : ""} /><span>启用流量压缩 (useCompression)</span></label>
+                 </div>
+               </div>
+
+               <div class="yc-grid-2">
+                 ${
+                   tp === "http"
+                     ? `<label class="yc-field">
+                          <span class="yc-field-label">注入请求头 (每行 Key=Value) <span class="yc-field-hint">requestHeaders.set</span></span>
+                          <textarea id="tmReqHeaders" rows="2" placeholder="X-From-Where=frp">${esc(mapToLines(tunDraft.requestHeaders))}</textarea>
+                        </label>
+                        <label class="yc-field">
+                          <span class="yc-field-label">注入响应头 (每行 Key=Value) <span class="yc-field-hint">responseHeaders.set</span></span>
+                          <textarea id="tmRespHeaders" rows="2" placeholder="Access-Control-Allow-Origin=*">${esc(mapToLines(tunDraft.responseHeaders))}</textarea>
+                        </label>`
+                     : ""
+                 }
+                 <label class="yc-field">
+                   <span class="yc-field-label">代理元数据 (每行 Key=Value) <span class="yc-field-hint">metadatas</span></span>
+                   <textarea id="tmMetas" rows="2" placeholder="env=prod">${esc(mapToLines(tunDraft.metadatas))}</textarea>
+                 </label>
+                 <label class="yc-field">
+                   <span class="yc-field-label">代理注解与附加 TOML <span class="yc-field-hint">extraToml</span></span>
+                   <textarea id="tmExtra" rows="2" placeholder="可选附加参数">${esc(tunDraft.extraToml || "")}</textarea>
+                 </label>
+               </div>`
+        }
+
+        <div class="yc-modal-foot">
+          <label class="yc-switch-label" style="margin-right:auto;">
+            <input id="tmEnabled" type="checkbox" ${tunDraft.enabled !== false ? "checked" : ""} />
+            <span>立即启用此规则</span>
+          </label>
+          <button type="button" class="yc-btn yc-btn-outline" data-modal-close>取消</button>
+          <button type="button" id="tmSaveBtn" class="yc-btn yc-btn-primary">保存规则并同步</button>
+        </div>`;
+
+      dlg.querySelectorAll("[data-modal-close]").forEach((b) => b.addEventListener("click", closeModal));
+
+      const syncBasicBeforeRerender = () => {
+        tunDraft.name = dlg.querySelector("#tmName").value.trim();
+        tunDraft.enabled = dlg.querySelector("#tmEnabled").checked;
+      };
+
+      dlg.querySelector("#tmMode").addEventListener("change", (e) => {
+        syncBasicBeforeRerender();
+        tunDraft.mode = e.target.value;
+        if (tunDraft.mode === "visitor" && !["xtcp", "stcp", "sudp"].includes(tunDraft.type)) {
+          tunDraft.type = "xtcp";
+        }
+        renderBody(dlg);
+      });
+      dlg.querySelector("#tmType").addEventListener("change", (e) => {
+        syncBasicBeforeRerender();
+        tunDraft.type = e.target.value;
+        renderBody(dlg);
+      });
+      const plugSel = dlg.querySelector("#tmPlugin");
+      if (plugSel) {
+        plugSel.addEventListener("change", (e) => {
+          syncBasicBeforeRerender();
+          tunDraft.plugin = e.target.value;
+          renderBody(dlg);
+        });
+      }
+
+      dlg.querySelector("#tmSaveBtn").addEventListener("click", async () => {
+        const name = dlg.querySelector("#tmName").value.trim();
+        if (!name) {
+          toast("请填写隧道规则名称", true);
+          return;
+        }
+        tunDraft.name = name;
+        tunDraft.enabled = dlg.querySelector("#tmEnabled").checked;
+        const val = (sel) => (dlg.querySelector(sel) ? dlg.querySelector(sel).value.trim() : "");
+        const num = (sel) => (dlg.querySelector(sel) && dlg.querySelector(sel).value.trim() !== "" ? parseInt(dlg.querySelector(sel).value, 10) || 0 : 0);
+        const chk = (sel) => Boolean(dlg.querySelector(sel) && dlg.querySelector(sel).checked);
+
+        tunDraft.useEncryption = chk("#tmEnc");
+        tunDraft.useCompression = chk("#tmComp");
+
+        if ((tunDraft.mode || "proxy") === "visitor") {
+          tunDraft.serverName = val("#tmServerName");
+          tunDraft.serverUser = val("#tmServerUser");
+          tunDraft.secretKey = val("#tmSecretKey");
+          tunDraft.localIP = val("#tmLocalIP") || "127.0.0.1";
+          tunDraft.localPort = dlg.querySelector("#tmLocalPort") ? parseInt(dlg.querySelector("#tmLocalPort").value, 10) || 0 : 17777;
+          tunDraft.visitorProtocol = val("#tmVisitorProto");
+          tunDraft.keepTunnelOpen = chk("#tmKeepOpen");
+          tunDraft.maxRetriesAnHour = num("#tmMaxRetries");
+          tunDraft.minRetryInterval = num("#tmMinRetry");
+          tunDraft.fallbackTo = val("#tmFallbackTo");
+          tunDraft.fallbackTimeoutMs = num("#tmFallbackMs");
+        } else {
+          if (!tunDraft.plugin) {
+            tunDraft.localIP = val("#tmLocalIP") || "127.0.0.1";
+            tunDraft.localPort = num("#tmLocalPort");
+          } else {
+            tunDraft.pluginLocalPath = val("#tmPlugPath");
+            tunDraft.pluginLocalAddr = val("#tmPlugAddr");
+            tunDraft.pluginStripPrefix = val("#tmPlugPrefix");
+            tunDraft.pluginUser = val("#tmPlugUser");
+            tunDraft.pluginPassword = val("#tmPlugPass");
+            tunDraft.pluginCrtPath = val("#tmPlugCrt");
+            tunDraft.pluginKeyPath = val("#tmPlugKey");
+          }
+          tunDraft.remotePort = num("#tmRemotePort");
+          tunDraft.portRangeLocal = val("#tmRangeLocal");
+          tunDraft.portRangeRemote = val("#tmRangeRemote");
+          if (dlg.querySelector("#tmDomains")) {
+            tunDraft.customDomains = val("#tmDomains").split(",").map((s) => s.trim()).filter(Boolean);
+          }
+          if (dlg.querySelector("#tmSubDomain")) tunDraft.subDomain = val("#tmSubDomain");
+          if (dlg.querySelector("#tmLocations")) {
+            tunDraft.locations = val("#tmLocations").split(",").map((s) => s.trim()).filter(Boolean);
+          }
+          if (dlg.querySelector("#tmHostRewrite")) tunDraft.hostHeaderRewrite = val("#tmHostRewrite");
+          if (dlg.querySelector("#tmHttpUser")) tunDraft.httpUser = val("#tmHttpUser");
+          if (dlg.querySelector("#tmHttpPass")) tunDraft.httpPassword = val("#tmHttpPass");
+          if (dlg.querySelector("#tmRouteUser")) tunDraft.routeByHTTPUser = val("#tmRouteUser");
+          if (dlg.querySelector("#tmSecretKey")) tunDraft.secretKey = val("#tmSecretKey");
+          if (dlg.querySelector("#tmAllowUsers")) {
+            tunDraft.allowUsers = val("#tmAllowUsers").split(",").map((s) => s.trim()).filter(Boolean);
+          }
+          tunDraft.bandwidthLimit = val("#tmBwLimit");
+          tunDraft.bandwidthLimitKB = 0;
+          tunDraft.bandwidthLimitMode = val("#tmBwMode") || "client";
+          tunDraft.proxyProtocolVersion = val("#tmProxyProto");
+          tunDraft.loadBalancerGroup = val("#tmLbGroup");
+          tunDraft.loadBalancerGroupKey = val("#tmLbKey");
+          tunDraft.healthCheckType = val("#tmHcType");
+          tunDraft.healthCheckPath = val("#tmHcPath");
+          tunDraft.healthCheckIntervalSeconds = num("#tmHcInt");
+          tunDraft.healthCheckTimeoutSeconds = num("#tmHcTo");
+          tunDraft.healthCheckMaxFailed = num("#tmHcFail");
+          if (dlg.querySelector("#tmReqHeaders")) tunDraft.requestHeaders = linesToMap(dlg.querySelector("#tmReqHeaders").value);
+          if (dlg.querySelector("#tmRespHeaders")) tunDraft.responseHeaders = linesToMap(dlg.querySelector("#tmRespHeaders").value);
+          if (dlg.querySelector("#tmMetas")) tunDraft.metadatas = linesToMap(dlg.querySelector("#tmMetas").value);
+          if (dlg.querySelector("#tmExtra")) tunDraft.extraToml = dlg.querySelector("#tmExtra").value;
+        }
+
+        cli.tunnels = cli.tunnels || [];
+        const existingIdx = cli.tunnels.findIndex((x) => (tunDraft.id && x.id === tunDraft.id) || x.name === tunDraft.name);
+        if (existingIdx >= 0) {
+          if (!tunDraft.id) tunDraft.id = cli.tunnels[existingIdx].id;
+          cli.tunnels[existingIdx] = tunDraft;
+        } else {
+          tunDraft.id = "tun-" + Math.random().toString(16).slice(2, 10);
+          cli.tunnels.push(tunDraft);
+        }
+
+        closeModal();
+        try {
+          await ctxCallbacks.onSaveClient(cli);
+        } catch (_e) {}
+      });
+    };
+
+    openModal("<div></div>", (dlg) => renderBody(dlg), 940);
+  }
+
+  // ==================== Shared Client Global Studio + Bidirectional TOML ====================
+  function renderClientStudioSection(container, cli, ctxCallbacks) {
+    const scopes = cli.authAdditionalScopes || [];
+    const triBoolVal = (v) => (typeof v === "boolean" ? String(v) : "");
+    const remoteCtrlOn = cli.remoteCtrlEnabled !== false;
+
+    const leftHTML = `
+      <div class="yc-form-stack">
+        ${
+          ctxCallbacks.isRemote
+            ? `<div class="yc-notice yc-notice-pink" style="margin:0;">
+                 <label class="yc-switch-label">
+                   <input type="checkbox" id="rcUnlockUpstreamChk" ${STATE.remoteAllowUpstream ? "checked" : ""} />
+                   <span>解锁修改此远端客户端的上游服务器地址/端口/Token（默认锁定保护，防止误改导致远控断连）</span>
+                 </label>
+               </div>`
+            : ""
+        }
+        ${renderAccordion(
+          "c1",
+          STATE.openClientAccs,
+          "01",
+          "上游服务器连接与运行策略 (Common & Remote Link)",
+          `<div class="yc-grid-2">
+             <label class="yc-field">
+               <span class="yc-field-label">客户端实例名称</span>
+               <input type="text" data-cf="name" value="${esc(cli.name || "")}" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">客户端用户名前缀 <span class="yc-field-hint">user</span></span>
+               <input type="text" data-cf="user" value="${esc(cli.user || "")}" placeholder="如 school / home / friend" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">远端 frps 服务器地址 <span class="yc-field-hint">serverAddr</span></span>
+               <input type="text" data-cf="serverAddr" value="${esc(cli.serverAddr || "")}" placeholder="203.0.113.10 或域名" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">远端 frps 服务器端口 <span class="yc-field-hint">serverPort</span></span>
+               <input type="number" data-cf-num="serverPort" value="${cli.serverPort || 7000}" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">自定义 DNS 服务器 <span class="yc-field-hint">dnsServer</span></span>
+               <input type="text" data-cf="dnsServer" value="${esc(cli.dnsServer || "")}" placeholder="如 223.5.5.5" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">NAT 打洞 STUN 服务 <span class="yc-field-hint">natHoleStunServer</span></span>
+               <input type="text" data-cf="natHoleStunServer" value="${esc(cli.natHoleStunServer || "")}" placeholder="默认 stun.easyvoip.com:3478" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">仅启动指定隧道(逗号分隔) <span class="yc-field-hint">start</span></span>
+               <input type="text" data-cf-arr="startProxies" value="${esc((cli.startProxies || []).join(", "))}" placeholder="留空启动全部已启用规则" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">包含外部子配置(逗号分隔) <span class="yc-field-hint">includes</span></span>
+               <input type="text" data-cf-arr="includes" value="${esc((cli.includes || []).join(", "))}" placeholder="./confd/*.toml" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">UDP 包大小 <span class="yc-field-hint">udpPacketSize</span></span>
+               <input type="number" data-cf-num="udpPacketSize" value="${cli.udpPacketSize || ""}" placeholder="默认 1500" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">虚拟网卡地址(实验) <span class="yc-field-hint">virtualNet.address</span></span>
+               <input type="text" data-cf="virtualNetAddr" value="${esc(cli.virtualNetAddr || "")}" placeholder="100.86.0.1/24" />
+             </label>
+           </div>
+           <div class="yc-check-row">
+             ${
+               !ctxCallbacks.isRemote
+                 ? `<label class="yc-switch-label">
+                      <input type="checkbox" data-cf-bool="autoStart" ${cli.autoStart ? "checked" : ""} />
+                      <span>软件启动时自动运行此客户端</span>
+                    </label>
+                    <label class="yc-switch-label">
+                      <input type="checkbox" id="cliRemoteCtrlChk" ${remoteCtrlOn ? "checked" : ""} />
+                      <span>允许所连接的 KurumiFrp 服务端通过连接远控本实例</span>
+                    </label>`
+                 : ""
+             }
+             <label class="yc-switch-label">
+               <input type="checkbox" data-cf-bool="loginFailExit" ${cli.loginFailExit ? "checked" : ""} />
+               <span>首次登录失败立即退出 (loginFailExit；关闭则断线自动重连)</span>
+             </label>
+           </div>`
+        )}
+
+        ${renderAccordion(
+          "c2",
+          STATE.openClientAccs,
+          "02",
+          "客户端鉴权认证 (Token / TokenSource / OIDC 全参数)",
+          `<div class="yc-grid-2">
+             <label class="yc-field">
+               <span class="yc-field-label">鉴权模式 <span class="yc-field-hint">auth.method</span></span>
+               <select data-cf="authMethod">
+                 <option value="token" ${(cli.authMethod || "token") === "token" ? "selected" : ""}>token</option>
+                 <option value="oidc" ${cli.authMethod === "oidc" ? "selected" : ""}>oidc</option>
+               </select>
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">连接令牌 <span class="yc-field-hint">auth.token</span></span>
+               <input type="text" data-cf="authToken" value="${esc(cli.authToken || "")}" placeholder="与 frps 一致的密钥" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">Token 外部文件路径 <span class="yc-field-hint">auth.tokenSource.file.path</span></span>
+               <input type="text" data-cf="authTokenSourceFile" value="${esc(cli.authTokenSourceFile || "")}" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">OIDC Client ID <span class="yc-field-hint">auth.oidc.clientID</span></span>
+               <input type="text" data-cf="oidcClientId" value="${esc(cli.oidcClientId || "")}" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">OIDC Client Secret <span class="yc-field-hint">auth.oidc.clientSecret</span></span>
+               <input type="text" data-cf="oidcClientSecret" value="${esc(cli.oidcClientSecret || "")}" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">OIDC Token Endpoint <span class="yc-field-hint">tokenEndpointURL</span></span>
+               <input type="text" data-cf="oidcTokenEndpointURL" value="${esc(cli.oidcTokenEndpointURL || "")}" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">OIDC Audience / Scope</span>
+               <div style="display:flex;gap:4px;">
+                 <input type="text" data-cf="oidcAudience" value="${esc(cli.oidcAudience || "")}" placeholder="audience" />
+                 <input type="text" data-cf="oidcScope" value="${esc(cli.oidcScope || "")}" placeholder="scope" />
+               </div>
+             </label>
+           </div>
+           <div class="yc-check-row">
+             <label class="yc-switch-label"><input type="checkbox" data-cf-scope="HeartBeats" ${scopes.includes("HeartBeats") ? "checked" : ""} /><span>附加鉴权: HeartBeats</span></label>
+             <label class="yc-switch-label"><input type="checkbox" data-cf-scope="NewWorkConns" ${scopes.includes("NewWorkConns") ? "checked" : ""} /><span>附加鉴权: NewWorkConns</span></label>
+           </div>`
+        )}
+
+        ${renderAccordion(
+          "c3",
+          STATE.openClientAccs,
+          "03",
+          "底层传输协议、前置代理与 QUIC / 多路复用",
+          `<div class="yc-grid-3">
+             <label class="yc-field">
+               <span class="yc-field-label">底层通信协议 <span class="yc-field-hint">transport.protocol</span></span>
+               <select data-cf="protocol">
+                 ${["tcp", "quic", "kcp", "websocket", "wss"]
+                   .map((p) => `<option value="${p}" ${(cli.protocol || "tcp") === p ? "selected" : ""}>${p.toUpperCase()}</option>`)
+                   .join("")}
+               </select>
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">预建连接池数量 <span class="yc-field-hint">poolCount</span></span>
+               <input type="number" data-cf-num="poolCount" value="${cli.poolCount || ""}" placeholder="默认 1" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">前置连接代理 <span class="yc-field-hint">transport.proxyURL</span></span>
+               <input type="text" data-cf="proxyURL" value="${esc(cli.proxyURL || "")}" placeholder="http:// 或 socks5://127.0.0.1:1080" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">指定源出口网卡 IP <span class="yc-field-hint">connectServerLocalIP</span></span>
+               <input type="text" data-cf="connectServerLocalIP" value="${esc(cli.connectServerLocalIP || "")}" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">拨号超时(秒) <span class="yc-field-hint">dialServerTimeout</span></span>
+               <input type="number" data-cf-num="dialServerTimeout" value="${cli.dialServerTimeout || ""}" placeholder="默认 10" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">TCPMux 多路复用 <span class="yc-field-hint">transport.tcpMux</span></span>
+               <select data-cf-tri="tcpMux">
+                 <option value="" ${triBoolVal(cli.tcpMux) === "" ? "selected" : ""}>默认 (开启)</option>
+                 <option value="true" ${triBoolVal(cli.tcpMux) === "true" ? "selected" : ""}>开启 (true)</option>
+                 <option value="false" ${triBoolVal(cli.tcpMux) === "false" ? "selected" : ""}>关闭 (false)</option>
+               </select>
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">心跳发送间隔(秒) <span class="yc-field-hint">heartbeatInterval</span></span>
+               <input type="number" data-cf-num="heartbeatInterval" value="${cli.heartbeatInterval || ""}" placeholder="默认 30" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">心跳超时(秒) <span class="yc-field-hint">heartbeatTimeout</span></span>
+               <input type="number" data-cf-num="heartbeatTimeout" value="${cli.heartbeatTimeout || ""}" placeholder="默认 90" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">QUIC 保活(秒) <span class="yc-field-hint">quic.keepalivePeriod</span></span>
+               <input type="number" data-cf-num="quicKeepalivePeriod" value="${cli.quicKeepalivePeriod || ""}" placeholder="默认 10" />
+             </label>
+           </div>`
+        )}
+
+        ${renderAccordion(
+          "c4",
+          STATE.openClientAccs,
+          "04",
+          "TLS 加密与双向 mTLS 证书 (transport.tls)",
+          `<div class="yc-grid-2">
+             <label class="yc-field">
+               <span class="yc-field-label">TLS 校验域名 (SNI) <span class="yc-field-hint">tls.serverName</span></span>
+               <input type="text" data-cf="tlsServerName" value="${esc(cli.tlsServerName || "")}" placeholder="可选自定义 SNI" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">受信任根证书 <span class="yc-field-hint">tls.trustedCaFile</span></span>
+               <input type="text" data-cf="tlsTrustedCaFile" value="${esc(cli.tlsTrustedCaFile || "")}" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">客户端证书 <span class="yc-field-hint">tls.certFile</span></span>
+               <input type="text" data-cf="tlsCertFile" value="${esc(cli.tlsCertFile || "")}" />
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">客户端私钥 <span class="yc-field-hint">tls.keyFile</span></span>
+               <input type="text" data-cf="tlsKeyFile" value="${esc(cli.tlsKeyFile || "")}" />
+             </label>
+           </div>
+           <div class="yc-check-row">
+             <label class="yc-switch-label"><input type="checkbox" data-cf-bool="tlsEnable" ${cli.tlsEnable ? "checked" : ""} /><span>启用连接服务端 TLS 加密 (transport.tls.enable)</span></label>
+             <label class="yc-switch-label"><input type="checkbox" data-cf-bool="tlsDisableCustomFirstByte" ${cli.tlsDisableCustomFirstByte ? "checked" : ""} /><span>禁用首字节特征 (disableCustomTLSFirstByte，增强公网端口复用穿透性)</span></label>
+           </div>`
+        )}
+
+        ${renderAccordion(
+          "c5",
+          STATE.openClientAccs,
+          "05",
+          "全局元数据 (metadatas)、日志级别与附加 TOML",
+          `<div class="yc-grid-2">
+             <label class="yc-field">
+               <span class="yc-field-label">全局 Metadatas (每行 Key=Value)</span>
+               <textarea rows="3" id="cliMetadatasArea" placeholder="region=cn-east\nowner=presikid">${esc(mapToLines(cli.metadatas))}</textarea>
+             </label>
+             <label class="yc-field">
+               <span class="yc-field-label">附加全局 TOML 原文 <span class="yc-field-hint">extraToml</span></span>
+               <textarea rows="3" data-cf="extraToml" placeholder="# 自定义附加参数">${esc(cli.extraToml || "")}</textarea>
+             </label>
+           </div>`
+        )}
+
+        <div>
+          <button type="button" class="yc-btn yc-btn-primary" id="cliStudioSaveFormBtn">
+            ${ctxCallbacks.isRemote ? "通过连接下发修改并远端热重载" : "保存客户端配置并热重载"}
+          </button>
+        </div>
+      </div>`;
+
+    const liveToml = renderClientTOMLLive(cli);
+    const rightHTML = `
+      <div class="yc-toml-studio">
+        <div class="yc-toml-head">
+          <div class="yc-toml-title">
+            <span class="yc-dot yc-dot-ok"></span>
+            <span>frpc.toml · 完整实例双向代码编辑器</span>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button type="button" class="yc-btn yc-btn-ghost-dark yc-btn-sm" id="cliTomlCopyBtn">复制</button>
+            <button type="button" class="yc-btn yc-btn-ghost-dark yc-btn-sm" id="cliTomlParseBtn">← 解析同步至表单与隧道</button>
+            <button type="button" class="yc-btn yc-btn-primary yc-btn-sm" id="cliTomlSaveBtn">
+              ${ctxCallbacks.isRemote ? "下发并应用 TOML" : "保存并应用 TOML"}
+            </button>
+          </div>
+        </div>
+        <textarea id="cliTomlTextarea" class="yc-toml-editor" spellcheck="false">${esc(liveToml)}</textarea>
+        <div class="yc-toml-foot">
+          <span>包含全局配置及全部已启用 [[proxies]] / [[visitors]]，支持直接手改代码后一键反向解析或保存。</span>
+        </div>
+      </div>`;
+
+    container.innerHTML = `<div class="yc-studio-split">${leftHTML}${rightHTML}</div>`;
+
+    const syncPreview = () => {
+      if (!ctxCallbacks.isRemote) STATE.clientDraftDirty = true;
+      const ta = container.querySelector("#cliTomlTextarea");
+      if (ta && document.activeElement !== ta) {
+        ta.value = renderClientTOMLLive(cli);
+      }
+    };
+
+    const unlockChk = container.querySelector("#rcUnlockUpstreamChk");
+    if (unlockChk) {
+      unlockChk.addEventListener("change", () => {
+        STATE.remoteAllowUpstream = unlockChk.checked;
+      });
+    }
+
+    container.querySelectorAll("[data-acc-toggle]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const k = btn.dataset.accToggle;
+        STATE.openClientAccs[k] = !STATE.openClientAccs[k];
+        btn.closest(".yc-accordion").classList.toggle("is-open", STATE.openClientAccs[k]);
+      });
+    });
+
+    container.querySelectorAll("[data-cf]").forEach((el) => {
+      el.addEventListener("input", () => {
+        cli[el.dataset.cf] = el.value;
+        syncPreview();
+      });
+    });
+    container.querySelectorAll("[data-cf-num]").forEach((el) => {
+      el.addEventListener("input", () => {
+        const v = el.value.trim();
+        cli[el.dataset.cfNum] = v === "" ? 0 : parseInt(v, 10) || 0;
+        syncPreview();
+      });
+    });
+    container.querySelectorAll("[data-cf-bool]").forEach((el) => {
+      el.addEventListener("change", () => {
+        cli[el.dataset.cfBool] = el.checked;
+        syncPreview();
+      });
+    });
+    container.querySelectorAll("[data-cf-tri]").forEach((el) => {
+      el.addEventListener("change", () => {
+        const v = el.value;
+        if (v === "") delete cli[el.dataset.cfTri];
+        else cli[el.dataset.cfTri] = v === "true";
+        syncPreview();
+      });
+    });
+    container.querySelectorAll("[data-cf-arr]").forEach((el) => {
+      el.addEventListener("input", () => {
+        cli[el.dataset.cfArr] = el.value.split(",").map((s) => s.trim()).filter(Boolean);
+        syncPreview();
+      });
+    });
+    container.querySelectorAll("[data-cf-scope]").forEach((el) => {
+      el.addEventListener("change", () => {
+        const set = new Set(cli.authAdditionalScopes || []);
+        if (el.checked) set.add(el.dataset.cfScope);
+        else set.delete(el.dataset.cfScope);
+        cli.authAdditionalScopes = Array.from(set);
+        syncPreview();
+      });
+    });
+    const rcChk = container.querySelector("#cliRemoteCtrlChk");
+    if (rcChk) {
+      rcChk.addEventListener("change", () => {
+        cli.remoteCtrlEnabled = rcChk.checked;
+        syncPreview();
+      });
+    }
+    const metaArea = container.querySelector("#cliMetadatasArea");
+    if (metaArea) {
+      metaArea.addEventListener("input", () => {
+        cli.metadatas = linesToMap(metaArea.value);
+        syncPreview();
+      });
+    }
+
+    container.querySelector("#cliStudioSaveFormBtn").addEventListener("click", () => {
+      ctxCallbacks.onSaveClient(cli).catch(() => {});
+    });
+    container.querySelector("#cliTomlCopyBtn").addEventListener("click", () => {
+      copyText(container.querySelector("#cliTomlTextarea").value, "frpc.toml");
+    });
+    container.querySelector("#cliTomlParseBtn").addEventListener("click", async () => {
+      try {
+        const raw = container.querySelector("#cliTomlTextarea").value;
+        const out = await apiFetch("/api/toml/parse", { method: "POST", body: { kind: "frpc", prevClient: cli, toml: raw } });
+        Object.assign(cli, out.client);
+        toast("已将 frpc.toml 反向解析同步回 UI 表单与隧道列表");
+        renderClientStudioSection(container, cli, ctxCallbacks);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    container.querySelector("#cliTomlSaveBtn").addEventListener("click", () => {
+      const raw = container.querySelector("#cliTomlTextarea").value;
+      ctxCallbacks.onSaveClientTOML(raw).catch(() => {});
+    });
+  }
+
+  // ==================== 6. View 4: TOPOLOGY & P2P Orchestrator ====================
+  function renderTopologyWorkspace() {
+    const sb = $("topologySidebar");
+    const main = $("topologyMainPane");
+    if (!sb || !main) return;
+
+    sb.innerHTML = `
+      <div class="yc-side-box">
+        <div class="yc-side-heading"><span>拓扑与 P2P 导航</span></div>
+        <div class="yc-dir-list">
+          <button type="button" class="yc-dir-item${STATE.topologyTab === "mesh" ? " is-active" : ""}" data-topo-tab="mesh">
+            <img src="assets/k_58.webp" alt="" class="yc-dir-thumb" style="object-fit:contain;background:#fff;" />
+            <div class="yc-dir-meta">
+              <div class="yc-dir-title">01 · 实时连接远控拓扑</div>
+              <div class="yc-dir-sub">Server → Client 实例连接图</div>
+            </div>
+          </button>
+          <button type="button" class="yc-dir-item${STATE.topologyTab === "p2pWizard" ? " is-active" : ""}" data-topo-tab="p2pWizard">
+            <img src="assets/k_41.webp" alt="" class="yc-dir-thumb" />
+            <div class="yc-dir-meta">
+              <div class="yc-dir-title">02 · XTCP P2P 协同向导</div>
+              <div class="yc-dir-sub">跨无公网客户端一键打洞</div>
+            </div>
+          </button>
+          <button type="button" class="yc-dir-item${STATE.topologyTab === "scenarios" ? " is-active" : ""}" data-topo-tab="scenarios">
+            <img src="assets/k_43.webp" alt="" class="yc-dir-thumb" />
+            <div class="yc-dir-meta">
+              <div class="yc-dir-title">03 · A/B/C/D/E 组网指南</div>
+              <div class="yc-dir-sub">多节点连接权限模型参考</div>
+            </div>
+          </button>
+        </div>
+      </div>`;
+
+    sb.querySelectorAll("[data-topo-tab]").forEach((b) => {
+      b.addEventListener("click", () => {
+        STATE.topologyTab = b.dataset.topoTab;
+        renderTopologyWorkspace();
+      });
+    });
+
+    if (STATE.topologyTab === "mesh") {
+      renderTopologyMeshPane(main);
+    } else if (STATE.topologyTab === "p2pWizard") {
+      renderP2PWizardPane(main);
+    } else {
+      renderScenariosGuidePane(main);
+    }
+  }
+
+  function renderTopologyMeshPane(main) {
+    let html = "";
+    if (STATE.servers.length === 0 && STATE.clients.length === 0) {
+      main.innerHTML = `
+        <div class="yc-card yc-empty-state">
+          <img src="assets/k_58.webp" alt="" class="yc-empty-sticker" />
+          <h3 style="margin:0 0 8px;">暂无实例拓扑节点</h3>
+          <p style="margin:0;">先在「FRPS 服务端」或「FRPC 客户端」板块创建实例后，此处会自动绘制实例间连接与远控关系。</p>
+        </div>`;
+      return;
+    }
+
+    STATE.servers.forEach((srv, idx) => {
+      const rt = STATE.runtime[srv.id] || {};
+      const remotes = rt.remoteClients || [];
+      html += `
+        <div class="yc-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
+            <div>
+              <span class="yc-tag yc-tag-pink">FRPS 中心节点 ${pad2(idx + 1)}</span>
+              <h3 style="margin:6px 0 2px;font-family:var(--yc-serif);font-size:20px;">${esc(srv.name)} (${esc(srv.bindAddr)}:${srv.bindPort})</h3>
+              <span style="font-size:12.5px;color:var(--yc-muted);">该服务端可通过已建立的实例连接控制下方所有连入的客户端实例</span>
+            </div>
+            <button type="button" class="yc-btn yc-btn-primary yc-btn-sm" id="jumpP2PFromSrv_${idx}">发起跨客户端 P2P 配对 →</button>
+          </div>
+          ${
+            remotes.length === 0
+              ? `<div style="padding:18px;border:1px dashed var(--yc-border-strong);border-radius:10px;font-size:13px;color:var(--yc-muted);">
+                   暂无已接入的 KurumiFrp 客户端实例（启动客户端连接至 <code>:${srv.bindPort}</code> 后自动点亮）。
+                 </div>`
+              : `<div class="yc-cards-grid">
+                   ${remotes
+                     .map(
+                       (rc, rIdx) => `
+                     <div class="yc-work-card">
+                       <div class="yc-work-cover">
+                         <img src="${PORTRAIT_COVERS[(rIdx + 1) % PORTRAIT_COVERS.length].src}" alt="" />
+                         <span class="w-num">C${rIdx + 1}</span>
+                       </div>
+                       <div class="yc-work-body">
+                         <div>
+                           <h4 class="yc-work-title">
+                             <span>${esc(rc.clientName)}</span>
+                             <span class="yc-tag ${rc.online ? "yc-tag-ok" : ""}">${rc.online ? "连接在线" : "离线"}</span>
+                           </h4>
+                           <div class="yc-work-route">${esc(srv.name)} ═══(受控连接)═══▶ ${esc(rc.clientName)}</div>
+                           <div class="yc-tag-row">
+                             <span class="yc-tag">${esc(rc.hostname || "远端节点")}</span>
+                             ${rc.frpUser ? `<span class="yc-tag yc-tag-pink">user: ${esc(rc.frpUser)}</span>` : ""}
+                             <span class="yc-tag">映射数: ${rc.proxyCount || 0}</span>
+                           </div>
+                         </div>
+                         <button type="button" class="yc-btn yc-btn-primary yc-btn-sm" data-topo-rc="${esc(srv.id)}::${esc(rc.clientId)}">
+                           进入远控管理该客户端
+                         </button>
+                       </div>
+                     </div>`
+                     )
+                     .join("")}
+                 </div>`
+          }
+        </div>`;
+    });
+
+    if (STATE.clients.length > 0) {
+      html += `
+        <div class="yc-card">
+          <h3 style="margin:0 0 12px;font-family:var(--yc-serif);font-size:19px;">本机独立运行的 FRPC 客户端实例 (${STATE.clients.length})</h3>
+          <div class="yc-cards-grid">
+            ${STATE.clients
+              .map((c, idx) => {
+                const rt = STATE.runtime[c.id] || {};
+                return `
+                  <div class="yc-work-card">
+                    <div class="yc-work-cover">
+                      <img src="${coverForIndex(c.coverAsset, idx + 4)}" alt="" />
+                      <span class="w-num">L${idx + 1}</span>
+                    </div>
+                    <div class="yc-work-body">
+                      <div>
+                        <h4 class="yc-work-title">
+                          <span>${esc(c.name)}</span>
+                          <span class="yc-tag ${rt.running ? "yc-tag-ok" : ""}">${rt.running ? "已上联" : "未启动"}</span>
+                        </h4>
+                        <div class="yc-work-route">本机实例 ──▶ 上游服务端 ${esc(c.serverAddr)}:${c.serverPort}</div>
+                        <div class="yc-tag-row">
+                          <span class="yc-tag">仅限管理自身 ${c.tunnels ? c.tunnels.length : 0} 条隧道</span>
+                        </div>
+                      </div>
+                      <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-topo-local-cli="${esc(c.id)}">编辑本机客户端</button>
+                    </div>
+                  </div>`;
+              })
+              .join("")}
+          </div>
+        </div>`;
+    }
+
+    main.innerHTML = html;
+
+    STATE.servers.forEach((_, idx) => {
+      const btn = main.querySelector("#jumpP2PFromSrv_" + idx);
+      if (btn) {
+        btn.addEventListener("click", () => {
+          STATE.topologyTab = "p2pWizard";
+          renderTopologyWorkspace();
+        });
+      }
+    });
+    main.querySelectorAll("[data-topo-rc]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const [sid, cid] = b.dataset.topoRc.split("::");
+        openRemoteClientConsole(sid, cid);
+      });
+    });
+    main.querySelectorAll("[data-topo-local-cli]").forEach((b) => {
+      b.addEventListener("click", () => {
+        STATE.selectedClientId = b.dataset.topoLocalCli;
+        STATE.clientDraft = deepClone(STATE.clients.find((x) => x.id === STATE.selectedClientId));
+        STATE.clientDraftDirty = false;
+        switchView("frpc");
+      });
+    });
+  }
+
+  function renderP2PWizardPane(main) {
+    const firstSrv = STATE.servers[0];
+    const selectedSrvId = STATE.selectedServerId || (firstSrv ? firstSrv.id : "");
+    const rt = (selectedSrvId && STATE.runtime[selectedSrvId]) || {};
+    const remotes = rt.remoteClients || [];
+
+    main.innerHTML = `
+      <div class="yc-card">
+        <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;">
+          <img src="assets/k_58.webp" alt="" style="width:58px;height:58px;object-fit:contain;" />
+          <div>
+            <h3 style="margin:0;font-family:var(--yc-serif);font-size:21px;">跨客户端 XTCP 点对点直连协同向导</h3>
+            <p style="margin:4px 0 0;font-size:13px;color:var(--yc-muted);">
+              支持两种实战流程：① 通过你的服务端直接远控配置被访问端（如家里电脑 C），并生成配对片段供对端用户（如朋友电脑 E）在本地发起 P2P；② 若两端均由本服务端管控，可一键双端同步打通！
+            </p>
+          </div>
+        </div>
+
+        <div class="yc-grid-3">
+          <label class="yc-field">
+            <span class="yc-field-label">协调中枢服务端 (FRPS)</span>
+            <select id="p2pSrvSel">
+              ${
+                STATE.servers.length === 0
+                  ? `<option value="">暂无本地 FRPS 服务端</option>`
+                  : STATE.servers
+                      .map((s) => `<option value="${esc(s.id)}" ${s.id === selectedSrvId ? "selected" : ""}>${esc(s.name)} (:${s.bindPort})</option>`)
+                      .join("")
+              }
+            </select>
+          </label>
+          <label class="yc-field">
+            <span class="yc-field-label">P2P 隧道标识基名</span>
+            <input id="p2pBaseName" type="text" value="ce-p2p-link" placeholder="如 ce-p2p-link" />
+          </label>
+          <label class="yc-field">
+            <span class="yc-field-label">通道类型</span>
+            <select id="p2pTypeSel">
+              <option value="xtcp">xtcp (NAT 穿透直连 P2P)</option>
+              <option value="stcp">stcp (加密私密中继 TCP)</option>
+              <option value="sudp">sudp (加密私密中继 UDP)</option>
+            </select>
+          </label>
+
+          <label class="yc-field">
+            <span class="yc-field-label">被访问端 (服务提供方，如家里电脑 C)</span>
+            <select id="p2pHostSel">
+              <option value="">仅生成配置片段（不自动远控下发）</option>
+              ${remotes.map((rc) => `<option value="${esc(rc.clientId)}">${esc(rc.clientName)} (${rc.frpUser ? "user:" + esc(rc.frpUser) : "已连接"})</option>`).join("")}
+            </select>
+          </label>
+          <label class="yc-field">
+            <span class="yc-field-label">被访问端本地目标 IP</span>
+            <input id="p2pHostIP" type="text" value="127.0.0.1" />
+          </label>
+          <label class="yc-field">
+            <span class="yc-field-label">被访问端本地服务端口</span>
+            <input id="p2pHostPort" type="number" value="7777" min="1" max="65535" />
+          </label>
+
+          <label class="yc-field">
+            <span class="yc-field-label">访问发起端 (如朋友电脑 E)</span>
+            <select id="p2pVisitorSel">
+              <option value="">由对端用户在本地 WebUI 自行发起 (生成配对代码)</option>
+              ${remotes.map((rc, i) => `<option value="${esc(rc.clientId)}" ${i === 1 ? "selected" : ""}>同时远控下发至：${esc(rc.clientName)}</option>`).join("")}
+            </select>
+          </label>
+          <label class="yc-field">
+            <span class="yc-field-label">发起端本地绑定端口</span>
+            <input id="p2pVisitorPort" type="number" value="17777" min="1" max="65535" />
+          </label>
+          <label class="yc-field">
+            <span class="yc-field-label">共享打洞密钥 (secretKey)</span>
+            <input id="p2pSecret" type="text" value="${esc(randomSecret(14))}" />
+          </label>
+        </div>
+
+        <div class="yc-check-row" style="margin:12px 0 18px;">
+          <label class="yc-switch-label">
+            <input id="p2pKeepOpen" type="checkbox" checked />
+            <span>保持 P2P 通道常驻预热 (keepTunnelOpen = true)</span>
+          </label>
+          <label class="yc-switch-label">
+            <input id="p2pFallback" type="checkbox" checked />
+            <span>同时配置 STCP 自动回退保底通道 (严格对称型 NAT 下 800ms 无缝回退不断连)</span>
+          </label>
+        </div>
+
+        <button type="button" id="p2pExecuteBtn" class="yc-btn yc-btn-primary">
+          ⚡ 执行 P2P 协同下发并生成对端配对凭证
+        </button>
+
+        ${
+          STATE.lastP2PResult
+            ? `<div style="margin-top:20px;padding:16px;border-radius:12px;background:var(--yc-code-bg);color:#f4f2ff;">
+                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                   <strong style="color:#ff9ec0;font-size:13px;">
+                     配对就绪 · ${STATE.lastP2PResult.visitorApplied ? "已双端远控自动下发并热重载！" : "已下发被访问端，可将下方 Visitor 配置交给发起端 E 本地导入"}
+                   </strong>
+                   <button type="button" class="yc-btn yc-btn-ghost-dark yc-btn-sm" id="copyP2PSnippetBtn">复制对端 TOML</button>
+                 </div>
+                 <pre style="margin:0;font-family:var(--yc-mono);font-size:12px;line-height:1.6;white-space:pre-wrap;">${esc(STATE.lastP2PResult.visitorTomlSnippet || "")}</pre>
+               </div>`
+            : ""
+        }
+      </div>`;
+
+    const srvSel = main.querySelector("#p2pSrvSel");
+    if (srvSel) {
+      srvSel.addEventListener("change", () => {
+        STATE.selectedServerId = srvSel.value;
+        renderP2PWizardPane(main);
+      });
+    }
+
+    main.querySelector("#p2pExecuteBtn").addEventListener("click", async () => {
+      try {
+        const res = await apiFetch("/api/remote/p2p-pair", {
+          method: "POST",
+          body: {
+            serverId: main.querySelector("#p2pSrvSel").value,
+            tunnelBaseName: main.querySelector("#p2pBaseName").value,
+            p2pType: main.querySelector("#p2pTypeSel").value,
+            secretKey: main.querySelector("#p2pSecret").value,
+            hostClientId: main.querySelector("#p2pHostSel").value,
+            hostLocalIP: main.querySelector("#p2pHostIP").value,
+            hostLocalPort: parseInt(main.querySelector("#p2pHostPort").value, 10) || 7777,
+            visitorClientId: main.querySelector("#p2pVisitorSel").value,
+            visitorBindIP: "127.0.0.1",
+            visitorBindPort: parseInt(main.querySelector("#p2pVisitorPort").value, 10) || 17777,
+            keepTunnelOpen: main.querySelector("#p2pKeepOpen").checked,
+            enableStcpFallback: main.querySelector("#p2pFallback").checked
+          }
+        });
+        STATE.lastP2PResult = res;
+        toast("P2P 协同编排已完成！");
+        await refreshState(true);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+
+    const cpBtn = main.querySelector("#copyP2PSnippetBtn");
+    if (cpBtn && STATE.lastP2PResult) {
+      cpBtn.addEventListener("click", () => copyText(STATE.lastP2PResult.visitorTomlSnippet, "对端 P2P Visitor 配置"));
+    }
+  }
+
+  function renderScenariosGuidePane(main) {
+    main.innerHTML = `
+      <div class="yc-card">
+        <h3 style="margin:0 0 14px;font-family:var(--yc-serif);font-size:21px;">经典五节点实战拓扑模型 (A / B / C / D / E)</h3>
+        <div class="yc-table-wrap">
+          <table class="yc-table">
+            <thead>
+              <tr>
+                <th>主机角色</th>
+                <th>网络条件</th>
+                <th>本地运行实例</th>
+                <th>基于连接的控制与协同方式</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>云服务器 A</strong></td>
+                <td>拥有公网 IP</td>
+                <td><code>frps</code> 实例 A</td>
+                <td>作为核心中枢，可直接在 A 的 WebUI 中远控所有连上 A 的客户端实例（B、C、D 的 frpc、E）。</td>
+              </tr>
+              <tr>
+                <td><strong>学校电脑 B</strong></td>
+                <td>校园网无公网 IP</td>
+                <td><code>frpc</code> 实例 B → 连 A</td>
+                <td>放学回家访问 A 的 WebUI，直接远控 B 的配置新增 <code>7777 → 9999</code> TCP 映射并热重载。</td>
+              </tr>
+              <tr>
+                <td><strong>家里电脑 C</strong></td>
+                <td>家宽 NAT 无公网 IP</td>
+                <td><code>frpc</code> 实例 C → 连 A</td>
+                <td>可通过 A 的 WebUI 远控 C 暴露 <code>xtcp</code> 服务，与朋友电脑 E 达成 P2P 直连。</td>
+              </tr>
+              <tr>
+                <td><strong>公司电脑 D</strong></td>
+                <td>拥有公网 IP</td>
+                <td>同时建有 <code>frps</code> D 与 <code>frpc</code> D (连 A)</td>
+                <td>D 的 <code>frpc</code> 将 <code>6768</code> UDP 映射到 A 的 <code>10000</code>；A 仅能控制 D 连过来的这一个 <code>frpc</code> 实例，D 自己的 <code>frps</code> 完全独立服务其他下游用户。</td>
+              </tr>
+              <tr>
+                <td><strong>朋友电脑 E</strong></td>
+                <td>家宽 NAT 无公网 IP</td>
+                <td><code>frpc</code> 实例 E → 连 A</td>
+                <td>E 用户在本地访问 E 的 WebUI 仅能控制 E 自己的配置，填入与 C 配对的 <code>xtcp</code> Visitor 即可与 C 完成打洞直连。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  // ==================== 7. View 5: SYSTEM, Hot-Update & 35 Curated Gallery ====================
+  function renderSystemWorkspace() {
+    const sb = $("systemSidebar");
+    const main = $("systemMainPane");
+    if (!sb || !main) return;
+
+    sb.innerHTML = `
+      <div class="yc-side-box">
+        <div class="yc-side-heading"><span>应用与画廊目录</span></div>
+        <div class="yc-dir-list">
+          ${[
+            ["schemes", "k_47.webp", "01 · 多配置方案管理", "独立 JSON 方案与导入导出"],
+            ["updates", "k_54.webp", "02 · 核心与软件热更新", "fatedier/frp & 本体一键升级"],
+            ["gallery", "k_35.webp", "03 · 精选 35 张狂三画廊", "全部保留素材高清鉴赏与设封面"],
+            ["security", "k_51.webp", "04 · 账户安全与后台控制", "修改管理员密码与优雅退出"]
+          ]
+            .map(
+              ([k, img, t, s]) => `
+            <button type="button" class="yc-dir-item${STATE.systemTab === k ? " is-active" : ""}" data-sys-tab="${k}">
+              <img src="assets/${img}" alt="" class="yc-dir-thumb" />
+              <div class="yc-dir-meta">
+                <div class="yc-dir-title">${esc(t)}</div>
+                <div class="yc-dir-sub">${esc(s)}</div>
+              </div>
+            </button>`
+            )
+            .join("")}
+        </div>
+      </div>`;
+
+    sb.querySelectorAll("[data-sys-tab]").forEach((b) => {
+      b.addEventListener("click", () => {
+        STATE.systemTab = b.dataset.sysTab;
+        renderSystemWorkspace();
+      });
+    });
+
+    if (STATE.systemTab === "schemes") {
+      renderSystemSchemesPane(main);
+    } else if (STATE.systemTab === "updates") {
+      renderSystemUpdatesPane(main);
+    } else if (STATE.systemTab === "gallery") {
+      renderSystemGalleryPane(main);
+    } else {
+      renderSystemSecurityPane(main);
+    }
+  }
+
+  function renderSystemSchemesPane(main) {
+    main.innerHTML = `
+      <div class="yc-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
+          <div>
+            <h3 style="margin:0;font-family:var(--yc-serif);font-size:20px;">独立工作区配置方案 (data/configs/*.json)</h3>
+            <span style="font-size:12.5px;color:var(--yc-muted);">支持在同一软件内保存多套互不干扰的服务端/客户端环境方案，零磨损按需切换。</span>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="yc-btn yc-btn-primary yc-btn-sm" id="newSchemeModalBtn">+ 新建配置方案</button>
+            <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" id="exportSchemeJsonBtn">导出当前 JSON</button>
+          </div>
+        </div>
+        <div class="yc-table-wrap">
+          <table class="yc-table">
+            <thead>
+              <tr><th>方案名称</th><th>文件名</th><th>FRPS / FRPC 数量</th><th>最近更新</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              ${STATE.configFiles
+                .map(
+                  (f) => `
+                <tr>
+                  <td><strong>${esc(f.displayName)}</strong> ${f.active ? `<span class="yc-tag yc-tag-ok">当前启用</span>` : ""}</td>
+                  <td><code>${esc(f.fileName)}</code></td>
+                  <td>${f.serverCount} 服务端 / ${f.clientCount} 客户端</td>
+                  <td style="font-size:12px;color:var(--yc-muted);">${esc((f.updated || "").slice(0, 19).replace("T", " "))}</td>
+                  <td>
+                    ${
+                      f.active
+                        ? `<span style="font-size:12px;color:var(--yc-subtle);">使用中</span>`
+                        : `<div style="display:flex;gap:6px;">
+                             <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-switch-cfg="${esc(f.fileName)}">切换启用</button>
+                             <button type="button" class="yc-btn yc-btn-danger yc-btn-sm" data-del-cfg="${esc(f.fileName)}">删除</button>
+                           </div>`
+                    }
+                  </td>
+                </tr>`
+                )
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+
+    main.querySelector("#exportSchemeJsonBtn").addEventListener("click", async () => {
+      try {
+        const docData = await apiFetch("/api/configs/export-json");
+        const blob = new Blob([typeof docData === "string" ? docData : JSON.stringify(docData, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = STATE.activeConfigFile || "kurumifrp-config.json";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast("已导出当前配置方案 JSON");
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    main.querySelector("#newSchemeModalBtn").addEventListener("click", () => {
+      openModal(
+        `<div class="yc-modal-head">
+           <h3 class="yc-modal-title">新建独立工作区配置方案</h3>
+           <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-modal-close>关闭</button>
+         </div>
+         <label class="yc-field">
+           <span class="yc-field-label">方案英文/中文文件名标识</span>
+           <input id="nsSlug" type="text" placeholder="如 lab-mesh" />
+         </label>
+         <label class="yc-field">
+           <span class="yc-field-label">方案显示名称</span>
+           <input id="nsTitle" type="text" placeholder="如 实验室联调方案" />
+         </label>
+         <div class="yc-modal-foot">
+           <button type="button" class="yc-btn yc-btn-outline" data-modal-close>取消</button>
+           <button type="button" id="nsCreateBtn" class="yc-btn yc-btn-primary">创建并切换</button>
+         </div>`,
+        (dlg) => {
+          dlg.querySelector("#nsCreateBtn").addEventListener("click", async () => {
+            try {
+              await apiFetch("/api/configs/select", {
+                method: "POST",
+                body: { fileName: dlg.querySelector("#nsSlug").value, displayName: dlg.querySelector("#nsTitle").value }
+              });
+              closeModal();
+              toast("已创建并切换至新配置方案");
+              await refreshState(true);
+            } catch (err) {
+              toast(err.message, true);
+            }
+          });
+        },
+        460
+      );
+    });
+
+    main.querySelectorAll("[data-switch-cfg]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        try {
+          await apiFetch("/api/configs/select", { method: "POST", body: { fileName: b.dataset.switchCfg } });
+          toast("已切换配置方案");
+          await refreshState(true);
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    });
+
+    main.querySelectorAll("[data-del-cfg]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const fn = b.dataset.delCfg;
+        confirmModal("删除配置方案", `确定删除方案文件 ${fn} 吗？`, "确认删除", async () => {
+          try {
+            await apiFetch("/api/configs/delete", { method: "POST", body: { fileName: fn } });
+            toast("已删除方案文件");
+            await refreshState(true);
+          } catch (err) {
+            toast(err.message, true);
+          }
+        });
+      });
+    });
+  }
+
+  function renderSystemUpdatesPane(main) {
+    const core = STATE.core || {};
+    const chk = STATE.lastUpdateCheck;
+    main.innerHTML = `
+      <div class="yc-card">
+        <h3 style="margin:0 0 12px;font-family:var(--yc-serif);font-size:20px;">内置核心状态与一键无缝热更新</h3>
+        <div class="yc-grid-2" style="margin-bottom:16px;">
+          <div style="padding:14px;border-radius:10px;background:#faf9fe;border:1px solid var(--yc-border);">
+            <div style="font-size:12px;color:var(--yc-muted);">KurumiFrp 当前版本</div>
+            <div style="font-size:20px;font-weight:700;margin:4px 0;">v${esc(STATE.version)}</div>
+            ${chk && chk.app ? `<div style="font-size:12.5px;color:${chk.app.hasUpdate ? "var(--yc-rose)" : "var(--yc-ok)"};">最新构建: v${esc(chk.app.latest)} ${chk.app.error ? "· " + esc(chk.app.error) : ""}</div>` : ""}
+          </div>
+          <div style="padding:14px;border-radius:10px;background:#faf9fe;border:1px solid var(--yc-border);">
+            <div style="font-size:12px;color:var(--yc-muted);">上游官方 fatedier/frp 核心</div>
+            <div style="font-size:20px;font-weight:700;margin:4px 0;">frps ${esc(core.frpsVersion || "未检测")} / frpc ${esc(core.frpcVersion || "未检测")}</div>
+            <div style="font-size:12px;color:var(--yc-muted);">来源: <code>${esc(core.coreSource || "bundled")}</code></div>
+          </div>
+        </div>
+
+        <label class="yc-field">
+          <span class="yc-field-label">GitHub 下载代理 (可选，留空自动识别系统代理 ${STATE.systemProxy ? esc(STATE.systemProxy) : ""})</span>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <input id="updProxyInput" type="text" style="flex:1;min-width:240px;" value="${esc(STATE.updateProxy || "")}" placeholder="如 http://127.0.0.1:7890 或 socks5://127.0.0.1:10808" />
+            <button type="button" class="yc-btn yc-btn-outline" id="btnSaveUpdProxy">保存代理</button>
+            <button type="button" class="yc-btn yc-btn-primary" id="btnCheckUpdates">检查更新</button>
+            <button type="button" class="yc-btn yc-btn-indigo" id="btnApplyFrpUpdate">热更新官方 FRP 核心</button>
+            <button type="button" class="yc-btn yc-btn-outline" id="btnApplyAppUpdate">自更新 KurumiFrp</button>
+          </div>
+        </label>
+      </div>`;
+
+    main.querySelector("#btnSaveUpdProxy").addEventListener("click", async () => {
+      try {
+        await apiFetch("/api/update/settings", { method: "POST", body: { proxyURL: main.querySelector("#updProxyInput").value } });
+        toast("更新代理配置已保存");
+        await refreshState(true);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    main.querySelector("#btnCheckUpdates").addEventListener("click", async () => {
+      try {
+        toast("正在检查 GitHub 最新版本…");
+        STATE.lastUpdateCheck = await apiFetch("/api/update/check", {
+          method: "POST",
+          body: { proxyURL: main.querySelector("#updProxyInput").value }
+        });
+        toast("版本检查完成");
+        renderSystemUpdatesPane(main);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    main.querySelector("#btnApplyFrpUpdate").addEventListener("click", async () => {
+      try {
+        toast("正在下载并 SHA-256 校验官方 FRP 核心…");
+        const res = await apiFetch("/api/update/apply-frp", {
+          method: "POST",
+          body: { proxyURL: main.querySelector("#updProxyInput").value }
+        });
+        toast(`官方 FRP 核心热替换成功，已自动恢复 ${res.restarted || 0} 个运行实例！`);
+        await refreshState(true);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+    main.querySelector("#btnApplyAppUpdate").addEventListener("click", async () => {
+      try {
+        const res = await apiFetch("/api/update/apply-app", {
+          method: "POST",
+          body: { proxyURL: main.querySelector("#updProxyInput").value }
+        });
+        toast(`已启动 v${res.targetVersion} 静默升级，稍后自动重连…`);
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  }
+
+  function renderSystemGalleryPane(main) {
+    const items = KURUMI_ASSETS.filter((a) => STATE.galleryCat === "all" || a.cat === STATE.galleryCat);
+    main.innerHTML = `
+      <div class="yc-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:18px;">
+          <div>
+            <h3 style="margin:0;font-family:var(--yc-serif);font-size:20px;">时崎狂三精选视觉画廊 (共保留 35 张)</h3>
+            <span style="font-size:12.5px;color:var(--yc-muted);">点击任意插画可高清放大鉴赏，或一键设为主舞台当前壁纸。</span>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${[
+              ["all", "全部 (35)"],
+              ["16:9", "16:9 主舞台 (11)"],
+              ["3:4", "3:4 竖版卡片 (11)"],
+              ["4:3", "4:3 专题横图 (5)"],
+              ["1:1", "1:1 头像与Q版贴纸 (8)"]
+            ]
+              .map(
+                ([k, l]) => `<button type="button" class="yc-btn ${STATE.galleryCat === k ? "yc-btn-indigo" : "yc-btn-outline"} yc-btn-sm" data-gal-cat="${k}">${l}</button>`
+              )
+              .join("")}
+          </div>
+        </div>
+
+        <div class="yc-gallery-wall">
+          ${items
+            .map(
+              (a, i) => `
+            <div class="yc-gallery-tile" data-gal-open="${esc(a.id)}">
+              <div class="yc-gallery-img-wrap">
+                <img src="${a.src}" alt="${esc(a.title)}" class="${a.sticker ? "is-sticker" : ""}" />
+              </div>
+              <div class="yc-gallery-caption">
+                <span>${pad2(i + 1)} · ${esc(a.title)}</span>
+                <span class="yc-tag">${a.cat}</span>
+              </div>
+            </div>`
+            )
+            .join("")}
+        </div>
+      </div>`;
+
+    main.querySelectorAll("[data-gal-cat]").forEach((b) => {
+      b.addEventListener("click", () => {
+        STATE.galleryCat = b.dataset.galCat;
+        renderSystemGalleryPane(main);
+      });
+    });
+
+    main.querySelectorAll("[data-gal-open]").forEach((tile) => {
+      tile.addEventListener("click", () => {
+        const art = KURUMI_ASSETS.find((x) => x.id === tile.dataset.galOpen);
+        if (!art) return;
+        const heroIdx = HERO_SLIDES.findIndex((h) => h.id === art.id);
+        openModal(
+          `<div class="yc-modal-head">
+             <h3 class="yc-modal-title">#${art.id} · ${esc(art.title)} (${art.cat})</h3>
+             <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-modal-close>关闭</button>
+           </div>
+           <div style="text-align:center;background:#111636;border-radius:12px;padding:14px;">
+             <img src="${art.src}" alt="${esc(art.title)}" style="max-width:100%;max-height:68vh;border-radius:8px;object-fit:contain;" />
+           </div>
+           <div class="yc-modal-foot">
+             ${heroIdx >= 0 ? `<button type="button" id="setHeroNowBtn" class="yc-btn yc-btn-primary">设为主舞台当前展示壁纸</button>` : ""}
+             <button type="button" class="yc-btn yc-btn-outline" data-modal-close>返回画廊</button>
+           </div>`,
+          (dlg) => {
+            const hb = dlg.querySelector("#setHeroNowBtn");
+            if (hb) {
+              hb.addEventListener("click", () => {
+                STATE.slideIdx = heroIdx;
+                syncHomeSlideIndicators();
+                closeModal();
+                switchView("home");
+              });
+            }
+          },
+          880
+        );
+      });
+    });
+  }
+
+  function renderSystemSecurityPane(main) {
+    main.innerHTML = `
+      <div class="yc-card" style="max-width:620px;">
+        <h3 style="margin:0 0 14px;font-family:var(--yc-serif);font-size:20px;">单用户管理员凭据设置</h3>
+        <div class="yc-field">
+          <span class="yc-field-label">当前密码 (首次未设密码可留空)</span>
+          <input id="secCurPass" type="password" autocomplete="current-password" />
+        </div>
+        <div class="yc-field">
+          <span class="yc-field-label">新管理员用户名</span>
+          <input id="secNewUser" type="text" value="${esc(STATE.username)}" />
+        </div>
+        <div class="yc-field">
+          <span class="yc-field-label">新登录密码</span>
+          <input id="secNewPass" type="password" autocomplete="new-password" placeholder="建议不少于 8 位" />
+        </div>
+        <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
+          <button type="button" class="yc-btn yc-btn-primary" id="secSaveBtn">更新管理员账号与密码</button>
+          <button type="button" class="yc-btn yc-btn-danger" id="secQuitDaemonBtn">优雅停止后台服务并退出</button>
+        </div>
+      </div>`;
+
+    main.querySelector("#secSaveBtn").addEventListener("click", async () => {
+      try {
+        await apiFetch("/api/account", {
+          method: "POST",
+          body: {
+            currentPassword: main.querySelector("#secCurPass").value,
+            newUsername: main.querySelector("#secNewUser").value,
+            newPassword: main.querySelector("#secNewPass").value
+          }
+        });
+        toast("管理员凭据已更新，请使用新密码重新登录");
+        enterLoginGate("密码已更新，请使用新凭据登录");
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+
+    main.querySelector("#secQuitDaemonBtn").addEventListener("click", () => {
+      confirmModal("停止 KurumiFrp 后台进程", "确定停止所有正在运行的 frps/frpc 隧道并退出 KurumiFrp 服务吗？", "确认停止退出", async () => {
+        try {
+          await apiFetch("/api/quit", { method: "POST" });
+          toast("KurumiFrp 后台进程已优雅停止");
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    });
+  }
+
+  // ==================== Cover Picker & TOML Import Modals & Live SSE Logs ====================
+  function openCoverPickerModal(currentAsset, onPick) {
+    openModal(
+      `<div class="yc-modal-head">
+         <h3 class="yc-modal-title">选择实例卡片狂三竖版立绘 (3:4 精选)</h3>
+         <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-modal-close>关闭</button>
+       </div>
+       <div class="yc-gallery-wall" style="grid-template-columns:repeat(auto-fill,minmax(145px,1fr));">
+         ${PORTRAIT_COVERS.map(
+           (a, i) => `
+           <div class="yc-gallery-tile" data-pick-cover="k_${a.id}" style="${currentAsset === "k_" + a.id ? "border-color:var(--yc-rose);background:var(--yc-rose-tint);" : ""}">
+             <div class="yc-framed-portrait" style="border-width:3px;">
+               <img src="${a.src}" alt="${esc(a.title)}" />
+               <span class="yc-portrait-num">${pad2(i + 1)}</span>
+             </div>
+             <div style="margin-top:6px;font-size:12px;font-weight:600;text-align:center;">${esc(a.title)}</div>
+           </div>`
+         ).join("")}
+       </div>`,
+      (dlg) => {
+        dlg.querySelectorAll("[data-pick-cover]").forEach((el) => {
+          el.addEventListener("click", () => {
+            closeModal();
+            onPick(el.dataset.pickCover);
+          });
+        });
+      },
+      780
+    );
+  }
+
+  function openImportTOMLModal(kind) {
+    openModal(
+      `<div class="yc-modal-head">
+         <h3 class="yc-modal-title">导入标准 ${kind === "frps" ? "frps.toml" : "frpc.toml"} 配置文件</h3>
+         <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-modal-close>关闭</button>
+       </div>
+       <label class="yc-field">
+         <span class="yc-field-label">导入后实例名称</span>
+         <input id="impName" type="text" value="${kind === "frps" ? "导入服务端配置" : "导入客户端配置"}" />
+       </label>
+       <label class="yc-field">
+         <span class="yc-field-label">粘贴或选择本地 .toml 文件内容</span>
+         <textarea id="impTomlText" rows="12" style="font-family:var(--yc-mono);font-size:12.5px;" placeholder="# 粘贴官方 ${kind}.toml 内容…"></textarea>
+       </label>
+       <div class="yc-modal-foot">
+         <input type="file" id="impFileInput" accept=".toml,.ini,.txt" style="margin-right:auto;font-size:12px;" />
+         <button type="button" class="yc-btn yc-btn-outline" data-modal-close>取消</button>
+         <button type="button" id="impSubmitBtn" class="yc-btn yc-btn-primary">解析并创建实例</button>
+       </div>`,
+      (dlg) => {
+        dlg.querySelector("#impFileInput").addEventListener("change", (e) => {
+          const f = e.target.files && e.target.files[0];
+          if (!f) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            dlg.querySelector("#impTomlText").value = String(reader.result || "");
+          };
+          reader.readAsText(f);
+        });
+        dlg.querySelector("#impSubmitBtn").addEventListener("click", async () => {
+          try {
+            const res = await apiFetch("/api/configs/import-toml", {
+              method: "POST",
+              body: {
+                name: dlg.querySelector("#impName").value,
+                kind,
+                toml: dlg.querySelector("#impTomlText").value
+              }
+            });
+            closeModal();
+            if (res.kind === "frps") STATE.selectedServerId = res.id || STATE.selectedServerId;
+            else STATE.selectedClientId = res.id || STATE.selectedClientId;
+            toast("TOML 配置已完整解析并导入！");
+            await refreshState(true);
+          } catch (err) {
+            toast(err.message, true);
+          }
+        });
+      },
+      700
+    );
+  }
+
+  function stopLogStream() {
+    if (activeLogES) {
+      try {
+        activeLogES.close();
+      } catch (_e) {}
+      activeLogES = null;
+    }
+  }
+
+  async function renderInstanceLogsBox(container, instanceId, isRunning) {
+    stopLogStream();
+    container.innerHTML = `
+      <div class="yc-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <img src="assets/${isRunning ? "k_54.webp" : "k_59.webp"}" alt="" style="width:38px;height:38px;object-fit:contain;" />
+            <div>
+              <strong style="font-size:14px;">实例实时运行日志 (敏感密钥自动脱敏 · ANSI 已净化)</strong>
+              <div style="font-size:12px;color:var(--yc-muted);">${isRunning ? "SSE 实时流连接中" : "当前实例未运行，展示最近缓冲日志"}</div>
+            </div>
+          </div>
+          <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" id="copyLogBtn">复制日志</button>
+        </div>
+        <div id="liveLogBox" class="yc-log-box">正在加载日志…</div>
+      </div>`;
+
+    const box = container.querySelector("#liveLogBox");
+    container.querySelector("#copyLogBtn").addEventListener("click", () => copyText(box.textContent, "运行日志"));
+
+    try {
+      const snap = await apiFetch(`/api/logs?id=${encodeURIComponent(instanceId)}`);
+      const lines = snap.lines || [];
+      box.textContent = lines.length ? lines.join("\n") : "暂无日志输出。启动实例后官方核心输出将实时滚动显示于此。";
+      box.scrollTop = box.scrollHeight;
+    } catch (err) {
+      box.textContent = "读取日志失败: " + err.message;
+    }
+
+    if (isRunning && typeof EventSource !== "undefined" && !window.__KURUMI_DISABLE_SSE__) {
+      try {
+        const es = new EventSource(`/api/logs/stream?id=${encodeURIComponent(instanceId)}`);
+        let cleared = false;
+        es.onmessage = (ev) => {
+          if (!cleared) {
+            box.textContent = "";
+            cleared = true;
+          }
+          box.textContent += (box.textContent ? "\n" : "") + ev.data;
+          box.scrollTop = box.scrollHeight;
+        };
+        activeLogES = es;
+      } catch (_e) {}
+    }
+  }
+
+  // ==================== Global Event Wiring ====================
+  function bindStaticEvents() {
+    $("loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const btn = $("loginSubmitBtn");
+      btn.disabled = true;
+      try {
+        const res = await apiFetch("/api/login", {
+          method: "POST",
+          body: {
+            username: $("loginUsername").value.trim(),
+            password: $("loginPassword").value
+          }
+        });
+        STATE.username = res.username || "admin";
+        STATE.needsPasswordSetup = Boolean(res.needsPasswordSetup);
+        $("loginPassword").value = "";
+        await enterAuthenticatedApp();
+      } catch (err) {
+        const eb = $("loginErrorBox");
+        eb.textContent = err.message;
+        eb.hidden = false;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    $("logoutBtn").addEventListener("click", async () => {
+      try {
+        await apiFetch("/api/logout", { method: "POST" });
+      } catch (_e) {}
+      enterLoginGate("您已安全退出控制台");
+    });
+
+    document.querySelectorAll("[data-nav]").forEach((el) => {
+      el.addEventListener("click", () => switchView(el.dataset.nav));
+    });
+    document.querySelectorAll("[data-nav-jump]").forEach((el) => {
+      el.addEventListener("click", () => switchView(el.dataset.navJump));
+    });
+    $("topSchemeBtn").addEventListener("click", () => {
+      STATE.systemTab = "schemes";
+      switchView("system");
+    });
+
+    $("homePrevSlideBtn").addEventListener("click", () => {
+      STATE.slideIdx = (STATE.slideIdx - 1 + HERO_SLIDES.length) % HERO_SLIDES.length;
+      syncHomeSlideIndicators();
+    });
+    $("homeNextSlideBtn").addEventListener("click", () => {
+      STATE.slideIdx = (STATE.slideIdx + 1) % HERO_SLIDES.length;
+      syncHomeSlideIndicators();
+    });
+    $("homeStripToggleBtn").addEventListener("click", () => {
+      STATE.filmstripOpen = !STATE.filmstripOpen;
+      $("homeFilmstrip").hidden = !STATE.filmstripOpen;
+    });
+    $("homeAutoBtn").addEventListener("click", () => {
+      STATE.autoPlay = !STATE.autoPlay;
+      const btn = $("homeAutoBtn");
+      btn.classList.toggle("is-on", STATE.autoPlay);
+      btn.textContent = STATE.autoPlay ? "AUTO 轮播 · ON" : "AUTO 轮播 · OFF";
+    });
+
+    $("btnNewServer").addEventListener("click", createBlankServer);
+    $("btnImportServerToml").addEventListener("click", () => openImportTOMLModal("frps"));
+    $("btnNewClient").addEventListener("click", createBlankClient);
+    $("btnImportClientToml").addEventListener("click", () => openImportTOMLModal("frpc"));
+
+    $("modalBackdrop").addEventListener("click", (e) => {
+      if (e.target === $("modalBackdrop")) closeModal();
+    });
+  }
+
+  window.addEventListener("DOMContentLoaded", () => {
+    bindStaticEvents();
+    bootSession();
+  });
 })();

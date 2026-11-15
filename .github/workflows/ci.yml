@@ -108,6 +108,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             VERSION
+            RELEASE_NOTES.md
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: native-*
@@ -124,9 +125,16 @@ jobs:
             exit 0
           fi
           (cd dist-native && sha256sum * > SHA256SUMS.txt)
-          prev_tag="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
-          if [ -n "$prev_tag" ]; then
-            gh release create "$tag" dist-native/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "KurumiFrp $version" --generate-notes --notes-start-tag "$prev_tag"
+          if [ -s RELEASE_NOTES.md ]; then
+            gh release create "$tag" dist-native/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "KurumiFrp v$version" \
+              --notes-file RELEASE_NOTES.md
           else
-            gh release create "$tag" dist-native/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "KurumiFrp $version" --notes "KurumiFrp v${version} 正式版（内置官方原版 frpc/frps 双端核心、单用户认证、狂三三大版块 WebUI 与一键无感更新）。"
+            gh release create "$tag" dist-native/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "KurumiFrp v$version" \
+              --generate-notes
           fi

@@ -2,9 +2,15 @@ package manager
 
 import (
 	"fmt"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/Presikid/KurumiFrp/internal/version"
 )
+
+const internalCtrlProxyPrefix = "__kurumi_ctrl_"
 
 // RenderedConfig holds the generated TOML text, process environment variables, and sensitive strings to mask in logs.
 type RenderedConfig struct {
@@ -24,13 +30,29 @@ type ServerRuntimeInjections struct {
 	PluginPath     string // e.g. "/internal/frps-plugin/srv-xxx?token=..."
 }
 
-// ClientRuntimeInjections carries internal loopback Admin API parameters injected when launching official frpc.
+// ClientRuntimeInjections carries internal loopback Admin API & Remote-Control tunnel parameters injected when launching official frpc.
 type ClientRuntimeInjections struct {
 	Preview     bool
 	MaskSecrets bool
 	AdminPort   int
 	AdminUser   string
 	AdminPass   string
+	AgentPort   int
+	ClientID    string
+	ClientName  string
+	CtrlSecret  string
+	AgentToken  string
+}
+
+func isInternalCtrlProxy(proxyName string) bool {
+	name := strings.TrimSpace(proxyName)
+	if strings.HasPrefix(name, internalCtrlProxyPrefix) {
+		return true
+	}
+	if dot := strings.IndexByte(name, '.'); dot >= 0 {
+		return strings.HasPrefix(name[dot+1:], internalCtrlProxyPrefix)
+	}
+	return false
 }
 
 // RenderServerTOML renders a 100% standard official frps v1 TOML config file.
@@ -38,6 +60,7 @@ func RenderServerTOML(srv ServerProfile, inj ServerRuntimeInjections) RenderedCo
 	var b strings.Builder
 	var env []string
 	var secrets []string
+	secretIdx := 0
 
 	addSecret := func(envKey, val string) string {
 		if val == "" {
@@ -49,6 +72,10 @@ func RenderServerTOML(srv ServerProfile, inj ServerRuntimeInjections) RenderedCo
 				return tomlQuote("********")
 			}
 			return tomlQuote(val)
+		}
+		if envKey == "" {
+			secretIdx++
+			envKey = fmt.Sprintf("KURUMI_SRV_SEC_%d", secretIdx)
 		}
 		env = append(env, envKey+"="+tomlInnerEscape(val))
 		return fmt.Sprintf(`"{{ .Envs.%s }}"`, envKey)
@@ -72,35 +99,157 @@ func RenderServerTOML(srv ServerProfile, inj ServerRuntimeInjections) RenderedCo
 	if srv.QUICBindPort > 0 {
 		fmt.Fprintf(&b, "quicBindPort = %d\n", srv.QUICBindPort)
 	}
+	if strings.TrimSpace(srv.ProxyBindAddr) != "" {
+		fmt.Fprintf(&b, "proxyBindAddr = %s\n", tomlQuote(strings.TrimSpace(srv.ProxyBindAddr)))
+	}
 	if srv.VhostHTTPPort > 0 {
 		fmt.Fprintf(&b, "vhostHTTPPort = %d\n", srv.VhostHTTPPort)
 	}
 	if srv.VhostHTTPSPort > 0 {
 		fmt.Fprintf(&b, "vhostHTTPSPort = %d\n", srv.VhostHTTPSPort)
 	}
+	if srv.VhostHTTPTimeout > 0 {
+		fmt.Fprintf(&b, "vhostHTTPTimeout = %d\n", srv.VhostHTTPTimeout)
+	}
 	if srv.TCPMuxHTTPConnectPort > 0 {
 		fmt.Fprintf(&b, "tcpmuxHTTPConnectPort = %d\n", srv.TCPMuxHTTPConnectPort)
+	}
+	if srv.TCPMuxPassthrough {
+		b.WriteString("tcpmuxPassthrough = true\n")
 	}
 	if strings.TrimSpace(srv.SubDomainHost) != "" {
 		fmt.Fprintf(&b, "subDomainHost = %s\n", tomlQuote(strings.TrimSpace(srv.SubDomainHost)))
 	}
+	if strings.TrimSpace(srv.Custom404Page) != "" {
+		fmt.Fprintf(&b, "custom404Page = %s\n", tomlQuote(strings.TrimSpace(srv.Custom404Page)))
+	}
+
+	// Quotas & Limits
 	if srv.MaxPortsPerClient > 0 {
 		fmt.Fprintf(&b, "maxPortsPerClient = %d\n", srv.MaxPortsPerClient)
+	}
+	if srv.UserConnTimeout > 0 {
+		fmt.Fprintf(&b, "userConnTimeout = %d\n", srv.UserConnTimeout)
+	}
+	if srv.UDPPacketSize > 0 {
+		fmt.Fprintf(&b, "udpPacketSize = %d\n", srv.UDPPacketSize)
+	}
+	if srv.NatHoleAnalysisDataReserveHours > 0 {
+		fmt.Fprintf(&b, "natholeAnalysisDataReserveHours = %d\n", srv.NatHoleAnalysisDataReserveHours)
 	}
 	if srv.DetailedErrorsToClient != nil {
 		fmt.Fprintf(&b, "detailedErrorsToClient = %t\n", *srv.DetailedErrorsToClient)
 	}
-	if srv.MaxPoolCount > 0 || srv.TLSForce {
-		if srv.MaxPoolCount > 0 {
-			fmt.Fprintf(&b, "transport.maxPoolCount = %d\n", srv.MaxPoolCount)
+
+	// Logging
+	if strings.TrimSpace(srv.LogLevel) != "" {
+		fmt.Fprintf(&b, "log.level = %s\n", tomlQuote(strings.ToLower(strings.TrimSpace(srv.LogLevel))))
+	}
+	if srv.LogMaxDays > 0 {
+		fmt.Fprintf(&b, "log.maxDays = %d\n", srv.LogMaxDays)
+	}
+	if srv.DisablePrintColor {
+		b.WriteString("log.disablePrintColor = true\n")
+	}
+
+	// Transport, QUIC & TLS
+	if srv.MaxPoolCount > 0 {
+		fmt.Fprintf(&b, "transport.maxPoolCount = %d\n", srv.MaxPoolCount)
+	}
+	if srv.TCPMux != nil {
+		fmt.Fprintf(&b, "transport.tcpMux = %t\n", *srv.TCPMux)
+	}
+	if srv.TCPMuxKeepaliveInterval > 0 {
+		fmt.Fprintf(&b, "transport.tcpMuxKeepaliveInterval = %d\n", srv.TCPMuxKeepaliveInterval)
+	}
+	if srv.TCPKeepalive != 0 {
+		fmt.Fprintf(&b, "transport.tcpKeepalive = %d\n", srv.TCPKeepalive)
+	}
+	if srv.HeartbeatTimeout != 0 {
+		fmt.Fprintf(&b, "transport.heartbeatTimeout = %d\n", srv.HeartbeatTimeout)
+	}
+	if srv.QUICKeepalivePeriod > 0 {
+		fmt.Fprintf(&b, "transport.quic.keepalivePeriod = %d\n", srv.QUICKeepalivePeriod)
+	}
+	if srv.QUICMaxIdleTimeout > 0 {
+		fmt.Fprintf(&b, "transport.quic.maxIdleTimeout = %d\n", srv.QUICMaxIdleTimeout)
+	}
+	if srv.QUICMaxIncomingStreams > 0 {
+		fmt.Fprintf(&b, "transport.quic.maxIncomingStreams = %d\n", srv.QUICMaxIncomingStreams)
+	}
+	if srv.TLSForce {
+		b.WriteString("transport.tls.force = true\n")
+	}
+	if strings.TrimSpace(srv.TLSCertFile) != "" {
+		fmt.Fprintf(&b, "transport.tls.certFile = %s\n", tomlQuote(strings.TrimSpace(srv.TLSCertFile)))
+	}
+	if strings.TrimSpace(srv.TLSKeyFile) != "" {
+		fmt.Fprintf(&b, "transport.tls.keyFile = %s\n", tomlQuote(strings.TrimSpace(srv.TLSKeyFile)))
+	}
+	if strings.TrimSpace(srv.TLSTrustedCaFile) != "" {
+		fmt.Fprintf(&b, "transport.tls.trustedCaFile = %s\n", tomlQuote(strings.TrimSpace(srv.TLSTrustedCaFile)))
+	}
+
+	// SSH Tunnel Gateway
+	if srv.SSHGatewayBindPort > 0 {
+		fmt.Fprintf(&b, "sshTunnelGateway.bindPort = %d\n", srv.SSHGatewayBindPort)
+		if strings.TrimSpace(srv.SSHPrivateKeyFile) != "" {
+			fmt.Fprintf(&b, "sshTunnelGateway.privateKeyFile = %s\n", tomlQuote(strings.TrimSpace(srv.SSHPrivateKeyFile)))
 		}
-		if srv.TLSForce {
-			b.WriteString("transport.tls.force = true\n")
+		if strings.TrimSpace(srv.SSHAutoGenPrivateKeyPath) != "" {
+			fmt.Fprintf(&b, "sshTunnelGateway.autoGenPrivateKeyPath = %s\n", tomlQuote(strings.TrimSpace(srv.SSHAutoGenPrivateKeyPath)))
+		}
+		if strings.TrimSpace(srv.SSHAuthorizedKeysFile) != "" {
+			fmt.Fprintf(&b, "sshTunnelGateway.authorizedKeysFile = %s\n", tomlQuote(strings.TrimSpace(srv.SSHAuthorizedKeysFile)))
 		}
 	}
-	if strings.TrimSpace(srv.AuthToken) != "" {
+
+	// Authentication
+	authMethod := strings.ToLower(strings.TrimSpace(srv.AuthMethod))
+	if authMethod == "oidc" || (authMethod == "" && strings.TrimSpace(srv.OIDCIssuer) != "") {
+		b.WriteString("auth.method = \"oidc\"\n")
+		if scopes := cleanStringSlice(srv.AuthAdditionalScopes); len(scopes) > 0 {
+			fmt.Fprintf(&b, "auth.additionalScopes = %s\n", tomlStringArray(scopes))
+		}
+		if strings.TrimSpace(srv.OIDCIssuer) != "" {
+			fmt.Fprintf(&b, "auth.oidc.issuer = %s\n", tomlQuote(strings.TrimSpace(srv.OIDCIssuer)))
+		}
+		if strings.TrimSpace(srv.OIDCAudience) != "" {
+			fmt.Fprintf(&b, "auth.oidc.audience = %s\n", tomlQuote(strings.TrimSpace(srv.OIDCAudience)))
+		}
+		if srv.OIDCSkipExpiryCheck {
+			b.WriteString("auth.oidc.skipExpiryCheck = true\n")
+		}
+		if srv.OIDCSkipIssuerCheck {
+			b.WriteString("auth.oidc.skipIssuerCheck = true\n")
+		}
+	} else if strings.TrimSpace(srv.AuthTokenSourceFile) != "" {
 		b.WriteString("auth.method = \"token\"\n")
+		if scopes := cleanStringSlice(srv.AuthAdditionalScopes); len(scopes) > 0 {
+			fmt.Fprintf(&b, "auth.additionalScopes = %s\n", tomlStringArray(scopes))
+		}
+		b.WriteString("auth.tokenSource.type = \"file\"\n")
+		fmt.Fprintf(&b, "auth.tokenSource.file.path = %s\n", tomlQuote(strings.TrimSpace(srv.AuthTokenSourceFile)))
+	} else if strings.TrimSpace(srv.AuthToken) != "" {
+		b.WriteString("auth.method = \"token\"\n")
+		if scopes := cleanStringSlice(srv.AuthAdditionalScopes); len(scopes) > 0 {
+			fmt.Fprintf(&b, "auth.additionalScopes = %s\n", tomlStringArray(scopes))
+		}
 		fmt.Fprintf(&b, "auth.token = %s\n", addSecret("KURUMI_FRPS_TOKEN", srv.AuthToken))
+	}
+
+	if !inj.Preview && inj.AdminPort > 0 {
+		b.WriteString("\n# KurumiFrp local loopback dashboard API\n")
+		b.WriteString("webServer.addr = \"127.0.0.1\"\n")
+		fmt.Fprintf(&b, "webServer.port = %d\n", inj.AdminPort)
+		fmt.Fprintf(&b, "webServer.user = %s\n", tomlQuote(inj.AdminUser))
+		fmt.Fprintf(&b, "webServer.password = %s\n", addSecret("KURUMI_ADMIN_PASS", inj.AdminPass))
+	}
+
+	if extra := strings.TrimSpace(srv.ExtraTOML); extra != "" {
+		b.WriteString("\n# Custom full-parameter TOML\n")
+		b.WriteString(extra)
+		b.WriteString("\n")
 	}
 
 	if ranges := parseAllowPortsSpec(srv.AllowPorts); len(ranges) > 0 {
@@ -115,27 +264,32 @@ func RenderServerTOML(srv ServerProfile, inj ServerRuntimeInjections) RenderedCo
 		}
 	}
 
-	if !inj.Preview && inj.AdminPort > 0 {
-		b.WriteString("\n# KurumiFrp local loopback dashboard API\n")
-		b.WriteString("webServer.addr = \"127.0.0.1\"\n")
-		fmt.Fprintf(&b, "webServer.port = %d\n", inj.AdminPort)
-		fmt.Fprintf(&b, "webServer.user = %s\n", tomlQuote(inj.AdminUser))
-		fmt.Fprintf(&b, "webServer.password = %s\n", addSecret("KURUMI_ADMIN_PASS", inj.AdminPass))
+	for _, hp := range srv.HTTPPlugins {
+		if strings.TrimSpace(hp.Name) == "" || strings.TrimSpace(hp.Addr) == "" {
+			continue
+		}
+		if strings.TrimSpace(hp.Name) == "kurumi-dashboard-guard" {
+			continue
+		}
+		b.WriteString("\n[[httpPlugins]]\n")
+		fmt.Fprintf(&b, "name = %s\n", tomlQuote(strings.TrimSpace(hp.Name)))
+		fmt.Fprintf(&b, "addr = %s\n", tomlQuote(strings.TrimSpace(hp.Addr)))
+		fmt.Fprintf(&b, "path = %s\n", tomlQuote(nonEmptyStr(hp.Path, "/handler")))
+		if ops := cleanStringSlice(hp.Ops); len(ops) > 0 {
+			fmt.Fprintf(&b, "ops = %s\n", tomlStringArray(ops))
+		}
+		if hp.TLSVerify {
+			b.WriteString("tlsVerify = true\n")
+		}
 	}
 
 	if !inj.Preview && inj.KurumiCallback != "" && inj.PluginPath != "" {
-		b.WriteString("\n# KurumiFrp Connection Dashboard enforcement plugin\n")
+		b.WriteString("\n# KurumiFrp Connection Dashboard & Remote Instance Link plugin\n")
 		b.WriteString("[[httpPlugins]]\n")
 		b.WriteString("name = \"kurumi-dashboard-guard\"\n")
 		fmt.Fprintf(&b, "addr = %s\n", tomlQuote(inj.KurumiCallback))
 		fmt.Fprintf(&b, "path = %s\n", tomlQuote(inj.PluginPath))
-		b.WriteString("ops = [\"NewProxy\", \"NewUserConn\", \"Ping\"]\n")
-	}
-
-	if extra := strings.TrimSpace(srv.ExtraTOML); extra != "" {
-		b.WriteString("\n# Custom full-parameter TOML\n")
-		b.WriteString(extra)
-		b.WriteString("\n")
+		b.WriteString("ops = [\"Login\", \"NewProxy\", \"CloseProxy\", \"NewUserConn\", \"Ping\"]\n")
 	}
 
 	return RenderedConfig{TOML: b.String(), Env: env, Secrets: secrets}
@@ -181,13 +335,50 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 	if strings.TrimSpace(cli.User) != "" {
 		fmt.Fprintf(&b, "user = %s\n", tomlQuote(strings.TrimSpace(cli.User)))
 	}
+	if starts := cleanStringSlice(cli.StartProxies); len(starts) > 0 {
+		fmt.Fprintf(&b, "start = %s\n", tomlStringArray(starts))
+	}
+	if incs := cleanStringSlice(cli.Includes); len(incs) > 0 {
+		fmt.Fprintf(&b, "includes = %s\n", tomlStringArray(incs))
+	}
 	if strings.TrimSpace(cli.DNSServer) != "" {
 		fmt.Fprintf(&b, "dnsServer = %s\n", tomlQuote(strings.TrimSpace(cli.DNSServer)))
 	}
 	if strings.TrimSpace(cli.NatHoleSTUNServer) != "" {
 		fmt.Fprintf(&b, "natHoleStunServer = %s\n", tomlQuote(strings.TrimSpace(cli.NatHoleSTUNServer)))
 	}
+	if cli.UDPPacketSize > 0 {
+		fmt.Fprintf(&b, "udpPacketSize = %d\n", cli.UDPPacketSize)
+	}
 
+	needsVirtualNet := strings.TrimSpace(cli.VirtualNetAddr) != ""
+	if !needsVirtualNet {
+		for _, t := range cli.Tunnels {
+			if t.Enabled && strings.TrimSpace(t.Plugin) == "virtual_net" {
+				needsVirtualNet = true
+				break
+			}
+		}
+	}
+	if needsVirtualNet {
+		b.WriteString("featureGates = { VirtualNet = true }\n")
+		if strings.TrimSpace(cli.VirtualNetAddr) != "" {
+			fmt.Fprintf(&b, "virtualNet.address = %s\n", tomlQuote(strings.TrimSpace(cli.VirtualNetAddr)))
+		}
+	}
+
+	// Logging
+	if strings.TrimSpace(cli.LogLevel) != "" {
+		fmt.Fprintf(&b, "log.level = %s\n", tomlQuote(strings.ToLower(strings.TrimSpace(cli.LogLevel))))
+	}
+	if cli.LogMaxDays > 0 {
+		fmt.Fprintf(&b, "log.maxDays = %d\n", cli.LogMaxDays)
+	}
+	if cli.DisablePrintColor {
+		b.WriteString("log.disablePrintColor = true\n")
+	}
+
+	// Transport, QUIC & TLS
 	proto := strings.ToLower(strings.TrimSpace(cli.Protocol))
 	if proto != "" && proto != "tcp" {
 		fmt.Fprintf(&b, "transport.protocol = %s\n", tomlQuote(proto))
@@ -195,14 +386,121 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 	if cli.PoolCount > 0 {
 		fmt.Fprintf(&b, "transport.poolCount = %d\n", cli.PoolCount)
 	}
+	if cli.DialServerTimeout > 0 {
+		fmt.Fprintf(&b, "transport.dialServerTimeout = %d\n", cli.DialServerTimeout)
+	}
+	if cli.DialServerKeepAlive != 0 {
+		fmt.Fprintf(&b, "transport.dialServerKeepAlive = %d\n", cli.DialServerKeepAlive)
+	}
+	if strings.TrimSpace(cli.ConnectServerLocalIP) != "" {
+		fmt.Fprintf(&b, "transport.connectServerLocalIP = %s\n", tomlQuote(strings.TrimSpace(cli.ConnectServerLocalIP)))
+	}
+	if strings.TrimSpace(cli.ProxyURL) != "" {
+		fmt.Fprintf(&b, "transport.proxyURL = %s\n", tomlQuote(strings.TrimSpace(cli.ProxyURL)))
+	}
+	if cli.TCPMux != nil {
+		fmt.Fprintf(&b, "transport.tcpMux = %t\n", *cli.TCPMux)
+	}
+	if cli.TCPMuxKeepaliveInterval > 0 {
+		fmt.Fprintf(&b, "transport.tcpMuxKeepaliveInterval = %d\n", cli.TCPMuxKeepaliveInterval)
+	}
+	if cli.HeartbeatInterval != 0 {
+		fmt.Fprintf(&b, "transport.heartbeatInterval = %d\n", cli.HeartbeatInterval)
+	}
+	if cli.HeartbeatTimeout != 0 {
+		fmt.Fprintf(&b, "transport.heartbeatTimeout = %d\n", cli.HeartbeatTimeout)
+	}
+	if cli.QUICKeepalivePeriod > 0 {
+		fmt.Fprintf(&b, "transport.quic.keepalivePeriod = %d\n", cli.QUICKeepalivePeriod)
+	}
+	if cli.QUICMaxIdleTimeout > 0 {
+		fmt.Fprintf(&b, "transport.quic.maxIdleTimeout = %d\n", cli.QUICMaxIdleTimeout)
+	}
+	if cli.QUICMaxIncomingStreams > 0 {
+		fmt.Fprintf(&b, "transport.quic.maxIncomingStreams = %d\n", cli.QUICMaxIncomingStreams)
+	}
+
 	fmt.Fprintf(&b, "transport.tls.enable = %t\n", cli.TLSEnable)
+	if cli.TLSDisableCustomFirstByte {
+		b.WriteString("transport.tls.disableCustomTLSFirstByte = true\n")
+	}
 	if strings.TrimSpace(cli.TLSServerName) != "" {
 		fmt.Fprintf(&b, "transport.tls.serverName = %s\n", tomlQuote(strings.TrimSpace(cli.TLSServerName)))
 	}
+	if strings.TrimSpace(cli.TLSCertFile) != "" {
+		fmt.Fprintf(&b, "transport.tls.certFile = %s\n", tomlQuote(strings.TrimSpace(cli.TLSCertFile)))
+	}
+	if strings.TrimSpace(cli.TLSKeyFile) != "" {
+		fmt.Fprintf(&b, "transport.tls.keyFile = %s\n", tomlQuote(strings.TrimSpace(cli.TLSKeyFile)))
+	}
+	if strings.TrimSpace(cli.TLSTrustedCaFile) != "" {
+		fmt.Fprintf(&b, "transport.tls.trustedCaFile = %s\n", tomlQuote(strings.TrimSpace(cli.TLSTrustedCaFile)))
+	}
 
-	if strings.TrimSpace(cli.AuthToken) != "" {
+	// Authentication
+	authMethod := strings.ToLower(strings.TrimSpace(cli.AuthMethod))
+	if authMethod == "oidc" || (authMethod == "" && strings.TrimSpace(cli.OIDCTokenEndpointURL) != "") {
+		b.WriteString("auth.method = \"oidc\"\n")
+		if scopes := cleanStringSlice(cli.AuthAdditionalScopes); len(scopes) > 0 {
+			fmt.Fprintf(&b, "auth.additionalScopes = %s\n", tomlStringArray(scopes))
+		}
+		if strings.TrimSpace(cli.OIDCClientID) != "" {
+			fmt.Fprintf(&b, "auth.oidc.clientID = %s\n", tomlQuote(strings.TrimSpace(cli.OIDCClientID)))
+		}
+		if strings.TrimSpace(cli.OIDCClientSecret) != "" {
+			fmt.Fprintf(&b, "auth.oidc.clientSecret = %s\n", addSecret("OIDC_SEC", cli.OIDCClientSecret))
+		}
+		if strings.TrimSpace(cli.OIDCAudience) != "" {
+			fmt.Fprintf(&b, "auth.oidc.audience = %s\n", tomlQuote(strings.TrimSpace(cli.OIDCAudience)))
+		}
+		if strings.TrimSpace(cli.OIDCScope) != "" {
+			fmt.Fprintf(&b, "auth.oidc.scope = %s\n", tomlQuote(strings.TrimSpace(cli.OIDCScope)))
+		}
+		if strings.TrimSpace(cli.OIDCTokenEndpointURL) != "" {
+			fmt.Fprintf(&b, "auth.oidc.tokenEndpointURL = %s\n", tomlQuote(strings.TrimSpace(cli.OIDCTokenEndpointURL)))
+		}
+		writeDottedKVMap(&b, "auth.oidc.additionalEndpointParams", cli.OIDCAdditionalParams)
+	} else if strings.TrimSpace(cli.AuthTokenSourceFile) != "" {
 		b.WriteString("auth.method = \"token\"\n")
+		if scopes := cleanStringSlice(cli.AuthAdditionalScopes); len(scopes) > 0 {
+			fmt.Fprintf(&b, "auth.additionalScopes = %s\n", tomlStringArray(scopes))
+		}
+		b.WriteString("auth.tokenSource.type = \"file\"\n")
+		fmt.Fprintf(&b, "auth.tokenSource.file.path = %s\n", tomlQuote(strings.TrimSpace(cli.AuthTokenSourceFile)))
+	} else if strings.TrimSpace(cli.AuthToken) != "" {
+		b.WriteString("auth.method = \"token\"\n")
+		if scopes := cleanStringSlice(cli.AuthAdditionalScopes); len(scopes) > 0 {
+			fmt.Fprintf(&b, "auth.additionalScopes = %s\n", tomlStringArray(scopes))
+		}
 		fmt.Fprintf(&b, "auth.token = %s\n", addSecret("AUTH_TOKEN", cli.AuthToken))
+	}
+
+	// Global Metadatas (user metadatas + optional runtime connection-link metadatas)
+	for _, k := range sortedMapKeys(cli.Metadatas) {
+		if strings.HasPrefix(k, "kurumi_") {
+			continue
+		}
+		fmt.Fprintf(&b, "metadatas.%s = %s\n", tomlDottedKeySegment(k), tomlQuote(cli.Metadatas[k]))
+	}
+	if strings.TrimSpace(cli.ClientID) != "" {
+		fmt.Fprintf(&b, "metadatas.client_id = %s\n", tomlQuote(strings.TrimSpace(cli.ClientID)))
+	}
+
+	enableRemoteCtrl := cli.RemoteCtrlEnabled == nil || *cli.RemoteCtrlEnabled
+	ctrlProxyName := internalCtrlProxyPrefix + cli.ID
+	var ctrlKeyExpr string
+	if !inj.Preview && enableRemoteCtrl && inj.AgentPort > 0 && inj.ClientID != "" && inj.CtrlSecret != "" && inj.AgentToken != "" {
+		ctrlProxyName = internalCtrlProxyPrefix + inj.ClientID
+		ctrlKeyExpr = addSecret("CTRL_KEY", inj.CtrlSecret)
+		agentTokExpr := addSecret("AGENT_TOK", inj.AgentToken)
+		hostName, _ := os.Hostname()
+		fmt.Fprintf(&b, "metadatas.kurumi_client_id = %s\n", tomlQuote(inj.ClientID))
+		fmt.Fprintf(&b, "metadatas.kurumi_client_name = %s\n", tomlQuote(nonEmptyStr(inj.ClientName, cli.Name)))
+		fmt.Fprintf(&b, "metadatas.kurumi_ctrl_proxy = %s\n", tomlQuote(ctrlProxyName))
+		fmt.Fprintf(&b, "metadatas.kurumi_ctrl_key = %s\n", ctrlKeyExpr)
+		fmt.Fprintf(&b, "metadatas.kurumi_agent_token = %s\n", agentTokExpr)
+		fmt.Fprintf(&b, "metadatas.kurumi_hostname = %s\n", tomlQuote(hostName))
+		fmt.Fprintf(&b, "metadatas.kurumi_app_ver = %s\n", tomlQuote(version.Current))
 	}
 
 	if !inj.Preview && inj.AdminPort > 0 {
@@ -221,6 +519,9 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 
 	for _, tun := range cli.Tunnels {
 		if !tun.Enabled {
+			continue
+		}
+		if isInternalCtrlProxy(tun.Name) {
 			continue
 		}
 		typ := strings.ToLower(strings.TrimSpace(tun.Type))
@@ -244,12 +545,52 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 			}
 			fmt.Fprintf(&b, "bindAddr = %s\n", tomlQuote(bindIP))
 			fmt.Fprintf(&b, "bindPort = %d\n", tun.LocalPort)
-			if typ == "xtcp" && tun.KeepTunnelOpen {
-				b.WriteString("keepTunnelOpen = true\n")
+			if tun.UseEncryption {
+				b.WriteString("transport.useEncryption = true\n")
+			}
+			if tun.UseCompression {
+				b.WriteString("transport.useCompression = true\n")
+			}
+			if typ == "xtcp" {
+				if vp := strings.ToLower(strings.TrimSpace(tun.VisitorProtocol)); vp != "" {
+					fmt.Fprintf(&b, "protocol = %s\n", tomlQuote(vp))
+				}
+				if tun.KeepTunnelOpen {
+					b.WriteString("keepTunnelOpen = true\n")
+				}
+				if tun.MaxRetriesAnHour > 0 {
+					fmt.Fprintf(&b, "maxRetriesAnHour = %d\n", tun.MaxRetriesAnHour)
+				}
+				if tun.MinRetryInterval > 0 {
+					fmt.Fprintf(&b, "minRetryInterval = %d\n", tun.MinRetryInterval)
+				}
+				if strings.TrimSpace(tun.FallbackTo) != "" {
+					fmt.Fprintf(&b, "fallbackTo = %s\n", tomlQuote(strings.TrimSpace(tun.FallbackTo)))
+				}
+				if tun.FallbackTimeoutMs > 0 {
+					fmt.Fprintf(&b, "fallbackTimeoutMs = %d\n", tun.FallbackTimeoutMs)
+				}
 			}
 			if ex := strings.TrimSpace(tun.ExtraTOML); ex != "" {
 				b.WriteString(ex + "\n")
 			}
+			continue
+		}
+
+		// Port-range batch mapping support for TCP/UDP via official FRP Go-template syntax
+		rangeLocal := strings.TrimSpace(tun.PortRangeLocal)
+		rangeRemote := strings.TrimSpace(tun.PortRangeRemote)
+		if (typ == "tcp" || typ == "udp") && rangeLocal != "" && rangeRemote != "" {
+			localIP := nonEmptyStr(tun.LocalIP, "127.0.0.1")
+			fmt.Fprintf(&b, "\n{{- range $_, $v := parseNumberRangePair %s %s }}\n", tomlQuote(rangeLocal), tomlQuote(rangeRemote))
+			b.WriteString("[[proxies]]\n")
+			fmt.Fprintf(&b, "name = \"%s-{{ $v.First }}\"\n", tomlInnerEscape(tun.Name))
+			fmt.Fprintf(&b, "type = %s\n", tomlQuote(typ))
+			fmt.Fprintf(&b, "localIP = %s\n", tomlQuote(localIP))
+			b.WriteString("localPort = {{ $v.First }}\n")
+			b.WriteString("remotePort = {{ $v.Second }}\n")
+			writeProxyTransportAndCommon(&b, tun)
+			b.WriteString("{{- end }}\n")
 			continue
 		}
 
@@ -276,13 +617,23 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 			}
 		case "http", "https", "tcpmux":
 			if typ == "tcpmux" {
-				b.WriteString("multiplexer = \"httpconnect\"\n")
+				mux := nonEmptyStr(tun.Multiplexer, "httpconnect")
+				fmt.Fprintf(&b, "multiplexer = %s\n", tomlQuote(mux))
 			}
 			if doms := cleanStringSlice(tun.CustomDomains); len(doms) > 0 {
 				fmt.Fprintf(&b, "customDomains = %s\n", tomlStringArray(doms))
 			}
 			if strings.TrimSpace(tun.SubDomain) != "" {
 				fmt.Fprintf(&b, "subdomain = %s\n", tomlQuote(strings.TrimSpace(tun.SubDomain)))
+			}
+			if typ == "http" || typ == "tcpmux" {
+				if strings.TrimSpace(tun.RouteByHTTPUser) != "" {
+					fmt.Fprintf(&b, "routeByHTTPUser = %s\n", tomlQuote(strings.TrimSpace(tun.RouteByHTTPUser)))
+				}
+				if strings.TrimSpace(tun.HTTPUser) != "" {
+					fmt.Fprintf(&b, "httpUser = %s\n", tomlQuote(strings.TrimSpace(tun.HTTPUser)))
+					fmt.Fprintf(&b, "httpPassword = %s\n", addSecret("HTTP_PASS", tun.HTTPPassword))
+				}
 			}
 			if typ == "http" {
 				if locs := cleanStringSlice(tun.Locations); len(locs) > 0 {
@@ -291,146 +642,305 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 				if strings.TrimSpace(tun.HostHeaderRewrite) != "" {
 					fmt.Fprintf(&b, "hostHeaderRewrite = %s\n", tomlQuote(strings.TrimSpace(tun.HostHeaderRewrite)))
 				}
-				if strings.TrimSpace(tun.HTTPUser) != "" {
-					fmt.Fprintf(&b, "httpUser = %s\n", tomlQuote(strings.TrimSpace(tun.HTTPUser)))
-					fmt.Fprintf(&b, "httpPassword = %s\n", addSecret("HTTP_PASS", tun.HTTPPassword))
-				}
+				writeDottedKVMap(&b, "requestHeaders.set", tun.RequestHeaders)
+				writeDottedKVMap(&b, "responseHeaders.set", tun.ResponseHeaders)
 			}
 		case "stcp", "xtcp", "sudp":
 			if strings.TrimSpace(tun.SecretKey) != "" {
 				fmt.Fprintf(&b, "secretKey = %s\n", addSecret("PROXY_KEY", tun.SecretKey))
 			}
+			if users := cleanStringSlice(tun.AllowUsers); len(users) > 0 {
+				fmt.Fprintf(&b, "allowUsers = %s\n", tomlStringArray(users))
+			}
 		}
 
-		if tun.BandwidthLimitKB > 0 {
-			fmt.Fprintf(&b, "transport.bandwidthLimit = \"%dKB\"\n", tun.BandwidthLimitKB)
-			b.WriteString("transport.bandwidthLimitMode = \"client\"\n")
-		}
-		if tun.UseEncryption {
-			b.WriteString("transport.useEncryption = true\n")
-		}
-		if tun.UseCompression {
-			b.WriteString("transport.useCompression = true\n")
-		}
+		writeProxyTransportAndCommon(&b, tun)
 
+		// Built-in Client Plugin (emitted via dotted keys so [[proxies]] table scope stays clean)
 		if pluginType != "" {
-			b.WriteString("[proxies.plugin]\n")
-			fmt.Fprintf(&b, "type = %s\n", tomlQuote(pluginType))
+			fmt.Fprintf(&b, "plugin.type = %s\n", tomlQuote(pluginType))
 			switch pluginType {
 			case "static_file":
-				fmt.Fprintf(&b, "localPath = %s\n", tomlQuote(tun.PluginLocalPath))
+				fmt.Fprintf(&b, "plugin.localPath = %s\n", tomlQuote(tun.PluginLocalPath))
 				if strings.TrimSpace(tun.PluginStripPrefix) != "" {
-					fmt.Fprintf(&b, "stripPrefix = %s\n", tomlQuote(strings.TrimSpace(tun.PluginStripPrefix)))
+					fmt.Fprintf(&b, "plugin.stripPrefix = %s\n", tomlQuote(strings.TrimSpace(tun.PluginStripPrefix)))
 				}
 				if strings.TrimSpace(tun.PluginUser) != "" {
-					fmt.Fprintf(&b, "httpUser = %s\n", tomlQuote(strings.TrimSpace(tun.PluginUser)))
-					fmt.Fprintf(&b, "httpPassword = %s\n", addSecret("PLUG_PASS", tun.PluginPassword))
+					fmt.Fprintf(&b, "plugin.httpUser = %s\n", tomlQuote(strings.TrimSpace(tun.PluginUser)))
+					fmt.Fprintf(&b, "plugin.httpPassword = %s\n", addSecret("PLUG_PASS", tun.PluginPassword))
 				}
 			case "socks5":
 				if strings.TrimSpace(tun.PluginUser) != "" {
-					fmt.Fprintf(&b, "username = %s\n", tomlQuote(strings.TrimSpace(tun.PluginUser)))
-					fmt.Fprintf(&b, "password = %s\n", addSecret("PLUG_PASS", tun.PluginPassword))
+					fmt.Fprintf(&b, "plugin.username = %s\n", tomlQuote(strings.TrimSpace(tun.PluginUser)))
+					fmt.Fprintf(&b, "plugin.password = %s\n", addSecret("PLUG_PASS", tun.PluginPassword))
 				}
 			case "http_proxy":
 				if strings.TrimSpace(tun.PluginUser) != "" {
-					fmt.Fprintf(&b, "httpUser = %s\n", tomlQuote(strings.TrimSpace(tun.PluginUser)))
-					fmt.Fprintf(&b, "httpPassword = %s\n", addSecret("PLUG_PASS", tun.PluginPassword))
+					fmt.Fprintf(&b, "plugin.httpUser = %s\n", tomlQuote(strings.TrimSpace(tun.PluginUser)))
+					fmt.Fprintf(&b, "plugin.httpPassword = %s\n", addSecret("PLUG_PASS", tun.PluginPassword))
 				}
 			case "unix_domain_socket":
-				fmt.Fprintf(&b, "unixPath = %s\n", tomlQuote(tun.PluginLocalPath))
-			case "https2http":
-				fmt.Fprintf(&b, "localAddr = %s\n", tomlQuote(tun.PluginLocalAddr))
+				fmt.Fprintf(&b, "plugin.unixPath = %s\n", tomlQuote(tun.PluginLocalPath))
+			case "virtual_net":
+				fmt.Fprintf(&b, "plugin.address = %s\n", tomlQuote(tun.PluginLocalAddr))
+			case "https2http", "https2https":
+				fmt.Fprintf(&b, "plugin.localAddr = %s\n", tomlQuote(tun.PluginLocalAddr))
+				if strings.TrimSpace(tun.PluginHostHeaderRewrite) != "" {
+					fmt.Fprintf(&b, "plugin.hostHeaderRewrite = %s\n", tomlQuote(strings.TrimSpace(tun.PluginHostHeaderRewrite)))
+				}
+				if strings.TrimSpace(tun.PluginCrtPath) != "" {
+					fmt.Fprintf(&b, "plugin.crtPath = %s\n", tomlQuote(strings.TrimSpace(tun.PluginCrtPath)))
+				}
+				if strings.TrimSpace(tun.PluginKeyPath) != "" {
+					fmt.Fprintf(&b, "plugin.keyPath = %s\n", tomlQuote(strings.TrimSpace(tun.PluginKeyPath)))
+				}
+				if tun.PluginEnableHTTP2 != nil {
+					fmt.Fprintf(&b, "plugin.enableHTTP2 = %t\n", *tun.PluginEnableHTTP2)
+				}
+				writeDottedKVMap(&b, "plugin.requestHeaders.set", tun.PluginHeaders)
+			case "http2https", "http2http":
+				fmt.Fprintf(&b, "plugin.localAddr = %s\n", tomlQuote(tun.PluginLocalAddr))
+				if strings.TrimSpace(tun.PluginHostHeaderRewrite) != "" {
+					fmt.Fprintf(&b, "plugin.hostHeaderRewrite = %s\n", tomlQuote(strings.TrimSpace(tun.PluginHostHeaderRewrite)))
+				}
+				writeDottedKVMap(&b, "plugin.requestHeaders.set", tun.PluginHeaders)
+			case "tls2raw":
+				fmt.Fprintf(&b, "plugin.localAddr = %s\n", tomlQuote(tun.PluginLocalAddr))
+				if strings.TrimSpace(tun.PluginCrtPath) != "" {
+					fmt.Fprintf(&b, "plugin.crtPath = %s\n", tomlQuote(strings.TrimSpace(tun.PluginCrtPath)))
+				}
+				if strings.TrimSpace(tun.PluginKeyPath) != "" {
+					fmt.Fprintf(&b, "plugin.keyPath = %s\n", tomlQuote(strings.TrimSpace(tun.PluginKeyPath)))
+				}
 			}
 		}
 
 		if ex := strings.TrimSpace(tun.ExtraTOML); ex != "" {
 			b.WriteString(ex + "\n")
 		}
+
+		// HealthCheck HTTP headers array-of-tables emitted last inside [[proxies]]
+		if strings.ToLower(strings.TrimSpace(tun.HealthCheckType)) == "http" && len(tun.HealthCheckHeaders) > 0 {
+			for _, hk := range sortedMapKeys(tun.HealthCheckHeaders) {
+				b.WriteString("[[proxies.healthCheck.httpHeaders]]\n")
+				fmt.Fprintf(&b, "name = %s\n", tomlQuote(hk))
+				fmt.Fprintf(&b, "value = %s\n", tomlQuote(tun.HealthCheckHeaders[hk]))
+			}
+		}
+	}
+
+	// Inject internal STCP control tunnel when running managed frpc with RemoteCtrlEnabled
+	if !inj.Preview && enableRemoteCtrl && inj.AgentPort > 0 && inj.ClientID != "" && ctrlKeyExpr != "" {
+		b.WriteString("\n# KurumiFrp instance-to-instance remote control channel (connection-scoped)\n")
+		b.WriteString("[[proxies]]\n")
+		fmt.Fprintf(&b, "name = %s\n", tomlQuote(ctrlProxyName))
+		b.WriteString("type = \"stcp\"\n")
+		fmt.Fprintf(&b, "secretKey = %s\n", ctrlKeyExpr)
+		b.WriteString("localIP = \"127.0.0.1\"\n")
+		fmt.Fprintf(&b, "localPort = %d\n", inj.AgentPort)
+		b.WriteString("transport.useEncryption = true\n")
 	}
 
 	return RenderedConfig{TOML: b.String(), Env: env, Secrets: secrets}
 }
 
-// ParseTOMLAsProfile parses an uploaded standard frps.toml or frpc.toml into a ServerProfile or ClientProfile.
-// Any unrecognized advanced lines are preserved inside ExtraTOML so 100% of official FRP parameters survive.
-func ParseTOMLAsProfile(name, kind, raw string) (*ServerProfile, *ClientProfile, error) {
-	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
-	if kind == "frps" || (kind == "" && (strings.Contains(raw, "bindPort") || strings.Contains(raw, "vhostHTTPPort")) && !strings.Contains(raw, "serverAddr")) {
-		srv := &ServerProfile{
-			ID:           newShortID("srv"),
-			Name:         nonEmptyStr(name, "导入转发端配置"),
-			BindAddr:     "0.0.0.0",
-			BindPort:     7000,
-			ConnPolicies: make(map[string]ConnPolicy),
+func writeProxyTransportAndCommon(b *strings.Builder, tun TunnelRule) {
+	bwSpec := strings.TrimSpace(tun.BandwidthLimit)
+	if bwSpec == "" && tun.BandwidthLimitKB > 0 {
+		bwSpec = fmt.Sprintf("%dKB", tun.BandwidthLimitKB)
+	}
+	if bwSpec != "" {
+		fmt.Fprintf(b, "transport.bandwidthLimit = %s\n", tomlQuote(bwSpec))
+		mode := strings.ToLower(strings.TrimSpace(tun.BandwidthLimitMode))
+		if mode != "server" {
+			mode = "client"
 		}
-		var extra []string
-		inSection := false
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-				continue
-			}
-			if strings.HasPrefix(trimmed, "[") {
-				inSection = true
-				extra = append(extra, line)
-				continue
-			}
-			if inSection {
-				extra = append(extra, line)
-				continue
-			}
-			k, v, ok := splitTOMLKeyVal(trimmed)
-			if !ok {
-				extra = append(extra, line)
-				continue
-			}
-			switch k {
-			case "bindAddr":
-				srv.BindAddr = unquoteTOML(v)
-			case "bindPort":
-				srv.BindPort, _ = strconv.Atoi(v)
-			case "kcpBindPort":
-				srv.KCPBindPort, _ = strconv.Atoi(v)
-			case "quicBindPort":
-				srv.QUICBindPort, _ = strconv.Atoi(v)
-			case "vhostHTTPPort":
-				srv.VhostHTTPPort, _ = strconv.Atoi(v)
-			case "vhostHTTPSPort":
-				srv.VhostHTTPSPort, _ = strconv.Atoi(v)
-			case "subDomainHost":
-				srv.SubDomainHost = unquoteTOML(v)
-			case "auth.token":
-				srv.AuthToken = unquoteTOML(v)
-			case "auth.method":
-				// Handled automatically when AuthToken is non-empty
-			default:
-				extra = append(extra, line)
-			}
+		fmt.Fprintf(b, "transport.bandwidthLimitMode = %s\n", tomlQuote(mode))
+	}
+	if tun.UseEncryption {
+		b.WriteString("transport.useEncryption = true\n")
+	}
+	if tun.UseCompression {
+		b.WriteString("transport.useCompression = true\n")
+	}
+	if ppv := strings.TrimSpace(tun.ProxyProtocolVersion); ppv == "v1" || ppv == "v2" {
+		fmt.Fprintf(b, "transport.proxyProtocolVersion = %s\n", tomlQuote(ppv))
+	}
+	if strings.TrimSpace(tun.LoadBalancerGroup) != "" {
+		fmt.Fprintf(b, "loadBalancer.group = %s\n", tomlQuote(strings.TrimSpace(tun.LoadBalancerGroup)))
+		if strings.TrimSpace(tun.LoadBalancerGroupKey) != "" {
+			fmt.Fprintf(b, "loadBalancer.groupKey = %s\n", tomlQuote(strings.TrimSpace(tun.LoadBalancerGroupKey)))
 		}
-		srv.ExtraTOML = strings.TrimSpace(strings.Join(extra, "\n"))
-		return srv, nil, nil
+	}
+	if hct := strings.ToLower(strings.TrimSpace(tun.HealthCheckType)); hct == "tcp" || hct == "http" {
+		fmt.Fprintf(b, "healthCheck.type = %s\n", tomlQuote(hct))
+		if tun.HealthCheckTimeoutSeconds > 0 {
+			fmt.Fprintf(b, "healthCheck.timeoutSeconds = %d\n", tun.HealthCheckTimeoutSeconds)
+		}
+		if tun.HealthCheckMaxFailed > 0 {
+			fmt.Fprintf(b, "healthCheck.maxFailed = %d\n", tun.HealthCheckMaxFailed)
+		}
+		if tun.HealthCheckIntervalSeconds > 0 {
+			fmt.Fprintf(b, "healthCheck.intervalSeconds = %d\n", tun.HealthCheckIntervalSeconds)
+		}
+		if hct == "http" && strings.TrimSpace(tun.HealthCheckPath) != "" {
+			fmt.Fprintf(b, "healthCheck.path = %s\n", tomlQuote(strings.TrimSpace(tun.HealthCheckPath)))
+		}
+	}
+	writeDottedKVMap(b, "metadatas", tun.Metadatas)
+	writeDottedKVMap(b, "annotations", tun.Annotations)
+}
+
+func writeDottedKVMap(b *strings.Builder, prefix string, m map[string]string) {
+	if len(m) == 0 {
+		return
+	}
+	for _, k := range sortedMapKeys(m) {
+		fmt.Fprintf(b, "%s.%s = %s\n", prefix, tomlDottedKeySegment(k), tomlQuote(m[k]))
+	}
+}
+
+func sortedMapKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		if strings.TrimSpace(k) != "" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func tomlDottedKeySegment(k string) string {
+	k = strings.TrimSpace(k)
+	for i := 0; i < len(k); i++ {
+		c := k[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return tomlQuote(k)
+		}
+	}
+	if k == "" {
+		return `""`
+	}
+	return k
+}
+
+// ApplyTOMLToServer parses raw frps.toml text into an updated ServerProfile while preserving identity, policies, and masked secrets.
+func ApplyTOMLToServer(prev ServerProfile, raw string) (ServerProfile, error) {
+	parsed, _, err := ParseTOMLAsProfile(prev.Name, "frps", raw)
+	if err != nil {
+		return prev, err
+	}
+	parsed.ID = prev.ID
+	parsed.Name = prev.Name
+	parsed.CoverAsset = prev.CoverAsset
+	parsed.Note = prev.Note
+	parsed.AutoStart = prev.AutoStart
+	parsed.ConnPolicies = prev.ConnPolicies
+	if parsed.AuthToken == "********" {
+		parsed.AuthToken = prev.AuthToken
+	}
+	return *parsed, nil
+}
+
+// ApplyTOMLToClient parses raw frpc.toml text into an updated ClientProfile while preserving identity, remote-link secrets, and masked secrets.
+func ApplyTOMLToClient(prev ClientProfile, raw string) (ClientProfile, error) {
+	_, parsed, err := ParseTOMLAsProfile(prev.Name, "frpc", raw)
+	if err != nil {
+		return prev, err
+	}
+	parsed.ID = prev.ID
+	parsed.Name = prev.Name
+	parsed.CoverAsset = prev.CoverAsset
+	parsed.Note = prev.Note
+	parsed.AutoStart = prev.AutoStart
+	parsed.RemoteCtrlEnabled = prev.RemoteCtrlEnabled
+	parsed.CtrlSecret = prev.CtrlSecret
+	parsed.AgentToken = prev.AgentToken
+	if parsed.AuthToken == "********" {
+		parsed.AuthToken = prev.AuthToken
+	}
+	if parsed.OIDCClientSecret == "********" {
+		parsed.OIDCClientSecret = prev.OIDCClientSecret
 	}
 
-	cli := &ClientProfile{
-		ID:         newShortID("cli"),
-		Name:       nonEmptyStr(name, "导入客户端配置"),
-		ServerAddr: "127.0.0.1",
-		ServerPort: 7000,
-		Protocol:   "tcp",
-		Tunnels:    []TunnelRule{},
+	// Preserve existing tunnel IDs and masked secrets by matching tunnel Name
+	prevByName := make(map[string]TunnelRule, len(prev.Tunnels))
+	for _, pt := range prev.Tunnels {
+		prevByName[pt.Name] = pt
 	}
-	var globalExtra []string
-	var curTun *TunnelRule
-	var curExtra []string
-	flushTun := func() {
-		if curTun != nil {
-			curTun.ExtraTOML = strings.TrimSpace(strings.Join(curExtra, "\n"))
-			if curTun.Name == "" {
-				curTun.Name = "rule-" + strconv.Itoa(len(cli.Tunnels)+1)
+	for i := range parsed.Tunnels {
+		if old, ok := prevByName[parsed.Tunnels[i].Name]; ok {
+			parsed.Tunnels[i].ID = old.ID
+			if parsed.Tunnels[i].Note == "" {
+				parsed.Tunnels[i].Note = old.Note
 			}
-			cli.Tunnels = append(cli.Tunnels, *curTun)
-			curTun = nil
-			curExtra = nil
+			if parsed.Tunnels[i].SecretKey == "********" {
+				parsed.Tunnels[i].SecretKey = old.SecretKey
+			}
+			if parsed.Tunnels[i].HTTPPassword == "********" {
+				parsed.Tunnels[i].HTTPPassword = old.HTTPPassword
+			}
+			if parsed.Tunnels[i].PluginPassword == "********" {
+				parsed.Tunnels[i].PluginPassword = old.PluginPassword
+			}
+		}
+	}
+	return *parsed, nil
+}
+
+// ParseTOMLAsProfile parses any standard official frps.toml or frpc.toml (supporting both dotted keys and [table]/[[array]] sections)
+// into a structured ServerProfile or ClientProfile while preserving unrecognized custom lines inside ExtraTOML.
+func ParseTOMLAsProfile(name, kind, raw string) (*ServerProfile, *ClientProfile, error) {
+	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+
+	isServer := kind == "frps" || (kind == "" && (strings.Contains(normalized, "bindPort") || strings.Contains(normalized, "vhostHTTPPort")) && !strings.Contains(normalized, "serverAddr"))
+	if isServer {
+		srv := parseServerTOMLLines(name, lines)
+		return srv, nil, nil
+	}
+	cli := parseClientTOMLLines(name, lines)
+	return nil, cli, nil
+}
+
+func parseServerTOMLLines(name string, lines []string) *ServerProfile {
+	srv := &ServerProfile{
+		ID:           newShortID("srv"),
+		Name:         nonEmptyStr(name, "导入转发端配置"),
+		BindAddr:     "0.0.0.0",
+		BindPort:     7000,
+		ConnPolicies: make(map[string]ConnPolicy),
+	}
+
+	var extra []string
+	var allowSpecs []string
+	var curAllowSingle, curAllowStart, curAllowEnd int
+	inAllowPort := false
+	flushAllow := func() {
+		if !inAllowPort {
+			return
+		}
+		if curAllowSingle > 0 {
+			allowSpecs = append(allowSpecs, strconv.Itoa(curAllowSingle))
+		} else if curAllowStart > 0 && curAllowEnd >= curAllowStart {
+			if curAllowStart == curAllowEnd {
+				allowSpecs = append(allowSpecs, strconv.Itoa(curAllowStart))
+			} else {
+				allowSpecs = append(allowSpecs, fmt.Sprintf("%d-%d", curAllowStart, curAllowEnd))
+			}
+		}
+		curAllowSingle, curAllowStart, curAllowEnd = 0, 0, 0
+		inAllowPort = false
+	}
+
+	var curPlugin *HTTPPluginSpec
+	flushPlugin := func() {
+		if curPlugin != nil {
+			if curPlugin.Name != "" && curPlugin.Name != "kurumi-dashboard-guard" {
+				srv.HTTPPlugins = append(srv.HTTPPlugins, *curPlugin)
+			}
+			curPlugin = nil
 		}
 	}
 
@@ -440,27 +950,338 @@ func ParseTOMLAsProfile(name, kind, raw string) (*ServerProfile, *ClientProfile,
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
+		if strings.HasPrefix(trimmed, "[[") && strings.HasSuffix(trimmed, "]]") {
+			flushAllow()
+			flushPlugin()
+			arrName := strings.TrimSpace(trimmed[2 : len(trimmed)-2])
+			switch arrName {
+			case "allowPorts":
+				section = "[[allowPorts]]"
+				inAllowPort = true
+			case "httpPlugins":
+				section = "[[httpPlugins]]"
+				curPlugin = &HTTPPluginSpec{Path: "/handler"}
+			default:
+				section = "[[" + arrName + "]]"
+				extra = append(extra, line)
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			flushAllow()
+			flushPlugin()
+			sec := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			section = sec
+			if !isKnownServerSection(sec) {
+				extra = append(extra, line)
+			}
+			continue
+		}
+
+		k, v, ok := splitTOMLKeyVal(trimmed)
+		if !ok {
+			extra = append(extra, line)
+			continue
+		}
+
+		if section == "[[allowPorts]]" {
+			switch k {
+			case "single":
+				curAllowSingle, _ = strconv.Atoi(v)
+			case "start":
+				curAllowStart, _ = strconv.Atoi(v)
+			case "end":
+				curAllowEnd, _ = strconv.Atoi(v)
+			}
+			continue
+		}
+		if section == "[[httpPlugins]]" && curPlugin != nil {
+			switch k {
+			case "name":
+				curPlugin.Name = unquoteTOML(v)
+			case "addr":
+				curPlugin.Addr = unquoteTOML(v)
+			case "path":
+				curPlugin.Path = unquoteTOML(v)
+			case "ops":
+				curPlugin.Ops = parseTOMLStringArray(v)
+			case "tlsVerify":
+				curPlugin.TLSVerify = v == "true"
+			}
+			continue
+		}
+		if strings.HasPrefix(section, "[[") {
+			extra = append(extra, line)
+			continue
+		}
+
+		fullKey := k
+		if section != "" {
+			fullKey = section + "." + k
+		}
+		if applyServerKeyValue(srv, fullKey, v) {
+			continue
+		}
+		extra = append(extra, line)
+	}
+	flushAllow()
+	flushPlugin()
+	if len(allowSpecs) > 0 {
+		srv.AllowPorts = strings.Join(allowSpecs, ",")
+	}
+	srv.ExtraTOML = strings.TrimSpace(strings.Join(extra, "\n"))
+	return srv
+}
+
+func isKnownServerSection(sec string) bool {
+	switch sec {
+	case "auth", "auth.oidc", "auth.tokenSource", "auth.tokenSource.file",
+		"transport", "transport.tls", "transport.quic",
+		"sshTunnelGateway", "log", "webServer":
+		return true
+	}
+	return false
+}
+
+func applyServerKeyValue(srv *ServerProfile, fullKey, v string) bool {
+	switch fullKey {
+	case "bindAddr":
+		srv.BindAddr = unquoteTOML(v)
+	case "bindPort":
+		srv.BindPort, _ = strconv.Atoi(v)
+	case "kcpBindPort":
+		srv.KCPBindPort, _ = strconv.Atoi(v)
+	case "quicBindPort":
+		srv.QUICBindPort, _ = strconv.Atoi(v)
+	case "proxyBindAddr":
+		srv.ProxyBindAddr = unquoteTOML(v)
+	case "vhostHTTPPort":
+		srv.VhostHTTPPort, _ = strconv.Atoi(v)
+	case "vhostHTTPSPort":
+		srv.VhostHTTPSPort, _ = strconv.Atoi(v)
+	case "vhostHTTPTimeout":
+		srv.VhostHTTPTimeout, _ = strconv.ParseInt(v, 10, 64)
+	case "tcpmuxHTTPConnectPort":
+		srv.TCPMuxHTTPConnectPort, _ = strconv.Atoi(v)
+	case "tcpmuxPassthrough":
+		srv.TCPMuxPassthrough = v == "true"
+	case "subDomainHost":
+		srv.SubDomainHost = unquoteTOML(v)
+	case "custom404Page":
+		srv.Custom404Page = unquoteTOML(v)
+	case "maxPortsPerClient":
+		srv.MaxPortsPerClient, _ = strconv.Atoi(v)
+	case "userConnTimeout":
+		srv.UserConnTimeout, _ = strconv.ParseInt(v, 10, 64)
+	case "udpPacketSize":
+		srv.UDPPacketSize, _ = strconv.ParseInt(v, 10, 64)
+	case "natholeAnalysisDataReserveHours":
+		srv.NatHoleAnalysisDataReserveHours, _ = strconv.ParseInt(v, 10, 64)
+	case "detailedErrorsToClient":
+		bv := v == "true"
+		srv.DetailedErrorsToClient = &bv
+	case "log.level":
+		srv.LogLevel = unquoteTOML(v)
+	case "log.maxDays":
+		srv.LogMaxDays, _ = strconv.Atoi(v)
+	case "log.disablePrintColor":
+		srv.DisablePrintColor = v == "true"
+	case "transport.maxPoolCount":
+		srv.MaxPoolCount, _ = strconv.Atoi(v)
+	case "transport.tcpMux":
+		bv := v == "true"
+		srv.TCPMux = &bv
+	case "transport.tcpMuxKeepaliveInterval":
+		srv.TCPMuxKeepaliveInterval, _ = strconv.ParseInt(v, 10, 64)
+	case "transport.tcpKeepalive":
+		srv.TCPKeepalive, _ = strconv.ParseInt(v, 10, 64)
+	case "transport.heartbeatTimeout":
+		srv.HeartbeatTimeout, _ = strconv.ParseInt(v, 10, 64)
+	case "transport.quic.keepalivePeriod":
+		srv.QUICKeepalivePeriod, _ = strconv.Atoi(v)
+	case "transport.quic.maxIdleTimeout":
+		srv.QUICMaxIdleTimeout, _ = strconv.Atoi(v)
+	case "transport.quic.maxIncomingStreams":
+		srv.QUICMaxIncomingStreams, _ = strconv.Atoi(v)
+	case "transport.tls.force":
+		srv.TLSForce = v == "true"
+	case "transport.tls.certFile":
+		srv.TLSCertFile = unquoteTOML(v)
+	case "transport.tls.keyFile":
+		srv.TLSKeyFile = unquoteTOML(v)
+	case "transport.tls.trustedCaFile":
+		srv.TLSTrustedCaFile = unquoteTOML(v)
+	case "sshTunnelGateway.bindPort":
+		srv.SSHGatewayBindPort, _ = strconv.Atoi(v)
+	case "sshTunnelGateway.privateKeyFile":
+		srv.SSHPrivateKeyFile = unquoteTOML(v)
+	case "sshTunnelGateway.autoGenPrivateKeyPath":
+		srv.SSHAutoGenPrivateKeyPath = unquoteTOML(v)
+	case "sshTunnelGateway.authorizedKeysFile":
+		srv.SSHAuthorizedKeysFile = unquoteTOML(v)
+	case "auth.method":
+		srv.AuthMethod = unquoteTOML(v)
+	case "auth.additionalScopes":
+		srv.AuthAdditionalScopes = parseTOMLStringArray(v)
+	case "auth.token":
+		srv.AuthToken = unquoteTOML(v)
+	case "auth.tokenSource.type":
+		// handled via AuthTokenSourceFile
+	case "auth.tokenSource.file.path":
+		srv.AuthTokenSourceFile = unquoteTOML(v)
+	case "auth.oidc.issuer":
+		srv.OIDCIssuer = unquoteTOML(v)
+	case "auth.oidc.audience":
+		srv.OIDCAudience = unquoteTOML(v)
+	case "auth.oidc.skipExpiryCheck":
+		srv.OIDCSkipExpiryCheck = v == "true"
+	case "auth.oidc.skipIssuerCheck":
+		srv.OIDCSkipIssuerCheck = v == "true"
+	case "webServer.addr", "webServer.port", "webServer.user", "webServer.password":
+		// Managed internally by KurumiFrp loopback dashboard
+	default:
+		return false
+	}
+	return true
+}
+
+func parseClientTOMLLines(name string, lines []string) *ClientProfile {
+	cli := &ClientProfile{
+		ID:         newShortID("cli"),
+		Name:       nonEmptyStr(name, "导入客户端配置"),
+		ServerAddr: "127.0.0.1",
+		ServerPort: 7000,
+		Protocol:   "tcp",
+		TLSEnable:  true,
+		CtrlSecret: randomTokenHex(16),
+		AgentToken: randomTokenHex(20),
+		Metadatas:  make(map[string]string),
+		Tunnels:    []TunnelRule{},
+	}
+
+	var globalExtra []string
+	var curTun *TunnelRule
+	var curExtra []string
+	var curHCHeaderName, curHCHeaderVal string
+	inHCHeader := false
+	flushHCHeader := func() {
+		if inHCHeader && curTun != nil && curHCHeaderName != "" {
+			if curTun.HealthCheckHeaders == nil {
+				curTun.HealthCheckHeaders = make(map[string]string)
+			}
+			curTun.HealthCheckHeaders[curHCHeaderName] = curHCHeaderVal
+		}
+		curHCHeaderName, curHCHeaderVal = "", ""
+		inHCHeader = false
+	}
+
+	flushTun := func() {
+		flushHCHeader()
+		if curTun != nil {
+			if !isInternalCtrlProxy(curTun.Name) {
+				curTun.ExtraTOML = strings.TrimSpace(strings.Join(curExtra, "\n"))
+				if curTun.Name == "" {
+					curTun.Name = "rule-" + strconv.Itoa(len(cli.Tunnels)+1)
+				}
+				cli.Tunnels = append(cli.Tunnels, *curTun)
+			}
+			curTun = nil
+			curExtra = nil
+		}
+	}
+
+	section := ""
+	tunSubSection := ""
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		// Recognize official Go-template port-range block: {{- range $_, $v := parseNumberRangePair "6000-6006" "16000-16006" }}
+		if strings.Contains(trimmed, "parseNumberRangePair") {
+			flushTun()
+			lSpec, rSpec := extractRangePairArgs(trimmed)
+			rt := TunnelRule{
+				ID:              newShortID("tun"),
+				Name:            "range-" + strconv.Itoa(len(cli.Tunnels)+1),
+				Mode:            "proxy",
+				Type:            "tcp",
+				Enabled:         true,
+				LocalIP:         "127.0.0.1",
+				PortRangeLocal:  lSpec,
+				PortRangeRemote: rSpec,
+			}
+			for i+1 < len(lines) {
+				i++
+				inner := strings.TrimSpace(lines[i])
+				if strings.Contains(inner, "end }}") {
+					break
+				}
+				if ik, iv, ok := splitTOMLKeyVal(inner); ok {
+					switch ik {
+					case "name":
+						n := unquoteTOML(iv)
+						n = strings.TrimSuffix(n, "-{{ $v.First }}")
+						n = strings.TrimSuffix(n, "_{{ $v.First }}")
+						if n != "" {
+							rt.Name = n
+						}
+					case "type":
+						rt.Type = unquoteTOML(iv)
+					case "localIP":
+						rt.LocalIP = unquoteTOML(iv)
+					default:
+						applyTunnelKeyValue(&rt, ik, iv)
+					}
+				}
+			}
+			cli.Tunnels = append(cli.Tunnels, rt)
+			continue
+		}
+
 		if trimmed == "[[proxies]]" {
 			flushTun()
-			section = "proxy"
+			section = "[[proxies]]"
+			tunSubSection = ""
 			curTun = &TunnelRule{ID: newShortID("tun"), Mode: "proxy", Type: "tcp", Enabled: true, LocalIP: "127.0.0.1"}
 			continue
 		}
 		if trimmed == "[[visitors]]" {
 			flushTun()
-			section = "visitor"
+			section = "[[visitors]]"
+			tunSubSection = ""
 			curTun = &TunnelRule{ID: newShortID("tun"), Mode: "visitor", Type: "stcp", Enabled: true, LocalIP: "127.0.0.1"}
 			continue
 		}
-		if strings.HasPrefix(trimmed, "[") {
-			if curTun != nil {
-				curExtra = append(curExtra, line)
-			} else {
-				section = "other"
+		if trimmed == "[[proxies.healthCheck.httpHeaders]]" && curTun != nil {
+			flushHCHeader()
+			inHCHeader = true
+			tunSubSection = "[[hcHeaders]]"
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") && !strings.HasPrefix(trimmed, "[[") {
+			flushHCHeader()
+			sec := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+			if curTun != nil && (strings.HasPrefix(sec, "proxies.") || strings.HasPrefix(sec, "visitors.")) {
+				if strings.HasPrefix(sec, "proxies.") {
+					tunSubSection = strings.TrimPrefix(sec, "proxies.")
+				} else {
+					tunSubSection = strings.TrimPrefix(sec, "visitors.")
+				}
+				continue
+			}
+			flushTun()
+			section = sec
+			tunSubSection = ""
+			if !isKnownClientSection(sec) {
 				globalExtra = append(globalExtra, line)
 			}
 			continue
 		}
+
 		k, v, ok := splitTOMLKeyVal(trimmed)
 		if !ok {
 			if curTun != nil {
@@ -470,56 +1291,347 @@ func ParseTOMLAsProfile(name, kind, raw string) (*ServerProfile, *ClientProfile,
 			}
 			continue
 		}
-		if curTun == nil && section == "" {
-			switch k {
-			case "serverAddr":
-				cli.ServerAddr = unquoteTOML(v)
-			case "serverPort":
-				cli.ServerPort, _ = strconv.Atoi(v)
-			case "user":
-				cli.User = unquoteTOML(v)
-			case "auth.token":
-				cli.AuthToken = unquoteTOML(v)
-			case "auth.method":
-			case "transport.protocol":
-				cli.Protocol = unquoteTOML(v)
-			case "transport.poolCount":
-				cli.PoolCount, _ = strconv.Atoi(v)
-			case "transport.tls.enable":
-				cli.TLSEnable = v == "true"
-			default:
-				globalExtra = append(globalExtra, line)
+
+		if curTun != nil {
+			if tunSubSection == "[[hcHeaders]]" {
+				if k == "name" {
+					curHCHeaderName = unquoteTOML(v)
+				} else if k == "value" {
+					curHCHeaderVal = unquoteTOML(v)
+				}
+				continue
 			}
-		} else if curTun != nil {
-			switch k {
-			case "name":
-				curTun.Name = unquoteTOML(v)
-			case "type":
-				curTun.Type = unquoteTOML(v)
-			case "localIP", "bindAddr":
-				curTun.LocalIP = unquoteTOML(v)
-			case "localPort", "bindPort":
-				curTun.LocalPort, _ = strconv.Atoi(v)
-			case "remotePort":
-				curTun.RemotePort, _ = strconv.Atoi(v)
-			case "subdomain":
-				curTun.SubDomain = unquoteTOML(v)
-			case "secretKey":
-				curTun.SecretKey = unquoteTOML(v)
-			case "serverName":
-				curTun.ServerName = unquoteTOML(v)
-			case "customDomains":
-				curTun.CustomDomains = parseTOMLStringArray(v)
-			default:
-				curExtra = append(curExtra, line)
+			fullKey := k
+			if tunSubSection != "" {
+				fullKey = tunSubSection + "." + k
 			}
-		} else {
-			globalExtra = append(globalExtra, line)
+			if applyTunnelKeyValue(curTun, fullKey, v) {
+				continue
+			}
+			curExtra = append(curExtra, line)
+			continue
 		}
+
+		fullGlobalKey := k
+		if section != "" && !strings.HasPrefix(section, "[[") {
+			fullGlobalKey = section + "." + k
+		}
+		if applyClientGlobalKeyValue(cli, fullGlobalKey, v) {
+			continue
+		}
+		globalExtra = append(globalExtra, line)
 	}
 	flushTun()
 	cli.ExtraTOML = strings.TrimSpace(strings.Join(globalExtra, "\n"))
-	return nil, cli, nil
+	return cli
+}
+
+func isKnownClientSection(sec string) bool {
+	switch sec {
+	case "auth", "auth.oidc", "auth.tokenSource", "auth.tokenSource.file",
+		"transport", "transport.tls", "transport.quic",
+		"metadatas", "log", "webServer", "virtualNet":
+		return true
+	}
+	return strings.HasPrefix(sec, "auth.oidc.additionalEndpointParams")
+}
+
+func applyClientGlobalKeyValue(cli *ClientProfile, fullKey, v string) bool {
+	if strings.HasPrefix(fullKey, "metadatas.") {
+		mk := unquoteTOML(strings.TrimPrefix(fullKey, "metadatas."))
+		if strings.HasPrefix(mk, "kurumi_") {
+			return true
+		}
+		if mk == "client_id" {
+			cli.ClientID = unquoteTOML(v)
+			return true
+		}
+		if cli.Metadatas == nil {
+			cli.Metadatas = make(map[string]string)
+		}
+		cli.Metadatas[mk] = unquoteTOML(v)
+		return true
+	}
+	if strings.HasPrefix(fullKey, "auth.oidc.additionalEndpointParams.") {
+		pk := unquoteTOML(strings.TrimPrefix(fullKey, "auth.oidc.additionalEndpointParams."))
+		if cli.OIDCAdditionalParams == nil {
+			cli.OIDCAdditionalParams = make(map[string]string)
+		}
+		cli.OIDCAdditionalParams[pk] = unquoteTOML(v)
+		return true
+	}
+	switch fullKey {
+	case "serverAddr":
+		cli.ServerAddr = unquoteTOML(v)
+	case "serverPort":
+		cli.ServerPort, _ = strconv.Atoi(v)
+	case "user":
+		cli.User = unquoteTOML(v)
+	case "loginFailExit":
+		cli.LoginFailExit = v == "true"
+	case "start":
+		cli.StartProxies = parseTOMLStringArray(v)
+	case "includes":
+		cli.Includes = parseTOMLStringArray(v)
+	case "dnsServer":
+		cli.DNSServer = unquoteTOML(v)
+	case "natHoleStunServer":
+		cli.NatHoleSTUNServer = unquoteTOML(v)
+	case "udpPacketSize":
+		cli.UDPPacketSize, _ = strconv.ParseInt(v, 10, 64)
+	case "featureGates":
+		return true
+	case "virtualNet.address":
+		cli.VirtualNetAddr = unquoteTOML(v)
+	case "log.level":
+		cli.LogLevel = unquoteTOML(v)
+	case "log.maxDays":
+		cli.LogMaxDays, _ = strconv.Atoi(v)
+	case "log.disablePrintColor":
+		cli.DisablePrintColor = v == "true"
+	case "transport.protocol":
+		cli.Protocol = unquoteTOML(v)
+	case "transport.poolCount":
+		cli.PoolCount, _ = strconv.Atoi(v)
+	case "transport.dialServerTimeout":
+		cli.DialServerTimeout, _ = strconv.ParseInt(v, 10, 64)
+	case "transport.dialServerKeepAlive":
+		cli.DialServerKeepAlive, _ = strconv.ParseInt(v, 10, 64)
+	case "transport.connectServerLocalIP", "connectServerLocalIP":
+		cli.ConnectServerLocalIP = unquoteTOML(v)
+	case "transport.proxyURL", "proxyURL":
+		cli.ProxyURL = unquoteTOML(v)
+	case "transport.tcpMux":
+		bv := v == "true"
+		cli.TCPMux = &bv
+	case "transport.tcpMuxKeepaliveInterval":
+		cli.TCPMuxKeepaliveInterval, _ = strconv.ParseInt(v, 10, 64)
+	case "transport.heartbeatInterval":
+		cli.HeartbeatInterval, _ = strconv.ParseInt(v, 10, 64)
+	case "transport.heartbeatTimeout":
+		cli.HeartbeatTimeout, _ = strconv.ParseInt(v, 10, 64)
+	case "transport.quic.keepalivePeriod":
+		cli.QUICKeepalivePeriod, _ = strconv.Atoi(v)
+	case "transport.quic.maxIdleTimeout":
+		cli.QUICMaxIdleTimeout, _ = strconv.Atoi(v)
+	case "transport.quic.maxIncomingStreams":
+		cli.QUICMaxIncomingStreams, _ = strconv.Atoi(v)
+	case "transport.tls.enable":
+		cli.TLSEnable = v == "true"
+	case "transport.tls.disableCustomTLSFirstByte":
+		cli.TLSDisableCustomFirstByte = v == "true"
+	case "transport.tls.serverName":
+		cli.TLSServerName = unquoteTOML(v)
+	case "transport.tls.certFile":
+		cli.TLSCertFile = unquoteTOML(v)
+	case "transport.tls.keyFile":
+		cli.TLSKeyFile = unquoteTOML(v)
+	case "transport.tls.trustedCaFile":
+		cli.TLSTrustedCaFile = unquoteTOML(v)
+	case "auth.method":
+		cli.AuthMethod = unquoteTOML(v)
+	case "auth.additionalScopes":
+		cli.AuthAdditionalScopes = parseTOMLStringArray(v)
+	case "auth.token":
+		cli.AuthToken = unquoteTOML(v)
+	case "auth.tokenSource.type":
+	case "auth.tokenSource.file.path":
+		cli.AuthTokenSourceFile = unquoteTOML(v)
+	case "auth.oidc.clientID":
+		cli.OIDCClientID = unquoteTOML(v)
+	case "auth.oidc.clientSecret":
+		cli.OIDCClientSecret = unquoteTOML(v)
+	case "auth.oidc.audience":
+		cli.OIDCAudience = unquoteTOML(v)
+	case "auth.oidc.scope":
+		cli.OIDCScope = unquoteTOML(v)
+	case "auth.oidc.tokenEndpointURL":
+		cli.OIDCTokenEndpointURL = unquoteTOML(v)
+	case "webServer.addr", "webServer.port", "webServer.user", "webServer.password":
+	default:
+		return false
+	}
+	return true
+}
+
+func applyTunnelKeyValue(tun *TunnelRule, fullKey, v string) bool {
+	if strings.HasPrefix(fullKey, "metadatas.") {
+		mk := unquoteTOML(strings.TrimPrefix(fullKey, "metadatas."))
+		if tun.Metadatas == nil {
+			tun.Metadatas = make(map[string]string)
+		}
+		tun.Metadatas[mk] = unquoteTOML(v)
+		return true
+	}
+	if strings.HasPrefix(fullKey, "annotations.") {
+		ak := unquoteTOML(strings.TrimPrefix(fullKey, "annotations."))
+		if tun.Annotations == nil {
+			tun.Annotations = make(map[string]string)
+		}
+		tun.Annotations[ak] = unquoteTOML(v)
+		return true
+	}
+	if strings.HasPrefix(fullKey, "requestHeaders.set.") {
+		hk := unquoteTOML(strings.TrimPrefix(fullKey, "requestHeaders.set."))
+		if tun.RequestHeaders == nil {
+			tun.RequestHeaders = make(map[string]string)
+		}
+		tun.RequestHeaders[hk] = unquoteTOML(v)
+		return true
+	}
+	if strings.HasPrefix(fullKey, "responseHeaders.set.") {
+		hk := unquoteTOML(strings.TrimPrefix(fullKey, "responseHeaders.set."))
+		if tun.ResponseHeaders == nil {
+			tun.ResponseHeaders = make(map[string]string)
+		}
+		tun.ResponseHeaders[hk] = unquoteTOML(v)
+		return true
+	}
+	if strings.HasPrefix(fullKey, "plugin.requestHeaders.set.") {
+		hk := unquoteTOML(strings.TrimPrefix(fullKey, "plugin.requestHeaders.set."))
+		if tun.PluginHeaders == nil {
+			tun.PluginHeaders = make(map[string]string)
+		}
+		tun.PluginHeaders[hk] = unquoteTOML(v)
+		return true
+	}
+
+	switch fullKey {
+	case "name":
+		tun.Name = unquoteTOML(v)
+	case "type":
+		tun.Type = unquoteTOML(v)
+	case "localIP", "bindAddr":
+		tun.LocalIP = unquoteTOML(v)
+	case "localPort", "bindPort":
+		tun.LocalPort, _ = strconv.Atoi(v)
+	case "remotePort":
+		tun.RemotePort, _ = strconv.Atoi(v)
+	case "customDomains":
+		tun.CustomDomains = parseTOMLStringArray(v)
+	case "subdomain":
+		tun.SubDomain = unquoteTOML(v)
+	case "locations":
+		tun.Locations = parseTOMLStringArray(v)
+	case "hostHeaderRewrite":
+		tun.HostHeaderRewrite = unquoteTOML(v)
+	case "httpUser":
+		tun.HTTPUser = unquoteTOML(v)
+	case "httpPassword":
+		tun.HTTPPassword = unquoteTOML(v)
+	case "routeByHTTPUser":
+		tun.RouteByHTTPUser = unquoteTOML(v)
+	case "multiplexer":
+		tun.Multiplexer = unquoteTOML(v)
+	case "secretKey":
+		tun.SecretKey = unquoteTOML(v)
+	case "allowUsers":
+		tun.AllowUsers = parseTOMLStringArray(v)
+	case "serverName":
+		tun.ServerName = unquoteTOML(v)
+	case "serverUser":
+		tun.ServerUser = unquoteTOML(v)
+	case "protocol":
+		tun.VisitorProtocol = unquoteTOML(v)
+	case "keepTunnelOpen":
+		tun.KeepTunnelOpen = v == "true"
+	case "maxRetriesAnHour":
+		tun.MaxRetriesAnHour, _ = strconv.Atoi(v)
+	case "minRetryInterval":
+		tun.MinRetryInterval, _ = strconv.Atoi(v)
+	case "fallbackTo":
+		tun.FallbackTo = unquoteTOML(v)
+	case "fallbackTimeoutMs":
+		tun.FallbackTimeoutMs, _ = strconv.Atoi(v)
+	case "transport.useEncryption":
+		tun.UseEncryption = v == "true"
+	case "transport.useCompression":
+		tun.UseCompression = v == "true"
+	case "transport.bandwidthLimit":
+		bw := unquoteTOML(v)
+		tun.BandwidthLimit = bw
+		upper := strings.ToUpper(strings.TrimSpace(bw))
+		if strings.HasSuffix(upper, "KB") {
+			if kb, err := strconv.Atoi(strings.TrimSpace(strings.TrimSuffix(upper, "KB"))); err == nil {
+				tun.BandwidthLimitKB = kb
+			}
+		} else if strings.HasSuffix(upper, "MB") {
+			if mb, err := strconv.Atoi(strings.TrimSpace(strings.TrimSuffix(upper, "MB"))); err == nil {
+				tun.BandwidthLimitKB = mb * 1024
+			}
+		}
+	case "transport.bandwidthLimitMode":
+		tun.BandwidthLimitMode = unquoteTOML(v)
+	case "transport.proxyProtocolVersion":
+		tun.ProxyProtocolVersion = unquoteTOML(v)
+	case "loadBalancer.group":
+		tun.LoadBalancerGroup = unquoteTOML(v)
+	case "loadBalancer.groupKey":
+		tun.LoadBalancerGroupKey = unquoteTOML(v)
+	case "healthCheck.type":
+		tun.HealthCheckType = unquoteTOML(v)
+	case "healthCheck.timeoutSeconds":
+		tun.HealthCheckTimeoutSeconds, _ = strconv.Atoi(v)
+	case "healthCheck.maxFailed":
+		tun.HealthCheckMaxFailed, _ = strconv.Atoi(v)
+	case "healthCheck.intervalSeconds":
+		tun.HealthCheckIntervalSeconds, _ = strconv.Atoi(v)
+	case "healthCheck.path":
+		tun.HealthCheckPath = unquoteTOML(v)
+	case "plugin.type":
+		tun.Plugin = unquoteTOML(v)
+	case "plugin.localPath", "plugin.unixPath":
+		tun.PluginLocalPath = unquoteTOML(v)
+	case "plugin.stripPrefix":
+		tun.PluginStripPrefix = unquoteTOML(v)
+	case "plugin.httpUser", "plugin.username":
+		tun.PluginUser = unquoteTOML(v)
+	case "plugin.httpPassword", "plugin.password":
+		tun.PluginPassword = unquoteTOML(v)
+	case "plugin.localAddr", "plugin.address":
+		tun.PluginLocalAddr = unquoteTOML(v)
+	case "plugin.crtPath":
+		tun.PluginCrtPath = unquoteTOML(v)
+	case "plugin.keyPath":
+		tun.PluginKeyPath = unquoteTOML(v)
+	case "plugin.hostHeaderRewrite":
+		tun.PluginHostHeaderRewrite = unquoteTOML(v)
+	case "plugin.enableHTTP2":
+		bv := v == "true"
+		tun.PluginEnableHTTP2 = &bv
+	default:
+		return false
+	}
+	return true
+}
+
+func extractRangePairArgs(line string) (string, string) {
+	idx := strings.Index(line, "parseNumberRangePair")
+	if idx < 0 {
+		return "", ""
+	}
+	rest := line[idx+len("parseNumberRangePair"):]
+	var quoted []string
+	for len(rest) > 0 {
+		q1 := strings.IndexByte(rest, '"')
+		if q1 < 0 {
+			break
+		}
+		rest = rest[q1+1:]
+		q2 := strings.IndexByte(rest, '"')
+		if q2 < 0 {
+			break
+		}
+		quoted = append(quoted, rest[:q2])
+		rest = rest[q2+1:]
+		if len(quoted) >= 2 {
+			break
+		}
+	}
+	if len(quoted) >= 2 {
+		return quoted[0], quoted[1]
+	}
+	return "", ""
 }
 
 // tomlQuote strictly encodes a string literal according to the TOML v1.0 specification.
@@ -603,15 +1715,35 @@ func parseAllowPortsSpec(spec string) [][2]int {
 }
 
 func splitTOMLKeyVal(line string) (string, string, bool) {
-	idx := strings.IndexByte(line, '=')
-	if idx <= 0 {
-		return "", "", false
-	}
-	key := strings.TrimSpace(line[:idx])
-	val := strings.TrimSpace(line[idx+1:])
-	// Strip trailing inline comments outside quotes
 	inQuote := false
 	escaped := false
+	eqIdx := -1
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && inQuote {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inQuote = !inQuote
+			continue
+		}
+		if c == '=' && !inQuote {
+			eqIdx = i
+			break
+		}
+	}
+	if eqIdx <= 0 {
+		return "", "", false
+	}
+	key := strings.TrimSpace(line[:eqIdx])
+	val := strings.TrimSpace(line[eqIdx+1:])
+	inQuote = false
+	escaped = false
 	for i := 0; i < len(val); i++ {
 		c := val[i]
 		if escaped {

@@ -179,7 +179,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Authenticated API routes
+	// 4. Strictly Authenticated API routes (zero access before login!)
 	if strings.HasPrefix(path, "/api/") {
 		username, ok := a.auth.Authenticated(r)
 		if !ok {
@@ -194,8 +194,16 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Static Tokisaki Kurumi WebUI assets
+	// 5. Static WebUI assets
 	a.staticFS.ServeHTTP(w, r)
+}
+
+func sanitizeDocForBrowser(doc ConfigDocument) ConfigDocument {
+	for i := range doc.Clients {
+		doc.Clients[i].CtrlSecret = ""
+		doc.Clients[i].AgentToken = ""
+	}
+	return doc
 }
 
 func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string) {
@@ -209,14 +217,15 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		}
 		activeFile, doc := a.store.Snapshot()
 		files, _ := a.store.ListConfigFiles()
+		views := a.runtime.Views(doc)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"version":            version.Current,
 			"username":           username,
 			"needsPasswordSetup": a.auth.NeedsPasswordSetup(),
 			"activeConfigFile":   activeFile,
 			"configFiles":        files,
-			"config":             doc,
-			"runtime":            a.runtime.Views(doc),
+			"config":             sanitizeDocForBrowser(doc),
+			"runtime":            views,
 			"core":               LocateBinaries(a.dataDir),
 			"updateProxy":        a.updater.ProxyURL(),
 			"systemProxy":        a.updater.DetectedSystemProxy(),
@@ -247,6 +256,75 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			"needsPasswordSetup": a.auth.NeedsPasswordSetup(),
 		})
 
+	// ==================== Bidirectional Live TOML Preview & Parse ====================
+	case "/api/toml/preview":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			Kind   string         `json:"kind"`
+			Mask   bool           `json:"mask"`
+			Server *ServerProfile `json:"server,omitempty"`
+			Client *ClientProfile `json:"client,omitempty"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if req.Kind == "frps" && req.Server != nil {
+			res := RenderServerTOML(*req.Server, ServerRuntimeInjections{Preview: true, MaskSecrets: req.Mask})
+			writeJSON(w, http.StatusOK, map[string]any{"toml": res.TOML})
+			return
+		}
+		if req.Client != nil {
+			res := RenderClientTOML(*req.Client, ClientRuntimeInjections{Preview: true, MaskSecrets: req.Mask})
+			writeJSON(w, http.StatusOK, map[string]any{"toml": res.TOML})
+			return
+		}
+		writeError(w, http.StatusBadRequest, "缺少要预览的实例数据")
+
+	case "/api/toml/parse":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			Kind       string         `json:"kind"`
+			TOML       string         `json:"toml"`
+			PrevServer *ServerProfile `json:"prevServer,omitempty"`
+			PrevClient *ClientProfile `json:"prevClient,omitempty"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if req.Kind == "frps" {
+			base := ServerProfile{BindAddr: "0.0.0.0", BindPort: 7000}
+			if req.PrevServer != nil {
+				base = *req.PrevServer
+			}
+			upd, err := ApplyTOMLToServer(base, req.TOML)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"server": upd})
+			return
+		}
+		baseCli := ClientProfile{ServerAddr: "127.0.0.1", ServerPort: 7000, Protocol: "tcp", TLSEnable: true}
+		if req.PrevClient != nil {
+			baseCli = *req.PrevClient
+		}
+		updCli, err := ApplyTOMLToClient(baseCli, req.TOML)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		updCli.CtrlSecret = ""
+		updCli.AgentToken = ""
+		writeJSON(w, http.StatusOK, map[string]any{"client": updCli})
+
 	// ==================== Section 1: Server (frps) & Connection Dashboard ====================
 	case "/api/servers/save":
 		var srv ServerProfile
@@ -262,11 +340,13 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, "监听端口需在 1~65535 之间")
 			return
 		}
+		var saved ServerProfile
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			if srv.ID == "" {
 				srv.ID = newShortID("srv")
 				srv.ConnPolicies = make(map[string]ConnPolicy)
 				doc.Servers = append(doc.Servers, srv)
+				saved = srv
 				return nil
 			}
 			for i := range doc.Servers {
@@ -274,19 +354,65 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 					if srv.ConnPolicies == nil {
 						srv.ConnPolicies = doc.Servers[i].ConnPolicies
 					}
+					if srv.AuthToken == "********" {
+						srv.AuthToken = doc.Servers[i].AuthToken
+					}
 					doc.Servers[i] = srv
+					saved = srv
 					return nil
 				}
 			}
 			doc.Servers = append(doc.Servers, srv)
+			saved = srv
 			return nil
 		})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if a.runtime.IsInstanceRunning(saved.ID) {
+			_ = a.runtime.StartServer(saved)
+		}
 		a.bumpState()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": srv.ID})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": saved.ID})
+
+	case "/api/servers/save-toml":
+		var req struct {
+			ID   string `json:"id"`
+			TOML string `json:"toml"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var saved ServerProfile
+		err := a.store.Update(func(doc *ConfigDocument) error {
+			for i := range doc.Servers {
+				if doc.Servers[i].ID == req.ID {
+					upd, parseErr := ApplyTOMLToServer(doc.Servers[i], req.TOML)
+					if parseErr != nil {
+						return parseErr
+					}
+					if upd.BindPort <= 0 || upd.BindPort > 65535 {
+						return errors.New("TOML 中监听端口 bindPort 需在 1~65535 之间")
+					}
+					doc.Servers[i] = upd
+					saved = upd
+					return nil
+				}
+			}
+			return errors.New("未找到该转发端实例")
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if a.runtime.IsInstanceRunning(saved.ID) {
+			_ = a.runtime.StartServer(saved)
+		}
+		a.bumpState()
+		rendered := RenderServerTOML(saved, ServerRuntimeInjections{Preview: true, MaskSecrets: false})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "server": saved, "toml": rendered.TOML})
 
 	case "/api/servers/duplicate":
 		var req struct {
@@ -300,7 +426,9 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			for _, s := range doc.Servers {
 				if s.ID == req.ID {
-					cp := s
+					raw, _ := json.Marshal(s)
+					var cp ServerProfile
+					_ = json.Unmarshal(raw, &cp)
 					cp.ID = newShortID("srv")
 					cp.Name = s.Name + " (副本)"
 					cp.AutoStart = false
@@ -511,6 +639,8 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			if cli.ID == "" {
 				cli.ID = newShortID("cli")
+				cli.CtrlSecret = randomTokenHex(16)
+				cli.AgentToken = randomTokenHex(20)
 				if cli.Tunnels == nil {
 					cli.Tunnels = []TunnelRule{}
 				}
@@ -520,14 +650,29 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			}
 			for i := range doc.Clients {
 				if doc.Clients[i].ID == cli.ID {
+					prev := doc.Clients[i]
 					if cli.Tunnels == nil {
-						cli.Tunnels = doc.Clients[i].Tunnels
+						cli.Tunnels = prev.Tunnels
+					}
+					if cli.CtrlSecret == "" {
+						cli.CtrlSecret = prev.CtrlSecret
+					}
+					if cli.AgentToken == "" {
+						cli.AgentToken = prev.AgentToken
+					}
+					if cli.AuthToken == "********" {
+						cli.AuthToken = prev.AuthToken
+					}
+					if cli.OIDCClientSecret == "********" {
+						cli.OIDCClientSecret = prev.OIDCClientSecret
 					}
 					doc.Clients[i] = cli
 					saved = cli
 					return nil
 				}
 			}
+			cli.CtrlSecret = randomTokenHex(16)
+			cli.AgentToken = randomTokenHex(20)
 			doc.Clients = append(doc.Clients, cli)
 			saved = cli
 			return nil
@@ -539,6 +684,45 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		_ = a.runtime.ReloadOrRestartClient(saved)
 		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": saved.ID})
+
+	case "/api/clients/save-toml":
+		var req struct {
+			ID   string `json:"id"`
+			TOML string `json:"toml"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var saved ClientProfile
+		err := a.store.Update(func(doc *ConfigDocument) error {
+			for i := range doc.Clients {
+				if doc.Clients[i].ID == req.ID {
+					upd, parseErr := ApplyTOMLToClient(doc.Clients[i], req.TOML)
+					if parseErr != nil {
+						return parseErr
+					}
+					if strings.TrimSpace(upd.ServerAddr) == "" || upd.ServerPort <= 0 || upd.ServerPort > 65535 {
+						return errors.New("TOML 中 serverAddr 不能为空且 serverPort 需在 1~65535 之间")
+					}
+					doc.Clients[i] = upd
+					saved = upd
+					return nil
+				}
+			}
+			return errors.New("未找到该客户端实例")
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		_ = a.runtime.ReloadOrRestartClient(saved)
+		a.bumpState()
+		rendered := RenderClientTOML(saved, ClientRuntimeInjections{Preview: true, MaskSecrets: false})
+		sanitized := saved
+		sanitized.CtrlSecret = ""
+		sanitized.AgentToken = ""
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "client": sanitized, "toml": rendered.TOML})
 
 	case "/api/clients/duplicate":
 		var req struct {
@@ -558,6 +742,8 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 					cp.ID = newShortID("cli")
 					cp.Name = c.Name + " (副本)"
 					cp.AutoStart = false
+					cp.CtrlSecret = randomTokenHex(16)
+					cp.AgentToken = randomTokenHex(20)
 					for i := range cp.Tunnels {
 						cp.Tunnels[i].ID = newShortID("tun")
 						cp.Tunnels[i].Enabled = false
@@ -783,6 +969,105 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		}
 		writeError(w, http.StatusNotFound, "未找到该客户端配置")
 
+	// ==================== Section 2B: Connection-Based Remote Client Control & P2P ====================
+	case "/api/remote/client":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		serverID := strings.TrimSpace(r.URL.Query().Get("serverId"))
+		clientID := strings.TrimSpace(r.URL.Query().Get("clientId"))
+		snap, err := a.runtime.FetchRemoteClient(r.Context(), serverID, clientID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, snap)
+
+	case "/api/remote/client/save":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			ServerID            string        `json:"serverId"`
+			ClientID            string        `json:"clientId"`
+			Profile             ClientProfile `json:"profile"`
+			AllowUpstreamChange bool          `json:"allowUpstreamChange"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		saved, tomlOut, err := a.runtime.SaveRemoteClient(r.Context(), req.ServerID, req.ClientID, req.Profile, req.AllowUpstreamChange)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "profile": saved, "toml": tomlOut})
+
+	case "/api/remote/client/save-toml":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			ServerID            string `json:"serverId"`
+			ClientID            string `json:"clientId"`
+			TOML                string `json:"toml"`
+			AllowUpstreamChange bool   `json:"allowUpstreamChange"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		saved, tomlOut, err := a.runtime.SaveRemoteClientTOML(r.Context(), req.ServerID, req.ClientID, req.TOML, req.AllowUpstreamChange)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "profile": saved, "toml": tomlOut})
+
+	case "/api/remote/client/reload":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			ServerID string `json:"serverId"`
+			ClientID string `json:"clientId"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := a.runtime.ReloadRemoteClient(r.Context(), req.ServerID, req.ClientID); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	case "/api/remote/p2p-pair":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req P2PPairRequest
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		res, err := a.runtime.OrchestrateRemoteP2P(r.Context(), req)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, res)
+
 	// ==================== Section 3: App Control (Software-Internal Configs, Logs, Update) ====================
 	case "/api/configs/select":
 		var req struct {
@@ -793,10 +1078,13 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		prevCB := a.runtime.CallbackAddr()
 		a.runtime.StopAll()
 		rt, err := NewRuntimeSupervisor(a.dataDir, a.store, func() { a.stateSeq.Add(1) })
 		if err == nil {
+			rt.SetCallbackAddr(prevCB)
 			a.runtime = rt
+			a.updater.runtime = rt
 		}
 		doc, err := a.store.SelectOrCreateConfig(req.FileName, req.DisplayName)
 		if err != nil {
@@ -805,7 +1093,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		}
 		a.runtime.StartAutoStarts()
 		a.bumpState()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "config": doc})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "config": sanitizeDocForBrowser(doc)})
 
 	case "/api/configs/import-json":
 		var req struct {
@@ -818,9 +1106,12 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		if req.Activate {
+			prevCB := a.runtime.CallbackAddr()
 			a.runtime.StopAll()
 			if rt, err := NewRuntimeSupervisor(a.dataDir, a.store, func() { a.stateSeq.Add(1) }); err == nil {
+				rt.SetCallbackAddr(prevCB)
 				a.runtime = rt
+				a.updater.runtime = rt
 			}
 		}
 		savedFile, err := a.store.ImportConfigDocument(req.FileName, req.Content, req.Activate)
@@ -840,7 +1131,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, activeFile))
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(doc)
+		_ = enc.Encode(sanitizeDocForBrowser(doc))
 
 	case "/api/configs/delete":
 		var req struct {
@@ -872,12 +1163,15 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		var createdID string
 		err = a.store.Update(func(doc *ConfigDocument) error {
 			if srv != nil {
 				doc.Servers = append(doc.Servers, *srv)
+				createdID = srv.ID
 			}
 			if cli != nil {
 				doc.Clients = append(doc.Clients, *cli)
+				createdID = cli.ID
 			}
 			return nil
 		})
@@ -890,7 +1184,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		if srv != nil {
 			kindOut = "frps"
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kindOut})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "kind": kindOut, "id": createdID})
 
 	case "/api/logs":
 		id := r.URL.Query().Get("id")
