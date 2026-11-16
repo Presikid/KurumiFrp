@@ -209,6 +209,7 @@ func validateDownloadURL(u *url.URL, allowLocal bool) error {
 	allowed := map[string]bool{
 		"github.com":                           true,
 		"api.github.com":                       true,
+		"raw.githubusercontent.com":            true,
 		"objects.githubusercontent.com":        true,
 		"release-assets.githubusercontent.com": true,
 		"codeload.github.com":                  true,
