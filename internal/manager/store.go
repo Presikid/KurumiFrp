@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -312,8 +313,21 @@ func (s *Store) Update(fn func(doc *ConfigDocument) error) error {
 	}
 	normalizeDocument(&draft, draft.Name)
 	draft.Updated = time.Now().UTC().Format(time.RFC3339)
+
+	// Prepare-then-Commit: validate size limit and atomically persist to disk BEFORE mutating in-memory s.doc!
+	b, err := json.MarshalIndent(draft, "", "  ")
+	if err != nil {
+		return err
+	}
+	if len(b) > maxConfigBytes {
+		return errors.New("配置内容超过 32 MiB 上限")
+	}
+	full := filepath.Join(s.configsDir, s.activeFile)
+	if _, err := writeIfChanged(full, append(b, '\n'), 0o600); err != nil {
+		return err
+	}
 	s.doc = draft
-	return s.saveActiveLocked()
+	return nil
 }
 
 // ListConfigFiles lists all self-contained config files inside <dataDir>/configs/.
@@ -343,7 +357,7 @@ func (s *Store) ListConfigFiles() ([]ConfigFileSummary, error) {
 		out = append(out, ConfigFileSummary{
 			FileName:    e.Name(),
 			DisplayName: doc.Name,
-			Active:      e.Name() == active,
+			Active:      sameConfigFileName(e.Name(), active),
 			ServerCount: len(doc.Servers),
 			ClientCount: len(doc.Clients),
 			Updated:     doc.Updated,
@@ -427,6 +441,9 @@ func (s *Store) ImportConfigDocument(fileName string, raw []byte, activate bool)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if !activate && sameConfigFileName(clean, s.activeFile) {
+		return "", errors.New("不能在不激活状态下覆盖当前正在使用的配置文件，请勾选立即启用或更改导入文件名")
+	}
 	full := filepath.Join(s.configsDir, clean)
 	if _, err := writeIfChanged(full, append(b, '\n'), 0o600); err != nil {
 		return "", err
@@ -449,7 +466,7 @@ func (s *Store) DeleteConfigFile(fileName string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if clean == s.activeFile {
+	if sameConfigFileName(clean, s.activeFile) {
 		return errors.New("不能删除当前正在使用的配置文件，请先切换到其他配置文件")
 	}
 	full := filepath.Join(s.configsDir, clean)
@@ -491,15 +508,49 @@ func sanitizeConfigFileName(name string) string {
 	return name + ".json"
 }
 
-// writeIfChanged skips disk writes completely if existing file bytes are identical, minimizing SSD wear.
+func sameConfigFileName(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// writeIfChanged skips disk writes if identical, and otherwise performs an atomic temp-file + Sync + Rename commit.
 func writeIfChanged(path string, data []byte, perm os.FileMode) (bool, error) {
 	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
 		return false, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return false, err
 	}
-	if err := os.WriteFile(path, data, perm); err != nil {
+	tmpPath := fmt.Sprintf("%s.tmp.%s", path, randomTokenHex(4))
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return false, err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return false, err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return false, err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return false, err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		if runtime.GOOS == "windows" {
+			_ = os.Remove(path)
+			if err2 := os.Rename(tmpPath, path); err2 == nil {
+				return true, nil
+			}
+		}
+		_ = os.Remove(tmpPath)
 		return false, err
 	}
 	return true, nil

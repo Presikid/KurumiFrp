@@ -26,6 +26,7 @@ type App struct {
 	assets     *AssetPackManager
 	staticFS   http.Handler
 	stateSeq   atomic.Uint64
+	exitCode   atomic.Int32
 	listenSpec string
 	origArgs   []string
 	onShutdown func()
@@ -56,7 +57,12 @@ func NewApp(dataDir string, onShutdown func()) (*App, error) {
 		return nil, err
 	}
 	app.runtime = rt
-	app.updater = NewUpdateManager(dataDir, rt, onShutdown)
+	app.updater = NewUpdateManager(dataDir, rt, func(code int) {
+		app.exitCode.Store(int32(code))
+		if onShutdown != nil {
+			onShutdown()
+		}
+	})
 	app.assets = NewAssetPackManager(dataDir, app.updater, func() {
 		app.stateSeq.Add(1)
 	})
@@ -86,6 +92,11 @@ func (a *App) Close() {
 	if a.runtime != nil {
 		a.runtime.StopAll()
 	}
+}
+
+// ExitCode returns any requested process exit status (e.g. 42 for systemd self-update restart).
+func (a *App) ExitCode() int {
+	return int(a.exitCode.Load())
 }
 
 // Auth exposes the AuthManager for CLI maintenance commands.
@@ -354,6 +365,10 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, "监听端口需在 1~65535 之间")
 			return
 		}
+		if _, err := ValidateAllowPortsSpec(srv.AllowPorts); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		var saved ServerProfile
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			if srv.ID == "" {
@@ -365,9 +380,8 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			}
 			for i := range doc.Servers {
 				if doc.Servers[i].ID == srv.ID {
-					if srv.ConnPolicies == nil {
-						srv.ConnPolicies = doc.Servers[i].ConnPolicies
-					}
+					// F33: Always preserve authoritative live ConnPolicies from Store so stale server form drafts never clobber traffic/quotas!
+					srv.ConnPolicies = doc.Servers[i].ConnPolicies
 					if srv.AuthToken == "********" {
 						srv.AuthToken = doc.Servers[i].AuthToken
 					}
@@ -385,7 +399,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		if a.runtime.IsInstanceRunning(saved.ID) {
-			_ = a.runtime.StartServer(saved)
+			if err := a.runtime.StartServer(saved); err != nil {
+				a.bumpState()
+				writeError(w, http.StatusBadRequest, "配置已写入草稿，但新配置校验或平滑重启失败（原运行实例未中断）: "+err.Error())
+				return
+			}
 		}
 		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": saved.ID})
@@ -422,7 +440,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		if a.runtime.IsInstanceRunning(saved.ID) {
-			_ = a.runtime.StartServer(saved)
+			if err := a.runtime.StartServer(saved); err != nil {
+				a.bumpState()
+				writeError(w, http.StatusBadRequest, "TOML 新配置校验或平滑重启失败（原运行实例未中断）: "+err.Error())
+				return
+			}
 		}
 		a.bumpState()
 		rendered := RenderServerTOML(saved, ServerRuntimeInjections{Preview: true, MaskSecrets: false})
@@ -475,6 +497,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		_ = a.runtime.StopInstance(req.ID)
+		a.runtime.ClearInstanceError(req.ID)
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			out := make([]ServerProfile, 0, len(doc.Servers))
 			for _, s := range doc.Servers {
@@ -575,6 +598,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 						doc.Servers[i].ConnPolicies = make(map[string]ConnPolicy)
 					}
 					prev := doc.Servers[i].ConnPolicies[req.ProxyName]
+					rawIn, rawOut := a.runtime.CurrentProxyRawTraffic(req.ServerID, req.ProxyName)
 					pol := ConnPolicy{
 						ProxyName:        req.ProxyName,
 						Enabled:          req.Enabled,
@@ -583,11 +607,15 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 						ExpiresAt:        strings.TrimSpace(req.ExpiresAt),
 						RecordedInBytes:  prev.RecordedInBytes,
 						RecordedOutBytes: prev.RecordedOutBytes,
+						LastRawInBytes:   prev.LastRawInBytes,
+						LastRawOutBytes:  prev.LastRawOutBytes,
 						Note:             strings.TrimSpace(req.Note),
 					}
 					if req.ResetTraffic {
 						pol.RecordedInBytes = 0
 						pol.RecordedOutBytes = 0
+						pol.LastRawInBytes = rawIn
+						pol.LastRawOutBytes = rawOut
 					}
 					doc.Servers[i].ConnPolicies[req.ProxyName] = pol
 					return nil
@@ -695,7 +723,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		_ = a.runtime.ReloadOrRestartClient(saved)
+		if err := a.runtime.ReloadOrRestartClient(saved); err != nil {
+			a.bumpState()
+			writeError(w, http.StatusBadRequest, "客户端配置校验或热重载失败: "+err.Error())
+			return
+		}
 		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": saved.ID})
 
@@ -730,7 +762,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		_ = a.runtime.ReloadOrRestartClient(saved)
+		if err := a.runtime.ReloadOrRestartClient(saved); err != nil {
+			a.bumpState()
+			writeError(w, http.StatusBadRequest, "TOML 配置校验或热重载失败: "+err.Error())
+			return
+		}
 		a.bumpState()
 		rendered := RenderClientTOML(saved, ClientRuntimeInjections{Preview: true, MaskSecrets: false})
 		sanitized := saved
@@ -1092,18 +1128,17 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		prevCB := a.runtime.CallbackAddr()
-		a.runtime.StopAll()
-		rt, err := NewRuntimeSupervisor(a.dataDir, a.store, func() { a.stateSeq.Add(1) })
-		if err == nil {
-			rt.SetCallbackAddr(prevCB)
-			a.runtime = rt
-			a.updater.runtime = rt
-		}
 		doc, err := a.store.SelectOrCreateConfig(req.FileName, req.DisplayName)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		prevCB := a.runtime.CallbackAddr()
+		a.runtime.StopAll()
+		if rt, err := NewRuntimeSupervisor(a.dataDir, a.store, func() { a.stateSeq.Add(1) }); err == nil {
+			rt.SetCallbackAddr(prevCB)
+			a.runtime = rt
+			a.updater.runtime = rt
 		}
 		a.runtime.StartAutoStarts()
 		a.bumpState()
@@ -1119,6 +1154,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		savedFile, err := a.store.ImportConfigDocument(req.FileName, req.Content, req.Activate)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if req.Activate {
 			prevCB := a.runtime.CallbackAddr()
 			a.runtime.StopAll()
@@ -1127,13 +1167,6 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 				a.runtime = rt
 				a.updater.runtime = rt
 			}
-		}
-		savedFile, err := a.store.ImportConfigDocument(req.FileName, req.Content, req.Activate)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if req.Activate {
 			a.runtime.StartAutoStarts()
 		}
 		a.bumpState()

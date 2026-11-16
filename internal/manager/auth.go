@@ -51,14 +51,15 @@ type browserTicket struct {
 
 // AuthManager manages single-user username+password authentication, local CLI token, and restart-resilient HMAC sessions.
 type AuthManager struct {
-	mu          sync.Mutex
-	accountPath string
-	tokenPath   string
-	localToken  string
-	account     adminAccountFile
-	revoked     map[string]time.Time
-	attempts    map[string]loginAttempt
-	tickets     map[string]browserTicket
+	mu            sync.Mutex
+	accountPath   string
+	tokenPath     string
+	localToken    string
+	account       adminAccountFile
+	emptyPassword bool
+	revoked       map[string]time.Time
+	attempts      map[string]loginAttempt
+	tickets       map[string]browserTicket
 }
 
 // NewAuthManager initializes or migrates the single-user credential file and local control token.
@@ -119,6 +120,7 @@ func (a *AuthManager) loadOrInitAccount() error {
 			Salt:     base64.RawStdEncoding.EncodeToString(salt),
 			Hash:     base64.RawStdEncoding.EncodeToString(sum),
 		}
+		a.emptyPassword = true
 		return a.saveAccountLocked()
 	}
 	var acc adminAccountFile
@@ -133,6 +135,8 @@ func (a *AuthManager) loadOrInitAccount() error {
 		acc.Version = 2
 	}
 	a.account = acc
+	emptyOK, emptyErr := verifyPasswordRecord(acc, "")
+	a.emptyPassword = (emptyErr == nil && emptyOK)
 	return a.saveAccountLocked()
 }
 
@@ -157,8 +161,7 @@ func (a *AuthManager) Username() string {
 func (a *AuthManager) NeedsPasswordSetup() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	ok, err := verifyPasswordRecord(a.account, "")
-	return err == nil && ok
+	return a.emptyPassword
 }
 
 // LocalToken returns the loopback CLI maintenance token.
@@ -221,7 +224,11 @@ func (a *AuthManager) Login(clientIP, username, password string) (string, error)
 		return "", errors.New("登录尝试过于频繁，请 1 分钟后再试")
 	}
 
-	userOK := constantTimeStringEqual(strings.TrimSpace(username), a.account.Username)
+	effUser := strings.TrimSpace(username)
+	if effUser == "" {
+		effUser = a.account.Username
+	}
+	userOK := constantTimeStringEqual(effUser, a.account.Username)
 	passOK, err := verifyPasswordRecord(a.account, password)
 	if err != nil || !userOK || !passOK {
 		a.recordFailureLocked(clientIP, now)
@@ -262,6 +269,7 @@ func (a *AuthManager) UpdateCredentials(currentPassword, newUsername, newPasswor
 		Salt:     base64.RawStdEncoding.EncodeToString(salt),
 		Hash:     base64.RawStdEncoding.EncodeToString(sum),
 	}
+	a.emptyPassword = (newPassword == "")
 	a.revoked = make(map[string]time.Time)
 	return a.saveAccountLocked()
 }

@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -335,7 +336,21 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 	if strings.TrimSpace(cli.User) != "" {
 		fmt.Fprintf(&b, "user = %s\n", tomlQuote(strings.TrimSpace(cli.User)))
 	}
+	enableRemoteCtrlEarly := cli.RemoteCtrlEnabled == nil || *cli.RemoteCtrlEnabled
 	if starts := cleanStringSlice(cli.StartProxies); len(starts) > 0 {
+		if !inj.Preview && enableRemoteCtrlEarly && inj.AgentPort > 0 && inj.ClientID != "" && inj.CtrlSecret != "" && inj.AgentToken != "" {
+			ctrlName := internalCtrlProxyPrefix + inj.ClientID
+			hasCtrl := false
+			for _, s := range starts {
+				if s == ctrlName {
+					hasCtrl = true
+					break
+				}
+			}
+			if !hasCtrl {
+				starts = append(starts, ctrlName)
+			}
+		}
 		fmt.Fprintf(&b, "start = %s\n", tomlStringArray(starts))
 	}
 	if incs := cleanStringSlice(cli.Includes); len(incs) > 0 {
@@ -351,19 +366,22 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 		fmt.Fprintf(&b, "udpPacketSize = %d\n", cli.UDPPacketSize)
 	}
 
-	needsVirtualNet := strings.TrimSpace(cli.VirtualNetAddr) != ""
-	if !needsVirtualNet {
-		for _, t := range cli.Tunnels {
-			if t.Enabled && strings.TrimSpace(t.Plugin) == "virtual_net" {
-				needsVirtualNet = true
-				break
+	effVirtAddr := strings.TrimSpace(cli.VirtualNetAddr)
+	needsVirtualNet := effVirtAddr != ""
+	for _, t := range cli.Tunnels {
+		if strings.TrimSpace(t.Plugin) == "virtual_net" {
+			needsVirtualNet = true
+			if effVirtAddr == "" && strings.ToLower(strings.TrimSpace(t.Mode)) != "visitor" && strings.TrimSpace(t.PluginLocalAddr) != "" {
+				effVirtAddr = strings.TrimSpace(t.PluginLocalAddr)
 			}
 		}
 	}
 	if needsVirtualNet {
-		b.WriteString("featureGates = { VirtualNet = true }\n")
-		if strings.TrimSpace(cli.VirtualNetAddr) != "" {
-			fmt.Fprintf(&b, "virtualNet.address = %s\n", tomlQuote(strings.TrimSpace(cli.VirtualNetAddr)))
+		if !strings.Contains(cli.ExtraTOML, "featureGates") {
+			b.WriteString("featureGates = { VirtualNet = true }\n")
+		}
+		if effVirtAddr != "" {
+			fmt.Fprintf(&b, "virtualNet.address = %s\n", tomlQuote(effVirtAddr))
 		}
 	}
 
@@ -421,8 +439,8 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 	}
 
 	fmt.Fprintf(&b, "transport.tls.enable = %t\n", cli.TLSEnable)
-	if cli.TLSDisableCustomFirstByte {
-		b.WriteString("transport.tls.disableCustomTLSFirstByte = true\n")
+	if cli.TLSEnable || proto == "wss" {
+		fmt.Fprintf(&b, "transport.tls.disableCustomTLSFirstByte = %t\n", cli.TLSDisableCustomFirstByte)
 	}
 	if strings.TrimSpace(cli.TLSServerName) != "" {
 		fmt.Fprintf(&b, "transport.tls.serverName = %s\n", tomlQuote(strings.TrimSpace(cli.TLSServerName)))
@@ -518,9 +536,6 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 	}
 
 	for _, tun := range cli.Tunnels {
-		if !tun.Enabled {
-			continue
-		}
 		if isInternalCtrlProxy(tun.Name) {
 			continue
 		}
@@ -528,10 +543,14 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 		if typ == "" {
 			typ = "tcp"
 		}
+		pluginType := strings.ToLower(strings.TrimSpace(tun.Plugin))
 		if strings.ToLower(strings.TrimSpace(tun.Mode)) == "visitor" {
 			b.WriteString("\n[[visitors]]\n")
 			fmt.Fprintf(&b, "name = %s\n", tomlQuote(tun.Name))
 			fmt.Fprintf(&b, "type = %s\n", tomlQuote(typ))
+			if !tun.Enabled {
+				b.WriteString("enabled = false\n")
+			}
 			fmt.Fprintf(&b, "serverName = %s\n", tomlQuote(tun.ServerName))
 			if strings.TrimSpace(tun.ServerUser) != "" {
 				fmt.Fprintf(&b, "serverUser = %s\n", tomlQuote(strings.TrimSpace(tun.ServerUser)))
@@ -571,6 +590,12 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 					fmt.Fprintf(&b, "fallbackTimeoutMs = %d\n", tun.FallbackTimeoutMs)
 				}
 			}
+			if pluginType == "virtual_net" {
+				b.WriteString("plugin.type = \"virtual_net\"\n")
+				if strings.TrimSpace(tun.PluginLocalAddr) != "" {
+					fmt.Fprintf(&b, "plugin.destinationIP = %s\n", tomlQuote(strings.TrimSpace(tun.PluginLocalAddr)))
+				}
+			}
 			if ex := strings.TrimSpace(tun.ExtraTOML); ex != "" {
 				b.WriteString(ex + "\n")
 			}
@@ -586,10 +611,16 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 			b.WriteString("[[proxies]]\n")
 			fmt.Fprintf(&b, "name = \"%s-{{ $v.First }}\"\n", tomlInnerEscape(tun.Name))
 			fmt.Fprintf(&b, "type = %s\n", tomlQuote(typ))
-			fmt.Fprintf(&b, "localIP = %s\n", tomlQuote(localIP))
-			b.WriteString("localPort = {{ $v.First }}\n")
+			if !tun.Enabled {
+				b.WriteString("enabled = false\n")
+			}
+			if pluginType == "" {
+				fmt.Fprintf(&b, "localIP = %s\n", tomlQuote(localIP))
+				b.WriteString("localPort = {{ $v.First }}\n")
+			}
 			b.WriteString("remotePort = {{ $v.Second }}\n")
 			writeProxyTransportAndCommon(&b, tun)
+			writeProxyPluginAndExtra(&b, tun, pluginType, addSecret)
 			b.WriteString("{{- end }}\n")
 			continue
 		}
@@ -597,8 +628,10 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 		b.WriteString("\n[[proxies]]\n")
 		fmt.Fprintf(&b, "name = %s\n", tomlQuote(tun.Name))
 		fmt.Fprintf(&b, "type = %s\n", tomlQuote(typ))
+		if !tun.Enabled {
+			b.WriteString("enabled = false\n")
+		}
 
-		pluginType := strings.TrimSpace(tun.Plugin)
 		if pluginType == "" {
 			localIP := strings.TrimSpace(tun.LocalIP)
 			if localIP == "" {
@@ -656,92 +689,95 @@ func RenderClientTOML(cli ClientProfile, inj ClientRuntimeInjections) RenderedCo
 
 		writeProxyTransportAndCommon(&b, tun)
 
-		// Built-in Client Plugin (emitted via dotted keys so [[proxies]] table scope stays clean)
-		if pluginType != "" {
-			fmt.Fprintf(&b, "plugin.type = %s\n", tomlQuote(pluginType))
-			switch pluginType {
-			case "static_file":
-				fmt.Fprintf(&b, "plugin.localPath = %s\n", tomlQuote(tun.PluginLocalPath))
-				if strings.TrimSpace(tun.PluginStripPrefix) != "" {
-					fmt.Fprintf(&b, "plugin.stripPrefix = %s\n", tomlQuote(strings.TrimSpace(tun.PluginStripPrefix)))
-				}
-				if strings.TrimSpace(tun.PluginUser) != "" {
-					fmt.Fprintf(&b, "plugin.httpUser = %s\n", tomlQuote(strings.TrimSpace(tun.PluginUser)))
-					fmt.Fprintf(&b, "plugin.httpPassword = %s\n", addSecret("PLUG_PASS", tun.PluginPassword))
-				}
-			case "socks5":
-				if strings.TrimSpace(tun.PluginUser) != "" {
-					fmt.Fprintf(&b, "plugin.username = %s\n", tomlQuote(strings.TrimSpace(tun.PluginUser)))
-					fmt.Fprintf(&b, "plugin.password = %s\n", addSecret("PLUG_PASS", tun.PluginPassword))
-				}
-			case "http_proxy":
-				if strings.TrimSpace(tun.PluginUser) != "" {
-					fmt.Fprintf(&b, "plugin.httpUser = %s\n", tomlQuote(strings.TrimSpace(tun.PluginUser)))
-					fmt.Fprintf(&b, "plugin.httpPassword = %s\n", addSecret("PLUG_PASS", tun.PluginPassword))
-				}
-			case "unix_domain_socket":
-				fmt.Fprintf(&b, "plugin.unixPath = %s\n", tomlQuote(tun.PluginLocalPath))
-			case "virtual_net":
-				fmt.Fprintf(&b, "plugin.address = %s\n", tomlQuote(tun.PluginLocalAddr))
-			case "https2http", "https2https":
-				fmt.Fprintf(&b, "plugin.localAddr = %s\n", tomlQuote(tun.PluginLocalAddr))
-				if strings.TrimSpace(tun.PluginHostHeaderRewrite) != "" {
-					fmt.Fprintf(&b, "plugin.hostHeaderRewrite = %s\n", tomlQuote(strings.TrimSpace(tun.PluginHostHeaderRewrite)))
-				}
-				if strings.TrimSpace(tun.PluginCrtPath) != "" {
-					fmt.Fprintf(&b, "plugin.crtPath = %s\n", tomlQuote(strings.TrimSpace(tun.PluginCrtPath)))
-				}
-				if strings.TrimSpace(tun.PluginKeyPath) != "" {
-					fmt.Fprintf(&b, "plugin.keyPath = %s\n", tomlQuote(strings.TrimSpace(tun.PluginKeyPath)))
-				}
-				if tun.PluginEnableHTTP2 != nil {
-					fmt.Fprintf(&b, "plugin.enableHTTP2 = %t\n", *tun.PluginEnableHTTP2)
-				}
-				writeDottedKVMap(&b, "plugin.requestHeaders.set", tun.PluginHeaders)
-			case "http2https", "http2http":
-				fmt.Fprintf(&b, "plugin.localAddr = %s\n", tomlQuote(tun.PluginLocalAddr))
-				if strings.TrimSpace(tun.PluginHostHeaderRewrite) != "" {
-					fmt.Fprintf(&b, "plugin.hostHeaderRewrite = %s\n", tomlQuote(strings.TrimSpace(tun.PluginHostHeaderRewrite)))
-				}
-				writeDottedKVMap(&b, "plugin.requestHeaders.set", tun.PluginHeaders)
-			case "tls2raw":
-				fmt.Fprintf(&b, "plugin.localAddr = %s\n", tomlQuote(tun.PluginLocalAddr))
-				if strings.TrimSpace(tun.PluginCrtPath) != "" {
-					fmt.Fprintf(&b, "plugin.crtPath = %s\n", tomlQuote(strings.TrimSpace(tun.PluginCrtPath)))
-				}
-				if strings.TrimSpace(tun.PluginKeyPath) != "" {
-					fmt.Fprintf(&b, "plugin.keyPath = %s\n", tomlQuote(strings.TrimSpace(tun.PluginKeyPath)))
-				}
-			}
-		}
-
-		if ex := strings.TrimSpace(tun.ExtraTOML); ex != "" {
-			b.WriteString(ex + "\n")
-		}
-
-		// HealthCheck HTTP headers array-of-tables emitted last inside [[proxies]]
-		if strings.ToLower(strings.TrimSpace(tun.HealthCheckType)) == "http" && len(tun.HealthCheckHeaders) > 0 {
-			for _, hk := range sortedMapKeys(tun.HealthCheckHeaders) {
-				b.WriteString("[[proxies.healthCheck.httpHeaders]]\n")
-				fmt.Fprintf(&b, "name = %s\n", tomlQuote(hk))
-				fmt.Fprintf(&b, "value = %s\n", tomlQuote(tun.HealthCheckHeaders[hk]))
-			}
-		}
+		writeProxyPluginAndExtra(&b, tun, pluginType, addSecret)
 	}
 
-	// Inject internal STCP control tunnel when running managed frpc with RemoteCtrlEnabled
+	// Inject internal STCP control tunnel when running managed frpc with RemoteCtrlEnabled (F13: allowUsers = ["*"] enables bridge across user namespaces)
 	if !inj.Preview && enableRemoteCtrl && inj.AgentPort > 0 && inj.ClientID != "" && ctrlKeyExpr != "" {
 		b.WriteString("\n# KurumiFrp instance-to-instance remote control channel (connection-scoped)\n")
 		b.WriteString("[[proxies]]\n")
 		fmt.Fprintf(&b, "name = %s\n", tomlQuote(ctrlProxyName))
 		b.WriteString("type = \"stcp\"\n")
 		fmt.Fprintf(&b, "secretKey = %s\n", ctrlKeyExpr)
+		b.WriteString("allowUsers = [\"*\"]\n")
 		b.WriteString("localIP = \"127.0.0.1\"\n")
 		fmt.Fprintf(&b, "localPort = %d\n", inj.AgentPort)
 		b.WriteString("transport.useEncryption = true\n")
 	}
 
 	return RenderedConfig{TOML: b.String(), Env: env, Secrets: secrets}
+}
+
+func writeProxyPluginAndExtra(b *strings.Builder, tun TunnelRule, pluginType string, addSecret func(string, string) string) {
+	if pluginType != "" {
+		fmt.Fprintf(b, "plugin.type = %s\n", tomlQuote(pluginType))
+		switch pluginType {
+		case "static_file":
+			fmt.Fprintf(b, "plugin.localPath = %s\n", tomlQuote(tun.PluginLocalPath))
+			if strings.TrimSpace(tun.PluginStripPrefix) != "" {
+				fmt.Fprintf(b, "plugin.stripPrefix = %s\n", tomlQuote(strings.TrimSpace(tun.PluginStripPrefix)))
+			}
+			if strings.TrimSpace(tun.PluginUser) != "" {
+				fmt.Fprintf(b, "plugin.httpUser = %s\n", tomlQuote(strings.TrimSpace(tun.PluginUser)))
+				fmt.Fprintf(b, "plugin.httpPassword = %s\n", addSecret("PLUG_PASS", tun.PluginPassword))
+			}
+		case "socks5":
+			if strings.TrimSpace(tun.PluginUser) != "" {
+				fmt.Fprintf(b, "plugin.username = %s\n", tomlQuote(strings.TrimSpace(tun.PluginUser)))
+				fmt.Fprintf(b, "plugin.password = %s\n", addSecret("PLUG_PASS", tun.PluginPassword))
+			}
+		case "http_proxy":
+			if strings.TrimSpace(tun.PluginUser) != "" {
+				fmt.Fprintf(b, "plugin.httpUser = %s\n", tomlQuote(strings.TrimSpace(tun.PluginUser)))
+				fmt.Fprintf(b, "plugin.httpPassword = %s\n", addSecret("PLUG_PASS", tun.PluginPassword))
+			}
+		case "unix_domain_socket":
+			fmt.Fprintf(b, "plugin.unixPath = %s\n", tomlQuote(tun.PluginLocalPath))
+		case "virtual_net":
+			// Upstream VirtualNetPluginOptions only takes type = "virtual_net"; CIDR address is emitted globally under virtualNet.address.
+		case "https2http", "https2https":
+			fmt.Fprintf(b, "plugin.localAddr = %s\n", tomlQuote(tun.PluginLocalAddr))
+			if strings.TrimSpace(tun.PluginHostHeaderRewrite) != "" {
+				fmt.Fprintf(b, "plugin.hostHeaderRewrite = %s\n", tomlQuote(strings.TrimSpace(tun.PluginHostHeaderRewrite)))
+			}
+			if strings.TrimSpace(tun.PluginCrtPath) != "" {
+				fmt.Fprintf(b, "plugin.crtPath = %s\n", tomlQuote(strings.TrimSpace(tun.PluginCrtPath)))
+			}
+			if strings.TrimSpace(tun.PluginKeyPath) != "" {
+				fmt.Fprintf(b, "plugin.keyPath = %s\n", tomlQuote(strings.TrimSpace(tun.PluginKeyPath)))
+			}
+			if tun.PluginEnableHTTP2 != nil {
+				fmt.Fprintf(b, "plugin.enableHTTP2 = %t\n", *tun.PluginEnableHTTP2)
+			}
+			writeDottedKVMap(b, "plugin.requestHeaders.set", tun.PluginHeaders)
+		case "http2https", "http2http":
+			fmt.Fprintf(b, "plugin.localAddr = %s\n", tomlQuote(tun.PluginLocalAddr))
+			if strings.TrimSpace(tun.PluginHostHeaderRewrite) != "" {
+				fmt.Fprintf(b, "plugin.hostHeaderRewrite = %s\n", tomlQuote(strings.TrimSpace(tun.PluginHostHeaderRewrite)))
+			}
+			writeDottedKVMap(b, "plugin.requestHeaders.set", tun.PluginHeaders)
+		case "tls2raw":
+			fmt.Fprintf(b, "plugin.localAddr = %s\n", tomlQuote(tun.PluginLocalAddr))
+			if strings.TrimSpace(tun.PluginCrtPath) != "" {
+				fmt.Fprintf(b, "plugin.crtPath = %s\n", tomlQuote(strings.TrimSpace(tun.PluginCrtPath)))
+			}
+			if strings.TrimSpace(tun.PluginKeyPath) != "" {
+				fmt.Fprintf(b, "plugin.keyPath = %s\n", tomlQuote(strings.TrimSpace(tun.PluginKeyPath)))
+			}
+		}
+	}
+
+	if ex := strings.TrimSpace(tun.ExtraTOML); ex != "" {
+		b.WriteString(ex + "\n")
+	}
+
+	if strings.ToLower(strings.TrimSpace(tun.HealthCheckType)) == "http" && len(tun.HealthCheckHeaders) > 0 {
+		for _, hk := range sortedMapKeys(tun.HealthCheckHeaders) {
+			b.WriteString("[[proxies.healthCheck.httpHeaders]]\n")
+			fmt.Fprintf(b, "name = %s\n", tomlQuote(hk))
+			fmt.Fprintf(b, "value = %s\n", tomlQuote(tun.HealthCheckHeaders[hk]))
+		}
+	}
 }
 
 func writeProxyTransportAndCommon(b *strings.Builder, tun TunnelRule) {
@@ -893,11 +929,17 @@ func ApplyTOMLToClient(prev ClientProfile, raw string) (ClientProfile, error) {
 // into a structured ServerProfile or ClientProfile while preserving unrecognized custom lines inside ExtraTOML.
 func ParseTOMLAsProfile(name, kind, raw string) (*ServerProfile, *ClientProfile, error) {
 	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
-	lines := strings.Split(normalized, "\n")
+	lines, err := foldMultilineTOMLLines(strings.Split(normalized, "\n"))
+	if err != nil {
+		return nil, nil, err
+	}
 
 	isServer := kind == "frps" || (kind == "" && (strings.Contains(normalized, "bindPort") || strings.Contains(normalized, "vhostHTTPPort")) && !strings.Contains(normalized, "serverAddr"))
 	if isServer {
 		srv := parseServerTOMLLines(name, lines)
+		if _, err := ValidateAllowPortsSpec(srv.AllowPorts); err != nil {
+			return nil, nil, err
+		}
 		return srv, nil, nil
 	}
 	cli := parseClientTOMLLines(name, lines)
@@ -1308,7 +1350,11 @@ func parseClientTOMLLines(name string, lines []string) *ClientProfile {
 			if applyTunnelKeyValue(curTun, fullKey, v) {
 				continue
 			}
-			curExtra = append(curExtra, line)
+			if tunSubSection != "" {
+				curExtra = append(curExtra, fullKey+" = "+v)
+			} else {
+				curExtra = append(curExtra, line)
+			}
 			continue
 		}
 
@@ -1501,6 +1547,8 @@ func applyTunnelKeyValue(tun *TunnelRule, fullKey, v string) bool {
 		tun.Name = unquoteTOML(v)
 	case "type":
 		tun.Type = unquoteTOML(v)
+	case "enabled":
+		tun.Enabled = strings.TrimSpace(v) != "false"
 	case "localIP", "bindAddr":
 		tun.LocalIP = unquoteTOML(v)
 	case "localPort", "bindPort":
@@ -1588,7 +1636,7 @@ func applyTunnelKeyValue(tun *TunnelRule, fullKey, v string) bool {
 		tun.PluginUser = unquoteTOML(v)
 	case "plugin.httpPassword", "plugin.password":
 		tun.PluginPassword = unquoteTOML(v)
-	case "plugin.localAddr", "plugin.address":
+	case "plugin.localAddr", "plugin.address", "plugin.destinationIP":
 		tun.PluginLocalAddr = unquoteTOML(v)
 	case "plugin.crtPath":
 		tun.PluginCrtPath = unquoteTOML(v)
@@ -1694,45 +1742,203 @@ func cleanStringSlice(in []string) []string {
 	return out
 }
 
-func parseAllowPortsSpec(spec string) [][2]int {
+// ValidateAllowPortsSpec strictly validates server port whitelists (fail-closed against full-width commas, typos, or reversed ranges).
+func ValidateAllowPortsSpec(spec string) ([][2]int, error) {
+	trimmed := strings.TrimSpace(spec)
+	if trimmed == "" {
+		return nil, nil
+	}
+	if strings.ContainsAny(trimmed, "，；、") {
+		return nil, errors.New("allowPorts 端口白名单包含中文全角标点（如“，”），请改用英文半角逗号分隔（如 2000-3000,4000）")
+	}
 	var out [][2]int
-	for _, part := range strings.Split(spec, ",") {
-		part = strings.TrimSpace(part)
+	for _, rawPart := range strings.Split(trimmed, ",") {
+		part := strings.TrimSpace(rawPart)
 		if part == "" {
-			continue
+			return nil, fmt.Errorf("allowPorts 端口白名单存在空片段: %q", trimmed)
 		}
-		if idx := strings.IndexByte(part, '-'); idx > 0 {
+		if idx := strings.IndexByte(part, '-'); idx >= 0 {
+			if idx == 0 || idx == len(part)-1 {
+				return nil, fmt.Errorf("allowPorts 端口范围格式无效: %q", part)
+			}
 			a, err1 := strconv.Atoi(strings.TrimSpace(part[:idx]))
 			b, err2 := strconv.Atoi(strings.TrimSpace(part[idx+1:]))
-			if err1 == nil && err2 == nil && a > 0 && b >= a && b <= 65535 {
-				out = append(out, [2]int{a, b})
+			if err1 != nil || err2 != nil || a <= 0 || b > 65535 || b < a {
+				return nil, fmt.Errorf("allowPorts 端口范围 %q 不合法（需满足 1 <= 起始 <= 结束 <= 65535）", part)
 			}
-		} else if p, err := strconv.Atoi(part); err == nil && p > 0 && p <= 65535 {
+			out = append(out, [2]int{a, b})
+		} else {
+			p, err := strconv.Atoi(part)
+			if err != nil || p <= 0 || p > 65535 {
+				return nil, fmt.Errorf("allowPorts 端口号 %q 不合法（需在 1~65535 之间）", part)
+			}
 			out = append(out, [2]int{p, p})
 		}
 	}
-	return out
+	return out, nil
+}
+
+func parseAllowPortsSpec(spec string) [][2]int {
+	ranges, err := ValidateAllowPortsSpec(spec)
+	if err != nil {
+		return nil
+	}
+	return ranges
+}
+
+// foldMultilineTOMLLines joins multiline bracketed TOML arrays `[ ... ]` while respecting single/double quotes and inline comments.
+func foldMultilineTOMLLines(rawLines []string) ([]string, error) {
+	var out []string
+	var buf strings.Builder
+	bracketDepth := 0
+
+	scanLine := func(s string) (int, byte, error) {
+		var quote byte
+		escaped := false
+		delta := 0
+		for i := 0; i < len(s); i++ {
+			c := s[i]
+			if quote == '"' {
+				if escaped {
+					escaped = false
+					continue
+				}
+				if c == '\\' {
+					escaped = true
+					continue
+				}
+				if c == '"' {
+					quote = 0
+				}
+				continue
+			}
+			if quote == '\'' {
+				if c == '\'' {
+					quote = 0
+				}
+				continue
+			}
+			if c == '#' {
+				break
+			}
+			if c == '"' || c == '\'' {
+				quote = c
+				continue
+			}
+			if c == '[' {
+				delta++
+			} else if c == ']' {
+				delta--
+			}
+		}
+		return delta, quote, nil
+	}
+
+	for idx, line := range rawLines {
+		trimmed := strings.TrimSpace(line)
+		if bracketDepth == 0 {
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") || (strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") && !strings.Contains(trimmed, "=")) {
+				out = append(out, line)
+				continue
+			}
+		}
+		cleaned := stripTOMLInlineComment(line)
+		delta, unclosedQuote, _ := scanLine(cleaned)
+		if unclosedQuote != 0 {
+			return nil, fmt.Errorf("TOML 第 %d 行存在未闭合的字符串引号", idx+1)
+		}
+		if bracketDepth > 0 || delta > 0 {
+			if buf.Len() > 0 {
+				buf.WriteByte(' ')
+				buf.WriteString(strings.TrimSpace(cleaned))
+			} else {
+				buf.WriteString(cleaned)
+			}
+			bracketDepth += delta
+			if bracketDepth < 0 {
+				return nil, fmt.Errorf("TOML 第 %d 行存在多余的右方括号 ']'", idx+1)
+			}
+			if bracketDepth == 0 {
+				out = append(out, buf.String())
+				buf.Reset()
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	if bracketDepth != 0 {
+		return nil, errors.New("TOML 存在未闭合的多行数组 '['")
+	}
+	return out, nil
+}
+
+func stripTOMLInlineComment(s string) string {
+	var quote byte
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if quote == '"' {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				quote = 0
+			}
+			continue
+		}
+		if quote == '\'' {
+			if c == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if c == '"' || c == '\'' {
+			quote = c
+			continue
+		}
+		if c == '#' {
+			return strings.TrimRight(s[:i], " \t")
+		}
+	}
+	return s
 }
 
 func splitTOMLKeyVal(line string) (string, string, bool) {
-	inQuote := false
+	var quote byte
 	escaped := false
 	eqIdx := -1
 	for i := 0; i < len(line); i++ {
 		c := line[i]
-		if escaped {
-			escaped = false
+		if quote == '"' {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				quote = 0
+			}
 			continue
 		}
-		if c == '\\' && inQuote {
-			escaped = true
+		if quote == '\'' {
+			if c == '\'' {
+				quote = 0
+			}
 			continue
 		}
-		if c == '"' {
-			inQuote = !inQuote
+		if c == '"' || c == '\'' {
+			quote = c
 			continue
 		}
-		if c == '=' && !inQuote {
+		if c == '=' {
 			eqIdx = i
 			break
 		}
@@ -1741,28 +1947,7 @@ func splitTOMLKeyVal(line string) (string, string, bool) {
 		return "", "", false
 	}
 	key := strings.TrimSpace(line[:eqIdx])
-	val := strings.TrimSpace(line[eqIdx+1:])
-	inQuote = false
-	escaped = false
-	for i := 0; i < len(val); i++ {
-		c := val[i]
-		if escaped {
-			escaped = false
-			continue
-		}
-		if c == '\\' && inQuote {
-			escaped = true
-			continue
-		}
-		if c == '"' {
-			inQuote = !inQuote
-			continue
-		}
-		if c == '#' && !inQuote {
-			val = strings.TrimSpace(val[:i])
-			break
-		}
-	}
+	val := strings.TrimSpace(stripTOMLInlineComment(line[eqIdx+1:]))
 	return key, val, true
 }
 
@@ -1784,11 +1969,53 @@ func parseTOMLStringArray(v string) []string {
 	v = strings.TrimPrefix(v, "[")
 	v = strings.TrimSuffix(v, "]")
 	var out []string
-	for _, p := range strings.Split(v, ",") {
-		u := strings.TrimSpace(unquoteTOML(p))
+	var cur strings.Builder
+	var quote byte
+	escaped := false
+	flush := func() {
+		u := strings.TrimSpace(unquoteTOML(cur.String()))
 		if u != "" {
 			out = append(out, u)
 		}
+		cur.Reset()
+	}
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if quote == '"' {
+			cur.WriteByte(c)
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				quote = 0
+			}
+			continue
+		}
+		if quote == '\'' {
+			cur.WriteByte(c)
+			if c == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if c == '"' || c == '\'' {
+			quote = c
+			cur.WriteByte(c)
+			continue
+		}
+		if c == ',' {
+			flush()
+			continue
+		}
+		cur.WriteByte(c)
+	}
+	if cur.Len() > 0 {
+		flush()
 	}
 	return out
 }

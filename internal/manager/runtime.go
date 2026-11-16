@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -121,6 +122,8 @@ type managedProc struct {
 	adminUser    string
 	adminPass    string
 	pluginSecret string
+	commonSig    string
+	procEnv      []string
 	cmd          *exec.Cmd
 	startedAt    time.Time
 	done         chan struct{}
@@ -143,6 +146,7 @@ type RuntimeSupervisor struct {
 	store        *Store
 	procs        map[string]*managedProc
 	historyLogs  map[string]*ringLogBuffer
+	lastErrors   map[string]string
 	callbackAddr atomic.Value // stores string "127.0.0.1:<port>"
 	onChange     func()
 	stopPollCh   chan struct{}
@@ -167,6 +171,7 @@ func NewRuntimeSupervisor(dataDir string, store *Store, onChange func()) (*Runti
 		store:       store,
 		procs:       make(map[string]*managedProc),
 		historyLogs: make(map[string]*ringLogBuffer),
+		lastErrors:  make(map[string]string),
 		onChange:    onChange,
 		stopPollCh:  make(chan struct{}),
 		httpClient:  &http.Client{Timeout: 2 * time.Second},
@@ -312,13 +317,16 @@ func (rs *RuntimeSupervisor) IsInstanceRunning(id string) bool {
 	return p.state == "running"
 }
 
-// StartServer verifies and launches an official frps subprocess for srv.
+// StartServer pre-verifies new configuration on a staging file BEFORE stopping any live frps instance (F04),
+// and injects pluginSecret as a clean REST path segment to avoid double-'?' query truncation (F01).
 func (rs *RuntimeSupervisor) StartServer(srv ServerProfile) error {
+	if _, err := ValidateAllowPortsSpec(srv.AllowPorts); err != nil {
+		return err
+	}
 	bins := LocateBinaries(rs.dataDir)
 	if !bins.FrpsFound {
 		return errors.New("未找到内置 frps 核心程序，请确认安装包完整或将官方 frps 放入 data/bin 目录")
 	}
-	_ = rs.StopInstance(srv.ID)
 
 	adminPort, err := pickFreeLoopbackPort()
 	if err != nil {
@@ -334,28 +342,37 @@ func (rs *RuntimeSupervisor) StartServer(srv ServerProfile) error {
 		AdminUser:      "kurumi",
 		AdminPass:      adminPass,
 		KurumiCallback: cbAddr,
-		PluginPath:     fmt.Sprintf("/internal/frps-plugin/%s?token=%s", srv.ID, pluginSecret),
+		PluginPath:     fmt.Sprintf("/internal/frps-plugin/%s/%s", srv.ID, pluginSecret),
 	})
 
-	cfgPath := filepath.Join(rs.runtimeDir, srv.ID+".toml")
-	if _, err := writeIfChanged(cfgPath, []byte(rendered.TOML), 0o600); err != nil {
-		return fmt.Errorf("写入运行配置失败: %w", err)
+	stagingPath := filepath.Join(rs.runtimeDir, srv.ID+".staging.toml")
+	if _, err := writeIfChanged(stagingPath, []byte(rendered.TOML), 0o600); err != nil {
+		return fmt.Errorf("写入预检配置失败: %w", err)
 	}
-
-	if err := verifyConfigBinary(bins.FrpsPath, cfgPath, rendered.Env); err != nil {
+	if err := verifyConfigBinary(bins.FrpsPath, stagingPath, rendered.Env); err != nil {
+		_ = os.Remove(stagingPath)
 		return err
 	}
 
-	return rs.spawnProcess(srv.ID, "frps", bins.FrpsPath, cfgPath, rendered, adminPort, "kurumi", adminPass, pluginSecret)
+	// Pre-verification passed: flush traffic counters & stop old instance before swapping live config
+	rs.flushServerTrafficSnapshot(srv.ID)
+	_ = rs.StopInstance(srv.ID)
+
+	cfgPath := filepath.Join(rs.runtimeDir, srv.ID+".toml")
+	if err := replaceFileAtomic(stagingPath, cfgPath, 0o600); err != nil {
+		_ = os.Remove(stagingPath)
+		return fmt.Errorf("激活运行配置失败: %w", err)
+	}
+
+	return rs.spawnProcess(srv.ID, "frps", bins.FrpsPath, cfgPath, rendered, "", adminPort, "kurumi", adminPass, pluginSecret)
 }
 
-// StartClient verifies and launches an official frpc subprocess for cli.
+// StartClient pre-verifies new configuration on a staging file BEFORE stopping any live frpc instance.
 func (rs *RuntimeSupervisor) StartClient(cli ClientProfile) error {
 	bins := LocateBinaries(rs.dataDir)
 	if !bins.FrpcFound {
 		return errors.New("未找到内置 frpc 核心程序，请确认安装包完整或将官方 frpc 放入 data/bin 目录")
 	}
-	_ = rs.StopInstance(cli.ID)
 
 	adminPort, err := pickFreeLoopbackPort()
 	if err != nil {
@@ -375,35 +392,48 @@ func (rs *RuntimeSupervisor) StartClient(cli ClientProfile) error {
 		AgentToken: cli.AgentToken,
 	})
 
-	cfgPath := filepath.Join(rs.runtimeDir, cli.ID+".toml")
-	if _, err := writeIfChanged(cfgPath, []byte(rendered.TOML), 0o600); err != nil {
-		return fmt.Errorf("写入运行配置失败: %w", err)
+	stagingPath := filepath.Join(rs.runtimeDir, cli.ID+".staging.toml")
+	if _, err := writeIfChanged(stagingPath, []byte(rendered.TOML), 0o600); err != nil {
+		return fmt.Errorf("写入预检配置失败: %w", err)
 	}
-
-	if err := verifyConfigBinary(bins.FrpcPath, cfgPath, rendered.Env); err != nil {
+	if err := verifyConfigBinary(bins.FrpcPath, stagingPath, rendered.Env); err != nil {
+		_ = os.Remove(stagingPath)
 		return err
 	}
 
-	return rs.spawnProcess(cli.ID, "frpc", bins.FrpcPath, cfgPath, rendered, adminPort, "kurumi", adminPass, "")
+	_ = rs.StopInstance(cli.ID)
+
+	cfgPath := filepath.Join(rs.runtimeDir, cli.ID+".toml")
+	if err := replaceFileAtomic(stagingPath, cfgPath, 0o600); err != nil {
+		_ = os.Remove(stagingPath)
+		return fmt.Errorf("激活运行配置失败: %w", err)
+	}
+
+	return rs.spawnProcess(cli.ID, "frpc", bins.FrpcPath, cfgPath, rendered, clientCommonSignature(cli), adminPort, "kurumi", adminPass, "")
 }
 
-// ReloadOrRestartClient hot-reloads a running frpc instance via official Admin API (`frpc reload`) without dropping active tunnels.
+// ReloadOrRestartClient uses official frpc /api/reload ONLY when common non-proxy settings AND secret env slice are unchanged (F02, F03);
+// otherwise it gracefully restarts the subprocess after pre-verification.
 func (rs *RuntimeSupervisor) ReloadOrRestartClient(cli ClientProfile) error {
 	rs.mu.RLock()
-	p, ok := rs.procs[cli.ID]
+	p, running := rs.procs[cli.ID]
 	rs.mu.RUnlock()
-	if !ok || p == nil {
+	if !running || p == nil {
 		return nil
 	}
+
 	p.mu.Lock()
-	running := p.state == "running"
 	adminPort := p.adminPort
 	adminUser := p.adminUser
 	adminPass := p.adminPass
 	cfgPath := p.cfgPath
+	oldSig := p.commonSig
+	oldEnv := append([]string(nil), p.procEnv...)
 	p.mu.Unlock()
-	if !running {
-		return nil
+
+	newSig := clientCommonSignature(cli)
+	if oldSig != newSig {
+		return rs.StartClient(cli)
 	}
 
 	bins := LocateBinaries(rs.dataDir)
@@ -422,10 +452,20 @@ func (rs *RuntimeSupervisor) ReloadOrRestartClient(cli ClientProfile) error {
 		CtrlSecret: cli.CtrlSecret,
 		AgentToken: cli.AgentToken,
 	})
-	if _, err := writeIfChanged(cfgPath, []byte(rendered.TOML), 0o600); err != nil {
+	if !equalStringSlices(oldEnv, rendered.Env) {
+		return rs.StartClient(cli)
+	}
+
+	stagingPath := cfgPath + ".staging"
+	if _, err := writeIfChanged(stagingPath, []byte(rendered.TOML), 0o600); err != nil {
 		return err
 	}
-	if err := verifyConfigBinary(bins.FrpcPath, cfgPath, rendered.Env); err != nil {
+	if err := verifyConfigBinary(bins.FrpcPath, stagingPath, rendered.Env); err != nil {
+		_ = os.Remove(stagingPath)
+		return err
+	}
+	if err := replaceFileAtomic(stagingPath, cfgPath, 0o600); err != nil {
+		_ = os.Remove(stagingPath)
 		return err
 	}
 
@@ -446,7 +486,31 @@ func (rs *RuntimeSupervisor) ReloadOrRestartClient(cli ClientProfile) error {
 	return rs.StartClient(cli)
 }
 
-func (rs *RuntimeSupervisor) spawnProcess(id, kind, binPath, cfgPath string, rendered RenderedConfig, adminPort int, adminUser, adminPass, pluginSecret string) error {
+func clientCommonSignature(cli ClientProfile) string {
+	cp := cli
+	cp.Tunnels = nil
+	cp.StartProxies = nil
+	cp.CoverAsset = ""
+	cp.Note = ""
+	cp.AutoStart = false
+	b, _ := json.Marshal(cp)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (rs *RuntimeSupervisor) spawnProcess(id, kind, binPath, cfgPath string, rendered RenderedConfig, commonSig string, adminPort int, adminUser, adminPass, pluginSecret string) error {
 	cmd := exec.Command(binPath, "-c", cfgPath)
 	cmd.Dir = rs.runtimeDir
 	cmd.Env = append(os.Environ(), rendered.Env...)
@@ -474,6 +538,8 @@ func (rs *RuntimeSupervisor) spawnProcess(id, kind, binPath, cfgPath string, ren
 		adminUser:     adminUser,
 		adminPass:     adminPass,
 		pluginSecret:  pluginSecret,
+		commonSig:     commonSig,
+		procEnv:       append([]string(nil), rendered.Env...),
 		cmd:           cmd,
 		startedAt:     time.Now(),
 		done:          make(chan struct{}),
@@ -487,6 +553,7 @@ func (rs *RuntimeSupervisor) spawnProcess(id, kind, binPath, cfgPath string, ren
 	logs.Append(fmt.Sprintf("[KurumiFrp] 已启动官方 %s 核心 (PID=%d)", kind, cmd.Process.Pid))
 
 	rs.mu.Lock()
+	delete(rs.lastErrors, id)
 	rs.procs[id] = proc
 	rs.historyLogs[id] = logs
 	rs.mu.Unlock()
@@ -497,10 +564,12 @@ func (rs *RuntimeSupervisor) spawnProcess(id, kind, binPath, cfgPath string, ren
 	go func() {
 		waitErr := cmd.Wait()
 		close(proc.done)
+		var exitErrMsg string
 		proc.mu.Lock()
 		if waitErr != nil && proc.state != "stopping" {
 			proc.state = "error"
-			proc.lastErr = waitErr.Error()
+			exitErrMsg = waitErr.Error()
+			proc.lastErr = exitErrMsg
 			logs.Append(fmt.Sprintf("[KurumiFrp] %s 异常退出: %v", kind, waitErr))
 		} else {
 			proc.state = "stopped"
@@ -511,6 +580,9 @@ func (rs *RuntimeSupervisor) spawnProcess(id, kind, binPath, cfgPath string, ren
 		rs.mu.Lock()
 		if cur, exists := rs.procs[id]; exists && cur == proc {
 			delete(rs.procs, id)
+			if exitErrMsg != "" {
+				rs.lastErrors[id] = exitErrMsg
+			}
 		}
 		rs.mu.Unlock()
 		rs.notifyChange()
@@ -521,9 +593,12 @@ func (rs *RuntimeSupervisor) spawnProcess(id, kind, binPath, cfgPath string, ren
 
 // StopInstance stops a running frps or frpc instance outside the global mutex so UI requests never hang.
 func (rs *RuntimeSupervisor) StopInstance(id string) error {
-	rs.mu.RLock()
+	rs.flushServerTrafficSnapshot(id)
+	rs.mu.Lock()
+	delete(rs.lastErrors, id)
 	p, ok := rs.procs[id]
-	rs.mu.RUnlock()
+	rs.mu.Unlock()
+	// unlocked lookup completed above
 	if !ok || p == nil {
 		return nil
 	}
@@ -578,6 +653,9 @@ func (rs *RuntimeSupervisor) Views(doc ConfigDocument) map[string]ProcessRuntime
 			view.Connections = buildMergedConnections(srv, p.conns)
 			view.RemoteClients = buildRemoteClientSummaries(srv.ID, p)
 			p.mu.Unlock()
+		} else if lastErr := rs.lastErrors[srv.ID]; lastErr != "" {
+			view.State = "error"
+			view.LastError = lastErr
 		}
 		out[srv.ID] = view
 	}
@@ -600,6 +678,9 @@ func (rs *RuntimeSupervisor) Views(doc ConfigDocument) map[string]ProcessRuntime
 			view.AdminPort = p.adminPort
 			view.TunnelStats = append([]TunnelLiveStatus(nil), p.tunnelStats...)
 			p.mu.Unlock()
+		} else if lastErr := rs.lastErrors[cli.ID]; lastErr != "" {
+			view.State = "error"
+			view.LastError = lastErr
 		}
 		out[cli.ID] = view
 	}
@@ -621,7 +702,13 @@ func (rs *RuntimeSupervisor) Logs(id string) ([]string, *ringLogBuffer) {
 
 // HandleFRPSPlugin implements the official fatedier/frp HTTP Server Plugin webhook to enforce
 // Connection Dashboard controls AND track connected KurumiFrp client instances for remote management.
-func (rs *RuntimeSupervisor) HandleFRPSPlugin(w http.ResponseWriter, r *http.Request, serverID string) {
+func (rs *RuntimeSupervisor) HandleFRPSPlugin(w http.ResponseWriter, r *http.Request, routeRest string) {
+	serverID := strings.Trim(routeRest, "/")
+	pathToken := ""
+	if slashIdx := strings.IndexByte(serverID, '/'); slashIdx > 0 {
+		pathToken = serverID[slashIdx+1:]
+		serverID = serverID[:slashIdx]
+	}
 	rs.mu.RLock()
 	proc, ok := rs.procs[serverID]
 	rs.mu.RUnlock()
@@ -629,7 +716,14 @@ func (rs *RuntimeSupervisor) HandleFRPSPlugin(w http.ResponseWriter, r *http.Req
 		http.Error(w, "unknown server instance", http.StatusNotFound)
 		return
 	}
-	gotToken := r.URL.Query().Get("token")
+	gotToken := pathToken
+	if gotToken == "" {
+		gotToken = r.URL.Query().Get("token")
+		// Defensive strip if legacy query got '?op=' concatenated by upstream frps
+		if qIdx := strings.IndexByte(gotToken, '?'); qIdx >= 0 {
+			gotToken = gotToken[:qIdx]
+		}
+	}
 	if subtle.ConstantTimeCompare([]byte(gotToken), []byte(proc.pluginSecret)) != 1 {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -637,6 +731,8 @@ func (rs *RuntimeSupervisor) HandleFRPSPlugin(w http.ResponseWriter, r *http.Req
 
 	op := r.URL.Query().Get("op")
 	var reqPayload struct {
+		Version string         `json:"version"`
+		Op      string         `json:"op"`
 		Content map[string]any `json:"content"`
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -645,6 +741,9 @@ func (rs *RuntimeSupervisor) HandleFRPSPlugin(w http.ResponseWriter, r *http.Req
 		return
 	}
 	_ = json.Unmarshal(body, &reqPayload)
+	if op == "" {
+		op = strings.TrimSpace(reqPayload.Op)
+	}
 	if op == "" {
 		op = stringField(reqPayload.Content, "op")
 	}
@@ -798,6 +897,7 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 	now := time.Now()
 	discovered := make(map[string]ConnLiveItem)
 	ctrlStatus := make(map[string]bool)
+	pendingPolicyUpdates := make(map[string][4]int64)
 
 	for _, pt := range proxyTypes {
 		url := fmt.Sprintf("http://127.0.0.1:%d/api/proxy/%s", p.adminPort, pt)
@@ -842,8 +942,19 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 			if !hasPol {
 				pol = ConnPolicy{ProxyName: item.Name, Enabled: true}
 			}
-			totalIn := pol.RecordedInBytes + item.TodayTrafficIn
-			totalOut := pol.RecordedOutBytes + item.TodayTrafficOut
+			deltaIn := item.TodayTrafficIn - pol.LastRawInBytes
+			if item.TodayTrafficIn < pol.LastRawInBytes {
+				deltaIn = item.TodayTrafficIn
+			}
+			deltaOut := item.TodayTrafficOut - pol.LastRawOutBytes
+			if item.TodayTrafficOut < pol.LastRawOutBytes {
+				deltaOut = item.TodayTrafficOut
+			}
+			totalIn := pol.RecordedInBytes + maxInt64(0, deltaIn)
+			totalOut := pol.RecordedOutBytes + maxInt64(0, deltaOut)
+			if (deltaIn+deltaOut) >= 65536 || item.TodayTrafficIn < pol.LastRawInBytes || item.TodayTrafficOut < pol.LastRawOutBytes {
+				pendingPolicyUpdates[item.Name] = [4]int64{totalIn, totalOut, item.TodayTrafficIn, item.TodayTrafficOut}
+			}
 
 			var speedIn, speedOut int64
 			if prev, ok := p.rateSamples[item.Name]; ok {
@@ -916,6 +1027,9 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 		}
 	}
 	p.mu.Unlock()
+	if len(pendingPolicyUpdates) > 0 {
+		rs.persistTrafficDeltas(srv.ID, pendingPolicyUpdates)
+	}
 	return len(discovered) > 0 || len(ctrlStatus) > 0
 }
 
@@ -1076,4 +1190,80 @@ func stripANSI(s string) string {
 		out.WriteByte(s[i])
 	}
 	return out.String()
+}
+
+func (rs *RuntimeSupervisor) persistTrafficDeltas(serverID string, updates map[string][4]int64) {
+	_ = rs.store.Update(func(doc *ConfigDocument) error {
+		for i := range doc.Servers {
+			if doc.Servers[i].ID == serverID {
+				if doc.Servers[i].ConnPolicies == nil {
+					doc.Servers[i].ConnPolicies = make(map[string]ConnPolicy)
+				}
+				for name, vals := range updates {
+					pol, ok := doc.Servers[i].ConnPolicies[name]
+					if !ok {
+						pol = ConnPolicy{ProxyName: name, Enabled: true}
+					}
+					pol.RecordedInBytes = vals[0]
+					pol.RecordedOutBytes = vals[1]
+					pol.LastRawInBytes = vals[2]
+					pol.LastRawOutBytes = vals[3]
+					doc.Servers[i].ConnPolicies[name] = pol
+				}
+				return nil
+			}
+		}
+		return nil
+	})
+}
+
+// CurrentProxyRawTraffic returns the latest sampled raw todayTrafficIn/Out for a proxy on a running frps instance.
+func (rs *RuntimeSupervisor) CurrentProxyRawTraffic(serverID, proxyName string) (int64, int64) {
+	rs.mu.RLock()
+	p, ok := rs.procs[serverID]
+	rs.mu.RUnlock()
+	if !ok || p == nil {
+		return 0, 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if s, ok := p.rateSamples[proxyName]; ok {
+		return s.inBytes, s.outBytes
+	}
+	return 0, 0
+}
+
+func (rs *RuntimeSupervisor) flushServerTrafficSnapshot(serverID string) {
+	rs.mu.RLock()
+	p, ok := rs.procs[serverID]
+	rs.mu.RUnlock()
+	if !ok || p == nil {
+		return
+	}
+	p.mu.Lock()
+	liveConns := make(map[string]ConnLiveItem, len(p.conns))
+	for k, v := range p.conns {
+		liveConns[k] = v
+	}
+	samples := make(map[string]proxyRateSample, len(p.rateSamples))
+	for k, v := range p.rateSamples {
+		samples[k] = v
+	}
+	p.mu.Unlock()
+	if len(liveConns) == 0 {
+		return
+	}
+	updates := make(map[string][4]int64)
+	for name, c := range liveConns {
+		raw := samples[name]
+		updates[name] = [4]int64{c.TotalInBytes, c.TotalOutBytes, raw.inBytes, raw.outBytes}
+	}
+	rs.persistTrafficDeltas(serverID, updates)
+}
+
+// ClearInstanceError clears any retained crash error when an instance profile is deleted.
+func (rs *RuntimeSupervisor) ClearInstanceError(id string) {
+	rs.mu.Lock()
+	delete(rs.lastErrors, id)
+	rs.mu.Unlock()
 }
