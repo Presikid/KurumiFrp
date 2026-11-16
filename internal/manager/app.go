@@ -23,6 +23,7 @@ type App struct {
 	store      *Store
 	runtime    *RuntimeSupervisor
 	updater    *UpdateManager
+	assets     *AssetPackManager
 	staticFS   http.Handler
 	stateSeq   atomic.Uint64
 	listenSpec string
@@ -56,6 +57,9 @@ func NewApp(dataDir string, onShutdown func()) (*App, error) {
 	}
 	app.runtime = rt
 	app.updater = NewUpdateManager(dataDir, rt, onShutdown)
+	app.assets = NewAssetPackManager(dataDir, app.updater, func() {
+		app.stateSeq.Add(1)
+	})
 
 	subFS, err := fs.Sub(web.Files, ".")
 	if err != nil {
@@ -127,6 +131,8 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"defaultUsername":    a.auth.Username(),
 			"needsPasswordSetup": a.auth.NeedsPasswordSetup(),
 			"version":            version.Current,
+			"activeAssetTier":    a.assets.ActiveTier(),
+			"assetCacheToken":    a.assets.CacheToken(),
 		})
 		return
 	}
@@ -194,7 +200,14 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Static WebUI assets
+	// 5. Static WebUI assets (transparently overlays downloaded GitHub HD artworks when enabled)
+	if strings.HasPrefix(path, "/assets/k_") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		if a.assets != nil && a.assets.ServeIfHD(w, r) {
+			return
+		}
+		w.Header().Set("X-Kurumi-Asset-Tier", "embedded")
+		w.Header().Set("Cache-Control", "public, max-age=60")
+	}
 	a.staticFS.ServeHTTP(w, r)
 }
 
@@ -229,6 +242,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			"core":               LocateBinaries(a.dataDir),
 			"updateProxy":        a.updater.ProxyURL(),
 			"systemProxy":        a.updater.DetectedSystemProxy(),
+			"hdAssets":           a.assets.Status(),
 		})
 
 	case "/api/account":
@@ -1321,6 +1335,80 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			"restarting":    true,
 			"targetVersion": targetVer,
 		})
+
+	// ==================== On-Demand GitHub HD Asset Pack Control ====================
+	case "/api/assets/hd/status":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		writeJSON(w, http.StatusOK, a.assets.Status())
+
+	case "/api/assets/hd/pull":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			ProxyURL *string `json:"proxyURL"`
+			Ref      string  `json:"ref"`
+			PackID   string  `json:"packId"`
+		}
+		if r.ContentLength > 0 {
+			if err := readJSONBody(r, &req); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		st, err := a.assets.StartPull(req.ProxyURL, req.Ref, req.PackID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, st)
+
+	case "/api/assets/hd/cancel":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		st := a.assets.CancelPull()
+		a.bumpState()
+		writeJSON(w, http.StatusOK, st)
+
+	case "/api/assets/hd/mode":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			PreferHD bool `json:"preferHD"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		st, err := a.assets.SetPreferHD(req.PreferHD)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, st)
+
+	case "/api/assets/hd/purge":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		st, err := a.assets.Purge()
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, st)
 
 	case "/api/quit":
 		if r.Method != http.MethodPost {

@@ -75,6 +75,29 @@
     updateProxy: "",
     systemProxy: "",
     lastUpdateCheck: null,
+    hdAssets: {
+      activeTier: "embedded",
+      preferHD: false,
+      installed: false,
+      installedCount: 0,
+      expectedCount: 35,
+      installedBytes: 0,
+      embeddedBytes: 2450000,
+      packId: "webui_v094",
+      packVersion: "0.9.4",
+      sourceRepo: "Presikid/KurumiFrp",
+      sourcePath: "assets/material/webui_v094",
+      sourceRef: "main",
+      cacheToken: "std-0-1",
+      dimensions: {},
+      downloading: false,
+      progressFiles: 0,
+      progressTotal: 35,
+      progressBytes: 0,
+      expectedBytes: 0,
+      currentAsset: "",
+      lastError: ""
+    },
 
     // Selection & editing states
     selectedServerId: "",
@@ -111,7 +134,9 @@
   let homeSlideTimer = null;
   let loginSlideTimer = null;
   let statePollTimer = null;
+  let hdPollTimer = null;
   let activeLogES = null;
+  let appliedCacheToken = "std-0-1";
 
   // ==================== Helpers ====================
   function $(id) {
@@ -152,12 +177,74 @@
     return (b / (1024 * 1024 * 1024)).toFixed(2) + " GB";
   }
 
+  function assetUrl(rawSrc) {
+    const s = String(rawSrc || "");
+    if (!s || s.startsWith("data:") || s.startsWith("blob:")) return s;
+    const base = s.split("?")[0];
+    const tok = (STATE.hdAssets && STATE.hdAssets.cacheToken) || "std";
+    return base + "?v=" + encodeURIComponent(tok);
+  }
+
+  function refreshAllDOMAssetQuality() {
+    const tok = (STATE.hdAssets && STATE.hdAssets.cacheToken) || "std";
+    if (tok === appliedCacheToken) return;
+    appliedCacheToken = tok;
+
+    document.querySelectorAll("img").forEach((img) => {
+      const raw = img.getAttribute("src") || "";
+      if (raw.includes("assets/k_")) {
+        img.setAttribute("src", assetUrl(raw));
+      }
+    });
+    document.querySelectorAll("[style*='assets/k_']").forEach((el) => {
+      const st = el.getAttribute("style") || "";
+      const next = st.replace(/assets\/k_[0-9a-zA-Z_]+\.webp(?:\?[^'")\s]*)?/g, (m) => assetUrl(m));
+      if (next !== st) el.setAttribute("style", next);
+    });
+    updateLoginWallpaper();
+    if ($("homeSlidesContainer") && $("homeSlidesContainer").children.length > 0) {
+      syncHomeSlideIndicators();
+    }
+  }
+
+  function syncHDAssetPoll() {
+    const shouldPoll = Boolean(STATE.authenticated && STATE.hdAssets && STATE.hdAssets.downloading);
+    if (shouldPoll && !hdPollTimer) {
+      hdPollTimer = setInterval(async () => {
+        try {
+          const st = await apiFetch("/api/assets/hd/status");
+          const wasDownloading = STATE.hdAssets.downloading;
+          STATE.hdAssets = Object.assign({}, STATE.hdAssets, st || {});
+          refreshAllDOMAssetQuality();
+          if (STATE.activeView === "system" && (STATE.systemTab === "updates" || STATE.systemTab === "gallery") && !isEditingActiveInput()) {
+            renderActiveView();
+          }
+          if (!STATE.hdAssets.downloading) {
+            clearInterval(hdPollTimer);
+            hdPollTimer = null;
+            if (wasDownloading) {
+              if (STATE.hdAssets.lastError) {
+                toast(STATE.hdAssets.lastError, true);
+              } else if (STATE.hdAssets.installed) {
+                toast("GitHub 原画质素材包拉取并校验完成，已自动启用高清原图！");
+              }
+              await refreshState(true);
+            }
+          }
+        } catch (_) {}
+      }, 450);
+    } else if (!shouldPoll && hdPollTimer) {
+      clearInterval(hdPollTimer);
+      hdPollTimer = null;
+    }
+  }
+
   function coverForIndex(coverId, idx) {
     if (coverId) {
       const found = KURUMI_ASSETS.find((a) => "k_" + a.id === coverId || a.id === coverId || a.src === coverId);
-      if (found) return found.src;
+      if (found) return assetUrl(found.src);
     }
-    return PORTRAIT_COVERS[idx % PORTRAIT_COVERS.length].src;
+    return assetUrl(PORTRAIT_COVERS[idx % PORTRAIT_COVERS.length].src);
   }
 
   function toast(msg, isErr) {
@@ -628,7 +715,7 @@
     const slide = HERO_SLIDES[STATE.loginSlideIdx % HERO_SLIDES.length];
     const bg = $("loginBgLayer");
     const cap = $("loginSlideCaption");
-    if (bg && slide) bg.style.backgroundImage = `url('${slide.src}')`;
+    if (bg && slide) bg.style.backgroundImage = `url('${assetUrl(slide.src)}')`;
     if (cap && slide) cap.textContent = `${pad2((STATE.loginSlideIdx % HERO_SLIDES.length) + 1)} · ${slide.title}`;
   }
 
@@ -638,6 +725,10 @@
     if (statePollTimer) {
       clearInterval(statePollTimer);
       statePollTimer = null;
+    }
+    if (hdPollTimer) {
+      clearInterval(hdPollTimer);
+      hdPollTimer = null;
     }
     if (homeSlideTimer) {
       clearInterval(homeSlideTimer);
@@ -683,7 +774,12 @@
     updateLoginWallpaper();
     try {
       const sess = await apiFetch("/api/session");
-      STATE.version = sess.version || "0.9.4";
+      STATE.version = sess.version || "0.9.5";
+      if (sess.assetCacheToken) {
+        STATE.hdAssets.cacheToken = sess.assetCacheToken;
+        STATE.hdAssets.activeTier = sess.activeAssetTier || "embedded";
+        refreshAllDOMAssetQuality();
+      }
       STATE.needsPasswordSetup = Boolean(sess.needsPasswordSetup);
       $("loginVersionBadge").textContent = "v" + STATE.version;
       $("topVersionBadge").textContent = "v" + STATE.version;
@@ -733,6 +829,11 @@
     STATE.core = res.core || {};
     STATE.updateProxy = res.updateProxy || "";
     STATE.systemProxy = res.systemProxy || "";
+    if (res.hdAssets) {
+      STATE.hdAssets = Object.assign({}, STATE.hdAssets, res.hdAssets);
+      refreshAllDOMAssetQuality();
+      syncHDAssetPoll();
+    }
 
     if (!STATE.selectedServerId || !STATE.servers.some((s) => s.id === STATE.selectedServerId)) {
       STATE.selectedServerId = STATE.servers[0] ? STATE.servers[0].id : "";
@@ -816,7 +917,7 @@
     const container = $("homeSlidesContainer");
     if (!container || container.children.length > 0) return;
     container.innerHTML = HERO_SLIDES.map(
-      (s, i) => `<div class="yc-home-slide${i === STATE.slideIdx ? " is-active" : ""}" data-slide-idx="${i}" style="background-image:url('${s.src}');"></div>`
+      (s, i) => `<div class="yc-home-slide${i === STATE.slideIdx ? " is-active" : ""}" data-slide-idx="${i}" style="background-image:url('${assetUrl(s.src)}');"></div>`
     ).join("");
     renderHomeFilmstrip();
     syncHomeSlideIndicators();
@@ -829,7 +930,7 @@
     document.querySelectorAll("#homeSlidesContainer .yc-home-slide").forEach((el, i) => {
       el.classList.toggle("is-active", i === idx);
     });
-    $("homeCapsuleThumb").src = slide.src;
+    $("homeCapsuleThumb").src = assetUrl(slide.src);
     $("homeCapsuleIndex").textContent = `SLIDE ${pad2(idx + 1)} / ${pad2(HERO_SLIDES.length)}`;
     $("homeCapsuleTitle").textContent = slide.title;
     document.querySelectorAll("#homeFilmstrip .yc-film-item").forEach((el, i) => {
@@ -843,7 +944,7 @@
     strip.innerHTML = HERO_SLIDES.map(
       (s, i) => `
       <button type="button" class="yc-film-item${i === STATE.slideIdx ? " is-active" : ""}" data-pick-slide="${i}">
-        <img src="${s.src}" alt="${esc(s.title)}" />
+        <img src="${assetUrl(s.src)}" alt="${esc(s.title)}" />
         <span>${pad2(i + 1)} · ${esc(s.title)}</span>
       </button>`
     ).join("");
@@ -3732,7 +3833,7 @@
         <div class="yc-dir-list">
           ${[
             ["schemes", "k_47.webp", "01 · 多配置方案管理", "独立 JSON 方案与导入导出"],
-            ["updates", "k_54.webp", "02 · 核心与软件热更新", "fatedier/frp & 本体一键升级"],
+            ["updates", "k_54.webp", "02 · 原画包与核心热更新", "GitHub 原画拉取 · FRP & 本体升级"],
             ["gallery", "k_35.webp", "03 · 精选 35 张狂三画廊", "全部保留素材高清鉴赏与设封面"],
             ["security", "k_51.webp", "04 · 账户安全与后台控制", "修改管理员密码与优雅退出"]
           ]
@@ -3895,10 +3996,163 @@
     });
   }
 
+  function buildHDAssetPackCardHTML() {
+    const hd = STATE.hdAssets || {};
+    const isHD = hd.activeTier === "hd";
+    const pct = hd.downloading && hd.progressTotal > 0 ? Math.min(100, Math.round((hd.progressFiles / hd.progressTotal) * 100)) : 0;
+    return `
+      <div class="yc-hd-card">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;">
+          <div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <h3 style="margin:0;font-family:var(--yc-serif);font-size:19px;">WebUI 视觉素材画质与 GitHub 原画质包</h3>
+              <span class="yc-hd-pill ${isHD ? "yc-hd-pill-hd" : "yc-hd-pill-std"}">
+                ${isHD ? "★ 当前生效：GitHub 原画质 (HD)" : "当前生效：内置轻量压缩 (WebP)"}
+              </span>
+            </div>
+            <p style="margin:6px 0 0;font-size:12.5px;color:var(--yc-muted);line-height:1.55;">
+              安装包默认仅内嵌轻量压缩 WebP（共 <code>${formatBytes(hd.embeddedBytes || 2450000)}</code>）以保持极速启动与小巧体积；你可以随时从仓库
+              <code>${esc(hd.sourceRepo || "Presikid/KurumiFrp")}/${esc(hd.sourcePath || "assets/material/webui_v094")}</code>
+              一键按需拉取无损级高清原画与高分透明贴纸包（逐张 SHA-256 校验，本地按需覆盖，无需重启服务）。
+            </p>
+          </div>
+          <div class="yc-hd-tier-switch" role="group" aria-label="画质档位切换">
+            <button type="button" class="yc-hd-tier-btn ${!isHD ? "is-active" : ""}" data-hd-mode="embedded" ${hd.downloading ? "disabled" : ""}>
+              内置压缩画质 (${formatBytes(hd.embeddedBytes || 2450000)})
+            </button>
+            <button type="button" class="yc-hd-tier-btn ${isHD ? "is-active-hd" : ""}" data-hd-mode="hd" ${!hd.installed || hd.downloading ? "disabled title='请先从 GitHub 拉取原画包'" : ""}>
+              GitHub 原画质 (${hd.installed ? formatBytes(hd.installedBytes) : "未拉取"})
+            </button>
+          </div>
+        </div>
+
+        <div class="yc-grid-2" style="margin-top:14px;gap:12px;">
+          <div style="padding:12px 14px;border-radius:10px;background:#ffffff;border:1px solid var(--yc-border);">
+            <div style="font-size:12px;color:var(--yc-muted);">默认内嵌压缩方案 (随软件自带)</div>
+            <div style="font-size:16px;font-weight:700;margin:3px 0;">${hd.expectedCount || 35} 张轻量 WebP · ${formatBytes(hd.embeddedBytes || 2450000)}</div>
+            <div style="font-size:12px;color:var(--yc-ok);">零外网依赖 · 开箱即用</div>
+          </div>
+          <div style="padding:12px 14px;border-radius:10px;background:#ffffff;border:1px solid var(--yc-border);">
+            <div style="font-size:12px;color:var(--yc-muted);">GitHub 仓库原画质素材包 (${esc(hd.sourceRef || "main")})</div>
+            <div style="font-size:16px;font-weight:700;margin:3px 0;">
+              ${hd.installed ? `已就绪 ${hd.installedCount} / ${hd.expectedCount || 35} 张 · ${formatBytes(hd.installedBytes)}` : "本地尚未下载原画包"}
+            </div>
+            <div style="font-size:12px;color:${hd.installed ? "var(--yc-rose)" : "var(--yc-muted)"};">
+              ${hd.installed ? "SHA-256 校验通过 · 支持随时无感秒切" : "拉取后自动保存至 data/hd_assets/ 目录"}
+            </div>
+          </div>
+        </div>
+
+        ${
+          hd.downloading
+            ? `<div style="margin-top:14px;padding:12px 14px;border-radius:10px;background:#fff4f8;border:1px solid var(--yc-rose-border);">
+                 <div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px;font-weight:600;color:var(--yc-indigo-ink);">
+                   <span>正在拉取并校验 GitHub 原画包：${hd.progressFiles} / ${hd.progressTotal || 35} 张 (${pct}%) ${hd.currentAsset ? "· " + esc(hd.currentAsset) : ""}</span>
+                   <span>${formatBytes(hd.progressBytes)} / ${hd.expectedBytes ? formatBytes(hd.expectedBytes) : "计算中"}</span>
+                 </div>
+                 <div class="yc-progress-track"><div class="yc-progress-fill" style="width:${pct}%;"></div></div>
+                 <div style="display:flex;justify-content:flex-end;margin-top:6px;">
+                   <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-hd-cancel>取消拉取 (保留已下载项)</button>
+                 </div>
+               </div>`
+            : ""
+        }
+
+        ${
+          !hd.downloading && hd.lastError
+            ? `<div class="yc-notice yc-notice-danger" style="margin-top:12px;">${esc(hd.lastError)}</div>`
+            : ""
+        }
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:14px;">
+          <button type="button" class="yc-btn yc-btn-primary" data-hd-pull ${hd.downloading ? "disabled" : ""}>
+            ${hd.installed ? "重新校验 / 同步 GitHub 原画包" : "⬇ 从 GitHub 仓库拉取原画质素材包"}
+          </button>
+          ${
+            hd.installed
+              ? `<button type="button" class="yc-btn yc-btn-outline" data-hd-purge ${hd.downloading ? "disabled" : ""}>
+                   清理本地原画缓存 (切回内置压缩包)
+                 </button>`
+              : ""
+          }
+          <span style="font-size:12px;color:var(--yc-muted);">自动复用下方已保存的 GitHub 代理或本机系统代理 ${STATE.systemProxy ? "(" + esc(STATE.systemProxy) + ")" : ""}</span>
+        </div>
+      </div>`;
+  }
+
+  function wireHDAssetCardEvents(container, proxyInputSelector) {
+    container.querySelectorAll("[data-hd-pull]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          const proxyEl = proxyInputSelector ? container.querySelector(proxyInputSelector) : null;
+          const body = {};
+          if (proxyEl) body.proxyURL = proxyEl.value;
+          const st = await apiFetch("/api/assets/hd/pull", { method: "POST", body });
+          STATE.hdAssets = Object.assign({}, STATE.hdAssets, st || {});
+          toast("已开始从 GitHub 仓库并发拉取原画质素材包…");
+          syncHDAssetPoll();
+          renderActiveView();
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    });
+
+    container.querySelectorAll("[data-hd-cancel]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          const st = await apiFetch("/api/assets/hd/cancel", { method: "POST", body: {} });
+          STATE.hdAssets = Object.assign({}, STATE.hdAssets, st || {});
+          renderActiveView();
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    });
+
+    container.querySelectorAll("[data-hd-mode]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const wantHD = btn.dataset.hdMode === "hd";
+        try {
+          const st = await apiFetch("/api/assets/hd/mode", { method: "POST", body: { preferHD: wantHD } });
+          STATE.hdAssets = Object.assign({}, STATE.hdAssets, st || {});
+          refreshAllDOMAssetQuality();
+          toast(wantHD ? "已切换为 GitHub 原画质显示！" : "已切换回内置轻量压缩画质！");
+          renderActiveView();
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    });
+
+    container.querySelectorAll("[data-hd-purge]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        confirmModal(
+          "清理本地原画质缓存",
+          "确定删除本地已拉取的 GitHub 原画缓存文件并恢复为内置轻量压缩 WebP 画质吗？（后续可随时再次拉取）",
+          "确认清理",
+          async () => {
+            try {
+              const st = await apiFetch("/api/assets/hd/purge", { method: "POST", body: {} });
+              STATE.hdAssets = Object.assign({}, STATE.hdAssets, st || {});
+              refreshAllDOMAssetQuality();
+              toast("已清理本地原画缓存并切回内置轻量画质");
+              renderActiveView();
+            } catch (err) {
+              toast(err.message, true);
+            }
+          }
+        );
+      });
+    });
+  }
+
   function renderSystemUpdatesPane(main) {
     const core = STATE.core || {};
     const chk = STATE.lastUpdateCheck;
     main.innerHTML = `
+      ${buildHDAssetPackCardHTML()}
+
       <div class="yc-card">
         <h3 style="margin:0 0 12px;font-family:var(--yc-serif);font-size:20px;">内置核心状态与一键无缝热更新</h3>
         <div class="yc-grid-2" style="margin-bottom:16px;">
@@ -3915,9 +4169,9 @@
         </div>
 
         <label class="yc-field">
-          <span class="yc-field-label">GitHub 下载代理 (可选，留空自动识别系统代理 ${STATE.systemProxy ? esc(STATE.systemProxy) : ""})</span>
+          <span class="yc-field-label">GitHub 下载代理 (同时供原画包拉取与核心升级使用，留空自动识别系统代理 ${STATE.systemProxy ? esc(STATE.systemProxy) : ""})</span>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <input id="updProxyInput" type="text" style="flex:1;min-width:240px;" value="${esc(STATE.updateProxy || "")}" placeholder="如 http://127.0.0.1:7890 或 socks5://127.0.0.1:10808" />
+            <input id="updProxyInput" type="text" style="flex:1;min-width:240px;" value="${esc(STATE.updateProxy || "")}" placeholder="如 http://127.0.0.1:2080 或 socks5://127.0.0.1:10808" />
             <button type="button" class="yc-btn yc-btn-outline" id="btnSaveUpdProxy">保存代理</button>
             <button type="button" class="yc-btn yc-btn-primary" id="btnCheckUpdates">检查更新</button>
             <button type="button" class="yc-btn yc-btn-indigo" id="btnApplyFrpUpdate">热更新官方 FRP 核心</button>
@@ -3926,10 +4180,12 @@
         </label>
       </div>`;
 
+    wireHDAssetCardEvents(main, "#updProxyInput");
+
     main.querySelector("#btnSaveUpdProxy").addEventListener("click", async () => {
       try {
         await apiFetch("/api/update/settings", { method: "POST", body: { proxyURL: main.querySelector("#updProxyInput").value } });
-        toast("更新代理配置已保存");
+        toast("GitHub 下载代理已保存");
         await refreshState(true);
       } catch (err) {
         toast(err.message, true);
@@ -3975,13 +4231,51 @@
   }
 
   function renderSystemGalleryPane(main) {
+    const hd = STATE.hdAssets || {};
+    const isHD = hd.activeTier === "hd";
     const items = KURUMI_ASSETS.filter((a) => STATE.galleryCat === "all" || a.cat === STATE.galleryCat);
+    const pct = hd.downloading && hd.progressTotal > 0 ? Math.min(100, Math.round((hd.progressFiles / hd.progressTotal) * 100)) : 0;
+
     main.innerHTML = `
+      <div class="yc-hd-banner">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <strong style="font-size:14.5px;">画廊当前渲染画质：${isHD ? "GitHub 原画质素材包 (HD 无损级原图)" : "内置轻量压缩包 (标准 WebP)"}</strong>
+            <span class="yc-hd-pill ${isHD ? "yc-hd-pill-hd" : "yc-hd-pill-std"}" style="${!isHD ? "background:rgba(255,255,255,0.16);color:#fff;" : ""}">
+              ${isHD ? "HD ACTIVE · " + formatBytes(hd.installedBytes) : "EMBEDDED · " + formatBytes(hd.embeddedBytes || 2450000)}
+            </span>
+          </div>
+          <div style="font-size:12px;color:rgba(255,255,255,0.78);margin-top:3px;">
+            ${
+              hd.downloading
+                ? `正在从 GitHub 仓库拉取原画：${hd.progressFiles} / ${hd.progressTotal || 35} (${pct}%) ${hd.currentAsset ? "· " + esc(hd.currentAsset) : ""}`
+                : hd.installed
+                  ? "本地已缓存全部 GitHub 原画与透明贴纸，可随时一键切换对比清晰度。"
+                  : "默认使用内置压缩图以节省安装包体积；点击右侧按钮即可从 GitHub 仓库拉取原画质素材包。"
+            }
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          ${
+            hd.installed
+              ? `<button type="button" class="yc-btn ${isHD ? "yc-btn-outline" : "yc-btn-primary"} yc-btn-sm" style="${isHD ? "background:#fff;color:#111636;border-color:#fff;" : ""}" data-hd-mode="${isHD ? "embedded" : "hd"}">
+                   ${isHD ? "切回内置压缩画质" : "启用 GitHub 原画质"}
+                 </button>`
+              : `<button type="button" class="yc-btn yc-btn-primary yc-btn-sm" data-hd-pull ${hd.downloading ? "disabled" : ""}>
+                   ${hd.downloading ? "拉取中 (" + pct + "%)…" : "⬇ 从 GitHub 拉取原画质包"}
+                 </button>`
+          }
+          <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" style="color:#fff;border-color:rgba(255,255,255,0.35);background:transparent;" id="btnJumpHDSettings">
+            画质与代理设置 →
+          </button>
+        </div>
+      </div>
+
       <div class="yc-card">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:18px;">
           <div>
             <h3 style="margin:0;font-family:var(--yc-serif);font-size:20px;">时崎狂三精选视觉画廊 (共保留 35 张)</h3>
-            <span style="font-size:12.5px;color:var(--yc-muted);">点击任意插画可高清放大鉴赏，或一键设为主舞台当前壁纸。</span>
+            <span style="font-size:12.5px;color:var(--yc-muted);">点击任意插画可放大鉴赏当前画质细节，或一键设为主舞台当前壁纸。</span>
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             ${[
@@ -4001,20 +4295,32 @@
         <div class="yc-gallery-wall">
           ${items
             .map(
-              (a, i) => `
+              (a, i) => {
+                const dimLabel = isHD && hd.dimensions && hd.dimensions["k_" + a.id] ? hd.dimensions["k_" + a.id] : a.cat;
+                return `
             <div class="yc-gallery-tile" data-gal-open="${esc(a.id)}">
               <div class="yc-gallery-img-wrap">
-                <img src="${a.src}" alt="${esc(a.title)}" class="${a.sticker ? "is-sticker" : ""}" />
+                <img src="${assetUrl(a.src)}" alt="${esc(a.title)}" class="${a.sticker ? "is-sticker" : ""}" />
               </div>
               <div class="yc-gallery-caption">
                 <span>${pad2(i + 1)} · ${esc(a.title)}</span>
-                <span class="yc-tag">${a.cat}</span>
+                <span class="yc-tag">${esc(dimLabel)}</span>
               </div>
-            </div>`
+            </div>`;
+              }
             )
             .join("")}
         </div>
       </div>`;
+
+    wireHDAssetCardEvents(main, null);
+    const jumpBtn = main.querySelector("#btnJumpHDSettings");
+    if (jumpBtn) {
+      jumpBtn.addEventListener("click", () => {
+        STATE.systemTab = "updates";
+        renderSystemWorkspace();
+      });
+    }
 
     main.querySelectorAll("[data-gal-cat]").forEach((b) => {
       b.addEventListener("click", () => {
@@ -4028,13 +4334,20 @@
         const art = KURUMI_ASSETS.find((x) => x.id === tile.dataset.galOpen);
         if (!art) return;
         const heroIdx = HERO_SLIDES.findIndex((h) => h.id === art.id);
+        const dim = (STATE.hdAssets.dimensions || {})["k_" + art.id];
+        const qualityText = STATE.hdAssets.activeTier === "hd"
+          ? `GitHub 原画质已启用${dim ? " · " + dim + " px" : ""}`
+          : "当前为内置轻量压缩 WebP（可在画廊顶部一键拉取 GitHub 原画包）";
         openModal(
           `<div class="yc-modal-head">
-             <h3 class="yc-modal-title">#${art.id} · ${esc(art.title)} (${art.cat})</h3>
+             <div>
+               <h3 class="yc-modal-title">#${art.id} · ${esc(art.title)} (${art.cat})</h3>
+               <div style="font-size:12px;color:var(--yc-muted);margin-top:2px;">${esc(qualityText)}</div>
+             </div>
              <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-modal-close>关闭</button>
            </div>
            <div style="text-align:center;background:#111636;border-radius:12px;padding:14px;">
-             <img src="${art.src}" alt="${esc(art.title)}" style="max-width:100%;max-height:68vh;border-radius:8px;object-fit:contain;" />
+             <img src="${assetUrl(art.src)}" alt="${esc(art.title)}" style="max-width:100%;max-height:68vh;border-radius:8px;object-fit:contain;" />
            </div>
            <div class="yc-modal-foot">
              ${heroIdx >= 0 ? `<button type="button" id="setHeroNowBtn" class="yc-btn yc-btn-primary">设为主舞台当前展示壁纸</button>` : ""}

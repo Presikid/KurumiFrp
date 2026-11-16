@@ -719,3 +719,140 @@ func TestWinINETProxyParserAndANSIClean(t *testing.T) {
 		t.Fatalf("stripANSI left escape codes: %q", cleaned)
 	}
 }
+
+func TestHDAssetPackPullSwitchAndPurge(t *testing.T) {
+	dir := t.TempDir()
+	hdSceneBytes := []byte("\xff\xd8\xff\xe0MOCK_FULL_RES_ORIGINAL_JPEG_K02")
+	hdStickerBytes := []byte("RIFFmockWEBP_FULL_RES_TRANSPARENT_CUTOUT_K17")
+	sceneSum := sha256.Sum256(hdSceneBytes)
+	stickerSum := sha256.Sum256(hdStickerBytes)
+	sceneHex := hex.EncodeToString(sceneSum[:])
+	stickerHex := hex.EncodeToString(stickerSum[:])
+
+	manifest := AssetPackManifest{
+		SchemaVersion: 1,
+		PackVersion:   "0.9.5",
+		TotalAssets:   2,
+		Assets: []AssetManifestEntry{
+			{
+				ID:       "02",
+				Key:      "k_02",
+				Category: "16:9",
+				Title:    "午后花房红茶",
+				Original: AssetFileMeta{
+					Path:      "assets/material/webui_v094/originals/16x9_stage/k_02.jpg",
+					Width:     1376,
+					Height:    768,
+					SizeBytes: int64(len(hdSceneBytes)),
+					SHA256:    sceneHex,
+				},
+			},
+			{
+				ID:        "17",
+				Key:       "k_17",
+				Category:  "3:4",
+				Title:     "粉绒披肩挥手Q版",
+				IsSticker: true,
+				Original: AssetFileMeta{
+					Path:   "assets/material/webui_v094/originals/3x4_portraits/k_17.jpg",
+					SHA256: sceneHex,
+				},
+				HDCutout: &AssetFileMeta{
+					Path:      "assets/material/webui_v094/cutouts_hd/k_17.webp",
+					Width:     896,
+					Height:    1200,
+					SizeBytes: int64(len(hdStickerBytes)),
+					SHA256:    stickerHex,
+				},
+			},
+		},
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/main/assets/material/webui_v094/manifest.json":
+			_ = json.NewEncoder(w).Encode(manifest)
+		case "/main/assets/material/webui_v094/originals/16x9_stage/k_02.jpg":
+			_, _ = w.Write(hdSceneBytes)
+		case "/main/assets/material/webui_v094/cutouts_hd/k_17.webp":
+			_, _ = w.Write(hdStickerBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	app, err := NewApp(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	app.updater.allowLocal = true
+	app.assets.rawBase = ts.URL
+
+	// 1. Default installation MUST serve lightweight embedded WebP
+	if tier := app.assets.ActiveTier(); tier != "embedded" {
+		t.Fatalf("expected default embedded tier, got %q", tier)
+	}
+	reqEmb := httptest.NewRequest(http.MethodGet, "/assets/k_02.webp", nil)
+	recEmb := httptest.NewRecorder()
+	app.ServeHTTP(recEmb, reqEmb)
+	if recEmb.Code != http.StatusOK || recEmb.Header().Get("X-Kurumi-Asset-Tier") != "embedded" {
+		t.Fatalf("expected embedded serve before pull, got status=%d tier=%q", recEmb.Code, recEmb.Header().Get("X-Kurumi-Asset-Tier"))
+	}
+
+	// 2. Pull HD asset pack from GitHub mock server and wait for completion
+	if _, err := app.assets.StartPull(nil, "main", "webui_v094"); err != nil {
+		t.Fatalf("StartPull failed: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		st := app.assets.Status()
+		if !st.Downloading {
+			if st.LastError != "" {
+				t.Fatalf("pull failed with error: %s", st.LastError)
+			}
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	st := app.assets.Status()
+	if st.ActiveTier != "hd" || !st.Installed || st.InstalledCount != 2 {
+		t.Fatalf("unexpected HD status after pull: %+v", st)
+	}
+
+	// 3. Verify /assets/k_02.webp now serves the HD JPEG and /assets/k_17.webp serves the HD transparent cutout WebP
+	reqHD := httptest.NewRequest(http.MethodGet, "/assets/k_02.webp", nil)
+	recHD := httptest.NewRecorder()
+	app.ServeHTTP(recHD, reqHD)
+	if recHD.Code != http.StatusOK || recHD.Header().Get("X-Kurumi-Asset-Tier") != "hd" || !bytes.Equal(recHD.Body.Bytes(), hdSceneBytes) {
+		t.Fatalf("expected HD scene bytes, got status=%d tier=%q len=%d", recHD.Code, recHD.Header().Get("X-Kurumi-Asset-Tier"), recHD.Body.Len())
+	}
+
+	reqSticker := httptest.NewRequest(http.MethodGet, "/assets/k_17.webp", nil)
+	recSticker := httptest.NewRecorder()
+	app.ServeHTTP(recSticker, reqSticker)
+	if recSticker.Code != http.StatusOK || recSticker.Header().Get("X-Kurumi-Asset-Tier") != "hd" || !bytes.Equal(recSticker.Body.Bytes(), hdStickerBytes) {
+		t.Fatalf("expected HD sticker cutout bytes, got status=%d tier=%q", recSticker.Code, recSticker.Header().Get("X-Kurumi-Asset-Tier"))
+	}
+
+	// 4. Switch back to embedded mode without deleting cache, then back to HD, then purge
+	if _, err := app.assets.SetPreferHD(false); err != nil {
+		t.Fatalf("SetPreferHD(false) failed: %v", err)
+	}
+	if app.assets.ActiveTier() != "embedded" {
+		t.Fatalf("expected embedded after toggle off")
+	}
+	if _, err := app.assets.SetPreferHD(true); err != nil {
+		t.Fatalf("SetPreferHD(true) failed: %v", err)
+	}
+	if app.assets.ActiveTier() != "hd" {
+		t.Fatalf("expected hd after toggle on")
+	}
+	if _, err := app.assets.Purge(); err != nil {
+		t.Fatalf("Purge failed: %v", err)
+	}
+	if app.assets.ActiveTier() != "embedded" || app.assets.Status().Installed {
+		t.Fatalf("expected clean embedded state after purge: %+v", app.assets.Status())
+	}
+}
