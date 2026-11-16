@@ -57,7 +57,7 @@ def main():
                 GOFLAGS='',
             )
             subprocess.run(
-                ['go', 'build', '-trimpath', '-ldflags=-s -w', '-o', str(binary), './cmd/kurumi'],
+                ['go', 'build', '-trimpath', f'-ldflags=-s -w -X github.com/Presikid/KurumiFrp/internal/version.BuildVariant={name}', '-o', str(binary), './cmd/kurumi'],
                 cwd=ROOT,
                 env=env,
                 check=True,

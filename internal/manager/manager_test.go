@@ -856,3 +856,130 @@ func TestHDAssetPackPullSwitchAndPurge(t *testing.T) {
 		t.Fatalf("expected clean embedded state after purge: %+v", app.assets.Status())
 	}
 }
+
+func TestAuditFixes_PluginPathAndDisabledTunnelsAndAllowPorts(t *testing.T) {
+	dir := t.TempDir()
+	app, err := NewApp(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+
+	// 1. F01: Verify server plugin path uses clean REST segment without '?' and HandleFRPSPlugin parses top-level JSON op
+	srv := ServerProfile{
+		ID:         "srv_audit",
+		Name:       "AuditFRPS",
+		BindAddr:   "127.0.0.1",
+		BindPort:   17000,
+		AllowPorts: "2000-3000, 4000",
+	}
+	renderedSrv := RenderServerTOML(srv, ServerRuntimeInjections{
+		Preview:        false,
+		AdminPort:      17500,
+		AdminUser:      "kurumi",
+		AdminPass:      "pass",
+		KurumiCallback: "127.0.0.1:9000",
+		PluginPath:     "/internal/frps-plugin/srv_audit/sec12345",
+	})
+	if strings.Contains(renderedSrv.TOML, "?token=") || !strings.Contains(renderedSrv.TOML, "/internal/frps-plugin/srv_audit/sec12345") {
+		t.Fatalf("F01 regression: plugin path still uses query token: %s", renderedSrv.TOML)
+	}
+
+	// Simulate upstream frps httpPlugin.do appending "?op=Login&version=0.1.0" onto PluginPath
+	app.runtime.mu.Lock()
+	app.runtime.procs["srv_audit"] = &managedProc{
+		id:            "srv_audit",
+		kind:          "frps",
+		pluginSecret:  "sec12345",
+		state:         "running",
+		logs:          newRingLogBuffer(nil),
+		conns:         make(map[string]ConnLiveItem),
+		rateSamples:   make(map[string]proxyRateSample),
+		remoteClients: make(map[string]*remoteClientSession),
+	}
+	app.runtime.mu.Unlock()
+
+	loginBody := `{"version":"0.1.0","op":"Login","content":{"user":"office","metas":{"kurumi_client_id":"cli_b","kurumi_client_name":"OfficePC","kurumi_ctrl_proxy":"__kurumi_ctrl_cli_b","kurumi_ctrl_key":"k1","kurumi_agent_token":"a1"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/internal/frps-plugin/srv_audit/sec12345?op=Login&version=0.1.0", strings.NewReader(loginBody))
+	rec := httptest.NewRecorder()
+	app.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"reject":false`) {
+		t.Fatalf("F01 regression: plugin webhook rejected valid frps Login: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 2. F05, F06, F12, F13, F25, F27: Verify disabled tunnels roundtrip via enabled=false, TLS first byte explicit false, start whitelist & allowUsers=["*"]
+	cli := ClientProfile{
+		ID:                        "cli_audit",
+		Name:                      "AuditFRPC",
+		ServerAddr:                "10.0.0.1",
+		ServerPort:                7000,
+		User:                      "office",
+		StartProxies:              []string{"ssh-prod"},
+		TLSEnable:                 true,
+		TLSDisableCustomFirstByte: false,
+		CtrlSecret:                "ctrl_sec",
+		AgentToken:                "agent_tok",
+		Tunnels: []TunnelRule{
+			{ID: "t1", Name: "ssh-prod", Mode: "proxy", Type: "tcp", Enabled: true, LocalIP: "127.0.0.1", LocalPort: 22, RemotePort: 6022},
+			{ID: "t2", Name: "backup-rdp", Mode: "proxy", Type: "tcp", Enabled: false, LocalIP: "127.0.0.1", LocalPort: 3389, RemotePort: 13389, Note: "keep-me"},
+			{ID: "t3", Name: "vnet-node", Mode: "proxy", Type: "stcp", Enabled: false, SecretKey: "s1", Plugin: "virtual_net", PluginLocalAddr: "100.86.0.2/24"},
+		},
+	}
+	preview := RenderClientTOML(cli, ClientRuntimeInjections{Preview: true, MaskSecrets: true})
+	if !strings.Contains(preview.TOML, "transport.tls.disableCustomTLSFirstByte = false") {
+		t.Fatalf("F25 regression: missing explicit disableCustomTLSFirstByte = false:\n%s", preview.TOML)
+	}
+	if !strings.Contains(preview.TOML, "enabled = false") {
+		t.Fatalf("F05 regression: disabled tunnel missing enabled = false:\n%s", preview.TOML)
+	}
+	if strings.Contains(preview.TOML, "plugin.address") || !strings.Contains(preview.TOML, `virtualNet.address = "100.86.0.2/24"`) {
+		t.Fatalf("F27 regression: virtual_net address placed in wrong scope:\n%s", preview.TOML)
+	}
+
+	roundtrip, err := ApplyTOMLToClient(cli, preview.TOML)
+	if err != nil {
+		t.Fatalf("ApplyTOMLToClient failed: %v", err)
+	}
+	if len(roundtrip.Tunnels) != 3 || roundtrip.Tunnels[1].Enabled || roundtrip.Tunnels[1].ID != "t2" || roundtrip.Tunnels[1].Note != "keep-me" {
+		t.Fatalf("F05/F06 regression: disabled tunnel lost or inverted after TOML save: %+v", roundtrip.Tunnels)
+	}
+
+	runtimeRender := RenderClientTOML(cli, ClientRuntimeInjections{
+		Preview:    false,
+		AdminPort:  18000,
+		AdminUser:  "kurumi",
+		AdminPass:  "ap",
+		AgentPort:  18001,
+		ClientID:   cli.ID,
+		ClientName: cli.Name,
+		CtrlSecret: cli.CtrlSecret,
+		AgentToken: cli.AgentToken,
+	})
+	if !strings.Contains(runtimeRender.TOML, `"__kurumi_ctrl_cli_audit"`) || !strings.Contains(runtimeRender.TOML, `start = ["ssh-prod", "__kurumi_ctrl_cli_audit"]`) {
+		t.Fatalf("F12 regression: ctrlProxyName not appended to non-empty start whitelist:\n%s", runtimeRender.TOML)
+	}
+	if !strings.Contains(runtimeRender.TOML, `allowUsers = ["*"]`) {
+		t.Fatalf("F13 regression: internal STCP ctrl tunnel missing allowUsers = [\"*\"]:\n%s", runtimeRender.TOML)
+	}
+
+	// 3. F29: Fail-closed allowPorts validation against full-width comma & reversed range
+	if _, err := ValidateAllowPortsSpec("2000-3000，4000"); err == nil {
+		t.Fatalf("F29 regression: expected error on full-width comma in allowPorts")
+	}
+	if _, err := ValidateAllowPortsSpec("5000-3000"); err == nil {
+		t.Fatalf("F29 regression: expected error on reversed port range in allowPorts")
+	}
+
+	// 4. F23 & F24: Single-quoted '#' literal + multiline array + unknown subtable dotted key retention
+	complexTOML := "serverAddr = '10.0.0.8'\nserverPort = 7000\nstart = [\n  'web#1',\n  \"ssh-2\"\n]\n\n[[proxies]]\nname = 'web#1'\ntype = 'tcp'\nlocalPort = 80\nremotePort = 8080\n[proxies.customExt]\ntoken = 'abc#123'\n"
+	_, parsedCli, err := ParseTOMLAsProfile("Complex", "frpc", complexTOML)
+	if err != nil {
+		t.Fatalf("F23 ParseTOMLAsProfile failed: %v", err)
+	}
+	if len(parsedCli.StartProxies) != 2 || parsedCli.StartProxies[0] != "web#1" {
+		t.Fatalf("F23 regression: multiline array or single-quote '#' failed: %+v", parsedCli.StartProxies)
+	}
+	if len(parsedCli.Tunnels) != 1 || !strings.Contains(parsedCli.Tunnels[0].ExtraTOML, "customExt.token = 'abc#123'") {
+		t.Fatalf("F24 regression: unknown subtable key lost prefix: %+v", parsedCli.Tunnels)
+	}
+}

@@ -81,13 +81,13 @@ type UpdateManager struct {
 	settingsPath string
 	settings     UpdateSettings
 	runtime      *RuntimeSupervisor
-	onShutdown   func()
+	onShutdown   func(exitCode int)
 	apiBase      string
 	allowLocal   bool // enabled only in unit tests for 127.0.0.1 httptest servers
 }
 
 // NewUpdateManager initializes UpdateManager and loads optional proxy settings.
-func NewUpdateManager(dataDir string, rt *RuntimeSupervisor, onShutdown func()) *UpdateManager {
+func NewUpdateManager(dataDir string, rt *RuntimeSupervisor, onShutdown func(exitCode int)) *UpdateManager {
 	um := &UpdateManager{
 		dataDir:      dataDir,
 		settingsPath: filepath.Join(dataDir, "update_settings.json"),
@@ -320,10 +320,11 @@ func matchAppAsset(assets []ghAsset, ver string, preferSelfUpdateArchive bool) (
 	case "windows":
 		wantNames = []string{fmt.Sprintf("KurumiFRP-%s-Setup.exe", ver)}
 	case "linux":
+		armVariant := detectLinuxARMVariant()
 		archMap := map[string]string{
 			"amd64":    "amd64",
 			"arm64":    "arm64",
-			"arm":      "arm_hf",
+			"arm":      armVariant,
 			"riscv64":  "riscv64",
 			"loong64":  "loong64",
 			"mips":     "mips",
@@ -335,7 +336,11 @@ func matchAppAsset(assets []ghAsset, ver string, preferSelfUpdateArchive bool) (
 			tarName := fmt.Sprintf("KurumiFRP-%s-linux-%s.tar.gz", ver, a)
 			debArch := runtime.GOARCH
 			if debArch == "arm" {
-				debArch = "armhf"
+				if armVariant == "arm" {
+					debArch = "armel"
+				} else {
+					debArch = "armhf"
+				}
 			}
 			debName := fmt.Sprintf("kurumifrp_%s_%s.deb", ver, debArch)
 			if preferSelfUpdateArchive {
@@ -366,7 +371,7 @@ func frpPlatformSlug() (string, string, bool) {
 		case "amd64", "arm64", "riscv64", "loong64":
 			return "linux_" + runtime.GOARCH, ".tar.gz", true
 		case "arm":
-			return "linux_arm_hf", ".tar.gz", true
+			return "linux_" + detectLinuxARMVariant(), ".tar.gz", true
 		}
 	case "darwin":
 		if runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64" {
@@ -833,4 +838,22 @@ func parseWinINETProxyString(raw string) string {
 		}
 	}
 	return ""
+}
+
+func detectLinuxARMVariant() string {
+	v := strings.TrimSpace(version.BuildVariant)
+	if v == "arm" || v == "arm_hf" {
+		return v
+	}
+	// Fallback: inspect ELF e_flags (EF_ARM_ABI_FLOAT_HARD = 0x00000400) on /proc/self/exe
+	if exe, err := os.Executable(); err == nil {
+		if hdr, err := os.ReadFile(exe); err == nil && len(hdr) >= 40 && hdr[0] == 0x7f && hdr[1] == 'E' && hdr[2] == 'L' && hdr[3] == 'F' && hdr[4] == 1 {
+			// 32-bit little-endian ELF: e_flags at offset 36..40
+			eFlags := uint32(hdr[36]) | uint32(hdr[37])<<8 | uint32(hdr[38])<<16 | uint32(hdr[39])<<24
+			if eFlags&0x00000400 == 0 && eFlags != 0 {
+				return "arm"
+			}
+		}
+	}
+	return "arm_hf"
 }

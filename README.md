@@ -87,6 +87,6 @@ go build -trimpath -ldflags="-s -w" -o kurumifrp ./cmd/kurumi
 - 发行安装包内随附的上游官方 `frpc` / `frps` 可执行组件来自 [`fatedier/frp`](https://github.com/fatedier/frp)，遵循其原始 **Apache License 2.0** 协议。
 
 
-### 双档视觉画质架构（v0.9.5+）
+### 双档视觉画质架构（v0.9.6+）
 - **默认轻量内置**：二进制仅内嵌约 `2.4 MB` 高压缩比 WebP 素材，确保各平台安装包小巧轻量。
 - **按需拉取原画包**：登录 WebUI 后可在「应用与画廊」一键从 GitHub 仓库并发拉取 `assets/material/` 原画质素材包（内置代理复用、SHA-256 校验、断点续传与零重启热切换）。

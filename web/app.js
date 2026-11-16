@@ -57,7 +57,7 @@
     authenticated: false,
     username: "admin",
     needsPasswordSetup: false,
-    version: "0.9.4",
+    version: "0.9.6",
     etag: "",
     activeView: "home", // home | frps | frpc | topology | system
     slideIdx: 0,
@@ -105,9 +105,12 @@
     frpsSubTab: "studio", // "studio" | "conns" | "remotes" | "logs"
     serverDraft: null,
     serverDraftDirty: false,
+    srvTomlDirty: false,
+    srvTomlRaw: "",
     openServerAccs: { s1: true, s2: true, s3: false, s4: false, s5: false, s6: false, s7: false },
 
     // Remote connected client inspected via FRPS
+    remoteReqSeq: 0,
     remoteTarget: null, // { serverId, clientId }
     remoteSnapshot: null, // { summary, profile, runtime, toml, logs }
     remoteClientDraft: null,
@@ -120,6 +123,8 @@
     tunnelFilter: "all", // "all" | "port" | "web" | "p2p" | "visitor"
     clientDraft: null,
     clientDraftDirty: false,
+    cliTomlDirty: false,
+    cliTomlRaw: "",
     openClientAccs: { c1: true, c2: false, c3: true, c4: false, c5: false },
 
     // Topology & P2P
@@ -154,6 +159,13 @@
 
   function deepClone(obj) {
     return JSON.parse(JSON.stringify(obj == null ? null : obj));
+  }
+
+  function isoToLocalDatetimeInput(isoStr) {
+    if (!isoStr) return "";
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return String(isoStr).slice(0, 16);
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
   }
 
   function pad2(n) {
@@ -484,10 +496,21 @@
     if (cli.natHoleStunServer) lines.push(`natHoleStunServer = ${tq(cli.natHoleStunServer.trim())}`);
     if (Number(cli.udpPacketSize) > 0) lines.push(`udpPacketSize = ${Number(cli.udpPacketSize)}`);
 
-    const hasVNet = Boolean(cli.virtualNetAddr) || (cli.tunnels || []).some((t) => t.enabled && t.plugin === "virtual_net");
+    let effVNetAddr = (cli.virtualNetAddr || "").trim();
+    let hasVNet = Boolean(effVNetAddr);
+    (cli.tunnels || []).forEach((t) => {
+      if (t && t.plugin === "virtual_net") {
+        hasVNet = true;
+        if (!effVNetAddr && (t.mode || "proxy") !== "visitor" && t.pluginLocalAddr) {
+          effVNetAddr = t.pluginLocalAddr.trim();
+        }
+      }
+    });
     if (hasVNet) {
-      lines.push(`featureGates = { VirtualNet = true }`);
-      if (cli.virtualNetAddr) lines.push(`virtualNet.address = ${tq(cli.virtualNetAddr.trim())}`);
+      if (!String(cli.extraToml || "").includes("featureGates")) {
+        lines.push(`featureGates = { VirtualNet = true }`);
+      }
+      if (effVNetAddr) lines.push(`virtualNet.address = ${tq(effVNetAddr)}`);
     }
 
     if (cli.logLevel) lines.push(`log.level = ${tq(cli.logLevel)}`);
@@ -505,14 +528,20 @@
     if (cli.proxyURL) lines.push(`transport.proxyURL = ${tq(cli.proxyURL.trim())}`);
     if (typeof cli.tcpMux === "boolean") lines.push(`transport.tcpMux = ${cli.tcpMux}`);
     if (Number(cli.tcpMuxKeepaliveInterval) > 0) lines.push(`transport.tcpMuxKeepaliveInterval = ${Number(cli.tcpMuxKeepaliveInterval)}`);
-    if (Number(cli.heartbeatInterval) > 0) lines.push(`transport.heartbeatInterval = ${Number(cli.heartbeatInterval)}`);
-    if (Number(cli.heartbeatTimeout) > 0) lines.push(`transport.heartbeatTimeout = ${Number(cli.heartbeatTimeout)}`);
+    if (Number(cli.heartbeatInterval) !== 0 && cli.heartbeatInterval != null && cli.heartbeatInterval !== "") {
+      lines.push(`transport.heartbeatInterval = ${Number(cli.heartbeatInterval)}`);
+    }
+    if (Number(cli.heartbeatTimeout) !== 0 && cli.heartbeatTimeout != null && cli.heartbeatTimeout !== "") {
+      lines.push(`transport.heartbeatTimeout = ${Number(cli.heartbeatTimeout)}`);
+    }
     if (Number(cli.quicKeepalivePeriod) > 0) lines.push(`transport.quic.keepalivePeriod = ${Number(cli.quicKeepalivePeriod)}`);
     if (Number(cli.quicMaxIdleTimeout) > 0) lines.push(`transport.quic.maxIdleTimeout = ${Number(cli.quicMaxIdleTimeout)}`);
     if (Number(cli.quicMaxIncomingStreams) > 0) lines.push(`transport.quic.maxIncomingStreams = ${Number(cli.quicMaxIncomingStreams)}`);
 
     lines.push(`transport.tls.enable = ${Boolean(cli.tlsEnable)}`);
-    if (cli.tlsDisableCustomFirstByte) lines.push(`transport.tls.disableCustomTLSFirstByte = true`);
+    if (cli.tlsEnable || proto === "wss") {
+      lines.push(`transport.tls.disableCustomTLSFirstByte = ${Boolean(cli.tlsDisableCustomFirstByte)}`);
+    }
     if (cli.tlsServerName) lines.push(`transport.tls.serverName = ${tq(cli.tlsServerName.trim())}`);
     if (cli.tlsCertFile) lines.push(`transport.tls.certFile = ${tq(cli.tlsCertFile.trim())}`);
     if (cli.tlsKeyFile) lines.push(`transport.tls.keyFile = ${tq(cli.tlsKeyFile.trim())}`);
@@ -553,12 +582,14 @@
     }
 
     (cli.tunnels || []).forEach((tun) => {
-      if (!tun || !tun.enabled) return;
+      if (!tun) return;
+      const isEnabled = tun.enabled !== false;
       const typ = (tun.type || "tcp").toLowerCase().trim();
       if ((tun.mode || "proxy") === "visitor") {
         lines.push("", "[[visitors]]");
         lines.push(`name = ${tq(tun.name || "")}`);
         lines.push(`type = ${tq(typ)}`);
+        if (!isEnabled) lines.push(`enabled = false`);
         lines.push(`serverName = ${tq(tun.serverName || "")}`);
         if (tun.serverUser) lines.push(`serverUser = ${tq(tun.serverUser.trim())}`);
         if (tun.secretKey) lines.push(`secretKey = ${tq(tun.secretKey)}`);
@@ -574,6 +605,10 @@
           if (tun.fallbackTo) lines.push(`fallbackTo = ${tq(tun.fallbackTo.trim())}`);
           if (Number(tun.fallbackTimeoutMs) > 0) lines.push(`fallbackTimeoutMs = ${Number(tun.fallbackTimeoutMs)}`);
         }
+        if (tun.plugin === "virtual_net") {
+          lines.push(`plugin.type = "virtual_net"`);
+          if (tun.pluginLocalAddr) lines.push(`plugin.destinationIP = ${tq(tun.pluginLocalAddr.trim())}`);
+        }
         if (tun.extraToml && tun.extraToml.trim()) lines.push(tun.extraToml.trim());
         return;
       }
@@ -583,10 +618,14 @@
         lines.push("[[proxies]]");
         lines.push(`name = "${(tun.name || "range").replace(/"/g, '\\"')}-{{ $v.First }}"`);
         lines.push(`type = ${tq(typ)}`);
-        lines.push(`localIP = ${tq(tun.localIP || "127.0.0.1")}`);
-        lines.push("localPort = {{ $v.First }}");
+        if (!isEnabled) lines.push(`enabled = false`);
+        if (!tun.plugin) {
+          lines.push(`localIP = ${tq(tun.localIP || "127.0.0.1")}`);
+          lines.push("localPort = {{ $v.First }}");
+        }
         lines.push("remotePort = {{ $v.Second }}");
         appendProxyCommonTOML(lines, tun);
+        appendProxyPluginAndExtraTOML(lines, tun);
         lines.push("{{- end }}");
         return;
       }
@@ -594,6 +633,7 @@
       lines.push("", "[[proxies]]");
       lines.push(`name = ${tq(tun.name || "")}`);
       lines.push(`type = ${tq(typ)}`);
+      if (!isEnabled) lines.push(`enabled = false`);
       if (!tun.plugin) {
         lines.push(`localIP = ${tq(tun.localIP || "127.0.0.1")}`);
         if (Number(tun.localPort) > 0) lines.push(`localPort = ${Number(tun.localPort)}`);
@@ -628,56 +668,60 @@
 
       appendProxyCommonTOML(lines, tun);
 
-      if (tun.plugin) {
-        const pt = tun.plugin.trim();
-        lines.push(`plugin.type = ${tq(pt)}`);
-        if (pt === "static_file") {
-          lines.push(`plugin.localPath = ${tq(tun.pluginLocalPath || "")}`);
-          if (tun.pluginStripPrefix) lines.push(`plugin.stripPrefix = ${tq(tun.pluginStripPrefix)}`);
-          if (tun.pluginUser) {
-            lines.push(`plugin.httpUser = ${tq(tun.pluginUser)}`);
-            lines.push(`plugin.httpPassword = ${tq(tun.pluginPassword || "")}`);
-          }
-        } else if (pt === "socks5") {
-          if (tun.pluginUser) {
-            lines.push(`plugin.username = ${tq(tun.pluginUser)}`);
-            lines.push(`plugin.password = ${tq(tun.pluginPassword || "")}`);
-          }
-        } else if (pt === "http_proxy") {
-          if (tun.pluginUser) {
-            lines.push(`plugin.httpUser = ${tq(tun.pluginUser)}`);
-            lines.push(`plugin.httpPassword = ${tq(tun.pluginPassword || "")}`);
-          }
-        } else if (pt === "unix_domain_socket") {
-          lines.push(`plugin.unixPath = ${tq(tun.pluginLocalPath || "")}`);
-        } else if (pt === "virtual_net") {
-          lines.push(`plugin.address = ${tq(tun.pluginLocalAddr || "")}`);
-        } else if (pt === "https2http" || pt === "https2https" || pt === "http2https" || pt === "http2http" || pt === "tls2raw") {
-          lines.push(`plugin.localAddr = ${tq(tun.pluginLocalAddr || "")}`);
-          if (tun.pluginHostHeaderRewrite && pt !== "tls2raw") lines.push(`plugin.hostHeaderRewrite = ${tq(tun.pluginHostHeaderRewrite)}`);
-          if ((pt === "https2http" || pt === "https2https" || pt === "tls2raw") && tun.pluginCrtPath) {
-            lines.push(`plugin.crtPath = ${tq(tun.pluginCrtPath)}`);
-            if (tun.pluginKeyPath) lines.push(`plugin.keyPath = ${tq(tun.pluginKeyPath)}`);
-          }
-          if ((pt === "https2http" || pt === "https2https") && typeof tun.pluginEnableHTTP2 === "boolean") {
-            lines.push(`plugin.enableHTTP2 = ${tun.pluginEnableHTTP2}`);
-          }
-          Object.keys(tun.pluginHeaders || {}).sort().forEach((k) => {
-            if (k.trim()) lines.push(`plugin.requestHeaders.set.${dotKey(k)} = ${tq(tun.pluginHeaders[k])}`);
-          });
-        }
-      }
-      if (tun.extraToml && tun.extraToml.trim()) lines.push(tun.extraToml.trim());
-      if (tun.healthCheckType === "http" && tun.healthCheckHeaders) {
-        Object.keys(tun.healthCheckHeaders).sort().forEach((hk) => {
-          if (hk.trim()) {
-            lines.push("[[proxies.healthCheck.httpHeaders]]", `name = ${tq(hk)}`, `value = ${tq(tun.healthCheckHeaders[hk])}`);
-          }
-        });
-      }
+      appendProxyPluginAndExtraTOML(lines, tun);
     });
 
     return lines.join("\n") + "\n";
+  }
+
+  function appendProxyPluginAndExtraTOML(lines, tun) {
+    if (tun.plugin) {
+      const pt = tun.plugin.trim();
+      lines.push(`plugin.type = ${tq(pt)}`);
+      if (pt === "static_file") {
+        lines.push(`plugin.localPath = ${tq(tun.pluginLocalPath || "")}`);
+        if (tun.pluginStripPrefix) lines.push(`plugin.stripPrefix = ${tq(tun.pluginStripPrefix)}`);
+        if (tun.pluginUser) {
+          lines.push(`plugin.httpUser = ${tq(tun.pluginUser)}`);
+          lines.push(`plugin.httpPassword = ${tq(tun.pluginPassword || "")}`);
+        }
+      } else if (pt === "socks5") {
+        if (tun.pluginUser) {
+          lines.push(`plugin.username = ${tq(tun.pluginUser)}`);
+          lines.push(`plugin.password = ${tq(tun.pluginPassword || "")}`);
+        }
+      } else if (pt === "http_proxy") {
+        if (tun.pluginUser) {
+          lines.push(`plugin.httpUser = ${tq(tun.pluginUser)}`);
+          lines.push(`plugin.httpPassword = ${tq(tun.pluginPassword || "")}`);
+        }
+      } else if (pt === "unix_domain_socket") {
+        lines.push(`plugin.unixPath = ${tq(tun.pluginLocalPath || "")}`);
+      } else if (pt === "virtual_net") {
+        // virtualNet.address is emitted globally on ClientCommonConfig per upstream fatedier/frp v1 spec
+      } else if (pt === "https2http" || pt === "https2https" || pt === "http2https" || pt === "http2http" || pt === "tls2raw") {
+        lines.push(`plugin.localAddr = ${tq(tun.pluginLocalAddr || "")}`);
+        if (tun.pluginHostHeaderRewrite && pt !== "tls2raw") lines.push(`plugin.hostHeaderRewrite = ${tq(tun.pluginHostHeaderRewrite)}`);
+        if ((pt === "https2http" || pt === "https2https" || pt === "tls2raw") && tun.pluginCrtPath) {
+          lines.push(`plugin.crtPath = ${tq(tun.pluginCrtPath)}`);
+          if (tun.pluginKeyPath) lines.push(`plugin.keyPath = ${tq(tun.pluginKeyPath)}`);
+        }
+        if ((pt === "https2http" || pt === "https2https") && typeof tun.pluginEnableHTTP2 === "boolean") {
+          lines.push(`plugin.enableHTTP2 = ${tun.pluginEnableHTTP2}`);
+        }
+        Object.keys(tun.pluginHeaders || {}).sort().forEach((k) => {
+          if (k.trim()) lines.push(`plugin.requestHeaders.set.${dotKey(k)} = ${tq(tun.pluginHeaders[k])}`);
+        });
+      }
+    }
+    if (tun.extraToml && tun.extraToml.trim()) lines.push(tun.extraToml.trim());
+    if (tun.healthCheckType === "http" && tun.healthCheckHeaders) {
+      Object.keys(tun.healthCheckHeaders).sort().forEach((hk) => {
+        if (hk.trim()) {
+          lines.push("[[proxies.healthCheck.httpHeaders]]", `name = ${tq(hk)}`, `value = ${tq(tun.healthCheckHeaders[hk])}`);
+        }
+      });
+    }
   }
 
   function appendProxyCommonTOML(lines, tun) {
@@ -774,7 +818,7 @@
     updateLoginWallpaper();
     try {
       const sess = await apiFetch("/api/session");
-      STATE.version = sess.version || "0.9.5";
+      STATE.version = sess.version || "0.9.6";
       if (sess.assetCacheToken) {
         STATE.hdAssets.cacheToken = sess.assetCacheToken;
         STATE.hdAssets.activeTier = sess.activeAssetTier || "embedded";
@@ -846,11 +890,11 @@
       STATE.clientDraftDirty = false;
     }
 
-    if (!STATE.serverDraftDirty && STATE.selectedServerId) {
+    if (!STATE.serverDraftDirty && !STATE.srvTomlDirty && STATE.selectedServerId) {
       const s = STATE.servers.find((x) => x.id === STATE.selectedServerId);
       if (s) STATE.serverDraft = deepClone(s);
     }
-    if (!STATE.clientDraftDirty && STATE.selectedClientId) {
+    if (!STATE.clientDraftDirty && !STATE.cliTomlDirty && STATE.selectedClientId) {
       const c = STATE.clients.find((x) => x.id === STATE.selectedClientId);
       if (c) STATE.clientDraft = deepClone(c);
     }
@@ -858,7 +902,7 @@
     renderTopBar();
     renderHomeMetrics();
 
-    if (forceRender || (!isEditingActiveInput() && $("modalBackdrop").hidden)) {
+    if (forceRender || (!isEditingActiveInput() && !STATE.srvTomlDirty && !STATE.cliTomlDirty && $("modalBackdrop").hidden)) {
       renderActiveView();
     }
   }
@@ -1062,19 +1106,41 @@
     if (sideAddBtn) sideAddBtn.addEventListener("click", createBlankServer);
     sb.querySelectorAll("[data-select-srv]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        stopLogStream();
-        STATE.frpsMode = "local";
-        STATE.selectedServerId = btn.dataset.selectSrv;
-        const found = STATE.servers.find((x) => x.id === STATE.selectedServerId);
-        STATE.serverDraft = found ? deepClone(found) : null;
-        STATE.serverDraftDirty = false;
-        renderFrpsWorkspace();
+        const nextId = btn.dataset.selectSrv;
+        if (STATE.frpsMode === "local" && nextId === STATE.selectedServerId) return;
+        const doSwitch = () => {
+          stopLogStream();
+          STATE.frpsMode = "local";
+          STATE.selectedServerId = nextId;
+          const found = STATE.servers.find((x) => x.id === STATE.selectedServerId);
+          STATE.serverDraft = found ? deepClone(found) : null;
+          STATE.serverDraftDirty = false;
+          STATE.srvTomlDirty = false;
+          STATE.srvTomlRaw = "";
+          renderFrpsWorkspace();
+        };
+        if (STATE.serverDraftDirty || STATE.srvTomlDirty || (STATE.frpsMode === "remoteClient" && STATE.cliTomlDirty)) {
+          confirmModal("放弃未保存更改", "当前实例存在尚未保存的表单或 TOML 修改，确定切换并放弃这些修改吗？", "放弃并切换", doSwitch);
+        } else {
+          doSwitch();
+        }
       });
     });
     sb.querySelectorAll("[data-select-remote]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const [sid, cid] = btn.dataset.selectRemote.split("::");
-        openRemoteClientConsole(sid, cid);
+        if (STATE.frpsMode === "remoteClient" && STATE.remoteTarget && STATE.remoteTarget.serverId === sid && STATE.remoteTarget.clientId === cid) return;
+        const doOpen = () => {
+          STATE.serverDraftDirty = false;
+          STATE.srvTomlDirty = false;
+          STATE.srvTomlRaw = "";
+          openRemoteClientConsole(sid, cid);
+        };
+        if (STATE.serverDraftDirty || STATE.srvTomlDirty || (STATE.frpsMode === "remoteClient" && STATE.cliTomlDirty)) {
+          confirmModal("放弃未保存更改", "当前实例存在尚未保存的表单或 TOML 修改，确定切换到远控客户端并放弃这些修改吗？", "放弃并切换", doOpen);
+        } else {
+          doOpen();
+        }
       });
     });
 
@@ -1110,7 +1176,7 @@
           <div class="yc-profile-head-row">
             <div class="yc-profile-title-wrap">
               <h3 class="yc-profile-title">${esc(srv.name)}</h3>
-              <span class="yc-tag ${rt.running ? "yc-tag-ok" : ""}">${rt.running ? "运行中 · PID " + (rt.pid || "-") : "已停止"}</span>
+              <span class="yc-tag ${rt.running ? "yc-tag-ok" : rt.state === "error" ? "yc-tag-danger" : ""}">${rt.running ? "运行中 · PID " + (rt.pid || "-") : rt.state === "error" ? "异常退出" : "已停止"}</span>
               ${srv.autoStart ? `<span class="yc-tag yc-tag-pink">随软件自启</span>` : ""}
               ${STATE.serverDraftDirty ? `<span class="yc-tag yc-tag-warn">有未保存修改</span>` : ""}
             </div>
@@ -1582,7 +1648,7 @@
         )}
       </div>`;
 
-    const liveToml = renderServerTOMLLive(srv);
+    const liveToml = STATE.srvTomlDirty && STATE.srvTomlRaw ? STATE.srvTomlRaw : renderServerTOMLLive(srv);
     const rightHTML = `
       <div class="yc-toml-studio">
         <div class="yc-toml-head">
@@ -1604,10 +1670,17 @@
 
     container.innerHTML = `<div class="yc-studio-split">${leftHTML}${rightHTML}</div>`;
 
+    const srvTaEl = container.querySelector("#srvTomlTextarea");
+    if (srvTaEl) {
+      srvTaEl.addEventListener("input", () => {
+        STATE.srvTomlDirty = true;
+        STATE.srvTomlRaw = srvTaEl.value;
+      });
+    }
     const syncTomlPreview = () => {
       STATE.serverDraftDirty = true;
       const ta = container.querySelector("#srvTomlTextarea");
-      if (ta && document.activeElement !== ta) {
+      if (ta && document.activeElement !== ta && !STATE.srvTomlDirty) {
         ta.value = renderServerTOMLLive(srv);
       }
     };
@@ -1714,6 +1787,8 @@
         const out = await apiFetch("/api/toml/parse", { method: "POST", body: { kind: "frps", prevServer: srv, toml: raw } });
         STATE.serverDraft = out.server;
         STATE.serverDraftDirty = true;
+        STATE.srvTomlDirty = false;
+        STATE.srvTomlRaw = "";
         toast("已从 TOML 代码反向解析并更新左侧全部 UI 控件");
         renderFrpsWorkspace();
       } catch (err) {
@@ -1726,6 +1801,8 @@
         const out = await apiFetch("/api/servers/save-toml", { method: "POST", body: { id: srv.id, toml: raw } });
         STATE.serverDraft = out.server;
         STATE.serverDraftDirty = false;
+        STATE.srvTomlDirty = false;
+        STATE.srvTomlRaw = "";
         toast("已保存并应用 frps.toml 配置");
         await refreshState(true);
       } catch (err) {
@@ -1740,6 +1817,8 @@
       const out = await apiFetch("/api/servers/save", { method: "POST", body: STATE.serverDraft });
       STATE.selectedServerId = out.id;
       STATE.serverDraftDirty = false;
+      STATE.srvTomlDirty = false;
+      STATE.srvTomlRaw = "";
       if (!silent) toast("FRPS 服务端配置已保存");
       await refreshState(true);
     } catch (err) {
@@ -1851,6 +1930,8 @@
     });
     container.querySelectorAll("[data-p2p-rc]").forEach((b) => {
       b.addEventListener("click", () => {
+        const [sid] = b.dataset.p2pRc.split("::");
+        if (sid) STATE.selectedServerId = sid;
         STATE.topologyTab = "p2pWizard";
         switchView("topology");
       });
@@ -1956,19 +2037,22 @@
   }
 
   function openConnPolicyModal(serverId, item) {
-    const localDT = item.expiresAt ? item.expiresAt.slice(0, 16) : "";
+    const localDT = isoToLocalDatetimeInput(item.expiresAt);
     openModal(
       `<div class="yc-modal-head">
          <h3 class="yc-modal-title">连接管控策略 · ${esc(item.proxyName)}</h3>
          <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-modal-close>关闭</button>
        </div>
+       <div class="yc-notice yc-notice-pink" style="margin-bottom:12px;font-size:12px;line-height:1.55;">
+         说明：禁用开关、到期时间与流量配额会通过官方插件立即拦截一切新建连接与重连注册（已建立的存量长连接将在重连或重启服务端时释放；硬限速可在对应客户端隧道设置 <code>bandwidthLimit</code>）。
+       </div>
        <div class="yc-grid-2">
          <label class="yc-field">
-           <span class="yc-field-label">流量配额上限 (MB) <span class="yc-field-hint">0 为不限流</span></span>
+           <span class="yc-field-label">流量配额上限 (MB) <span class="yc-field-hint">0 为不限配额</span></span>
            <input id="polTrafficMB" type="number" min="0" value="${item.trafficLimitMB || 0}" />
          </label>
          <label class="yc-field">
-           <span class="yc-field-label">速率阈值 (KB/s) <span class="yc-field-hint">0 为不限速</span></span>
+           <span class="yc-field-label">超速告警阈值 (KB/s) <span class="yc-field-hint">0 为关闭超速告警</span></span>
            <input id="polSpeedKB" type="number" min="0" value="${item.speedLimitKBps || 0}" />
          </label>
          <label class="yc-field">
@@ -2027,22 +2111,32 @@
   // ==================== Remote Client Inspector (Inside FRPS via Connection!) ====================
   async function openRemoteClientConsole(serverId, clientId) {
     stopLogStream();
+    const reqSeq = ++STATE.remoteReqSeq;
     STATE.activeView = "frps";
     STATE.frpsMode = "remoteClient";
     STATE.remoteTarget = { serverId, clientId };
+    STATE.remoteSnapshot = null;
+    STATE.remoteClientDraft = null;
+    STATE.cliTomlDirty = false;
+    STATE.cliTomlRaw = "";
     renderTopBar();
     $("viewHome").hidden = true;
     $("viewFrps").hidden = false;
     $("viewFrpc").hidden = true;
     $("viewTopology").hidden = true;
     $("viewSystem").hidden = true;
+    renderFrpsWorkspace();
 
     try {
       const snap = await apiFetch(`/api/remote/client?serverId=${encodeURIComponent(serverId)}&clientId=${encodeURIComponent(clientId)}`);
+      if (reqSeq !== STATE.remoteReqSeq || !STATE.remoteTarget || STATE.remoteTarget.serverId !== serverId || STATE.remoteTarget.clientId !== clientId) {
+        return;
+      }
       STATE.remoteSnapshot = snap;
       STATE.remoteClientDraft = deepClone(snap.profile);
       renderFrpsWorkspace();
     } catch (err) {
+      if (reqSeq !== STATE.remoteReqSeq) return;
       toast("拉取远端客户端配置失败: " + err.message, true);
       STATE.frpsMode = "local";
       renderFrpsWorkspace();
@@ -2112,6 +2206,8 @@
     });
 
     const sub = main.querySelector("#remoteSubBody");
+    const boundSrvId = (snap.summary && snap.summary.serverId) || STATE.remoteTarget.serverId;
+    const boundCliId = (snap.profile && snap.profile.id) || STATE.remoteTarget.clientId;
     const remoteCallbacks = {
       isRemote: true,
       runtimeView: snap.runtime || {},
@@ -2119,15 +2215,19 @@
         const res = await apiFetch("/api/remote/client/save", {
           method: "POST",
           body: {
-            serverId: STATE.remoteTarget.serverId,
-            clientId: STATE.remoteTarget.clientId,
+            serverId: boundSrvId,
+            clientId: boundCliId,
             profile: updatedCli,
             allowUpstreamChange: STATE.remoteAllowUpstream
           }
         });
-        STATE.remoteClientDraft = deepClone(res.profile);
-        STATE.remoteSnapshot.profile = deepClone(res.profile);
-        STATE.remoteSnapshot.toml = res.toml;
+        if (STATE.remoteTarget && STATE.remoteTarget.clientId === boundCliId) {
+          STATE.remoteClientDraft = deepClone(res.profile);
+          STATE.remoteSnapshot.profile = deepClone(res.profile);
+          STATE.remoteSnapshot.toml = res.toml;
+          STATE.cliTomlDirty = false;
+          STATE.cliTomlRaw = "";
+        }
         toast("已通过连接远控下发并热重载远端客户端配置！");
         await refreshState(true);
       },
@@ -2135,15 +2235,19 @@
         const res = await apiFetch("/api/remote/client/save-toml", {
           method: "POST",
           body: {
-            serverId: STATE.remoteTarget.serverId,
-            clientId: STATE.remoteTarget.clientId,
+            serverId: boundSrvId,
+            clientId: boundCliId,
             toml: rawToml,
             allowUpstreamChange: STATE.remoteAllowUpstream
           }
         });
-        STATE.remoteClientDraft = deepClone(res.profile);
-        STATE.remoteSnapshot.profile = deepClone(res.profile);
-        STATE.remoteSnapshot.toml = res.toml;
+        if (STATE.remoteTarget && STATE.remoteTarget.clientId === boundCliId) {
+          STATE.remoteClientDraft = deepClone(res.profile);
+          STATE.remoteSnapshot.profile = deepClone(res.profile);
+          STATE.remoteSnapshot.toml = res.toml;
+          STATE.cliTomlDirty = false;
+          STATE.cliTomlRaw = "";
+        }
         toast("已向远端客户端下发 frpc.toml 并完成热重载！");
         await refreshState(true);
       }
@@ -2209,12 +2313,23 @@
     sb.querySelector("#sideAddCliBtn").addEventListener("click", createBlankClient);
     sb.querySelectorAll("[data-select-cli]").forEach((b) => {
       b.addEventListener("click", () => {
-        stopLogStream();
-        STATE.selectedClientId = b.dataset.selectCli;
-        const found = STATE.clients.find((x) => x.id === STATE.selectedClientId);
-        STATE.clientDraft = found ? deepClone(found) : null;
-        STATE.clientDraftDirty = false;
-        renderFrpcWorkspace();
+        const nextId = b.dataset.selectCli;
+        if (nextId === STATE.selectedClientId) return;
+        const doSwitch = () => {
+          stopLogStream();
+          STATE.selectedClientId = nextId;
+          const found = STATE.clients.find((x) => x.id === STATE.selectedClientId);
+          STATE.clientDraft = found ? deepClone(found) : null;
+          STATE.clientDraftDirty = false;
+          STATE.cliTomlDirty = false;
+          STATE.cliTomlRaw = "";
+          renderFrpcWorkspace();
+        };
+        if (STATE.clientDraftDirty || STATE.cliTomlDirty) {
+          confirmModal("放弃未保存更改", "当前客户端存在尚未保存的表单或 TOML 修改，确定切换实例并放弃这些修改吗？", "放弃并切换", doSwitch);
+        } else {
+          doSwitch();
+        }
       });
     });
 
@@ -2246,7 +2361,7 @@
           <div class="yc-profile-head-row">
             <div class="yc-profile-title-wrap">
               <h3 class="yc-profile-title">${esc(cli.name)}</h3>
-              <span class="yc-tag ${rt.running ? "yc-tag-ok" : ""}">${rt.running ? "已连接运行中 · PID " + (rt.pid || "-") : "未启动"}</span>
+              <span class="yc-tag ${rt.running ? "yc-tag-ok" : rt.state === "error" ? "yc-tag-danger" : ""}">${rt.running ? "进程运行中 · PID " + (rt.pid || "-") + " · 在网规则 " + ((rt.tunnelStats || []).filter((x) => x.status === "running").length) + " 条" : rt.state === "error" ? "异常退出" : "未启动"}</span>
               <span class="yc-tag yc-tag-pink">${esc((cli.protocol || "tcp").toUpperCase())}</span>
               ${remoteAllowed ? `<span class="yc-tag">已开启服务端连接远控</span>` : `<span class="yc-tag yc-tag-warn">仅本地管理</span>`}
               ${STATE.clientDraftDirty ? `<span class="yc-tag yc-tag-warn">有未保存修改</span>` : ""}
@@ -2570,10 +2685,15 @@
       b.addEventListener("click", async () => {
         const target = filtered[Number(b.dataset.tunToggle)];
         if (!target) return;
+        const prevEnabled = target.enabled;
         target.enabled = !target.enabled;
         try {
           await ctxCallbacks.onSaveClient(cli);
-        } catch (_e) {}
+        } catch (err) {
+          target.enabled = prevEnabled;
+          toast(err.message || "保存隧道开关状态失败", true);
+          renderClientTunnelsSection(container, cli, ctxCallbacks);
+        }
       });
     });
 
@@ -2591,10 +2711,15 @@
         const found = (cli.tunnels || []).find((x) => (x.id || x.name) === key);
         if (!found) return;
         confirmModal("删除隧道规则", `确定删除规则「${found.name}」吗？`, "确认删除", async () => {
+          const backupTunnels = deepClone(cli.tunnels || []);
           cli.tunnels = (cli.tunnels || []).filter((x) => (x.id || x.name) !== key);
           try {
             await ctxCallbacks.onSaveClient(cli);
-          } catch (_e) {}
+          } catch (err) {
+            cli.tunnels = backupTunnels;
+            toast(err.message || "删除隧道规则失败", true);
+            renderClientTunnelsSection(container, cli, ctxCallbacks);
+          }
         });
       });
     });
@@ -2960,13 +3085,73 @@
 
       dlg.querySelectorAll("[data-modal-close]").forEach((b) => b.addEventListener("click", closeModal));
 
-      const syncBasicBeforeRerender = () => {
-        tunDraft.name = dlg.querySelector("#tmName").value.trim();
-        tunDraft.enabled = dlg.querySelector("#tmEnabled").checked;
+      const collectModalIntoDraft = () => {
+        if (dlg.querySelector("#tmName")) tunDraft.name = dlg.querySelector("#tmName").value.trim();
+        if (dlg.querySelector("#tmEnabled")) tunDraft.enabled = dlg.querySelector("#tmEnabled").checked;
+        const val = (sel) => (dlg.querySelector(sel) ? dlg.querySelector(sel).value.trim() : "");
+        const has = (sel) => Boolean(dlg.querySelector(sel));
+        const num = (sel) => (dlg.querySelector(sel) && dlg.querySelector(sel).value.trim() !== "" ? parseInt(dlg.querySelector(sel).value, 10) || 0 : 0);
+        const chk = (sel) => Boolean(dlg.querySelector(sel) && dlg.querySelector(sel).checked);
+
+        if (has("#tmEnc")) tunDraft.useEncryption = chk("#tmEnc");
+        if (has("#tmComp")) tunDraft.useCompression = chk("#tmComp");
+
+        if ((tunDraft.mode || "proxy") === "visitor") {
+          if (has("#tmServerName")) tunDraft.serverName = val("#tmServerName");
+          if (has("#tmServerUser")) tunDraft.serverUser = val("#tmServerUser");
+          if (has("#tmSecretKey")) tunDraft.secretKey = val("#tmSecretKey");
+          if (has("#tmLocalIP")) tunDraft.localIP = val("#tmLocalIP") || "127.0.0.1";
+          if (has("#tmLocalPort")) tunDraft.localPort = parseInt(dlg.querySelector("#tmLocalPort").value, 10) || 0;
+          if (has("#tmVisitorProto")) tunDraft.visitorProtocol = val("#tmVisitorProto");
+          if (has("#tmKeepOpen")) tunDraft.keepTunnelOpen = chk("#tmKeepOpen");
+          if (has("#tmMaxRetries")) tunDraft.maxRetriesAnHour = num("#tmMaxRetries");
+          if (has("#tmMinRetry")) tunDraft.minRetryInterval = num("#tmMinRetry");
+          if (has("#tmFallbackTo")) tunDraft.fallbackTo = val("#tmFallbackTo");
+          if (has("#tmFallbackMs")) tunDraft.fallbackTimeoutMs = num("#tmFallbackMs");
+        } else {
+          if (has("#tmLocalIP")) tunDraft.localIP = val("#tmLocalIP") || "127.0.0.1";
+          if (has("#tmLocalPort")) tunDraft.localPort = num("#tmLocalPort");
+          if (has("#tmPlugPath")) tunDraft.pluginLocalPath = val("#tmPlugPath");
+          if (has("#tmPlugAddr")) tunDraft.pluginLocalAddr = val("#tmPlugAddr");
+          if (has("#tmPlugPrefix")) tunDraft.pluginStripPrefix = val("#tmPlugPrefix");
+          if (has("#tmPlugUser")) tunDraft.pluginUser = val("#tmPlugUser");
+          if (has("#tmPlugPass")) tunDraft.pluginPassword = val("#tmPlugPass");
+          if (has("#tmPlugCrt")) tunDraft.pluginCrtPath = val("#tmPlugCrt");
+          if (has("#tmPlugKey")) tunDraft.pluginKeyPath = val("#tmPlugKey");
+          if (has("#tmRemotePort")) tunDraft.remotePort = num("#tmRemotePort");
+          if (has("#tmRangeLocal")) tunDraft.portRangeLocal = val("#tmRangeLocal");
+          if (has("#tmRangeRemote")) tunDraft.portRangeRemote = val("#tmRangeRemote");
+          if (has("#tmDomains")) tunDraft.customDomains = val("#tmDomains").split(",").map((s) => s.trim()).filter(Boolean);
+          if (has("#tmSubDomain")) tunDraft.subDomain = val("#tmSubDomain");
+          if (has("#tmLocations")) tunDraft.locations = val("#tmLocations").split(",").map((s) => s.trim()).filter(Boolean);
+          if (has("#tmHostRewrite")) tunDraft.hostHeaderRewrite = val("#tmHostRewrite");
+          if (has("#tmHttpUser")) tunDraft.httpUser = val("#tmHttpUser");
+          if (has("#tmHttpPass")) tunDraft.httpPassword = val("#tmHttpPass");
+          if (has("#tmRouteUser")) tunDraft.routeByHTTPUser = val("#tmRouteUser");
+          if (has("#tmSecretKey")) tunDraft.secretKey = val("#tmSecretKey");
+          if (has("#tmAllowUsers")) tunDraft.allowUsers = val("#tmAllowUsers").split(",").map((s) => s.trim()).filter(Boolean);
+          if (has("#tmBwLimit")) {
+            tunDraft.bandwidthLimit = val("#tmBwLimit");
+            tunDraft.bandwidthLimitKB = 0;
+          }
+          if (has("#tmBwMode")) tunDraft.bandwidthLimitMode = val("#tmBwMode") || "client";
+          if (has("#tmProxyProto")) tunDraft.proxyProtocolVersion = val("#tmProxyProto");
+          if (has("#tmLbGroup")) tunDraft.loadBalancerGroup = val("#tmLbGroup");
+          if (has("#tmLbKey")) tunDraft.loadBalancerGroupKey = val("#tmLbKey");
+          if (has("#tmHcType")) tunDraft.healthCheckType = val("#tmHcType");
+          if (has("#tmHcPath")) tunDraft.healthCheckPath = val("#tmHcPath");
+          if (has("#tmHcInt")) tunDraft.healthCheckIntervalSeconds = num("#tmHcInt");
+          if (has("#tmHcTo")) tunDraft.healthCheckTimeoutSeconds = num("#tmHcTo");
+          if (has("#tmHcFail")) tunDraft.healthCheckMaxFailed = num("#tmHcFail");
+          if (has("#tmReqHeaders")) tunDraft.requestHeaders = linesToMap(dlg.querySelector("#tmReqHeaders").value);
+          if (has("#tmRespHeaders")) tunDraft.responseHeaders = linesToMap(dlg.querySelector("#tmRespHeaders").value);
+          if (has("#tmMetas")) tunDraft.metadatas = linesToMap(dlg.querySelector("#tmMetas").value);
+          if (has("#tmExtra")) tunDraft.extraToml = dlg.querySelector("#tmExtra").value;
+        }
       };
 
       dlg.querySelector("#tmMode").addEventListener("change", (e) => {
-        syncBasicBeforeRerender();
+        collectModalIntoDraft();
         tunDraft.mode = e.target.value;
         if (tunDraft.mode === "visitor" && !["xtcp", "stcp", "sudp"].includes(tunDraft.type)) {
           tunDraft.type = "xtcp";
@@ -2974,108 +3159,49 @@
         renderBody(dlg);
       });
       dlg.querySelector("#tmType").addEventListener("change", (e) => {
-        syncBasicBeforeRerender();
+        collectModalIntoDraft();
         tunDraft.type = e.target.value;
         renderBody(dlg);
       });
       const plugSel = dlg.querySelector("#tmPlugin");
       if (plugSel) {
         plugSel.addEventListener("change", (e) => {
-          syncBasicBeforeRerender();
+          collectModalIntoDraft();
           tunDraft.plugin = e.target.value;
           renderBody(dlg);
         });
       }
 
       dlg.querySelector("#tmSaveBtn").addEventListener("click", async () => {
-        const name = dlg.querySelector("#tmName").value.trim();
-        if (!name) {
+        collectModalIntoDraft();
+        if (!tunDraft.name) {
           toast("请填写隧道规则名称", true);
           return;
         }
-        tunDraft.name = name;
-        tunDraft.enabled = dlg.querySelector("#tmEnabled").checked;
-        const val = (sel) => (dlg.querySelector(sel) ? dlg.querySelector(sel).value.trim() : "");
-        const num = (sel) => (dlg.querySelector(sel) && dlg.querySelector(sel).value.trim() !== "" ? parseInt(dlg.querySelector(sel).value, 10) || 0 : 0);
-        const chk = (sel) => Boolean(dlg.querySelector(sel) && dlg.querySelector(sel).checked);
-
-        tunDraft.useEncryption = chk("#tmEnc");
-        tunDraft.useCompression = chk("#tmComp");
-
-        if ((tunDraft.mode || "proxy") === "visitor") {
-          tunDraft.serverName = val("#tmServerName");
-          tunDraft.serverUser = val("#tmServerUser");
-          tunDraft.secretKey = val("#tmSecretKey");
-          tunDraft.localIP = val("#tmLocalIP") || "127.0.0.1";
-          tunDraft.localPort = dlg.querySelector("#tmLocalPort") ? parseInt(dlg.querySelector("#tmLocalPort").value, 10) || 0 : 17777;
-          tunDraft.visitorProtocol = val("#tmVisitorProto");
-          tunDraft.keepTunnelOpen = chk("#tmKeepOpen");
-          tunDraft.maxRetriesAnHour = num("#tmMaxRetries");
-          tunDraft.minRetryInterval = num("#tmMinRetry");
-          tunDraft.fallbackTo = val("#tmFallbackTo");
-          tunDraft.fallbackTimeoutMs = num("#tmFallbackMs");
-        } else {
-          if (!tunDraft.plugin) {
-            tunDraft.localIP = val("#tmLocalIP") || "127.0.0.1";
-            tunDraft.localPort = num("#tmLocalPort");
-          } else {
-            tunDraft.pluginLocalPath = val("#tmPlugPath");
-            tunDraft.pluginLocalAddr = val("#tmPlugAddr");
-            tunDraft.pluginStripPrefix = val("#tmPlugPrefix");
-            tunDraft.pluginUser = val("#tmPlugUser");
-            tunDraft.pluginPassword = val("#tmPlugPass");
-            tunDraft.pluginCrtPath = val("#tmPlugCrt");
-            tunDraft.pluginKeyPath = val("#tmPlugKey");
-          }
-          tunDraft.remotePort = num("#tmRemotePort");
-          tunDraft.portRangeLocal = val("#tmRangeLocal");
-          tunDraft.portRangeRemote = val("#tmRangeRemote");
-          if (dlg.querySelector("#tmDomains")) {
-            tunDraft.customDomains = val("#tmDomains").split(",").map((s) => s.trim()).filter(Boolean);
-          }
-          if (dlg.querySelector("#tmSubDomain")) tunDraft.subDomain = val("#tmSubDomain");
-          if (dlg.querySelector("#tmLocations")) {
-            tunDraft.locations = val("#tmLocations").split(",").map((s) => s.trim()).filter(Boolean);
-          }
-          if (dlg.querySelector("#tmHostRewrite")) tunDraft.hostHeaderRewrite = val("#tmHostRewrite");
-          if (dlg.querySelector("#tmHttpUser")) tunDraft.httpUser = val("#tmHttpUser");
-          if (dlg.querySelector("#tmHttpPass")) tunDraft.httpPassword = val("#tmHttpPass");
-          if (dlg.querySelector("#tmRouteUser")) tunDraft.routeByHTTPUser = val("#tmRouteUser");
-          if (dlg.querySelector("#tmSecretKey")) tunDraft.secretKey = val("#tmSecretKey");
-          if (dlg.querySelector("#tmAllowUsers")) {
-            tunDraft.allowUsers = val("#tmAllowUsers").split(",").map((s) => s.trim()).filter(Boolean);
-          }
-          tunDraft.bandwidthLimit = val("#tmBwLimit");
-          tunDraft.bandwidthLimitKB = 0;
-          tunDraft.bandwidthLimitMode = val("#tmBwMode") || "client";
-          tunDraft.proxyProtocolVersion = val("#tmProxyProto");
-          tunDraft.loadBalancerGroup = val("#tmLbGroup");
-          tunDraft.loadBalancerGroupKey = val("#tmLbKey");
-          tunDraft.healthCheckType = val("#tmHcType");
-          tunDraft.healthCheckPath = val("#tmHcPath");
-          tunDraft.healthCheckIntervalSeconds = num("#tmHcInt");
-          tunDraft.healthCheckTimeoutSeconds = num("#tmHcTo");
-          tunDraft.healthCheckMaxFailed = num("#tmHcFail");
-          if (dlg.querySelector("#tmReqHeaders")) tunDraft.requestHeaders = linesToMap(dlg.querySelector("#tmReqHeaders").value);
-          if (dlg.querySelector("#tmRespHeaders")) tunDraft.responseHeaders = linesToMap(dlg.querySelector("#tmRespHeaders").value);
-          if (dlg.querySelector("#tmMetas")) tunDraft.metadatas = linesToMap(dlg.querySelector("#tmMetas").value);
-          if (dlg.querySelector("#tmExtra")) tunDraft.extraToml = dlg.querySelector("#tmExtra").value;
+        cli.tunnels = cli.tunnels || [];
+        // F32: Block duplicate tunnel name collisions across distinct IDs; match existing entry strictly by ID!
+        const dup = cli.tunnels.find((x) => x.name === tunDraft.name && (!tunDraft.id || x.id !== tunDraft.id));
+        if (dup) {
+          toast(`已存在同名规则「${tunDraft.name}」，请更换名称后再保存`, true);
+          return;
         }
 
-        cli.tunnels = cli.tunnels || [];
-        const existingIdx = cli.tunnels.findIndex((x) => (tunDraft.id && x.id === tunDraft.id) || x.name === tunDraft.name);
+        const backupTunnels = deepClone(cli.tunnels);
+        const existingIdx = tunDraft.id ? cli.tunnels.findIndex((x) => x.id === tunDraft.id) : -1;
         if (existingIdx >= 0) {
-          if (!tunDraft.id) tunDraft.id = cli.tunnels[existingIdx].id;
           cli.tunnels[existingIdx] = tunDraft;
         } else {
           tunDraft.id = "tun-" + Math.random().toString(16).slice(2, 10);
           cli.tunnels.push(tunDraft);
         }
 
-        closeModal();
         try {
           await ctxCallbacks.onSaveClient(cli);
-        } catch (_e) {}
+          closeModal();
+        } catch (err) {
+          cli.tunnels = backupTunnels;
+          toast(err.message || "保存隧道规则失败", true);
+        }
       });
     };
 
@@ -3320,7 +3446,7 @@
         </div>
       </div>`;
 
-    const liveToml = renderClientTOMLLive(cli);
+    const liveToml = STATE.cliTomlDirty && STATE.cliTomlRaw ? STATE.cliTomlRaw : renderClientTOMLLive(cli);
     const rightHTML = `
       <div class="yc-toml-studio">
         <div class="yc-toml-head">
@@ -3344,10 +3470,17 @@
 
     container.innerHTML = `<div class="yc-studio-split">${leftHTML}${rightHTML}</div>`;
 
+    const cliTaEl = container.querySelector("#cliTomlTextarea");
+    if (cliTaEl) {
+      cliTaEl.addEventListener("input", () => {
+        STATE.cliTomlDirty = true;
+        STATE.cliTomlRaw = cliTaEl.value;
+      });
+    }
     const syncPreview = () => {
       if (!ctxCallbacks.isRemote) STATE.clientDraftDirty = true;
       const ta = container.querySelector("#cliTomlTextarea");
-      if (ta && document.activeElement !== ta) {
+      if (ta && document.activeElement !== ta && !STATE.cliTomlDirty) {
         ta.value = renderClientTOMLLive(cli);
       }
     };
@@ -3424,8 +3557,14 @@
       });
     }
 
-    container.querySelector("#cliStudioSaveFormBtn").addEventListener("click", () => {
-      ctxCallbacks.onSaveClient(cli).catch(() => {});
+    container.querySelector("#cliStudioSaveFormBtn").addEventListener("click", async () => {
+      try {
+        await ctxCallbacks.onSaveClient(cli);
+        STATE.cliTomlDirty = false;
+        STATE.cliTomlRaw = "";
+      } catch (err) {
+        toast(err.message || "保存客户端配置失败", true);
+      }
     });
     container.querySelector("#cliTomlCopyBtn").addEventListener("click", () => {
       copyText(container.querySelector("#cliTomlTextarea").value, "frpc.toml");
@@ -3435,15 +3574,23 @@
         const raw = container.querySelector("#cliTomlTextarea").value;
         const out = await apiFetch("/api/toml/parse", { method: "POST", body: { kind: "frpc", prevClient: cli, toml: raw } });
         Object.assign(cli, out.client);
+        STATE.cliTomlDirty = false;
+        STATE.cliTomlRaw = "";
         toast("已将 frpc.toml 反向解析同步回 UI 表单与隧道列表");
         renderClientStudioSection(container, cli, ctxCallbacks);
       } catch (err) {
         toast(err.message, true);
       }
     });
-    container.querySelector("#cliTomlSaveBtn").addEventListener("click", () => {
-      const raw = container.querySelector("#cliTomlTextarea").value;
-      ctxCallbacks.onSaveClientTOML(raw).catch(() => {});
+    container.querySelector("#cliTomlSaveBtn").addEventListener("click", async () => {
+      try {
+        const raw = container.querySelector("#cliTomlTextarea").value;
+        await ctxCallbacks.onSaveClientTOML(raw);
+        STATE.cliTomlDirty = false;
+        STATE.cliTomlRaw = "";
+      } catch (err) {
+        toast(err.message || "保存 frpc.toml 失败", true);
+      }
     });
   }
 
@@ -3597,10 +3744,11 @@
 
     main.innerHTML = html;
 
-    STATE.servers.forEach((_, idx) => {
+    STATE.servers.forEach((srv, idx) => {
       const btn = main.querySelector("#jumpP2PFromSrv_" + idx);
       if (btn) {
         btn.addEventListener("click", () => {
+          STATE.selectedServerId = srv.id;
           STATE.topologyTab = "p2pWizard";
           renderTopologyWorkspace();
         });
@@ -3708,6 +3856,10 @@
             <input id="p2pFallback" type="checkbox" checked />
             <span>同时配置 STCP 自动回退保底通道 (严格对称型 NAT 下 800ms 无缝回退不断连)</span>
           </label>
+          <label class="yc-switch-label">
+            <input id="p2pOverwrite" type="checkbox" />
+            <span>允许覆盖同名已有 P2P 规则 (默认重名时拦截保护)</span>
+          </label>
         </div>
 
         <button type="button" id="p2pExecuteBtn" class="yc-btn yc-btn-primary">
@@ -3719,7 +3871,7 @@
             ? `<div style="margin-top:20px;padding:16px;border-radius:12px;background:var(--yc-code-bg);color:#f4f2ff;">
                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                    <strong style="color:#ff9ec0;font-size:13px;">
-                     配对就绪 · ${STATE.lastP2PResult.visitorApplied ? "已双端远控自动下发并热重载！" : "已下发被访问端，可将下方 Visitor 配置交给发起端 E 本地导入"}
+                     配对就绪 · ${STATE.lastP2PResult.hostApplied && STATE.lastP2PResult.visitorApplied ? "已双端远控自动下发并热重载！" : STATE.lastP2PResult.hostApplied ? "已下发被访问端，请将下方 Visitor 配置交给发起端本地导入" : STATE.lastP2PResult.visitorApplied ? "已下发访问发起端，请确保被访问端也配置对应代理规则" : "已生成配对配置片段（未自动下发被访问端）"}
                    </strong>
                    <button type="button" class="yc-btn yc-btn-ghost-dark yc-btn-sm" id="copyP2PSnippetBtn">复制对端 TOML</button>
                  </div>
@@ -3753,7 +3905,8 @@
             visitorBindIP: "127.0.0.1",
             visitorBindPort: parseInt(main.querySelector("#p2pVisitorPort").value, 10) || 17777,
             keepTunnelOpen: main.querySelector("#p2pKeepOpen").checked,
-            enableStcpFallback: main.querySelector("#p2pFallback").checked
+            enableStcpFallback: main.querySelector("#p2pFallback").checked,
+            overwrite: main.querySelector("#p2pOverwrite").checked
           }
         });
         STATE.lastP2PResult = res;
@@ -3879,6 +4032,7 @@
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;">
             <button type="button" class="yc-btn yc-btn-primary yc-btn-sm" id="newSchemeModalBtn">+ 新建配置方案</button>
+            <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" id="importSchemeJsonBtn">导入方案 JSON</button>
             <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" id="exportSchemeJsonBtn">导出当前 JSON</button>
           </div>
         </div>
@@ -3914,6 +4068,67 @@
         </div>
       </div>`;
 
+    main.querySelector("#importSchemeJsonBtn").addEventListener("click", () => {
+      openModal(
+        `<div class="yc-modal-head">
+           <h3 class="yc-modal-title">导入工作区配置方案 JSON</h3>
+           <button type="button" class="yc-btn yc-btn-outline yc-btn-sm" data-modal-close>关闭</button>
+         </div>
+         <label class="yc-field">
+           <span class="yc-field-label">选择导出的 JSON 方案文件</span>
+           <input id="impJsonFile" type="file" accept=".json,application/json" />
+         </label>
+         <label class="yc-field">
+           <span class="yc-field-label">保存方案文件名 (留空自动按原文件名保存)</span>
+           <input id="impJsonSlug" type="text" placeholder="如 backup-prod" />
+         </label>
+         <div class="yc-check-row" style="margin:8px 0 4px;">
+           <label class="yc-switch-label">
+             <input id="impJsonActivate" type="checkbox" checked />
+             <span>导入后立即切换启用该方案</span>
+           </label>
+         </div>
+         <div class="yc-modal-foot">
+           <button type="button" class="yc-btn yc-btn-outline" data-modal-close>取消</button>
+           <button type="button" id="impJsonConfirmBtn" class="yc-btn yc-btn-primary">上传并导入</button>
+         </div>`,
+        (dlg) => {
+          const fileInp = dlg.querySelector("#impJsonFile");
+          const slugInp = dlg.querySelector("#impJsonSlug");
+          fileInp.addEventListener("change", () => {
+            const f = fileInp.files && fileInp.files[0];
+            if (f && !slugInp.value.trim()) {
+              slugInp.value = f.name.replace(/\.json$/i, "");
+            }
+          });
+          dlg.querySelector("#impJsonConfirmBtn").addEventListener("click", async () => {
+            const f = fileInp.files && fileInp.files[0];
+            if (!f) {
+              toast("请先选择一个 .json 配置文件", true);
+              return;
+            }
+            try {
+              const txt = await f.text();
+              const parsed = JSON.parse(txt);
+              await apiFetch("/api/configs/import-json", {
+                method: "POST",
+                body: {
+                  fileName: slugInp.value.trim() || f.name,
+                  content: parsed,
+                  activate: dlg.querySelector("#impJsonActivate").checked
+                }
+              });
+              closeModal();
+              toast("已成功导入工作区配置方案！");
+              await refreshState(true);
+            } catch (err) {
+              toast("导入 JSON 失败: " + err.message, true);
+            }
+          });
+        },
+        480
+      );
+    });
     main.querySelector("#exportSchemeJsonBtn").addEventListener("click", async () => {
       try {
         const docData = await apiFetch("/api/configs/export-json");

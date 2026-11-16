@@ -169,6 +169,11 @@ func main() {
 		}
 		os.Exit(1)
 	}
+	if code := app.ExitCode(); code != 0 {
+		app.Close()
+		_ = ln.Close()
+		os.Exit(code)
+	}
 }
 
 func resolveDataDir(explicit string) string {

@@ -112,6 +112,8 @@ type ConnPolicy struct {
 	ExpiresAt        string `json:"expiresAt,omitempty"`
 	RecordedInBytes  int64  `json:"recordedInBytes,omitempty"`
 	RecordedOutBytes int64  `json:"recordedOutBytes,omitempty"`
+	LastRawInBytes   int64  `json:"lastRawInBytes,omitempty"`
+	LastRawOutBytes  int64  `json:"lastRawOutBytes,omitempty"`
 	Note             string `json:"note,omitempty"`
 }
 
@@ -311,8 +313,8 @@ type TunnelLiveStatus struct {
 	Name       string `json:"name"`
 	Type       string `json:"type"`
 	Status     string `json:"status"`
-	LocalAddr  string `json:"localAddr,omitempty"`
-	RemoteAddr string `json:"remoteAddr,omitempty"`
+	LocalAddr  string `json:"local_addr,omitempty"`
+	RemoteAddr string `json:"remote_addr,omitempty"`
 	Plugin     string `json:"plugin,omitempty"`
 	Err        string `json:"err,omitempty"`
 }

@@ -25,7 +25,7 @@ func canPlatformSelfUpdateApp(_ string) (bool, string, string) {
 	return true, "windows-installer", ""
 }
 
-func executePlatformSelfUpdate(pkgPath, currentExePath, listenSpec string, _ []string, _ func()) error {
+func executePlatformSelfUpdate(pkgPath, currentExePath, listenSpec string, _ []string, _ func(exitCode int)) error {
 	head, err := os.ReadFile(pkgPath)
 	if err != nil || len(head) < 64 || head[0] != 'M' || head[1] != 'Z' {
 		return errors.New("下载的 Windows 安装包文件头校验无效")

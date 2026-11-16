@@ -32,7 +32,7 @@ func canPlatformSelfUpdateApp(exePath string) (bool, string, string) {
 	return true, "linux-binary", ""
 }
 
-func executePlatformSelfUpdate(pkgPath, currentExePath, _ string, origArgs []string, onShutdown func()) error {
+func executePlatformSelfUpdate(pkgPath, currentExePath, _ string, origArgs []string, onRestartShutdown func(exitCode int)) error {
 	if !strings.HasSuffix(pkgPath, ".tar.gz") {
 		return errors.New("当前 Linux 模式需要 .tar.gz 便携更新包")
 	}
@@ -117,8 +117,12 @@ func executePlatformSelfUpdate(pkgPath, currentExePath, _ string, origArgs []str
 			re.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 			_ = re.Start()
 		}
-		if onShutdown != nil {
-			onShutdown()
+		if onRestartShutdown != nil {
+			if os.Getenv("INVOCATION_ID") != "" {
+				onRestartShutdown(42)
+			} else {
+				onRestartShutdown(0)
+			}
 		}
 	}()
 	return nil

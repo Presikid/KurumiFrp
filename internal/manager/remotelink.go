@@ -78,6 +78,7 @@ type P2PPairRequest struct {
 	VisitorBindPort    int    `json:"visitorBindPort"`    // e.g., 17777
 	KeepTunnelOpen     bool   `json:"keepTunnelOpen"`     // keep XTCP hole-punched link warm
 	EnableSTCPFallback bool   `json:"enableStcpFallback"` // auto-create companion STCP fallback tunnel + fallbackTo
+	Overwrite          bool   `json:"overwrite,omitempty"`
 }
 
 func (rs *RuntimeSupervisor) startLoopbackAgentServer() error {
@@ -248,7 +249,11 @@ func (rs *RuntimeSupervisor) handleClientAgentHTTP(w http.ResponseWriter, r *htt
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		_ = rs.ReloadOrRestartClient(saved)
+		if err := rs.ReloadOrRestartClient(saved); err != nil {
+			rs.notifyChange()
+			writeError(w, http.StatusBadRequest, "远端配置预检或重载失败: "+err.Error())
+			return
+		}
 		rs.notifyChange()
 		sanitized := saved
 		sanitized.CtrlSecret = ""
@@ -299,7 +304,11 @@ func (rs *RuntimeSupervisor) handleClientAgentHTTP(w http.ResponseWriter, r *htt
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		_ = rs.ReloadOrRestartClient(saved)
+		if err := rs.ReloadOrRestartClient(saved); err != nil {
+			rs.notifyChange()
+			writeError(w, http.StatusBadRequest, "远端配置预检或重载失败: "+err.Error())
+			return
+		}
 		rs.notifyChange()
 		sanitized := saved
 		sanitized.CtrlSecret = ""
@@ -585,7 +594,18 @@ func (rs *RuntimeSupervisor) ensureVisitorBridge(srv ServerProfile, sess remoteC
 	if srv.TLSForce {
 		tb.WriteString("transport.tls.enable = true\n")
 	}
-	if strings.TrimSpace(srv.AuthToken) != "" {
+	authMethod := strings.ToLower(strings.TrimSpace(srv.AuthMethod))
+	if authMethod == "oidc" || (authMethod == "" && strings.TrimSpace(srv.OIDCIssuer) != "") {
+		return 0, errors.New("当前 frps 启用了 OIDC 鉴权，服务端无法自动签发客户端 OIDC 令牌建立反向桥接；请改用 Token / 令牌文件鉴权或在客户端本机管理")
+	}
+	if scopes := cleanStringSlice(srv.AuthAdditionalScopes); len(scopes) > 0 {
+		fmt.Fprintf(&tb, "auth.additionalScopes = %s\n", tomlStringArray(scopes))
+	}
+	if strings.TrimSpace(srv.AuthTokenSourceFile) != "" {
+		tb.WriteString("auth.method = \"token\"\n")
+		tb.WriteString("auth.tokenSource.type = \"file\"\n")
+		fmt.Fprintf(&tb, "auth.tokenSource.file.path = %s\n", tomlQuote(strings.TrimSpace(srv.AuthTokenSourceFile)))
+	} else if strings.TrimSpace(srv.AuthToken) != "" {
 		tb.WriteString("auth.method = \"token\"\n")
 		tb.WriteString("auth.token = \"{{ .Envs.KURUMI_BRIDGE_AUTH }}\"\n")
 		env = append(env, "KURUMI_BRIDGE_AUTH="+tomlInnerEscape(srv.AuthToken))
@@ -809,15 +829,64 @@ func (rs *RuntimeSupervisor) OrchestrateRemoteP2P(ctx context.Context, req P2PPa
 		return nil, errors.New("被访问端本地端口需在 1~65535 之间")
 	}
 
-	var hostUser string
-	if strings.TrimSpace(req.HostClientID) != "" {
+	// Pre-read both endpoints up front so we can check collisions (F17), align cross-user allowUsers (F16), and rollback cleanly on partial failure (F18)
+	var (
+		hasHost     = strings.TrimSpace(req.HostClientID) != ""
+		hasVisitor  = strings.TrimSpace(req.VisitorClientID) != ""
+		origHost    ClientProfile
+		hostProf    ClientProfile
+		vProf       ClientProfile
+		hostUser    string
+		visitorUser string
+	)
+
+	if hasHost {
 		snap, err := rs.FetchRemoteClient(ctx, req.ServerID, req.HostClientID)
 		if err != nil {
 			return nil, fmt.Errorf("读取被访问端 (%s) 配置失败: %w", req.HostClientID, err)
 		}
-		hostProf := snap.Profile
+		origHost = cloneClientProfile(snap.Profile)
+		hostProf = cloneClientProfile(snap.Profile)
 		hostUser = strings.TrimSpace(hostProf.User)
+		if !req.Overwrite {
+			for _, t := range hostProf.Tunnels {
+				if t.Name == baseName || (p2pType == "xtcp" && req.EnableSTCPFallback && t.Name == baseName+"-fallback") {
+					return nil, fmt.Errorf("被访问端已存在同名隧道 %q（如需覆盖已有规则请勾选允许覆盖同名规则或更换标识基名）", t.Name)
+				}
+			}
+		}
+	}
 
+	if hasVisitor {
+		vSnap, err := rs.FetchRemoteClient(ctx, req.ServerID, req.VisitorClientID)
+		if err != nil {
+			return nil, fmt.Errorf("读取访问发起端 (%s) 配置失败: %w", req.VisitorClientID, err)
+		}
+		vProf = cloneClientProfile(vSnap.Profile)
+		visitorUser = strings.TrimSpace(vProf.User)
+		if !req.Overwrite {
+			for _, t := range vProf.Tunnels {
+				if t.Name == baseName+"-visitor" || (p2pType == "xtcp" && req.EnableSTCPFallback && t.Name == baseName+"-fb-visitor") {
+					return nil, fmt.Errorf("访问发起端已存在同名访问端规则 %q（如需覆盖已有规则请勾选允许覆盖同名规则或更换标识基名）", t.Name)
+				}
+			}
+		}
+	}
+
+	// F16: Compute STCP/XTCP/SUDP allowUsers when FRP user namespaces differ (or when generating offline snippet for unknown peer user)
+	var hostAllowUsers []string
+	if !hasVisitor {
+		hostAllowUsers = []string{"*"}
+	} else if visitorUser != hostUser {
+		if visitorUser == "" {
+			hostAllowUsers = []string{"*"}
+		} else {
+			hostAllowUsers = []string{visitorUser}
+		}
+	}
+
+	hostApplied := false
+	if hasHost {
 		upsertTunnelRule(&hostProf.Tunnels, TunnelRule{
 			Name:           baseName,
 			Mode:           "proxy",
@@ -826,6 +895,7 @@ func (rs *RuntimeSupervisor) OrchestrateRemoteP2P(ctx context.Context, req P2PPa
 			LocalIP:        hostLocalIP,
 			LocalPort:      req.HostLocalPort,
 			SecretKey:      secret,
+			AllowUsers:     hostAllowUsers,
 			UseEncryption:  true,
 			UseCompression: true,
 			Note:           "由服务端 P2P 协同中心下发",
@@ -839,6 +909,7 @@ func (rs *RuntimeSupervisor) OrchestrateRemoteP2P(ctx context.Context, req P2PPa
 				LocalIP:        hostLocalIP,
 				LocalPort:      req.HostLocalPort,
 				SecretKey:      secret,
+				AllowUsers:     hostAllowUsers,
 				UseEncryption:  true,
 				UseCompression: true,
 				Note:           "XTCP 打洞回退保底通道",
@@ -847,6 +918,7 @@ func (rs *RuntimeSupervisor) OrchestrateRemoteP2P(ctx context.Context, req P2PPa
 		if _, _, err := rs.SaveRemoteClient(ctx, req.ServerID, req.HostClientID, hostProf, false); err != nil {
 			return nil, fmt.Errorf("下发被访问端 (%s) P2P 配置失败: %w", req.HostClientID, err)
 		}
+		hostApplied = true
 	}
 
 	visitorBindIP := nonEmptyStr(req.VisitorBindIP, "127.0.0.1")
@@ -892,18 +964,20 @@ func (rs *RuntimeSupervisor) OrchestrateRemoteP2P(ctx context.Context, req P2PPa
 	}
 
 	visitorApplied := false
-	if strings.TrimSpace(req.VisitorClientID) != "" {
-		vSnap, err := rs.FetchRemoteClient(ctx, req.ServerID, req.VisitorClientID)
-		if err != nil {
-			return nil, fmt.Errorf("读取访问发起端 (%s) 配置失败: %w", req.VisitorClientID, err)
-		}
-		vProf := vSnap.Profile
+	if hasVisitor {
 		if fallbackVisitor != nil {
 			upsertTunnelRule(&vProf.Tunnels, *fallbackVisitor)
 		}
 		upsertTunnelRule(&vProf.Tunnels, visitorRule)
 		if _, _, err := rs.SaveRemoteClient(ctx, req.ServerID, req.VisitorClientID, vProf, false); err != nil {
-			return nil, fmt.Errorf("下发访问发起端 (%s) P2P 配置失败: %w", req.VisitorClientID, err)
+			// F18: Automatically rollback step-1 host changes so half-configured rules are never left behind!
+			if hostApplied {
+				_, _, rbErr := rs.SaveRemoteClient(ctx, req.ServerID, req.HostClientID, origHost, false)
+				if rbErr != nil {
+					return nil, fmt.Errorf("下发访问发起端失败 (%v)，且回滚被访问端失败 (%v)", err, rbErr)
+				}
+			}
+			return nil, fmt.Errorf("下发访问发起端 (%s) P2P 配置失败（已自动回滚被访问端变更）: %w", req.VisitorClientID, err)
 		}
 		visitorApplied = true
 	}
@@ -930,10 +1004,18 @@ func (rs *RuntimeSupervisor) OrchestrateRemoteP2P(ctx context.Context, req P2PPa
 		"p2pType":            p2pType,
 		"secretKey":          secret,
 		"serverUser":         hostUser,
+		"hostApplied":        hostApplied,
 		"visitorApplied":     visitorApplied,
 		"visitorRule":        visitorRule,
 		"visitorTomlSnippet": visitorSnippet,
 	}, nil
+}
+
+func cloneClientProfile(in ClientProfile) ClientProfile {
+	raw, _ := json.Marshal(in)
+	var out ClientProfile
+	_ = json.Unmarshal(raw, &out)
+	return out
 }
 
 func upsertTunnelRule(list *[]TunnelRule, rule TunnelRule) {
