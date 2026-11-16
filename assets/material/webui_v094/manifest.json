@@ -1,0 +1,857 @@
+{
+  "schemaVersion": 1,
+  "packVersion": "0.9.4",
+  "description": "KurumiFrp curated 35 original-resolution artworks & full-res transparent sticker cutouts for future HD resource pack upgrades.",
+  "totalAssets": 35,
+  "totalOriginalBytes": 26808998,
+  "totalCutoutBytes": 939362,
+  "assets": [
+    {
+      "id": "02",
+      "key": "k_02",
+      "category": "16:9",
+      "title": "午后花房红茶",
+      "subtitle": "Sunlit Conservatory Tea",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_02.webp",
+        "width": 1280,
+        "height": 720,
+        "sizeBytes": 160024,
+        "sha256": "51c265eb23c931a3d6a015acae78c5fdce54146c9ba49672d2afa33c2cba4c42"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/16x9_stage/k_02.jpg",
+        "width": 1376,
+        "height": 768,
+        "sizeBytes": 974791,
+        "sha256": "51fd5dbbe382a1dc32e58eb123218acacd62c1ca17dcadeebdb09a52bcf030d4"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "03",
+      "key": "k_03",
+      "category": "16:9",
+      "title": "放学后夕阳教室",
+      "subtitle": "After-School Sunset Classroom",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_03.webp",
+        "width": 1280,
+        "height": 720,
+        "sizeBytes": 99850,
+        "sha256": "6059f1ee957f5eda90f649f13bd60b15347cbc8c9fb954946e118017b83ccb2f"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/16x9_stage/k_03.jpg",
+        "width": 1376,
+        "height": 768,
+        "sizeBytes": 801744,
+        "sha256": "9e781968926eb5d710a53ac8656918b93718f4b9bef3ed0828778c60cb07b2fc"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "06",
+      "key": "k_06",
+      "category": "16:9",
+      "title": "樱花铁道口白裙",
+      "subtitle": "Sakura Railway Crossing",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_06.webp",
+        "width": 1280,
+        "height": 720,
+        "sizeBytes": 149630,
+        "sha256": "49f7fdf255ae447505a80820d60f57b85e7a486459f6bff1592ab6765f7c3301"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/16x9_stage/k_06.jpg",
+        "width": 1376,
+        "height": 768,
+        "sizeBytes": 962190,
+        "sha256": "327102f6a4d1152da0d2fe526a5585d56b0406fa364b2e49fa67c19817d8e548"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "07",
+      "key": "k_07",
+      "category": "16:9",
+      "title": "雨夜霓虹咖啡馆",
+      "subtitle": "Rainy Neon Café",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_07.webp",
+        "width": 1280,
+        "height": 720,
+        "sizeBytes": 71664,
+        "sha256": "f616beeb9f2fb7ed3f2a19a531b7d725cad368a9ac7717fa644ae6d1c76aba22"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/16x9_stage/k_07.jpg",
+        "width": 1376,
+        "height": 768,
+        "sizeBytes": 782311,
+        "sha256": "bef7d7f0defa9aacae9d5329616dc8b9675f3c47911016378e337c5286a2b870"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "08",
+      "key": "k_08",
+      "category": "16:9",
+      "title": "晴光花窗纯白礼拜堂",
+      "subtitle": "Sunlit Stained-Glass Chapel",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_08.webp",
+        "width": 1280,
+        "height": 720,
+        "sizeBytes": 102924,
+        "sha256": "b62880b32a6652fdc7493c669a48ff0cbcd8aa0b4eb70d91a0865cd5b1084749"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/16x9_stage/k_08.jpg",
+        "width": 1376,
+        "height": 768,
+        "sizeBytes": 816260,
+        "sha256": "d72890fec217e77b50a1ee44fa6a9abb10d810bc215789b2e40abb6d76339097"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "09",
+      "key": "k_09",
+      "category": "16:9",
+      "title": "银月彼岸花海",
+      "subtitle": "Full Moon Spider-Lily Field",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_09.webp",
+        "width": 1280,
+        "height": 720,
+        "sizeBytes": 107760,
+        "sha256": "8a6fbcdf0e4214417e419e3cec9f14917dd6e6abb1211a63527398155c4eb657"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/16x9_stage/k_09.jpg",
+        "width": 1376,
+        "height": 768,
+        "sizeBytes": 851929,
+        "sha256": "9526fe6eb157448fefa54091254231a6d4cb6e2f5809a31f05c2d7c8401a7996"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "10",
+      "key": "k_10",
+      "category": "16:9",
+      "title": "午后书桌与小黑猫",
+      "subtitle": "Afternoon Desk & Black Kitten",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_10.webp",
+        "width": 1280,
+        "height": 720,
+        "sizeBytes": 100328,
+        "sha256": "f7aac580f2ce2f846a3b49c21f2ae79128dd74ada786b7e4278a9ceff8222167"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/16x9_stage/k_10.jpg",
+        "width": 1376,
+        "height": 768,
+        "sizeBytes": 812958,
+        "sha256": "28e9da412309ee7f7a80505e9812bd4443962cf240ae307e1137bf6c2c055cc7"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "12",
+      "key": "k_12",
+      "category": "16:9",
+      "title": "极简双屏工作台",
+      "subtitle": "Minimalist Dual-Monitor Loft",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_12.webp",
+        "width": 1280,
+        "height": 720,
+        "sizeBytes": 68828,
+        "sha256": "1f283ec37e931f4f719b4bab1ec9e0a77d2de485ca24c229ec366a73626d5144"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/16x9_stage/k_12.jpg",
+        "width": 1376,
+        "height": 768,
+        "sizeBytes": 640020,
+        "sha256": "01b6e859e28ac264e941ad8707eed2a02ef7c72cad369df10d3d86277f3ee0c6"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "13",
+      "key": "k_13",
+      "category": "16:9",
+      "title": "晴空碧海白石露台",
+      "subtitle": "Azure Sea Stone Balcony",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_13.webp",
+        "width": 1280,
+        "height": 720,
+        "sizeBytes": 128512,
+        "sha256": "cac4e6c285f0d94d33b0c0094dd02c7e6cae8fe0c2e1068737828ad536d07ee1"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/16x9_stage/k_13.jpg",
+        "width": 1376,
+        "height": 768,
+        "sizeBytes": 905329,
+        "sha256": "94fd4bded4ed2677805c983ab31d08e73ed617208316167e3d2d79dab6bff0bc"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "15",
+      "key": "k_15",
+      "category": "16:9",
+      "title": "清晨阳光床畔",
+      "subtitle": "Morning Sunlight Bedroom",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_15.webp",
+        "width": 1280,
+        "height": 720,
+        "sizeBytes": 66386,
+        "sha256": "5a236ed41642eaa6d09144d1be2a10a8cfbe1377ee2f11069ed42667bcc2bfe2"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/16x9_stage/k_15.jpg",
+        "width": 1376,
+        "height": 768,
+        "sizeBytes": 666287,
+        "sha256": "f90ad30050b9add0914bdc6452cc70e2693726f0fd9ec57135ae80b64e401dba"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "16",
+      "key": "k_16",
+      "category": "16:9",
+      "title": "暮色钟楼露台",
+      "subtitle": "Twilight Clock-Tower Terrace",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_16.webp",
+        "width": 1280,
+        "height": 720,
+        "sizeBytes": 108498,
+        "sha256": "3666deab15dbf85a96a8d319240d399b569fbe9476fc0cee96a31c2543ad1fae"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/16x9_stage/k_16.jpg",
+        "width": 1376,
+        "height": 768,
+        "sizeBytes": 851584,
+        "sha256": "bb8aacdba833dd08151cf3c4ce22e8dac808a2b4869fb08c5ae63254dce1da09"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "17",
+      "key": "k_17",
+      "category": "3:4",
+      "title": "粉绒披肩挥手Q版",
+      "subtitle": "Pink Capelet Chibi",
+      "isSticker": true,
+      "embedded": {
+        "path": "web/assets/k_17.webp",
+        "width": 480,
+        "height": 640,
+        "sizeBytes": 36388,
+        "sha256": "e83b7ff0a383eb38c7a809fb6f30ad931426c6e3c1343de34e5f9ee41d6db457"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/3x4_portraits/k_17.jpg",
+        "width": 896,
+        "height": 1200,
+        "sizeBytes": 531997,
+        "sha256": "d9d357dd291578d233e19a781c03551c203c24b4f194054e13f2b45364071ee2"
+      },
+      "hdCutout": {
+        "path": "assets/material/webui_v094/cutouts_hd/k_17.webp",
+        "width": 896,
+        "height": 1200,
+        "sizeBytes": 146954,
+        "sha256": "59ff89dacff7061bff90d3d8690556a4fe51b08b0e452a18e64204fd11998a79"
+      }
+    },
+    {
+      "id": "23",
+      "key": "k_23",
+      "category": "3:4",
+      "title": "玫瑰庭院女仆红茶",
+      "subtitle": "Rose Garden Maid",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_23.webp",
+        "width": 540,
+        "height": 720,
+        "sizeBytes": 87214,
+        "sha256": "fcff41d345518c5b20b675871fe68cb7deab9f52bfb74350f6cb11f89d202617"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/3x4_portraits/k_23.jpg",
+        "width": 896,
+        "height": 1200,
+        "sizeBytes": 980077,
+        "sha256": "29ab090929617ffb427953f456e71f260037b2f9409c32f9f43bf85ed23509bb"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "25",
+      "key": "k_25",
+      "category": "3:4",
+      "title": "冬夜初雪红格围巾",
+      "subtitle": "Winter Snow Red Scarf",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_25.webp",
+        "width": 540,
+        "height": 720,
+        "sizeBytes": 49546,
+        "sha256": "e9a047945c247a55844479f57332a6886a2b093776715a0f6c1c4cf3d5ae0067"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/3x4_portraits/k_25.jpg",
+        "width": 896,
+        "height": 1200,
+        "sizeBytes": 750033,
+        "sha256": "51cb469178903be081f33f4f7426fc47b12f0e236e2855ab5d401cd4dc1773e3"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "26",
+      "key": "k_26",
+      "category": "3:4",
+      "title": "碧海晴空草帽白裙",
+      "subtitle": "Summer Sea Straw Hat",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_26.webp",
+        "width": 540,
+        "height": 720,
+        "sizeBytes": 62760,
+        "sha256": "3b4055eec2bb2553034094439c852b327c838b96ef9227de8f5a11af6347538a"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/3x4_portraits/k_26.jpg",
+        "width": 896,
+        "height": 1200,
+        "sizeBytes": 853188,
+        "sha256": "bd50b738659e98ca7c02afdf98a3e31773346b55d06a4e03537f3a6c8960d113"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "27",
+      "key": "k_27",
+      "category": "3:4",
+      "title": "猫耳卫衣与黑猫玩偶",
+      "subtitle": "Cat-Ear Hoodie & Plush",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_27.webp",
+        "width": 540,
+        "height": 720,
+        "sizeBytes": 50072,
+        "sha256": "92541bf5c12efdc43a4d5fc5688e1a5551893342aa0d94e345488486c0464619"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/3x4_portraits/k_27.jpg",
+        "width": 896,
+        "height": 1200,
+        "sizeBytes": 765194,
+        "sha256": "4cc39a18684bee0348472e45272256f3983b6458ae823b81d86b9ac694b55cc1"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "30",
+      "key": "k_30",
+      "category": "3:4",
+      "title": "樱花鸟居绯袴巫女",
+      "subtitle": "Sakura Torii Shrine Maiden",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_30.webp",
+        "width": 540,
+        "height": 720,
+        "sizeBytes": 64094,
+        "sha256": "d4f51a9d68ed6d672f34622a41db22060e0cd81cdef980a3a6f99d4f60951bb8"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/3x4_portraits/k_30.jpg",
+        "width": 896,
+        "height": 1200,
+        "sizeBytes": 836017,
+        "sha256": "fd4cd2c4916b179d3b05ccba523777f69fab37742e92231e2948518276088cd4"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "33",
+      "key": "k_33",
+      "category": "3:4",
+      "title": "草莓蛋糕甜点围裙",
+      "subtitle": "Patisserie Strawberry Cake",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_33.webp",
+        "width": 540,
+        "height": 720,
+        "sizeBytes": 57488,
+        "sha256": "7a9908ec6710cf648c215ab712b6e844442f696d69519ea88ba011dff119f90f"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/3x4_portraits/k_33.jpg",
+        "width": 896,
+        "height": 1200,
+        "sizeBytes": 778299,
+        "sha256": "ecb43c4d4d61e9867f542e70d585acd1a905a40777d222d3b9b0243af73acf47"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "34",
+      "key": "k_34",
+      "category": "3:4",
+      "title": "星夜漫天祈愿灯",
+      "subtitle": "Starry Sky Floating Lanterns",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_34.webp",
+        "width": 540,
+        "height": 720,
+        "sizeBytes": 58548,
+        "sha256": "3214a2dacd0fac96774b1c0a7dcb6042ba6f779241968aa9d524064857af0c20"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/3x4_portraits/k_34.jpg",
+        "width": 896,
+        "height": 1200,
+        "sizeBytes": 879551,
+        "sha256": "3d18bb8ae77359bd0a4230d3b6d91086c076fdab0490b0a3db9c0a28bd64d55f"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "35",
+      "key": "k_35",
+      "category": "3:4",
+      "title": "原画风轻提双马尾",
+      "subtitle": "Crimson Dress Twintails",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_35.webp",
+        "width": 540,
+        "height": 720,
+        "sizeBytes": 56804,
+        "sha256": "553d2a30d780101b41e24bb457360252dcec1e8c4d4c1aa1dba5e16139561f5a"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/3x4_portraits/k_35.jpg",
+        "width": 896,
+        "height": 1200,
+        "sizeBytes": 791506,
+        "sha256": "765417f710338648fff382815566dc6abe86b6a1a3c3e2dc2be520b2119a7957"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "36",
+      "key": "k_36",
+      "category": "3:4",
+      "title": "阳光花店玫瑰花束",
+      "subtitle": "Sunlit Flower Shop Bouquet",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_36.webp",
+        "width": 540,
+        "height": 720,
+        "sizeBytes": 94100,
+        "sha256": "46c87cd4facdc1a432c46fdf63fe9d500e63c0e63ea99a9f19ddc4c2969e366d"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/3x4_portraits/k_36.jpg",
+        "width": 896,
+        "height": 1200,
+        "sizeBytes": 1056690,
+        "sha256": "6d24401f4ca13c5c8c3e6e38d6c24d20f4726f2eed2f0161229d489ab5e85ec0"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "37",
+      "key": "k_37",
+      "category": "3:4",
+      "title": "白金室内乐小提琴",
+      "subtitle": "Chamber Hall Violin",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_37.webp",
+        "width": 540,
+        "height": 720,
+        "sizeBytes": 54964,
+        "sha256": "dfa3239af36c066ed7c22042272f6ea6f964a3fd3bb72eb3ab68d7a1b9735a7b"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/3x4_portraits/k_37.jpg",
+        "width": 896,
+        "height": 1200,
+        "sizeBytes": 787077,
+        "sha256": "508142209759920cf917a22bf2ba7ba1e5776dbcdcee8f3f7868bf926b57e5f8"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "41",
+      "key": "k_41",
+      "category": "4:3",
+      "title": "星夜红线P2P拓扑",
+      "subtitle": "Red Thread Network Topology",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_41.webp",
+        "width": 800,
+        "height": 600,
+        "sizeBytes": 63958,
+        "sha256": "54df035b8698cc7642ef63554cf263309d0ffc7429a6183c3400498e444f85ee"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/4x3_banners/k_41.jpg",
+        "width": 1200,
+        "height": 896,
+        "sizeBytes": 825828,
+        "sha256": "de57e0e17a2f0a815e4121352a8a01a9b9294f67b20b69605340d0827f99fbdf"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "43",
+      "key": "k_43",
+      "category": "4:3",
+      "title": "黄昏海景电车耳机",
+      "subtitle": "Sunset Sea Train Earphone",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_43.webp",
+        "width": 800,
+        "height": 600,
+        "sizeBytes": 48222,
+        "sha256": "a56d1c053ece911d24a1d08df2dac30a323956dab397b2b61394e90173387961"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/4x3_banners/k_43.jpg",
+        "width": 1200,
+        "height": 896,
+        "sizeBytes": 775779,
+        "sha256": "84986d88754072cc1f2fd422cc197cfb5b36e4fcc7e3d06ccb94931f1c8ab743"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "44",
+      "key": "k_44",
+      "category": "4:3",
+      "title": "阳光白木图书馆书梯",
+      "subtitle": "Sunlit White Library Ladder",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_44.webp",
+        "width": 800,
+        "height": 600,
+        "sizeBytes": 86296,
+        "sha256": "02e95c67f5d1a6c1f591a268d21c5b5f263a498608735f7457f310c8a6b83ef1"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/4x3_banners/k_44.jpg",
+        "width": 1200,
+        "height": 896,
+        "sizeBytes": 920697,
+        "sha256": "db5aba544ca0796436fb3c7045f7eb749b408b9027c5c49b2b506b24eae5b841"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "45",
+      "key": "k_45",
+      "category": "4:3",
+      "title": "露台马卡龙玫瑰茶歇",
+      "subtitle": "Balcony Macarons & Rose Tea",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_45.webp",
+        "width": 800,
+        "height": 600,
+        "sizeBytes": 99500,
+        "sha256": "96f10cb1f4cafd1c0e26c21ac84507171b3b09d2d480ca273b034f193da30e39"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/4x3_banners/k_45.jpg",
+        "width": 1200,
+        "height": 896,
+        "sizeBytes": 971318,
+        "sha256": "65d4c2e951ff8641b7d8a56a34a60d62a3cba4b9ec0e1fbb2115cdf8fa48d7d1"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "46",
+      "key": "k_46",
+      "category": "4:3",
+      "title": "夏日缘侧水手服弹珠汽水",
+      "subtitle": "Summer Veranda Ramune",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_46.webp",
+        "width": 800,
+        "height": 600,
+        "sizeBytes": 102094,
+        "sha256": "8fa05cc7eac06b1b43e20b6e3e26fbdb689501b8feea40fc1d8389f3ec8a7f06"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/4x3_banners/k_46.jpg",
+        "width": 1200,
+        "height": 896,
+        "sizeBytes": 1003131,
+        "sha256": "0e625153e85372c68d598976c1f43e136623dd1dce282266b1a0093c4f4226e2"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "47",
+      "key": "k_47",
+      "category": "1:1",
+      "title": "水彩抱枕轻甜插画",
+      "subtitle": "Watercolor Pillow Portrait",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_47.webp",
+        "width": 400,
+        "height": 400,
+        "sizeBytes": 29222,
+        "sha256": "d18f60492fd91e339c5db16fc26a425819c2ce784df5b579f89f15a37167d7a6"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/1x1_avatars_stickers/k_47.jpg",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 673274,
+        "sha256": "5462dcfe7672755e83ef515dd0a9d499a54b31940d6222b93cf10ef9e178a8ef"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "51",
+      "key": "k_51",
+      "category": "1:1",
+      "title": "金瞳小黑猫治愈头像",
+      "subtitle": "Black Kitten Avatar",
+      "isSticker": false,
+      "embedded": {
+        "path": "web/assets/k_51.webp",
+        "width": 400,
+        "height": 400,
+        "sizeBytes": 25386,
+        "sha256": "b5e4f1442d40670330cda8996aac11038d84daaf3c889f79934950d7f72be960"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/1x1_avatars_stickers/k_51.jpg",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 673543,
+        "sha256": "5c3b7f15f8a72c994b394487a9cb0cde603dcef54dae0dab93b4313639209ae6"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "53",
+      "key": "k_53",
+      "category": "1:1",
+      "title": "Q版贴纸 · 怀表守护",
+      "subtitle": "Chibi Pocket Watch",
+      "isSticker": true,
+      "embedded": {
+        "path": "web/assets/k_53.webp",
+        "width": 360,
+        "height": 360,
+        "sizeBytes": 24580,
+        "sha256": "dc9911a1ed7e85fd5bcb9aa7fd56065916426972b24d250dbe4ad642e74b52dc"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/1x1_avatars_stickers/k_53.jpg",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 579453,
+        "sha256": "fe850deba685edf0c5290cee6d1fb2dda657ffc1ea446588e17e8c73413957e9"
+      },
+      "hdCutout": {
+        "path": "assets/material/webui_v094/cutouts_hd/k_53.webp",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 172888,
+        "sha256": "db173c084057a42d838c525bde799a592f740886802c0e921b9838542cb56a33"
+      }
+    },
+    {
+      "id": "54",
+      "key": "k_54",
+      "category": "1:1",
+      "title": "Q版贴纸 · 极客敲代码",
+      "subtitle": "Chibi Coding Laptop",
+      "isSticker": true,
+      "embedded": {
+        "path": "web/assets/k_54.webp",
+        "width": 360,
+        "height": 360,
+        "sizeBytes": 20660,
+        "sha256": "fc98b2e22cc7eaefd0dc500372256b596fef8a3c948841ccd402fc4ba8305212"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/1x1_avatars_stickers/k_54.jpg",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 490389,
+        "sha256": "3b3a9647455ce0db4fc6875a9784121690ed5e60d870f08d59a1927f4e9a95f9"
+      },
+      "hdCutout": {
+        "path": "assets/material/webui_v094/cutouts_hd/k_54.webp",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 134922,
+        "sha256": "8d913fdd4ea35f7ff124d7d8e83a7ae96538bd359a9735731f0a8ea811666c11"
+      }
+    },
+    {
+      "id": "55",
+      "key": "k_55",
+      "category": "1:1",
+      "title": "Q版贴纸 · 双手捧脸凝视",
+      "subtitle": "Chibi Heart-Eyes Gaze",
+      "isSticker": true,
+      "embedded": {
+        "path": "web/assets/k_55.webp",
+        "width": 360,
+        "height": 360,
+        "sizeBytes": 18982,
+        "sha256": "c4a315bb84712df49e5ce51eb9d14edb71fda41ba5485439412d3ff0f03c2509"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/1x1_avatars_stickers/k_55.jpg",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 461136,
+        "sha256": "1aaa5ebb3eda34a5611c6275bc4c1b6c9ea4395f1bd5410bdb99959f848ad4d0"
+      },
+      "hdCutout": {
+        "path": "assets/material/webui_v094/cutouts_hd/k_55.webp",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 131502,
+        "sha256": "a0ccacd8e350dc4bd53bb7aebe2f84145a0ffbc16bfc069082d5a530fda2cbb4"
+      }
+    },
+    {
+      "id": "56",
+      "key": "k_56",
+      "category": "1:1",
+      "title": "Q版贴纸 · 毛毯热可可待机",
+      "subtitle": "Chibi Cozy Blanket",
+      "isSticker": true,
+      "embedded": {
+        "path": "web/assets/k_56.webp",
+        "width": 360,
+        "height": 360,
+        "sizeBytes": 16912,
+        "sha256": "21c28698d7df316c9d13bc50e241c137da8ca922869e76f7c0c02c061449f128"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/1x1_avatars_stickers/k_56.jpg",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 467991,
+        "sha256": "c7f5dd7326f8d55da3a060d6990484fcd59c65a55e93be634a88665b58ff2105"
+      },
+      "hdCutout": {
+        "path": "assets/material/webui_v094/cutouts_hd/k_56.webp",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 112286,
+        "sha256": "bee11e712c45746628e4c01171d39eb1631be4b40e1d08946a64cdf1b337ffb1"
+      }
+    },
+    {
+      "id": "58",
+      "key": "k_58",
+      "category": "1:1",
+      "title": "Q版贴纸 · 红丝线P2P直连",
+      "subtitle": "Chibi Red Thread P2P",
+      "isSticker": true,
+      "embedded": {
+        "path": "web/assets/k_58.webp",
+        "width": 360,
+        "height": 360,
+        "sizeBytes": 19208,
+        "sha256": "29add6c1d4fe1f13e0d88e5c7c10d05fe1f457409e0acaf6c1ba413a35237aeb"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/1x1_avatars_stickers/k_58.jpg",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 456498,
+        "sha256": "1db51ac083d500348e2eddfa392505c6a4a748f0545b90c942a2866af2000363"
+      },
+      "hdCutout": {
+        "path": "assets/material/webui_v094/cutouts_hd/k_58.webp",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 122964,
+        "sha256": "b8d6dbfe740c8ed53b1e4e7c8d7179eb28c9b3f8e0219b59fcf65de3464d22ff"
+      }
+    },
+    {
+      "id": "59",
+      "key": "k_59",
+      "category": "1:1",
+      "title": "Q版贴纸 · 鼓腮离线提示",
+      "subtitle": "Chibi Offline Pout",
+      "isSticker": true,
+      "embedded": {
+        "path": "web/assets/k_59.webp",
+        "width": 360,
+        "height": 360,
+        "sizeBytes": 17936,
+        "sha256": "13d4fbc8c649b1f2b15b2180a272eacd7d8b84fe674997b50d74dc2e229e38ed"
+      },
+      "original": {
+        "path": "assets/material/webui_v094/originals/1x1_avatars_stickers/k_59.jpg",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 434929,
+        "sha256": "1f4fe90cd31d542019b59a7e95abbd0c2750bd3d732969da0ead48e1b48bd962"
+      },
+      "hdCutout": {
+        "path": "assets/material/webui_v094/cutouts_hd/k_59.webp",
+        "width": 1024,
+        "height": 1024,
+        "sizeBytes": 117846,
+        "sha256": "1cc9d36aad082c89008e16ec44475d278db7a0ab58b42eb06f5f05a41167d8c5"
+      }
+    }
+  ]
+}
