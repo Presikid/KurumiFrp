@@ -1,0 +1,1022 @@
+{
+  "schemaVersion": 1,
+  "packVersion": "0.9.9",
+  "description": "KurumiFrp Date A Live (GPT-Image-2.6-Sunburst) curated 4K artworks, 2K banners, 3:4 portraits, 2048px transparent cutouts & 12-frame seamless GIFs.",
+  "totalAssets": 39,
+  "totalArchivedAssets": 65,
+  "totalEmbeddedBytes": 6318116,
+  "totalOriginalBytes": 89886250,
+  "assets": [
+    {
+      "id": "01",
+      "key": "s_01",
+      "sourceAssetId": "A_hero4k_004",
+      "category": "16:9",
+      "title": "古典藏书阁斜阳",
+      "subtitle": "登录首屏 / 主舞台轮播",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_01.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 224840,
+        "sha256": "e16b4c83f42bac02767251d63d3704acb1b135008b01d55217acb740ebd25a80"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/hero_4k/A_hero4k_004_home_stage_03.webp",
+        "width": 3840,
+        "height": 2160,
+        "sizeBytes": 2893856,
+        "sha256": "899f9f68229b7ff427d2d544215f9a55200a27cefcef6a72ad5600d74980468e"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "02",
+      "key": "s_02",
+      "sourceAssetId": "A_hero4k_025",
+      "category": "16:9",
+      "title": "放学空教室夕照",
+      "subtitle": "主舞台轮播 · 来禅制服",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_02.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 125524,
+        "sha256": "b204aa6152c79596e2fcb968e188a9bfaa43a37079920f0bd8d579db0d5d9514"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/hero_4k/A_hero4k_025_hero_classroom_dusk.webp",
+        "width": 3840,
+        "height": 2160,
+        "sizeBytes": 1390662,
+        "sha256": "509ebd19503eb0ba64252be263219306873f6458ece1aa89bde780bd8541b956"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "03",
+      "key": "s_03",
+      "sourceAssetId": "A_hero4k_017",
+      "category": "16:9",
+      "title": "红丝绒歌剧包厢",
+      "subtitle": "主舞台轮播 · 神威灵装",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_03.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 168264,
+        "sha256": "9d31f1a29281b1e0cfa6053375a273a39d583543418d7811adab9e4dfa85133e"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/hero_4k/A_hero4k_017_hero_opera_box.webp",
+        "width": 3840,
+        "height": 2160,
+        "sizeBytes": 2394732,
+        "sha256": "8517e94ecd572ac644ec99d6a7f9c4afa646e6e6cd606690a44fadb618ff61ee"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "04",
+      "key": "s_04",
+      "sourceAssetId": "A_hero4k_019",
+      "category": "16:9",
+      "title": "猫咖午后阳光",
+      "subtitle": "主舞台轮播 · 狂三与猫",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_04.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 210542,
+        "sha256": "de38f3a226ed949b8f8a635ec236679765b638f5c14805d46125ca2f0b77a5e9"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/hero_4k/A_hero4k_019_hero_cat_salon.webp",
+        "width": 3840,
+        "height": 2160,
+        "sizeBytes": 2814396,
+        "sha256": "d347d83c5ed23ff2e02c78b96f7b2419246696598ae3697dbf318a1ceb61785c"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "05",
+      "key": "s_05",
+      "sourceAssetId": "A_hero4k_024",
+      "category": "16:9",
+      "title": "月夜天台栏杆",
+      "subtitle": "主舞台轮播 · 满月夜色",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_05.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 161730,
+        "sha256": "b09285ccd171624f56c075d0440d70b9c6ac7a7a06e96ed453e5d42df794cdf3"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/hero_4k/A_hero4k_024_hero_moon_railing.webp",
+        "width": 3840,
+        "height": 2160,
+        "sizeBytes": 2073760,
+        "sha256": "eac548e89e46e0a5b50c7a21df4998135015d668b079116de0d5f117e706b0ef"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "06",
+      "key": "s_06",
+      "sourceAssetId": "A_hero4k_030",
+      "category": "16:9",
+      "title": "银河铁道站台",
+      "subtitle": "主舞台轮播 · 暮色海站",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_06.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 179362,
+        "sha256": "6f1d79400628232532fd37c04330fabb9ef561464dc84961bf75b56e84cb1c35"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/hero_4k/A_hero4k_030_hero_twilight_station.webp",
+        "width": 3840,
+        "height": 2160,
+        "sizeBytes": 1959990,
+        "sha256": "c797fc5a8c02f25c2384545f9eb0449a1994903d9b3edf0aaffc33f1f5c56ed0"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "07",
+      "key": "s_07",
+      "sourceAssetId": "A_hero4k_036",
+      "category": "16:9",
+      "title": "烛影西洋棋局",
+      "subtitle": "主舞台轮播 · 烛光对弈",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_07.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 160018,
+        "sha256": "12d41dde5bae397f7f238ad590c70f019451357a0bd7e017d0e40963ade987ea"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/hero_4k/A_hero4k_036_hero_chess_parlor.webp",
+        "width": 3840,
+        "height": 2160,
+        "sizeBytes": 2021116,
+        "sha256": "c0de972ad3d4fbfeefb26325b08bf67300aa609a6e173a87a9c71c844f272c84"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "08",
+      "key": "s_08",
+      "sourceAssetId": "A_hero4k_051",
+      "category": "16:9",
+      "title": "天台烟花绽放",
+      "subtitle": "主舞台轮播 · 夏祭振袖",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_08.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 251978,
+        "sha256": "7c1f154d7722d1d34b2c68d06b858be5d2b45522bdc9adc7c6e9628b3077d53a"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/hero_4k/A_hero4k_051_hero_fireworks_night.webp",
+        "width": 3840,
+        "height": 2160,
+        "sizeBytes": 2840502,
+        "sha256": "eb53e74d9c0264f530cafce1f3df2b3b84e300fe347dbfe491011cc59173a74b"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "09",
+      "key": "s_09",
+      "sourceAssetId": "F_encore_026_A_hero4k_026",
+      "category": "16:9",
+      "title": "水晶吊灯舞厅",
+      "subtitle": "主舞台轮播 · 月白礼服",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_09.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 204952,
+        "sha256": "66ced009b319435ec0f3d346c969971fc62d030bcfeb9f7cf2b41b08102109a2"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/hero_4k/F_encore_026_A_hero4k_026_hero_crystal_hall_alt26.webp",
+        "width": 3840,
+        "height": 2160,
+        "sizeBytes": 2534016,
+        "sha256": "aff96f13c4efbc14f74f41fa5c486cf7beffef95a3197ecac58ed218e52efeed"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "10",
+      "key": "s_10",
+      "sourceAssetId": "A_hero4k_015",
+      "category": "16:9",
+      "title": "双姝黄昏祭典",
+      "subtitle": "主舞台轮播 · 狂三与十香",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_10.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 236596,
+        "sha256": "9f628d18b58499a91bbd19e8746293d4ed4b67fd5b587956321f68996224afde"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/hero_4k/A_hero4k_015_home_stage_14.webp",
+        "width": 3840,
+        "height": 2160,
+        "sizeBytes": 2563522,
+        "sha256": "b1df02e1b00112b60f5c7157437b1d2fae1bdeb4953e086697ebec6f417be5fe"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "11",
+      "key": "s_11",
+      "sourceAssetId": "A_hero4k_009",
+      "category": "16:9",
+      "title": "天宫市樱道暮色",
+      "subtitle": "主舞台轮播 · 夜刀神十香",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_11.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 243324,
+        "sha256": "391bb180a2a6f7e52c0285b7550b552c5222dad1d047924a39e1cd5a76ee4a44"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/hero_4k/A_hero4k_009_home_stage_08.webp",
+        "width": 3840,
+        "height": 2160,
+        "sizeBytes": 2628372,
+        "sha256": "cc1d01c25d2ec5a29e8ae375e13dd552b8208222e7849bcf99df062da8522415"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "12",
+      "key": "s_12",
+      "sourceAssetId": "F_encore_011_A_hero4k_011",
+      "category": "16:9",
+      "title": "白羽晴空露台",
+      "subtitle": "主舞台轮播 · 鸢一折纸",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_12.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 141124,
+        "sha256": "5730497b600e227901a2c5b07e545a303bf605b85df80f079ec69fecd434d715"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/hero_4k/F_encore_011_A_hero4k_011_home_stage_10_alt11.webp",
+        "width": 3840,
+        "height": 2160,
+        "sizeBytes": 1831634,
+        "sha256": "b4dda2fd65e0492ef402506e652c2f51197925bbbf7b6fcfe2886105cb17afc3"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "13",
+      "key": "s_13",
+      "sourceAssetId": "C_banner2k_024",
+      "category": "banner",
+      "title": "雪夜街角暖灯",
+      "subtitle": "FRPS 服务端板块顶栏横幅",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_13.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 208238,
+        "sha256": "3fbbd85d00c645adf5c3ea4da9fcdf4f8fe674fffb0228ab47f8bf3c7bfe08da"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/banner_2k/C_banner2k_024_banner_snow_corner.webp",
+        "width": 2560,
+        "height": 1440,
+        "sizeBytes": 1383924,
+        "sha256": "0997b6bc4677e42e4010a76b2601929e8fc4692bf0ca75af108852b8d7c9b5eb"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "14",
+      "key": "s_14",
+      "sourceAssetId": "C_banner2k_002",
+      "category": "banner",
+      "title": "黄昏天台远眺",
+      "subtitle": "FRPC 客户端板块顶栏横幅",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_14.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 131590,
+        "sha256": "5e249b805ad17c40b5f06f98a7767ed439784f4402a357c056052b9156758ac5"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/banner_2k/C_banner2k_002_banner_frpc_main.webp",
+        "width": 2560,
+        "height": 1440,
+        "sizeBytes": 1015476,
+        "sha256": "2e62e299d73e74d411b06f2917535b7fac27a68a4f5e32854da74197ecd9576c"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "15",
+      "key": "s_15",
+      "sourceAssetId": "C_banner2k_004",
+      "category": "banner",
+      "title": "星桥双姝组网",
+      "subtitle": "跨实例远控与 P2P 板块顶栏横幅",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_15.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 214906,
+        "sha256": "45cc2f75659d17f282edc34edd2a7140a3fdf42561718a0c55f8a2db66faeb57"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/banner_2k/C_banner2k_004_banner_p2p_mesh.webp",
+        "width": 2560,
+        "height": 1440,
+        "sizeBytes": 1393448,
+        "sha256": "208d5ac8f2ce26f9e15c9bfb99ab87a241cfb2bbb98f41a7de16d1df74789acd"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "16",
+      "key": "s_16",
+      "sourceAssetId": "C_banner2k_025",
+      "category": "banner",
+      "title": "晴空海岸公路",
+      "subtitle": "应用控制与画廊板块顶栏横幅",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_16.webp",
+        "width": 1360,
+        "height": 765,
+        "sizeBytes": 207580,
+        "sha256": "812cea3f88419ea6f079dee49d64bb5fe2fa982ad17e8c8b18cdee25cebc3ab4"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/banner_2k/C_banner2k_025_banner_coast_sunny.webp",
+        "width": 2560,
+        "height": 1440,
+        "sizeBytes": 1292320,
+        "sha256": "042518b62aac948db26a28766fa25c0c3a6aa8783097febed9f384df8644baca"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "17",
+      "key": "s_17",
+      "sourceAssetId": "B_card34_014",
+      "category": "3:4",
+      "title": "丝带编发清晨",
+      "subtitle": "实例与隧道立绘卡",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_17.webp",
+        "width": 660,
+        "height": 880,
+        "sizeBytes": 92366,
+        "sha256": "b2da05b513b2796946c16ce599bd40d6adfbf474e99ca66b873cc36e20ee1003"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/card_3_4/B_card34_014_frpc_card_04.webp",
+        "width": 1440,
+        "height": 1920,
+        "sizeBytes": 815330,
+        "sha256": "95f7dc6c7a0a0652d19d59e528c2cce6bb813877a98229e95e1089ab32b01e7c"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "18",
+      "key": "s_18",
+      "sourceAssetId": "B_card34_015",
+      "category": "3:4",
+      "title": "冬日红围巾",
+      "subtitle": "实例与隧道立绘卡",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_18.webp",
+        "width": 660,
+        "height": 880,
+        "sizeBytes": 108202,
+        "sha256": "779449175d81cfa4239adac6d8b31aac3505ba0eb5fc16568908d934053b00d3"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/card_3_4/B_card34_015_frpc_card_05.webp",
+        "width": 1440,
+        "height": 1920,
+        "sizeBytes": 843220,
+        "sha256": "e95229c5edaea123058aa405131f4cd74acc9d19a2e9231024cf408f5705f013"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "19",
+      "key": "s_19",
+      "sourceAssetId": "B_card34_025",
+      "category": "3:4",
+      "title": "暖阳猫耳发箍",
+      "subtitle": "实例与隧道立绘卡",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_19.webp",
+        "width": 660,
+        "height": 880,
+        "sizeBytes": 109724,
+        "sha256": "78c9e521c6ec10bb199bd3dfb40a264ce343f0b0d65f51987f52d3a1f3e8a539"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/card_3_4/B_card34_025_tunnel_card_05.webp",
+        "width": 1440,
+        "height": 1920,
+        "sizeBytes": 950836,
+        "sha256": "1b78dd58445dadc7cc902059904cb84d9b2948680d5026dcc3e0701e4b385781"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "20",
+      "key": "s_20",
+      "sourceAssetId": "B_card34_026",
+      "category": "3:4",
+      "title": "琉璃灯下品茗",
+      "subtitle": "实例与隧道立绘卡",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_20.webp",
+        "width": 660,
+        "height": 880,
+        "sizeBytes": 121474,
+        "sha256": "3b80d3d515209b152ecada041a62bb0996f28203d5f111b1653c1c30ec89cb2c"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/card_3_4/B_card34_026_tunnel_card_06.webp",
+        "width": 1440,
+        "height": 1920,
+        "sizeBytes": 1046016,
+        "sha256": "a020cfb5c3adc3c8708f7a4ef723084d2a26ef9e9aa230236c941f1ca0da4fd2"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "21",
+      "key": "s_21",
+      "sourceAssetId": "B_card34_027",
+      "category": "3:4",
+      "title": "丝绒舞台谢幕",
+      "subtitle": "实例与隧道立绘卡",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_21.webp",
+        "width": 660,
+        "height": 880,
+        "sizeBytes": 86216,
+        "sha256": "07492b284b2c8ef2237a57e343d4c4104310b39799f57cfe6d4df1a9bd61ca66"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/card_3_4/B_card34_027_tunnel_card_07.webp",
+        "width": 1440,
+        "height": 1920,
+        "sizeBytes": 796072,
+        "sha256": "48c1d882a32a0a50a6ab765fbbd7b1cc435d69ed4ee113289a3b3cb2cf540fc8"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "22",
+      "key": "s_22",
+      "sourceAssetId": "B_card34_037",
+      "category": "3:4",
+      "title": "美术馆画框旁",
+      "subtitle": "实例与隧道立绘卡",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_22.webp",
+        "width": 660,
+        "height": 880,
+        "sizeBytes": 96270,
+        "sha256": "bdc755cf0ee8ec9751477f8bd35bad24d07a44aa361f98b811997b0bd36fe1cf"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/card_3_4/B_card34_037_remote_card_07.webp",
+        "width": 1440,
+        "height": 1920,
+        "sizeBytes": 889444,
+        "sha256": "01b2d83fe42a1a8424163c756226a85341051416577be4a6080467694740477d"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "23",
+      "key": "s_23",
+      "sourceAssetId": "B_card34_064",
+      "category": "3:4",
+      "title": "雨后彩虹天台",
+      "subtitle": "实例与隧道立绘卡",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_23.webp",
+        "width": 660,
+        "height": 880,
+        "sizeBytes": 98794,
+        "sha256": "9b252cfe10b73f4747221382128d311bbc7394819d28676784c59fa7915a3b27"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/card_3_4/B_card34_064_kurumi_card_64.webp",
+        "width": 1440,
+        "height": 1920,
+        "sizeBytes": 876610,
+        "sha256": "042350f50b5f7677a0dd958f3bcad39a84c4266616d927b7add3b1eac5de8114"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "24",
+      "key": "s_24",
+      "sourceAssetId": "B_card34_058",
+      "category": "3:4",
+      "title": "甜品店下午茶",
+      "subtitle": "双人同框立绘卡",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_24.webp",
+        "width": 660,
+        "height": 880,
+        "sizeBytes": 158352,
+        "sha256": "c7d24a063e5a17da27e275bbd23d78973033e3e888cc5c13f6d8179906d481d7"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/card_3_4/B_card34_058_dal_card_18.webp",
+        "width": 1440,
+        "height": 1920,
+        "sizeBytes": 1257410,
+        "sha256": "0c087e868051d17538751ba20229d3e5001c5240e54d112d52d6a9d9f3adcb95"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "25",
+      "key": "s_25",
+      "sourceAssetId": "B_card34_044",
+      "category": "3:4",
+      "title": "夜刀神十香·星夜礼服",
+      "subtitle": "精灵精选立绘卡",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_25.webp",
+        "width": 660,
+        "height": 880,
+        "sizeBytes": 111292,
+        "sha256": "368f0b54a1ace2e7a5f5f6e31cd3477292d30562da40237b72d871753ee732c9"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/card_3_4/B_card34_044_dal_card_04.webp",
+        "width": 1440,
+        "height": 1920,
+        "sizeBytes": 930660,
+        "sha256": "5434f73e7c40b2f6f8ff95ab9b196d77dcfeee9b51771880a0796f6b9ffd85a3"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "26",
+      "key": "s_26",
+      "sourceAssetId": "B_card34_047",
+      "category": "3:4",
+      "title": "鸢一折纸·冬雪白衣",
+      "subtitle": "精灵精选立绘卡",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_26.webp",
+        "width": 660,
+        "height": 880,
+        "sizeBytes": 83608,
+        "sha256": "74d4eb4e9027f4c587bc22abab1a56fd0c9d8e3955ecc03229f0727bcee07418"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/card_3_4/B_card34_047_dal_card_07.webp",
+        "width": 1440,
+        "height": 1920,
+        "sizeBytes": 829442,
+        "sha256": "271b7bb1fd9a210b9092fb80b835372a4ff2566a224033cc3203c58992fca6f5"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "27",
+      "key": "s_27",
+      "sourceAssetId": "B_card34_051",
+      "category": "3:4",
+      "title": "四糸乃·雨滴绣球花",
+      "subtitle": "精灵精选立绘卡",
+      "isSticker": false,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_27.webp",
+        "width": 660,
+        "height": 880,
+        "sizeBytes": 143234,
+        "sha256": "bb3b718c8d23de50baa7fd320755eab7aba695a5cd83381f9561672f4f826a40"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/card_3_4/B_card34_051_dal_card_11.webp",
+        "width": 1440,
+        "height": 1920,
+        "sizeBytes": 1237330,
+        "sha256": "588836dd1680af7f04938d12a50bb82c292863b685b6d21647a16e2611fe3ebd"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "28",
+      "key": "s_28",
+      "sourceAssetId": "D_cutout_013",
+      "category": "1:1",
+      "title": "Q版狂三 · 歪头空列表提示",
+      "subtitle": "空列表状态透明立绘",
+      "isSticker": true,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_28.webp",
+        "width": 512,
+        "height": 512,
+        "sizeBytes": 65860,
+        "sha256": "62d3ca3eaac31681abad0260a7b1cbe3f9fd7d5d5847efe2559b48b17d8733b6"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/cutout_1_1/D_cutout_013_sticker_kurumi_empty.png",
+        "width": 2048,
+        "height": 2048,
+        "sizeBytes": 4760063,
+        "sha256": "ec15c4ead98625748637456e0ef8b4c624424aaca4b391890f0c3a838a291fe4"
+      },
+      "hdCutout": {
+        "path": "assets/material/sunburst_dal/cutout_1_1/D_cutout_013_sticker_kurumi_empty.png",
+        "width": 2048,
+        "height": 2048,
+        "sizeBytes": 4760063,
+        "sha256": "ec15c4ead98625748637456e0ef8b4c624424aaca4b391890f0c3a838a291fe4"
+      }
+    },
+    {
+      "id": "29",
+      "key": "s_29",
+      "sourceAssetId": "D_cutout_014",
+      "category": "1:1",
+      "title": "Q版狂三 · 提灯链路巡检",
+      "subtitle": "远控拓扑巡检透明立绘",
+      "isSticker": true,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_29.webp",
+        "width": 512,
+        "height": 512,
+        "sizeBytes": 79376,
+        "sha256": "3a29bb449d60f5e8a8bea0883f44aeeb260bc60a1276b5849123c2c349a1503c"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/cutout_1_1/D_cutout_014_sticker_kurumi_patrol.png",
+        "width": 2048,
+        "height": 2048,
+        "sizeBytes": 4968132,
+        "sha256": "a6b7ea7080a4f3568bf81d04a50751de53af991ce84524b2362a4c200a0fc272"
+      },
+      "hdCutout": {
+        "path": "assets/material/sunburst_dal/cutout_1_1/D_cutout_014_sticker_kurumi_patrol.png",
+        "width": 2048,
+        "height": 2048,
+        "sizeBytes": 4968132,
+        "sha256": "a6b7ea7080a4f3568bf81d04a50751de53af991ce84524b2362a4c200a0fc272"
+      }
+    },
+    {
+      "id": "30",
+      "key": "s_30",
+      "sourceAssetId": "D_cutout_015",
+      "category": "1:1",
+      "title": "Q版狂三 · 敲键盘配置维护",
+      "subtitle": "TOML 与方案透明立绘",
+      "isSticker": true,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_30.webp",
+        "width": 512,
+        "height": 512,
+        "sizeBytes": 90898,
+        "sha256": "9eb05c1b5a30cba0688c5a807bc170e652290b41f283519c18be1f0dd8d86e61"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/cutout_1_1/D_cutout_015_sticker_kurumi_coding.png",
+        "width": 2048,
+        "height": 2048,
+        "sizeBytes": 5760285,
+        "sha256": "070b4533bc8b26ca9e8c7d133ef8b11f313cc9ff8baa95b1b8195d2e7bcf695f"
+      },
+      "hdCutout": {
+        "path": "assets/material/sunburst_dal/cutout_1_1/D_cutout_015_sticker_kurumi_coding.png",
+        "width": 2048,
+        "height": 2048,
+        "sizeBytes": 5760285,
+        "sha256": "070b4533bc8b26ca9e8c7d133ef8b11f313cc9ff8baa95b1b8195d2e7bcf695f"
+      }
+    },
+    {
+      "id": "31",
+      "key": "s_31",
+      "sourceAssetId": "D_cutout_016",
+      "category": "1:1",
+      "title": "Q版狂三 · 连接就绪 OK",
+      "subtitle": "登录卡片与在线透明立绘",
+      "isSticker": true,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_31.webp",
+        "width": 512,
+        "height": 512,
+        "sizeBytes": 76092,
+        "sha256": "faec2fdef63756184d0cd2062cd3d149a1c772b8558e5b469c6e3637bde175d5"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/cutout_1_1/D_cutout_016_sticker_kurumi_ok.png",
+        "width": 2048,
+        "height": 2048,
+        "sizeBytes": 4571958,
+        "sha256": "04358e3ca884621c120e783ce6cfde556de4bd15813a8b8e9b14d971b8b422f9"
+      },
+      "hdCutout": {
+        "path": "assets/material/sunburst_dal/cutout_1_1/D_cutout_016_sticker_kurumi_ok.png",
+        "width": 2048,
+        "height": 2048,
+        "sizeBytes": 4571958,
+        "sha256": "04358e3ca884621c120e783ce6cfde556de4bd15813a8b8e9b14d971b8b422f9"
+      }
+    },
+    {
+      "id": "32",
+      "key": "s_32",
+      "sourceAssetId": "D_cutout_020",
+      "category": "1:1",
+      "title": "Q版狂三 · 版本与原画礼盒",
+      "subtitle": "热更新与原画包透明立绘",
+      "isSticker": true,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_32.webp",
+        "width": 512,
+        "height": 512,
+        "sizeBytes": 70116,
+        "sha256": "de6bd3b1dc723d7d3bc84f376a81d6d1670d70c1fd758a3c357bbcd6da43720b"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/cutout_1_1/D_cutout_020_sticker_kurumi_gift.png",
+        "width": 2048,
+        "height": 2048,
+        "sizeBytes": 4604022,
+        "sha256": "415bac0e18fb3c0a98eb2453a3463947ff9b2b00cbbfa09abc86718bb562ce73"
+      },
+      "hdCutout": {
+        "path": "assets/material/sunburst_dal/cutout_1_1/D_cutout_020_sticker_kurumi_gift.png",
+        "width": 2048,
+        "height": 2048,
+        "sizeBytes": 4604022,
+        "sha256": "415bac0e18fb3c0a98eb2453a3463947ff9b2b00cbbfa09abc86718bb562ce73"
+      }
+    },
+    {
+      "id": "33",
+      "key": "s_33",
+      "sourceAssetId": "D_cutout_022",
+      "category": "1:1",
+      "title": "Q版狂三 · 蕾丝伞安全守护",
+      "subtitle": "账户与端口安全透明立绘",
+      "isSticker": true,
+      "isAnimated": false,
+      "embedded": {
+        "path": "web/assets/s_33.webp",
+        "width": 512,
+        "height": 512,
+        "sizeBytes": 65576,
+        "sha256": "4ab7e1146ab83dd9847202bc0b3fcb8517f88bb22593f481700dba4e01232712"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/cutout_1_1/D_cutout_022_sticker_kurumi_shield.png",
+        "width": 2048,
+        "height": 2048,
+        "sizeBytes": 4673521,
+        "sha256": "9c6c9e0174b6b3908dddb9c1da8843200b7e36f82b4ba8e93ff4dc5f53b7a29f"
+      },
+      "hdCutout": {
+        "path": "assets/material/sunburst_dal/cutout_1_1/D_cutout_022_sticker_kurumi_shield.png",
+        "width": 2048,
+        "height": 2048,
+        "sizeBytes": 4673521,
+        "sha256": "9c6c9e0174b6b3908dddb9c1da8843200b7e36f82b4ba8e93ff4dc5f53b7a29f"
+      }
+    },
+    {
+      "id": "34",
+      "key": "s_34",
+      "sourceAssetId": "E_gif_007",
+      "category": "gif",
+      "title": "动态主视觉 · 星宫六喰星海漂浮",
+      "subtitle": "主舞台动态壁纸 / 画廊 GIF",
+      "isSticker": false,
+      "isAnimated": true,
+      "embedded": {
+        "path": "web/assets/s_34.webp",
+        "width": 480,
+        "height": 274,
+        "sizeBytes": 393848,
+        "sha256": "867bb87806378816e96e77e87e29d8d8dd92ce10d76ad6c2058780694df30ade"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/gif_loop/E_gif_007_gif_home_mukuro.gif",
+        "width": 896,
+        "height": 512,
+        "sizeBytes": 4113611,
+        "sha256": "6dde4d7299afe39af6e5ba43cec415f700c8517c23ef9aa384b9721ef5cfa8eb"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "35",
+      "key": "s_35",
+      "sourceAssetId": "E_gif_009",
+      "category": "gif",
+      "title": "动态主视觉 · 崇宫澪花海微风",
+      "subtitle": "主舞台动态壁纸 / 画廊 GIF",
+      "isSticker": false,
+      "isAnimated": true,
+      "embedded": {
+        "path": "web/assets/s_35.webp",
+        "width": 480,
+        "height": 274,
+        "sizeBytes": 315278,
+        "sha256": "12c4d03db920dd2e494cb47124c890b27f16a65d6634491479447d3f397a2516"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/gif_loop/E_gif_009_gif_home_mio.gif",
+        "width": 896,
+        "height": 512,
+        "sizeBytes": 3501699,
+        "sha256": "5d8016974f766656962da4ae8dcdc64fbe0d8cb51af4456902650c08593f5d4d"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "36",
+      "key": "s_36",
+      "sourceAssetId": "E_gif_021",
+      "category": "gif",
+      "title": "动态Q版 · 狂三品红茶待机",
+      "subtitle": "登录页 / 主舞台胶囊动态伴侣",
+      "isSticker": false,
+      "isAnimated": true,
+      "embedded": {
+        "path": "web/assets/s_36.webp",
+        "width": 300,
+        "height": 300,
+        "sizeBytes": 234704,
+        "sha256": "176c68961d210d2bc5b08630aa842ccf989716a878269379ab0a78f1de4a5df7"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/gif_loop/E_gif_021_gif_ui_idle_tea.gif",
+        "width": 640,
+        "height": 640,
+        "sizeBytes": 2464800,
+        "sha256": "a26773491872395becfc7acebafc579e2ad4f22a932498b66b239f0b04269020"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "37",
+      "key": "s_37",
+      "sourceAssetId": "E_gif_024",
+      "category": "gif",
+      "title": "动态Q版 · 狂三撸黑猫健康在线",
+      "subtitle": "服务端/客户端在线状态动图",
+      "isSticker": false,
+      "isAnimated": true,
+      "embedded": {
+        "path": "web/assets/s_37.webp",
+        "width": 300,
+        "height": 300,
+        "sizeBytes": 237382,
+        "sha256": "7ef4f2970940c8ac83760aa855efde64c88b781655dda932c39e4d003ee799eb"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/gif_loop/E_gif_024_gif_ui_healthy_cat.gif",
+        "width": 640,
+        "height": 640,
+        "sizeBytes": 2383028,
+        "sha256": "066726871269a384058b56e0856b29886180b8aa3d5654b1a5d76e42b392c81b"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "38",
+      "key": "s_38",
+      "sourceAssetId": "E_gif_025",
+      "category": "gif",
+      "title": "动态Q版 · 狂三敲键盘同步配置",
+      "subtitle": "双向 TOML 编辑器与原画拉取动图",
+      "isSticker": false,
+      "isAnimated": true,
+      "embedded": {
+        "path": "web/assets/s_38.webp",
+        "width": 300,
+        "height": 300,
+        "sizeBytes": 200698,
+        "sha256": "8a89dd0b70a541741f7e6713592f40784869a63c83f5ed167241c59ca8d0b8d6"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/gif_loop/E_gif_025_gif_ui_sync_toml.gif",
+        "width": 640,
+        "height": 640,
+        "sizeBytes": 2248177,
+        "sha256": "ce4533b7a4c05362571191862d487a008ce157ac7bc1188c6f9823bffc2d1378"
+      },
+      "hdCutout": null
+    },
+    {
+      "id": "39",
+      "key": "s_39",
+      "sourceAssetId": "E_gif_032",
+      "category": "gif",
+      "title": "动态Q版 · 狂三歪头等待接入",
+      "subtitle": "远控拓扑与空隧道等待动图",
+      "isSticker": false,
+      "isAnimated": true,
+      "embedded": {
+        "path": "web/assets/s_39.webp",
+        "width": 300,
+        "height": 300,
+        "sizeBytes": 208188,
+        "sha256": "761228fa784315d1e5e036b148bba12446aecaa40c997be5f27ce5dfeca5990a"
+      },
+      "original": {
+        "path": "assets/material/sunburst_dal/gif_loop/E_gif_032_gif_ui_empty_wait.gif",
+        "width": 640,
+        "height": 640,
+        "sizeBytes": 2332858,
+        "sha256": "ac71fb9523dfee307b6ecf370e7274a5825ccac490a3157588050f9f053b2c19"
+      },
+      "hdCutout": null
+    }
+  ]
+}

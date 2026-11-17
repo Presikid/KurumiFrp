@@ -239,7 +239,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. Static WebUI assets (transparently overlays downloaded GitHub HD artworks when enabled)
-	if strings.HasPrefix(path, "/assets/k_") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+	if (strings.HasPrefix(path, "/assets/k_") || strings.HasPrefix(path, "/assets/s_")) && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		if a.assets != nil && a.assets.ServeIfHD(w, r) {
 			return
 		}
