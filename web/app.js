@@ -57,7 +57,7 @@
     authenticated: false,
     username: "admin",
     needsPasswordSetup: false,
-    version: "0.9.7",
+    version: "0.9.8",
     etag: "",
     activeView: "home", // home | frps | frpc | topology | system
     slideIdx: 0,
@@ -872,7 +872,7 @@
     updateLoginWallpaper();
     try {
       const sess = await apiFetch("/api/session");
-      STATE.version = sess.version || "0.9.7";
+      STATE.version = sess.version || "0.9.8";
       if (sess.assetCacheToken) {
         STATE.hdAssets.cacheToken = sess.assetCacheToken;
         STATE.hdAssets.activeTier = sess.activeAssetTier || "embedded";
@@ -4840,17 +4840,31 @@
           window.location.hostname &&
           !window.__KURUMI_DISABLE_SSE__;
         if (canNavigate) {
-          const targetHost =
-            bindHost === "127.0.0.1" && window.location.hostname !== "localhost"
-              ? "127.0.0.1"
-              : window.location.hostname;
-          const nextURL = `${window.location.protocol}//${targetHost}:${newPort}/`;
-          notice.hidden = false;
-          notice.innerHTML = `✓ 面板端口已平滑切换至 <strong>${esc(nextURL)}</strong>，正在自动为您跳转新地址…`;
-          toast(`面板端口已切换至 ${newPort}，即将自动跳转…`);
-          setTimeout(() => {
-            window.location.href = nextURL;
-          }, 550);
+          const curHostname = window.location.hostname;
+          const csMatch = curHostname.match(/^(.*)-(\d+)(\.(?:app\.github\.dev|preview\.app\.github\.dev|githubpreview\.dev))$/i);
+          const isReverseProxyHTTPS = window.location.protocol === "https:" && !window.location.port && !csMatch;
+          if (isReverseProxyHTTPS) {
+            const actualAddr = (res.panel && res.panel.listenAddr) || (bindHost + ":" + newPort);
+            notice.hidden = false;
+            notice.innerHTML = `✓ 后端监听已热切换至 <code>${esc(actualAddr)}</code>（当前通过无端口 HTTPS 反向代理访问，请同步更新反代上游端口）。`;
+            toast(`后端面板端口已切换至 ${newPort}`);
+          } else {
+            let nextURL = "";
+            if (csMatch) {
+              nextURL = `${window.location.protocol}//${csMatch[1]}-${newPort}${csMatch[3]}/`;
+            } else {
+              const isLocalHost = curHostname === "127.0.0.1" || curHostname === "localhost" || curHostname === "::1" || curHostname === "[::1]";
+              let targetHost = bindHost === "127.0.0.1" && isLocalHost && curHostname !== "localhost" ? "127.0.0.1" : curHostname;
+              if (targetHost.includes(":") && !targetHost.startsWith("[")) targetHost = `[${targetHost}]`;
+              nextURL = `${window.location.protocol}//${targetHost}:${newPort}/`;
+            }
+            notice.hidden = false;
+            notice.innerHTML = `✓ 面板端口已平滑切换，新访问地址：<a href="${esc(nextURL)}" style="color:var(--yc-rose);font-weight:700;">${esc(nextURL)}</a>（正在自动跳转…）`;
+            toast(`面板端口已切换至 ${newPort}，即将自动跳转…`);
+            setTimeout(() => {
+              window.location.href = nextURL;
+            }, 600);
+          }
         } else {
           toast(`面板监听已切换至 ${(res.panel && res.panel.listenAddr) || (bindHost + ":" + newPort)}`);
           renderSystemSecurityPane(main);
@@ -5097,6 +5111,11 @@
 
   window.addEventListener("DOMContentLoaded", () => {
     enhancePasswordEyes(document);
+    if (typeof MutationObserver !== "undefined" && document.body) {
+      const obs = new MutationObserver(() => enhancePasswordEyes(document));
+      obs.observe(document.body, { childList: true, subtree: true });
+      window.__kurumiEyeObserver = obs;
+    }
     bindStaticEvents();
     bootSession();
   });

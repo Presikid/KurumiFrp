@@ -37,6 +37,7 @@ type PanelRebindFunc func(bindHost string, port int) (actualListen string, actua
 
 // PanelManager manages WebUI service port persistence, conflict validation, and live listener hot-rebinding.
 type PanelManager struct {
+	rebindMu     sync.Mutex
 	mu           sync.RWMutex
 	settingsPath string
 	settings     PanelSettings
@@ -148,6 +149,9 @@ func (pm *PanelManager) Status() PanelStatus {
 
 // UpdatePort validates, persists, and (when rebindFn is registered) live-switches the WebUI panel service port.
 func (pm *PanelManager) UpdatePort(newPort int, rawBindHost string, store *Store, rt *RuntimeSupervisor) (PanelStatus, bool, error) {
+	pm.rebindMu.Lock()
+	defer pm.rebindMu.Unlock()
+
 	if newPort < 1 || newPort > 65535 {
 		return pm.Status(), false, errors.New("面板服务端口需在 1 ~ 65535 之间")
 	}
@@ -163,7 +167,7 @@ func (pm *PanelManager) UpdatePort(newPort int, rawBindHost string, store *Store
 	if store != nil {
 		_, doc := store.Snapshot()
 		for _, s := range doc.Servers {
-			if s.BindPort == newPort || s.VhostHTTPPort == newPort || s.VhostHTTPSPort == newPort || s.TCPMuxHTTPConnectPort == newPort || s.SSHGatewayBindPort == newPort {
+			if s.BindPort == newPort || s.KCPBindPort == newPort || s.QUICBindPort == newPort || s.VhostHTTPPort == newPort || s.VhostHTTPSPort == newPort || s.TCPMuxHTTPConnectPort == newPort || s.SSHGatewayBindPort == newPort {
 				return pm.Status(), false, fmt.Errorf("端口 %d 与当前方案中的 FRPS 实例 %q 配置端口冲突，请选用其他端口", newPort, s.Name)
 			}
 		}

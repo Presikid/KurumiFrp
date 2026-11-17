@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,6 +29,7 @@ type App struct {
 	staticFS   http.Handler
 	stateSeq   atomic.Uint64
 	exitCode   atomic.Int32
+	metaMu     sync.RWMutex
 	listenSpec string
 	origArgs   []string
 	onShutdown func()
@@ -96,11 +98,19 @@ func (a *App) SetPanelRebindHandler(listenAddr string, fn PanelRebindFunc) {
 
 // SetRuntimeMeta records the bound TCP listener address and CLI arguments for seamless self-updates.
 func (a *App) SetRuntimeMeta(listenSpec string, origArgs []string) {
+	a.metaMu.Lock()
 	a.listenSpec = listenSpec
 	a.origArgs = append([]string(nil), origArgs...)
+	a.metaMu.Unlock()
 	if a.panel != nil {
 		a.panel.RecordBoundAddr(listenSpec)
 	}
+}
+
+func (a *App) getRuntimeMeta() (string, []string) {
+	a.metaMu.RLock()
+	defer a.metaMu.RUnlock()
+	return a.listenSpec, append([]string(nil), a.origArgs...)
 }
 
 // Close gracefully stops all running frpc and frps child processes.
@@ -1408,7 +1418,8 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 				return
 			}
 		}
-		targetVer, err := a.updater.ApplyAppUpdate(r.Context(), req.ProxyURL, a.listenSpec, a.origArgs)
+		lsSpec, oArgs := a.getRuntimeMeta()
+		targetVer, err := a.updater.ApplyAppUpdate(r.Context(), req.ProxyURL, lsSpec, oArgs)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
