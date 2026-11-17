@@ -57,7 +57,7 @@
     authenticated: false,
     username: "admin",
     needsPasswordSetup: false,
-    version: "0.9.6",
+    version: "0.9.7",
     etag: "",
     activeView: "home", // home | frps | frpc | topology | system
     slideIdx: 0,
@@ -75,6 +75,15 @@
     updateProxy: "",
     systemProxy: "",
     lastUpdateCheck: null,
+    panel: {
+      currentHost: "127.0.0.1",
+      currentPort: 9000,
+      listenAddr: "127.0.0.1:9000",
+      bindHost: "127.0.0.1",
+      savedPort: 9000,
+      customized: false,
+      canHotSwap: true
+    },
     hdAssets: {
       activeTier: "embedded",
       preferHD: false,
@@ -155,6 +164,51 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  const SVG_EYE_CLOSED = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+  const SVG_EYE_OPEN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+
+  function bindEyeToggleButton(btn, inputEl) {
+    if (!btn || !inputEl || btn.dataset.eyeBound === "1") return;
+    btn.dataset.eyeBound = "1";
+    const syncIcon = () => {
+      const showing = inputEl.type === "text";
+      btn.classList.toggle("is-visible", showing);
+      btn.innerHTML = showing ? SVG_EYE_OPEN : SVG_EYE_CLOSED;
+      btn.title = showing ? "隐藏密码" : "显示密码";
+      btn.setAttribute("aria-label", showing ? "隐藏密码" : "显示密码");
+    };
+    syncIcon();
+    btn.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      inputEl.type = inputEl.type === "password" ? "text" : "password";
+      syncIcon();
+      try {
+        inputEl.focus({ preventScroll: true });
+      } catch (_) {}
+    });
+  }
+
+  function enhancePasswordEyes(root) {
+    const scope = root || document;
+    scope.querySelectorAll("[data-eye-for]").forEach((btn) => {
+      const target = document.getElementById(btn.dataset.eyeFor) || scope.querySelector("#" + btn.dataset.eyeFor);
+      if (target) bindEyeToggleButton(btn, target);
+    });
+    scope.querySelectorAll('input[type="password"]').forEach((inp) => {
+      if (inp.closest(".yc-pass-wrap")) return;
+      const wrap = document.createElement("div");
+      wrap.className = "yc-pass-wrap";
+      inp.parentNode.insertBefore(wrap, inp);
+      wrap.appendChild(inp);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "yc-eye-btn";
+      wrap.appendChild(btn);
+      bindEyeToggleButton(btn, inp);
+    });
   }
 
   function deepClone(obj) {
@@ -818,7 +872,7 @@
     updateLoginWallpaper();
     try {
       const sess = await apiFetch("/api/session");
-      STATE.version = sess.version || "0.9.6";
+      STATE.version = sess.version || "0.9.7";
       if (sess.assetCacheToken) {
         STATE.hdAssets.cacheToken = sess.assetCacheToken;
         STATE.hdAssets.activeTier = sess.activeAssetTier || "embedded";
@@ -873,6 +927,9 @@
     STATE.core = res.core || {};
     STATE.updateProxy = res.updateProxy || "";
     STATE.systemProxy = res.systemProxy || "";
+    if (res.panel) {
+      STATE.panel = Object.assign({}, STATE.panel, res.panel);
+    }
     if (res.hdAssets) {
       STATE.hdAssets = Object.assign({}, STATE.hdAssets, res.hdAssets);
       refreshAllDOMAssetQuality();
@@ -3988,12 +4045,12 @@
             ["schemes", "k_47.webp", "01 · 多配置方案管理", "独立 JSON 方案与导入导出"],
             ["updates", "k_54.webp", "02 · 原画包与核心热更新", "GitHub 原画拉取 · FRP & 本体升级"],
             ["gallery", "k_35.webp", "03 · 精选 35 张狂三画廊", "全部保留素材高清鉴赏与设封面"],
-            ["security", "k_51.webp", "04 · 账户安全与后台控制", "修改管理员密码与优雅退出"]
+            ["security", "k_51.webp", "04 · 面板端口与账户安全", "服务端口修改 · 四项改密 · 后台控制"]
           ]
             .map(
               ([k, img, t, s]) => `
             <button type="button" class="yc-dir-item${STATE.systemTab === k ? " is-active" : ""}" data-sys-tab="${k}">
-              <img src="assets/${img}" alt="" class="yc-dir-thumb" />
+              <img src="${assetUrl("assets/" + img)}" alt="" class="yc-dir-thumb" />
               <div class="yc-dir-meta">
                 <div class="yc-dir-title">${esc(t)}</div>
                 <div class="yc-dir-sub">${esc(s)}</div>
@@ -4586,41 +4643,222 @@
   }
 
   function renderSystemSecurityPane(main) {
+    const p = STATE.panel || {};
+    const curPort = Number(p.currentPort || p.savedPort || 9000);
+    const curHost = p.bindHost || p.currentHost || "127.0.0.1";
+    const isStandardHost = curHost === "127.0.0.1" || curHost === "0.0.0.0";
+
     main.innerHTML = `
-      <div class="yc-card" style="max-width:620px;">
-        <h3 style="margin:0 0 14px;font-family:var(--yc-serif);font-size:20px;">单用户管理员凭据设置</h3>
-        <div class="yc-field">
-          <span class="yc-field-label">当前密码 (首次未设密码可留空)</span>
-          <input id="secCurPass" type="password" autocomplete="current-password" />
+      <div class="yc-grid-2" style="align-items:start;gap:20px;">
+        <!-- Card 1: Panel Service Port & Bind Scope Settings -->
+        <div class="yc-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
+            <h3 style="margin:0;font-family:var(--yc-serif);font-size:20px;">面板服务端口与监听设置</h3>
+            <span class="yc-tag yc-tag-ok">当前监听：${esc(p.listenAddr || (curHost + ":" + curPort))}</span>
+          </div>
+          <p style="margin:0 0 14px;font-size:12.5px;color:var(--yc-muted);line-height:1.55;">
+            修改后将预先检测目标端口可用性并立即<strong>零停机热切换</strong>面板服务端口（所有运行中的 <code>frps</code> / <code>frpc</code> 隧道均不会中断），同时持久化保存至 <code>data/panel_settings.json</code>，重启软件后继续生效。
+          </p>
+
+          <div class="yc-field">
+            <label class="yc-field-label" for="panelPortInput">面板服务端口 (1 ~ 65535)</label>
+            <input id="panelPortInput" type="number" min="1" max="65535" step="1" value="${curPort}" placeholder="默认 9000" />
+          </div>
+
+          <div class="yc-field">
+            <label class="yc-field-label" for="panelBindHostSelect">面板监听网卡范围</label>
+            <select id="panelBindHostSelect">
+              <option value="127.0.0.1" ${curHost === "127.0.0.1" ? "selected" : ""}>仅本机回环访问 (127.0.0.1 · 桌面端安全默认)</option>
+              <option value="0.0.0.0" ${curHost === "0.0.0.0" ? "selected" : ""}>允许局域网与公网访问 (0.0.0.0 · 云服务器远程访问)</option>
+              ${!isStandardHost ? `<option value="${esc(curHost)}" selected>保持当前自定义网卡 (${esc(curHost)})</option>` : ""}
+            </select>
+          </div>
+
+          <div id="panelPortNotice" class="yc-notice yc-notice-pink" hidden></div>
+
+          <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;align-items:center;">
+            <button type="button" class="yc-btn yc-btn-primary" id="panelSavePortBtn">保存并切换面板端口</button>
+            <button type="button" class="yc-btn yc-btn-danger" id="secQuitDaemonBtn">优雅停止后台服务并退出</button>
+          </div>
         </div>
-        <div class="yc-field">
-          <span class="yc-field-label">新管理员用户名</span>
-          <input id="secNewUser" type="text" value="${esc(STATE.username)}" />
-        </div>
-        <div class="yc-field">
-          <span class="yc-field-label">新登录密码</span>
-          <input id="secNewPass" type="password" autocomplete="new-password" placeholder="建议不少于 8 位" />
-        </div>
-        <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;">
-          <button type="button" class="yc-btn yc-btn-primary" id="secSaveBtn">更新管理员账号与密码</button>
-          <button type="button" class="yc-btn yc-btn-danger" id="secQuitDaemonBtn">优雅停止后台服务并退出</button>
+
+        <!-- Card 2: 4-Field Administrator Credentials Form with Eye Toggles -->
+        <div class="yc-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
+            <h3 style="margin:0;font-family:var(--yc-serif);font-size:20px;">管理员账号与密码修改</h3>
+            <span class="yc-tag ${STATE.needsPasswordSetup ? "yc-tag-warn" : "yc-tag-ok"}">
+              ${STATE.needsPasswordSetup ? "当前为空密码 · 建议立即设密" : "PBKDF2-SHA256 保护中"}
+            </span>
+          </div>
+
+          <div class="yc-field">
+            <label class="yc-field-label" for="secCurPass">
+              原密码 ${STATE.needsPasswordSetup ? '<span style="font-weight:400;color:var(--yc-muted);">（当前尚未设密，留空即可）</span>' : '<span style="color:var(--yc-rose);">*</span>'}
+            </label>
+            <div class="yc-pass-wrap">
+              <input id="secCurPass" type="password" autocomplete="current-password" placeholder="${STATE.needsPasswordSetup ? "首次未设密码可留空" : "请输入当前正在使用的原密码"}" />
+              <button type="button" class="yc-eye-btn" data-eye-for="secCurPass"></button>
+            </div>
+          </div>
+
+          <div class="yc-field">
+            <label class="yc-field-label" for="secNewUser">新用户名 <span style="color:var(--yc-rose);">*</span></label>
+            <input id="secNewUser" type="text" maxlength="64" autocomplete="username" value="${esc(STATE.username)}" placeholder="请输入新管理员用户名 (1~64 位，不含空格)" />
+          </div>
+
+          <div class="yc-field">
+            <label class="yc-field-label" for="secNewPass">新密码 <span style="color:var(--yc-rose);">*</span></label>
+            <div class="yc-pass-wrap">
+              <input id="secNewPass" type="password" autocomplete="new-password" placeholder="请输入新登录密码（点击右侧小眼睛可查看明文）" />
+              <button type="button" class="yc-eye-btn" data-eye-for="secNewPass"></button>
+            </div>
+          </div>
+
+          <div class="yc-field">
+            <label class="yc-field-label" for="secConfirmPass">新密码确认 <span style="color:var(--yc-rose);">*</span></label>
+            <div class="yc-pass-wrap">
+              <input id="secConfirmPass" type="password" autocomplete="new-password" placeholder="请再次输入相同的新密码" />
+              <button type="button" class="yc-eye-btn" data-eye-for="secConfirmPass"></button>
+            </div>
+            <div id="secPassMatchHint" class="yc-pass-hint"></div>
+          </div>
+
+          <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+            <button type="button" class="yc-btn yc-btn-primary" id="secSaveBtn">确认修改账号与密码</button>
+          </div>
         </div>
       </div>`;
 
+    enhancePasswordEyes(main);
+
+    const newPassEl = main.querySelector("#secNewPass");
+    const confirmPassEl = main.querySelector("#secConfirmPass");
+    const matchHintEl = main.querySelector("#secPassMatchHint");
+    const checkPassMatch = () => {
+      const p1 = newPassEl.value;
+      const p2 = confirmPassEl.value;
+      if (!p1 && !p2) {
+        matchHintEl.textContent = "";
+        matchHintEl.className = "yc-pass-hint";
+        return;
+      }
+      if (!p2) {
+        matchHintEl.textContent = "请继续输入确认密码";
+        matchHintEl.className = "yc-pass-hint";
+        return;
+      }
+      if (p1 === p2) {
+        matchHintEl.textContent = "✓ 两次输入的新密码完全一致";
+        matchHintEl.className = "yc-pass-hint is-ok";
+      } else {
+        matchHintEl.textContent = "✗ 两次输入的新密码不一致，请核对";
+        matchHintEl.className = "yc-pass-hint is-err";
+      }
+    };
+    newPassEl.addEventListener("input", checkPassMatch);
+    confirmPassEl.addEventListener("input", checkPassMatch);
+
     main.querySelector("#secSaveBtn").addEventListener("click", async () => {
+      const curPass = main.querySelector("#secCurPass").value;
+      const nextUser = main.querySelector("#secNewUser").value.trim();
+      const nextPass = newPassEl.value;
+      const confPass = confirmPassEl.value;
+
+      if (!STATE.needsPasswordSetup && !curPass) {
+        toast("请输入原密码", true);
+        main.querySelector("#secCurPass").focus();
+        return;
+      }
+      if (!nextUser || /\s/.test(nextUser)) {
+        toast("新用户名不能为空且不能包含空格", true);
+        main.querySelector("#secNewUser").focus();
+        return;
+      }
+      if (!nextPass) {
+        toast("新密码不能为空", true);
+        newPassEl.focus();
+        return;
+      }
+      if (nextPass !== confPass) {
+        toast("两次输入的新密码不一致，请点击小眼睛核对后再提交", true);
+        confirmPassEl.focus();
+        return;
+      }
+
+      const btn = main.querySelector("#secSaveBtn");
+      btn.disabled = true;
       try {
         await apiFetch("/api/account", {
           method: "POST",
           body: {
-            currentPassword: main.querySelector("#secCurPass").value,
-            newUsername: main.querySelector("#secNewUser").value,
-            newPassword: main.querySelector("#secNewPass").value
+            currentPassword: curPass,
+            newUsername: nextUser,
+            newPassword: nextPass,
+            confirmPassword: confPass
           }
         });
-        toast("管理员凭据已更新，请使用新密码重新登录");
-        enterLoginGate("密码已更新，请使用新凭据登录");
+        STATE.username = nextUser;
+        $("loginUsername").value = nextUser;
+        toast("管理员用户名与密码已更新，请使用新凭据重新登录");
+        enterLoginGate("账号密码已成功修改，请使用新用户名与新密码登录");
       } catch (err) {
         toast(err.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    main.querySelector("#panelSavePortBtn").addEventListener("click", async () => {
+      const rawPort = Number(main.querySelector("#panelPortInput").value);
+      const bindHost = main.querySelector("#panelBindHostSelect").value;
+      const notice = main.querySelector("#panelPortNotice");
+
+      if (!Number.isInteger(rawPort) || rawPort < 1 || rawPort > 65535) {
+        toast("请输入 1 ~ 65535 之间的有效端口号", true);
+        main.querySelector("#panelPortInput").focus();
+        return;
+      }
+
+      const saveBtn = main.querySelector("#panelSavePortBtn");
+      saveBtn.disabled = true;
+      try {
+        const res = await apiFetch("/api/panel/settings", {
+          method: "POST",
+          body: { port: rawPort, bindHost }
+        });
+        if (res.panel) {
+          STATE.panel = Object.assign({}, STATE.panel, res.panel);
+        }
+        const newPort = (res.panel && res.panel.currentPort) || rawPort;
+        if (!res.changed) {
+          toast("面板端口配置已保存（端口未变动）");
+          renderSystemSecurityPane(main);
+          return;
+        }
+        const canNavigate =
+          (window.location.protocol === "http:" || window.location.protocol === "https:") &&
+          window.location.hostname &&
+          !window.__KURUMI_DISABLE_SSE__;
+        if (canNavigate) {
+          const targetHost =
+            bindHost === "127.0.0.1" && window.location.hostname !== "localhost"
+              ? "127.0.0.1"
+              : window.location.hostname;
+          const nextURL = `${window.location.protocol}//${targetHost}:${newPort}/`;
+          notice.hidden = false;
+          notice.innerHTML = `✓ 面板端口已平滑切换至 <strong>${esc(nextURL)}</strong>，正在自动为您跳转新地址…`;
+          toast(`面板端口已切换至 ${newPort}，即将自动跳转…`);
+          setTimeout(() => {
+            window.location.href = nextURL;
+          }, 550);
+        } else {
+          toast(`面板监听已切换至 ${(res.panel && res.panel.listenAddr) || (bindHost + ":" + newPort)}`);
+          renderSystemSecurityPane(main);
+        }
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        saveBtn.disabled = false;
       }
     });
 
@@ -4648,7 +4886,7 @@
            (a, i) => `
            <div class="yc-gallery-tile" data-pick-cover="k_${a.id}" style="${currentAsset === "k_" + a.id ? "border-color:var(--yc-rose);background:var(--yc-rose-tint);" : ""}">
              <div class="yc-framed-portrait" style="border-width:3px;">
-               <img src="${a.src}" alt="${esc(a.title)}" />
+               <img src="${assetUrl(a.src)}" alt="${esc(a.title)}" />
                <span class="yc-portrait-num">${pad2(i + 1)}</span>
              </div>
              <div style="margin-top:6px;font-size:12px;font-weight:600;text-align:center;">${esc(a.title)}</div>
@@ -4735,7 +4973,7 @@
       <div class="yc-card">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
           <div style="display:flex;align-items:center;gap:10px;">
-            <img src="assets/${isRunning ? "k_54.webp" : "k_59.webp"}" alt="" style="width:38px;height:38px;object-fit:contain;" />
+            <img src="${assetUrl("assets/" + (isRunning ? "k_54.webp" : "k_59.webp"))}" alt="" style="width:38px;height:38px;object-fit:contain;" />
             <div>
               <strong style="font-size:14px;">实例实时运行日志 (敏感密钥自动脱敏 · ANSI 已净化)</strong>
               <div style="font-size:12px;color:var(--yc-muted);">${isRunning ? "SSE 实时流连接中" : "当前实例未运行，展示最近缓冲日志"}</div>
@@ -4761,13 +4999,21 @@
     if (isRunning && typeof EventSource !== "undefined" && !window.__KURUMI_DISABLE_SSE__) {
       try {
         const es = new EventSource(`/api/logs/stream?id=${encodeURIComponent(instanceId)}`);
-        let cleared = false;
+        let liveLines = [];
+        let resetPending = true;
+        es.onopen = () => {
+          resetPending = true;
+        };
         es.onmessage = (ev) => {
-          if (!cleared) {
-            box.textContent = "";
-            cleared = true;
+          if (resetPending) {
+            liveLines = [];
+            resetPending = false;
           }
-          box.textContent += (box.textContent ? "\n" : "") + ev.data;
+          liveLines.push(ev.data);
+          if (liveLines.length > 600) {
+            liveLines = liveLines.slice(liveLines.length - 600);
+          }
+          box.textContent = liveLines.join("\n");
           box.scrollTop = box.scrollHeight;
         };
         activeLogES = es;
@@ -4850,6 +5096,7 @@
   }
 
   window.addEventListener("DOMContentLoaded", () => {
+    enhancePasswordEyes(document);
     bindStaticEvents();
     bootSession();
   });

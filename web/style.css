@@ -1764,3 +1764,68 @@ code {
   background: linear-gradient(90deg, #e5487b 0%, #ff6b9d 100%);
   color: #ffffff;
 }
+
+
+/* ==================== Password Eye Toggle & Panel Port Settings ==================== */
+.yc-pass-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.yc-pass-wrap > input {
+  width: 100%;
+  padding-right: 40px !important;
+}
+
+.yc-eye-btn {
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--yc-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  transition: color 0.16s ease, background 0.16s ease;
+}
+
+.yc-eye-btn:hover {
+  color: var(--yc-indigo-ink);
+  background: rgba(17, 22, 54, 0.06);
+}
+
+.yc-eye-btn.is-visible {
+  color: var(--yc-rose);
+  background: rgba(229, 72, 123, 0.10);
+}
+
+.yc-eye-btn svg {
+  width: 17px;
+  height: 17px;
+  pointer-events: none;
+}
+
+.yc-pass-hint {
+  font-size: 12px;
+  margin-top: 5px;
+  min-height: 18px;
+}
+
+.yc-pass-hint.is-ok {
+  color: var(--yc-ok);
+  font-weight: 600;
+}
+
+.yc-pass-hint.is-err {
+  color: var(--yc-danger);
+  font-weight: 600;
+}

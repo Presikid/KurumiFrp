@@ -16,4 +16,4 @@ COPY --from=build /out/kurumifrp /opt/kurumifrp/kurumifrp
 COPY --from=build /out/bundled /opt/kurumifrp/bundled
 VOLUME ["/opt/kurumifrp/data"]
 EXPOSE 9000 7000
-ENTRYPOINT ["/opt/kurumifrp/kurumifrp", "-listen", "0.0.0.0:9000", "-data", "/opt/kurumifrp/data"]
+ENTRYPOINT ["/opt/kurumifrp/kurumifrp", "-default-host", "0.0.0.0", "-data", "/opt/kurumifrp/data"]

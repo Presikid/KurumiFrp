@@ -983,3 +983,144 @@ func TestAuditFixes_PluginPathAndDisabledTunnelsAndAllowPorts(t *testing.T) {
 		t.Fatalf("F24 regression: unknown subtable key lost prefix: %+v", parsedCli.Tunnels)
 	}
 }
+
+func TestAuditFixesAndPanelSettingsV097(t *testing.T) {
+	dir := t.TempDir()
+	app, err := NewApp(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+
+	var reboundAddr string
+	var reboundPort int
+	app.SetPanelRebindHandler("127.0.0.1:9000", func(bindHost string, port int) (string, string, int, error) {
+		reboundAddr = fmt.Sprintf("%s:%d", bindHost, port)
+		reboundPort = port
+		return reboundAddr, bindHost, port, nil
+	})
+
+	// 1. Login on initial empty password
+	sid, err := app.auth.Login("127.0.0.1", "admin", "")
+	if err != nil {
+		t.Fatalf("initial login failed: %v", err)
+	}
+
+	// 2. A02: Cross-Site form-POST or Sec-Fetch-Site: cross-site MUST be blocked with 403
+	csrfReq := httptest.NewRequest(http.MethodPost, "/api/panel/settings", strings.NewReader(`{"port":9100}`))
+	csrfReq.AddCookie(&http.Cookie{Name: sessionCookie, Value: sid})
+	csrfReq.Header.Set("Sec-Fetch-Site", "cross-site")
+	csrfRec := httptest.NewRecorder()
+	app.ServeHTTP(csrfRec, csrfReq)
+	if csrfRec.Code != http.StatusForbidden {
+		t.Fatalf("A02 regression: expected 403 for cross-site request, got %d", csrfRec.Code)
+	}
+
+	// 3. 4-Field Password Modification: reject mismatched confirmPassword, accept matching confirmPassword, then require currentPassword!
+	badAccBody := `{"currentPassword":"","newUsername":"kurumi_admin","newPassword":"secret888","confirmPassword":"wrong888"}`
+	badAccReq := httptest.NewRequest(http.MethodPost, "/api/account", strings.NewReader(badAccBody))
+	badAccReq.Header.Set("Content-Type", "application/json")
+	badAccReq.AddCookie(&http.Cookie{Name: sessionCookie, Value: sid})
+	badAccRec := httptest.NewRecorder()
+	app.ServeHTTP(badAccRec, badAccReq)
+	if badAccRec.Code != http.StatusBadRequest || !strings.Contains(badAccRec.Body.String(), "不一致") {
+		t.Fatalf("expected 400 mismatch error, got %d: %s", badAccRec.Code, badAccRec.Body.String())
+	}
+
+	okAccBody := `{"currentPassword":"","newUsername":"kurumi_admin","newPassword":"secret888","confirmPassword":"secret888"}`
+	okAccReq := httptest.NewRequest(http.MethodPost, "/api/account", strings.NewReader(okAccBody))
+	okAccReq.Header.Set("Content-Type", "application/json")
+	okAccReq.AddCookie(&http.Cookie{Name: sessionCookie, Value: sid})
+	okAccRec := httptest.NewRecorder()
+	app.ServeHTTP(okAccRec, okAccReq)
+	if okAccRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 on valid 4-field password update, got %d: %s", okAccRec.Code, okAccRec.Body.String())
+	}
+
+	// Subsequent password change without currentPassword MUST be rejected
+	if err := app.auth.UpdateCredentialsConfirmed("", "kurumi_admin", "next999", "next999"); err == nil {
+		t.Fatalf("expected error when currentPassword is empty after password setup")
+	}
+	sid2, err := app.auth.Login("127.0.0.1", "kurumi_admin", "secret888")
+	if err != nil {
+		t.Fatalf("re-login with updated credentials failed: %v", err)
+	}
+
+	// 4. Panel Service Port modification: collision check against FRPS bindPort + hot rebind + persistence
+	srvSaveReq := httptest.NewRequest(http.MethodPost, "/api/servers/save", strings.NewReader(`{"name":"MainFRPS","bindAddr":"0.0.0.0","bindPort":7000}`))
+	srvSaveReq.Header.Set("Content-Type", "application/json")
+	srvSaveReq.AddCookie(&http.Cookie{Name: sessionCookie, Value: sid2})
+	srvSaveRec := httptest.NewRecorder()
+	app.ServeHTTP(srvSaveRec, srvSaveReq)
+	if srvSaveRec.Code != http.StatusOK {
+		t.Fatalf("save server failed: %d %s", srvSaveRec.Code, srvSaveRec.Body.String())
+	}
+
+	// Port 7000 collides with MainFRPS -> must reject!
+	colReq := httptest.NewRequest(http.MethodPost, "/api/panel/settings", strings.NewReader(`{"port":7000,"bindHost":"127.0.0.1"}`))
+	colReq.Header.Set("Content-Type", "application/json")
+	colReq.AddCookie(&http.Cookie{Name: sessionCookie, Value: sid2})
+	colRec := httptest.NewRecorder()
+	app.ServeHTTP(colRec, colReq)
+	if colRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 port collision with FRPS bindPort 7000, got %d", colRec.Code)
+	}
+
+	// Valid port 9527 -> hot-rebinds and persists to panel_settings.json!
+	portReq := httptest.NewRequest(http.MethodPost, "/api/panel/settings", strings.NewReader(`{"port":9527,"bindHost":"0.0.0.0"}`))
+	portReq.Header.Set("Content-Type", "application/json")
+	portReq.AddCookie(&http.Cookie{Name: sessionCookie, Value: sid2})
+	portRec := httptest.NewRecorder()
+	app.ServeHTTP(portRec, portReq)
+	if portRec.Code != http.StatusOK || reboundPort != 9527 || reboundAddr != "0.0.0.0:9527" {
+		t.Fatalf("expected live rebind to 0.0.0.0:9527, got code=%d addr=%q body=%s", portRec.Code, reboundAddr, portRec.Body.String())
+	}
+	loadedPanel := LoadPanelSettings(dir)
+	if !loadedPanel.Customized || loadedPanel.Port != 9527 || loadedPanel.BindHost != "0.0.0.0" {
+		t.Fatalf("panel_settings.json did not persist properly: %+v", loadedPanel)
+	}
+
+	// 5. A04: Concurrent /api/state read + /api/configs/select switch MUST be 100% race-free under -race!
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		for i := 0; i < 20; i++ {
+			r := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+			r.AddCookie(&http.Cookie{Name: sessionCookie, Value: sid2})
+			w := httptest.NewRecorder()
+			app.ServeHTTP(w, r)
+		}
+	}()
+	swReq := httptest.NewRequest(http.MethodPost, "/api/configs/select", strings.NewReader(`{"fileName":"alt_env","displayName":"备用方案"}`))
+	swReq.Header.Set("Content-Type", "application/json")
+	swReq.AddCookie(&http.Cookie{Name: sessionCookie, Value: sid2})
+	swRec := httptest.NewRecorder()
+	app.ServeHTTP(swRec, swReq)
+	<-doneCh
+	if swRec.Code != http.StatusOK {
+		t.Fatalf("config switch failed: %d %s", swRec.Code, swRec.Body.String())
+	}
+
+	// 6. A08: Verify Go-template {{- end -}} range block parses without swallowing subsequent proxies
+	rangeTOML := `
+serverAddr = "1.2.3.4"
+serverPort = 7000
+{{- range $_, $v := parseNumberRangePair "6000-6002" "16000-16002" }}
+[[proxies]]
+name = "batch-{{ $v.First }}"
+type = "tcp"
+localPort = {{ $v.First }}
+remotePort = {{ $v.Second }}
+{{- end -}}
+
+[[proxies]]
+name = "after-range-ssh"
+type = "tcp"
+localPort = 22
+remotePort = 6022
+`
+	_, parsedCli, err := ParseTOMLAsProfile("RangeCheck", "frpc", rangeTOML)
+	if err != nil || len(parsedCli.Tunnels) != 2 || parsedCli.Tunnels[1].Name != "after-range-ssh" {
+		t.Fatalf("A08 regression: range parser swallowed trailing proxy: err=%v tunnels=%+v", err, parsedCli.Tunnels)
+	}
+}
