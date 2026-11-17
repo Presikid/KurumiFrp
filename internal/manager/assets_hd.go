@@ -22,14 +22,14 @@ import (
 )
 
 const (
-	defaultHDAssetPackID  = "webui_v094"
+	defaultHDAssetPackID  = "sunburst_dal"
 	defaultGitHubRawBase  = "https://raw.githubusercontent.com/Presikid/KurumiFrp"
 	defaultGitHubRepoSlug = "Presikid/KurumiFrp"
 	maxSingleHDAssetBytes = 64 << 20 // 64 MiB per artwork safety cap
 	hdPullConcurrency     = 6
 )
 
-var validAssetKeyRe = regexp.MustCompile(`^k_[0-9a-zA-Z_]{1,48}$`)
+var validAssetKeyRe = regexp.MustCompile(`^(?:k|s)_[0-9a-zA-Z_]{1,48}$`)
 
 // AssetFileMeta describes either an embedded lightweight WebP or a full-res original/cutout file in manifest.json.
 type AssetFileMeta struct {
@@ -149,7 +149,7 @@ func NewAssetPackManager(dataDir string, updater *UpdateManager, onStateChange f
 		state: persistedHDState{
 			PreferHD:    false,
 			PackID:      defaultHDAssetPackID,
-			PackVersion: "0.9.4",
+			PackVersion: "0.9.9",
 			SourceRef:   "main",
 			Files:       make(map[string]string),
 			FileSHA256:  make(map[string]string),
@@ -306,7 +306,7 @@ func (m *AssetPackManager) Status() HDAssetStatus {
 		InstalledBytes: m.state.TotalBytes,
 		EmbeddedBytes:  m.embeddedBytes,
 		PackID:         packID,
-		PackVersion:    nonEmptyStr(m.state.PackVersion, "0.9.4"),
+		PackVersion:    nonEmptyStr(m.state.PackVersion, "0.9.9"),
 		SourceRepo:     defaultGitHubRepoSlug,
 		SourcePath:     "assets/material/" + packID,
 		SourceRef:      nonEmptyStr(m.state.SourceRef, "main"),
@@ -506,7 +506,7 @@ func (m *AssetPackManager) runPullJob(ctx context.Context, proxyStr, customRef, 
 	if customRef != "" {
 		candidateRefs = []string{customRef}
 	} else {
-		candidateRefs = []string{"main", "feat/v0.9.4-webui-remote-control"}
+		candidateRefs = []string{"main", "feat/v0.9.9-sunburst-dal-pack", "feat/v0.9.4-webui-remote-control"}
 	}
 
 	var manifest AssetPackManifest
@@ -518,6 +518,13 @@ func (m *AssetPackManager) runPullJob(ctx context.Context, proxyStr, customRef, 
 		if fetchErr == nil && len(manifest.Assets) > 0 {
 			resolvedRef = ref
 			break
+		}
+	}
+	// Merge companion classic pack (webui_v094) when pulling sunburst_dal so both s_* and k_* slots upgrade together
+	if resolvedRef != "" && packID == "sunburst_dal" {
+		compURL := fmt.Sprintf("%s/%s/assets/material/webui_v094/manifest.json", strings.TrimRight(m.rawBase, "/"), resolvedRef)
+		if compMan, cErr := fetchRemoteAssetManifest(ctx, manifestClient, compURL); cErr == nil && len(compMan.Assets) > 0 {
+			manifest.Assets = append(manifest.Assets, compMan.Assets...)
 		}
 	}
 	if resolvedRef == "" {

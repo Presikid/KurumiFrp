@@ -9,7 +9,51 @@
   "use strict";
 
   // Strictly only the 35 user-approved Kurumi illustrations (25 rejected IDs excluded)
-  const KURUMI_ASSETS = [
+  // 39 Curated Sunburst 2.6 Masterpieces & 12-Frame Seamless Animated Loops (65 total archived in assets/material/sunburst_dal/)
+  const SUNBURST_ASSETS = [
+    { id: "s01", key: "s_01", pack: "sunburst", cat: "16:9", src: "assets/s_01.webp", title: "古典藏书阁斜阳", role: "登录首屏 / 主舞台轮播" },
+    { id: "s02", key: "s_02", pack: "sunburst", cat: "16:9", src: "assets/s_02.webp", title: "放学空教室夕照", role: "主舞台轮播 · 来禅制服" },
+    { id: "s03", key: "s_03", pack: "sunburst", cat: "16:9", src: "assets/s_03.webp", title: "红丝绒歌剧包厢", role: "主舞台轮播 · 神威灵装" },
+    { id: "s04", key: "s_04", pack: "sunburst", cat: "16:9", src: "assets/s_04.webp", title: "猫咖午后阳光", role: "主舞台轮播 · 狂三与猫" },
+    { id: "s05", key: "s_05", pack: "sunburst", cat: "16:9", src: "assets/s_05.webp", title: "月夜天台栏杆", role: "主舞台轮播 · 满月夜色" },
+    { id: "s06", key: "s_06", pack: "sunburst", cat: "16:9", src: "assets/s_06.webp", title: "银河铁道站台", role: "主舞台轮播 · 暮色海站" },
+    { id: "s07", key: "s_07", pack: "sunburst", cat: "16:9", src: "assets/s_07.webp", title: "烛影西洋棋局", role: "主舞台轮播 · 烛光对弈" },
+    { id: "s08", key: "s_08", pack: "sunburst", cat: "16:9", src: "assets/s_08.webp", title: "天台烟花绽放", role: "主舞台轮播 · 夏祭振袖" },
+    { id: "s09", key: "s_09", pack: "sunburst", cat: "16:9", src: "assets/s_09.webp", title: "水晶吊灯舞厅", role: "主舞台轮播 · 月白礼服" },
+    { id: "s10", key: "s_10", pack: "sunburst", cat: "16:9", src: "assets/s_10.webp", title: "双姝黄昏祭典", role: "主舞台轮播 · 狂三与十香" },
+    { id: "s11", key: "s_11", pack: "sunburst", cat: "16:9", src: "assets/s_11.webp", title: "天宫市樱道暮色", role: "主舞台轮播 · 夜刀神十香" },
+    { id: "s12", key: "s_12", pack: "sunburst", cat: "16:9", src: "assets/s_12.webp", title: "白羽晴空露台", role: "主舞台轮播 · 鸢一折纸" },
+    { id: "s13", key: "s_13", pack: "sunburst", cat: "banner", src: "assets/s_13.webp", title: "雪夜街角暖灯", role: "FRPS 服务端板块顶栏横幅" },
+    { id: "s14", key: "s_14", pack: "sunburst", cat: "banner", src: "assets/s_14.webp", title: "黄昏天台远眺", role: "FRPC 客户端板块顶栏横幅" },
+    { id: "s15", key: "s_15", pack: "sunburst", cat: "banner", src: "assets/s_15.webp", title: "星桥双姝组网", role: "跨实例远控与 P2P 板块顶栏横幅" },
+    { id: "s16", key: "s_16", pack: "sunburst", cat: "banner", src: "assets/s_16.webp", title: "晴空海岸公路", role: "应用控制与画廊板块顶栏横幅" },
+    { id: "s17", key: "s_17", pack: "sunburst", cat: "3:4", src: "assets/s_17.webp", title: "丝带编发清晨", role: "实例与隧道立绘卡" },
+    { id: "s18", key: "s_18", pack: "sunburst", cat: "3:4", src: "assets/s_18.webp", title: "冬日红围巾", role: "实例与隧道立绘卡" },
+    { id: "s19", key: "s_19", pack: "sunburst", cat: "3:4", src: "assets/s_19.webp", title: "暖阳猫耳发箍", role: "实例与隧道立绘卡" },
+    { id: "s20", key: "s_20", pack: "sunburst", cat: "3:4", src: "assets/s_20.webp", title: "琉璃灯下品茗", role: "实例与隧道立绘卡" },
+    { id: "s21", key: "s_21", pack: "sunburst", cat: "3:4", src: "assets/s_21.webp", title: "丝绒舞台谢幕", role: "实例与隧道立绘卡" },
+    { id: "s22", key: "s_22", pack: "sunburst", cat: "3:4", src: "assets/s_22.webp", title: "美术馆画框旁", role: "实例与隧道立绘卡" },
+    { id: "s23", key: "s_23", pack: "sunburst", cat: "3:4", src: "assets/s_23.webp", title: "雨后彩虹天台", role: "实例与隧道立绘卡" },
+    { id: "s24", key: "s_24", pack: "sunburst", cat: "3:4", src: "assets/s_24.webp", title: "甜品店下午茶", role: "双人同框立绘卡" },
+    { id: "s25", key: "s_25", pack: "sunburst", cat: "3:4", src: "assets/s_25.webp", title: "夜刀神十香·星夜礼服", role: "精灵精选立绘卡" },
+    { id: "s26", key: "s_26", pack: "sunburst", cat: "3:4", src: "assets/s_26.webp", title: "鸢一折纸·冬雪白衣", role: "精灵精选立绘卡" },
+    { id: "s27", key: "s_27", pack: "sunburst", cat: "3:4", src: "assets/s_27.webp", title: "四糸乃·雨滴绣球花", role: "精灵精选立绘卡" },
+    { id: "s28", key: "s_28", pack: "sunburst", cat: "1:1", src: "assets/s_28.webp", title: "Q版狂三 · 歪头空列表提示", role: "空列表状态透明立绘", sticker: true },
+    { id: "s29", key: "s_29", pack: "sunburst", cat: "1:1", src: "assets/s_29.webp", title: "Q版狂三 · 提灯链路巡检", role: "远控拓扑巡检透明立绘", sticker: true },
+    { id: "s30", key: "s_30", pack: "sunburst", cat: "1:1", src: "assets/s_30.webp", title: "Q版狂三 · 敲键盘配置维护", role: "TOML 与方案透明立绘", sticker: true },
+    { id: "s31", key: "s_31", pack: "sunburst", cat: "1:1", src: "assets/s_31.webp", title: "Q版狂三 · 连接就绪 OK", role: "登录卡片与在线透明立绘", sticker: true },
+    { id: "s32", key: "s_32", pack: "sunburst", cat: "1:1", src: "assets/s_32.webp", title: "Q版狂三 · 版本与原画礼盒", role: "热更新与原画包透明立绘", sticker: true },
+    { id: "s33", key: "s_33", pack: "sunburst", cat: "1:1", src: "assets/s_33.webp", title: "Q版狂三 · 蕾丝伞安全守护", role: "账户与端口安全透明立绘", sticker: true },
+    { id: "s34", key: "s_34", pack: "sunburst", cat: "gif", src: "assets/s_34.webp", title: "动态主视觉 · 星宫六喰星海漂浮", role: "主舞台动态壁纸 / 画廊 GIF", animated: true },
+    { id: "s35", key: "s_35", pack: "sunburst", cat: "gif", src: "assets/s_35.webp", title: "动态主视觉 · 崇宫澪花海微风", role: "主舞台动态壁纸 / 画廊 GIF", animated: true },
+    { id: "s36", key: "s_36", pack: "sunburst", cat: "gif", src: "assets/s_36.webp", title: "动态Q版 · 狂三品红茶待机", role: "登录页 / 主舞台胶囊动态伴侣", animated: true },
+    { id: "s37", key: "s_37", pack: "sunburst", cat: "gif", src: "assets/s_37.webp", title: "动态Q版 · 狂三撸黑猫健康在线", role: "服务端/客户端在线状态动图", animated: true },
+    { id: "s38", key: "s_38", pack: "sunburst", cat: "gif", src: "assets/s_38.webp", title: "动态Q版 · 狂三敲键盘同步配置", role: "双向 TOML 编辑器与原画拉取动图", animated: true },
+    { id: "s39", key: "s_39", pack: "sunburst", cat: "gif", src: "assets/s_39.webp", title: "动态Q版 · 狂三歪头等待接入", role: "远控拓扑与空隧道等待动图", animated: true }
+  ];
+
+  // Classic 35 v0.9.4 curated illustrations
+  const CLASSIC_KURUMI_ASSETS = [
     { id: "02", cat: "16:9", src: "assets/k_02.webp", title: "午后花房红茶" },
     { id: "03", cat: "16:9", src: "assets/k_03.webp", title: "放学后夕阳教室" },
     { id: "06", cat: "16:9", src: "assets/k_06.webp", title: "樱花铁道口白裙" },
@@ -50,14 +94,19 @@
     { id: "59", cat: "1:1", src: "assets/k_59.webp", title: "Q版贴纸 · 鼓腮离线提示", sticker: true }
   ];
 
-  const HERO_SLIDES = KURUMI_ASSETS.filter((a) => a.cat === "16:9");
-  const PORTRAIT_COVERS = KURUMI_ASSETS.filter((a) => a.cat === "3:4" && !a.sticker);
+  const KURUMI_ASSETS = SUNBURST_ASSETS.concat(
+    CLASSIC_KURUMI_ASSETS.map((a) => Object.assign({ key: "k_" + a.id, pack: "classic" }, a))
+  );
+  const HERO_SLIDES = SUNBURST_ASSETS.filter((a) => a.cat === "16:9" || (a.animated && (a.key === "s_34" || a.key === "s_35")));
+  const PORTRAIT_COVERS = SUNBURST_ASSETS.filter((a) => a.cat === "3:4").concat(
+    CLASSIC_KURUMI_ASSETS.filter((a) => a.cat === "3:4" && !a.sticker)
+  );
 
   const STATE = {
     authenticated: false,
     username: "admin",
     needsPasswordSetup: false,
-    version: "0.9.8",
+    version: "0.9.9",
     etag: "",
     activeView: "home", // home | frps | frpc | topology | system
     slideIdx: 0,
@@ -89,19 +138,19 @@
       preferHD: false,
       installed: false,
       installedCount: 0,
-      expectedCount: 35,
+      expectedCount: 74,
       installedBytes: 0,
-      embeddedBytes: 2450000,
-      packId: "webui_v094",
+      embeddedBytes: 8720000,
+      packId: "sunburst_dal",
       packVersion: "0.9.4",
       sourceRepo: "Presikid/KurumiFrp",
-      sourcePath: "assets/material/webui_v094",
+      sourcePath: "assets/material/sunburst_dal",
       sourceRef: "main",
       cacheToken: "std-0-1",
       dimensions: {},
       downloading: false,
       progressFiles: 0,
-      progressTotal: 35,
+      progressTotal: 74,
       progressBytes: 0,
       expectedBytes: 0,
       currentAsset: "",
@@ -142,7 +191,7 @@
 
     // System & Gallery
     systemTab: "schemes", // "schemes" | "updates" | "gallery" | "security"
-    galleryCat: "all"
+    galleryCat: "sunburst"
   };
 
   let homeSlideTimer = null;
@@ -258,13 +307,13 @@
 
     document.querySelectorAll("img").forEach((img) => {
       const raw = img.getAttribute("src") || "";
-      if (raw.includes("assets/k_")) {
+      if (raw.includes("assets/k_") || raw.includes("assets/s_")) {
         img.setAttribute("src", assetUrl(raw));
       }
     });
-    document.querySelectorAll("[style*='assets/k_']").forEach((el) => {
+    document.querySelectorAll("[style*='assets/']").forEach((el) => {
       const st = el.getAttribute("style") || "";
-      const next = st.replace(/assets\/k_[0-9a-zA-Z_]+\.webp(?:\?[^'")\s]*)?/g, (m) => assetUrl(m));
+      const next = st.replace(/assets\/(?:k|s)_[0-9a-zA-Z_]+\.(?:webp|gif|png|jpg)(?:\?[^'")\s]*)?/g, (m) => assetUrl(m));
       if (next !== st) el.setAttribute("style", next);
     });
     updateLoginWallpaper();
@@ -307,7 +356,7 @@
 
   function coverForIndex(coverId, idx) {
     if (coverId) {
-      const found = KURUMI_ASSETS.find((a) => "k_" + a.id === coverId || a.id === coverId || a.src === coverId);
+      const found = KURUMI_ASSETS.find((a) => a.key === coverId || "k_" + a.id === coverId || a.id === coverId || a.src === coverId);
       if (found) return assetUrl(found.src);
     }
     return assetUrl(PORTRAIT_COVERS[idx % PORTRAIT_COVERS.length].src);
@@ -872,7 +921,7 @@
     updateLoginWallpaper();
     try {
       const sess = await apiFetch("/api/session");
-      STATE.version = sess.version || "0.9.8";
+      STATE.version = sess.version || "0.9.9";
       if (sess.assetCacheToken) {
         STATE.hdAssets.cacheToken = sess.assetCacheToken;
         STATE.hdAssets.activeTier = sess.activeAssetTier || "embedded";
@@ -1209,7 +1258,7 @@
     if (!STATE.selectedServerId || !STATE.serverDraft) {
       main.innerHTML = `
         <div class="yc-card yc-empty-state">
-          <img src="assets/k_53.webp" alt="" class="yc-empty-sticker" />
+          <img src="assets/s_28.webp" alt="" class="yc-empty-sticker" />
           <h3 style="margin:0 0 8px;color:var(--yc-indigo-ink);">尚未创建本机 FRPS 服务端实例</h3>
           <p style="margin:0 0 18px;font-size:13.5px;">本机有公网 IP（如云服务器 A 或公司电脑 D）时，可在此建立 frps 实例等待客户端接入并直接远控已连接客户端。</p>
           <button type="button" class="yc-btn yc-btn-primary" id="emptyCreateSrvBtn">+ 立即创建第一个 FRPS 实例</button>
@@ -1917,7 +1966,7 @@
     if (remotes.length === 0) {
       container.innerHTML = `
         <div class="yc-card yc-empty-state">
-          <img src="assets/k_56.webp" alt="" class="yc-empty-sticker" />
+          <img src="assets/s_37.webp" alt="" class="yc-empty-sticker" />
           <h4 style="margin:0 0 8px;color:var(--yc-indigo-ink);">当前尚无 KurumiFrp 客户端连接到「${esc(srv.name)}」</h4>
           <p style="margin:0 auto;max-width:560px;font-size:13px;line-height:1.7;">
             当任意电脑（如学校电脑 B、家里电脑 C、公司客户端 D、朋友电脑 E）安装 KurumiFrp 并启动一个指向 <code>${esc(srv.bindAddr === "0.0.0.0" ? "<本机公网IP>" : srv.bindAddr)}:${srv.bindPort}</code> 的 <code>frpc</code> 实例后，它会自动出现在此处，无需开放任何额外端口即可直接远控其配置与 P2P 规则。
@@ -2000,7 +2049,7 @@
     if (conns.length === 0) {
       container.innerHTML = `
         <div class="yc-card yc-empty-state">
-          <img src="assets/k_55.webp" alt="" class="yc-empty-sticker" />
+          <img src="assets/s_28.webp" alt="" class="yc-empty-sticker" />
           <h4 style="margin:0 0 8px;">暂无活跃或已登记的客户端代理连接</h4>
           <p style="margin:0;font-size:13px;">当客户端将端口映射到此服务端时，所有隧道会自动收录于此，支持实时流量统计、一键开关、限流(MB)、限速(KB/s)与到期时间管控。</p>
         </div>`;
@@ -2393,7 +2442,7 @@
     if (!STATE.selectedClientId || !STATE.clientDraft) {
       main.innerHTML = `
         <div class="yc-card yc-empty-state">
-          <img src="assets/k_54.webp" alt="" class="yc-empty-sticker" />
+          <img src="assets/s_38.webp" alt="" class="yc-empty-sticker" />
           <h3 style="margin:0 0 8px;color:var(--yc-indigo-ink);">尚未创建本机 FRPC 客户端实例</h3>
           <p style="margin:0 0 18px;font-size:13.5px;">无公网 IP 主机（如学校电脑 B、家里电脑 C、朋友电脑 E）或需级联上报的主机（如公司电脑 D）可建立 frpc 实例接入公网 frps。</p>
           <button type="button" class="yc-btn yc-btn-primary" id="emptyCreateCliBtn">+ 立即创建第一个 FRPC 实例</button>
@@ -2629,7 +2678,7 @@
       ${
         filtered.length === 0
           ? `<div class="yc-card yc-empty-state">
-               <img src="assets/k_58.webp" alt="" class="yc-empty-sticker" />
+               <img src="assets/s_39.webp" alt="" class="yc-empty-sticker" />
                <h4 style="margin:0 0 8px;color:var(--yc-indigo-ink);">当前筛选下暂无隧道规则</h4>
                <p style="margin:0;font-size:13px;">点击右上「+ 新增映射隧道」暴露本机端口/网站/内置插件服务，或「+ 新增访问发起端」发起 XTCP P2P 点对点直连。</p>
              </div>`
@@ -3706,7 +3755,7 @@
     if (STATE.servers.length === 0 && STATE.clients.length === 0) {
       main.innerHTML = `
         <div class="yc-card yc-empty-state">
-          <img src="assets/k_58.webp" alt="" class="yc-empty-sticker" />
+          <img src="assets/s_39.webp" alt="" class="yc-empty-sticker" />
           <h3 style="margin:0 0 8px;">暂无实例拓扑节点</h3>
           <p style="margin:0;">先在「FRPS 服务端」或「FRPC 客户端」板块创建实例后，此处会自动绘制实例间连接与远控关系。</p>
         </div>`;
@@ -4042,10 +4091,10 @@
         <div class="yc-side-heading"><span>应用与画廊目录</span></div>
         <div class="yc-dir-list">
           ${[
-            ["schemes", "k_47.webp", "01 · 多配置方案管理", "独立 JSON 方案与导入导出"],
-            ["updates", "k_54.webp", "02 · 原画包与核心热更新", "GitHub 原画拉取 · FRP & 本体升级"],
-            ["gallery", "k_35.webp", "03 · 精选 35 张狂三画廊", "全部保留素材高清鉴赏与设封面"],
-            ["security", "k_51.webp", "04 · 面板端口与账户安全", "服务端口修改 · 四项改密 · 后台控制"]
+            ["schemes", "s_30.webp", "01 · 多配置方案管理", "独立 JSON 方案与导入导出"],
+            ["updates", "s_32.webp", "02 · 原画包与核心热更新", "GitHub 原画拉取 · FRP & 本体升级"],
+            ["gallery", "s_19.webp", "03 · 约战 4K 与动图画廊", "39 项新精选 + 6 动图 + 经典馆藏"],
+            ["security", "s_33.webp", "04 · 面板端口与账户安全", "服务端口修改 · 四项改密 · 后台控制"]
           ]
             .map(
               ([k, img, t, s]) => `
@@ -4505,7 +4554,13 @@
   function renderSystemGalleryPane(main) {
     const hd = STATE.hdAssets || {};
     const isHD = hd.activeTier === "hd";
-    const items = KURUMI_ASSETS.filter((a) => STATE.galleryCat === "all" || a.cat === STATE.galleryCat);
+    const items = KURUMI_ASSETS.filter((a) => {
+      if (STATE.galleryCat === "all") return true;
+      if (STATE.galleryCat === "sunburst") return a.pack === "sunburst";
+      if (STATE.galleryCat === "gif") return Boolean(a.animated);
+      if (STATE.galleryCat === "16:9") return a.cat === "16:9" || a.cat === "banner";
+      return a.cat === STATE.galleryCat;
+    });
     const pct = hd.downloading && hd.progressTotal > 0 ? Math.min(100, Math.round((hd.progressFiles / hd.progressTotal) * 100)) : 0;
 
     main.innerHTML = `
@@ -4546,16 +4601,17 @@
       <div class="yc-card">
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:18px;">
           <div>
-            <h3 style="margin:0;font-family:var(--yc-serif);font-size:20px;">时崎狂三精选视觉画廊 (共保留 35 张)</h3>
-            <span style="font-size:12.5px;color:var(--yc-muted);">点击任意插画可放大鉴赏当前画质细节，或一键设为主舞台当前壁纸。</span>
+            <h3 style="margin:0;font-family:var(--yc-serif);font-size:20px;">《约会大作战》× 时崎狂三精选画廊 (在线 74 项 · 另归档 26 张 4K/2K 储备原画)</h3>
+            <span style="font-size:12.5px;color:var(--yc-muted);">已接入 39 项 Sunburst 4K/2K/透明立绘与 12 帧无缝循环动图（仓库 <code>assets/material/sunburst_dal/</code> 完整归档全部 65 项保留精品）。</span>
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             ${[
-              ["all", "全部 (35)"],
-              ["16:9", "16:9 主舞台 (11)"],
-              ["3:4", "3:4 竖版卡片 (11)"],
-              ["4:3", "4:3 专题横图 (5)"],
-              ["1:1", "1:1 头像与Q版贴纸 (8)"]
+              ["sunburst", "★ Sunburst 新精选 (39)"],
+              ["gif", "动态循环动图 (6)"],
+              ["16:9", "16:9 主舞台与顶栏 (27)"],
+              ["3:4", "3:4 竖版立绘卡 (22)"],
+              ["1:1", "1:1 透明贴纸 (14)"],
+              ["all", "全部在线馆藏 (74)"]
             ]
               .map(
                 ([k, l]) => `<button type="button" class="yc-btn ${STATE.galleryCat === k ? "yc-btn-indigo" : "yc-btn-outline"} yc-btn-sm" data-gal-cat="${k}">${l}</button>`
@@ -4568,7 +4624,7 @@
           ${items
             .map(
               (a, i) => {
-                const dimLabel = isHD && hd.dimensions && hd.dimensions["k_" + a.id] ? hd.dimensions["k_" + a.id] : a.cat;
+                const aKey = a.key || ("k_" + a.id); const dimLabel = isHD && hd.dimensions && hd.dimensions[aKey] ? hd.dimensions[aKey] : (a.animated ? "GIF LOOP" : a.cat);
                 return `
             <div class="yc-gallery-tile" data-gal-open="${esc(a.id)}">
               <div class="yc-gallery-img-wrap">
@@ -4606,7 +4662,7 @@
         const art = KURUMI_ASSETS.find((x) => x.id === tile.dataset.galOpen);
         if (!art) return;
         const heroIdx = HERO_SLIDES.findIndex((h) => h.id === art.id);
-        const dim = (STATE.hdAssets.dimensions || {})["k_" + art.id];
+        const dim = (STATE.hdAssets.dimensions || {})[art.key || ("k_" + art.id)];
         const qualityText = STATE.hdAssets.activeTier === "hd"
           ? `GitHub 原画质已启用${dim ? " · " + dim + " px" : ""}`
           : "当前为内置轻量压缩 WebP（可在画廊顶部一键拉取 GitHub 原画包）";
