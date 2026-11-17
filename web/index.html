@@ -31,7 +31,7 @@
           </div>
         </div>
         <div id="loginFirstRunHint" class="yc-notice yc-notice-pink" hidden>
-          首次启动默认用户名为 <code>admin</code>，密码留空即可直接登录；进入后可在「应用与画廊 → 账户安全」设置专属密码。
+          首次启动默认用户名为 <code>admin</code>，密码留空即可直接登录；进入后可在「应用与画廊 → 面板设置与账户安全」修改专属密码及服务端口。
         </div>
         <div id="loginErrorBox" class="yc-notice yc-notice-danger" hidden></div>
 
@@ -39,16 +39,19 @@
           <span class="yc-field-label">管理员用户名</span>
           <input id="loginUsername" name="username" type="text" value="admin" required autocomplete="username" placeholder="admin" />
         </label>
-        <label class="yc-field">
-          <span class="yc-field-label">登录密码</span>
-          <input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="首次运行可留空" />
-        </label>
+        <div class="yc-field">
+          <label class="yc-field-label" for="loginPassword">登录密码</label>
+          <div class="yc-pass-wrap">
+            <input id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="首次运行可留空" />
+            <button type="button" class="yc-eye-btn" data-eye-for="loginPassword" title="显示密码" aria-label="显示或隐藏密码"></button>
+          </div>
+        </div>
 
         <button id="loginSubmitBtn" type="submit" class="yc-btn yc-btn-primary yc-btn-block">
           进入 KurumiFrp 控制台
         </button>
         <div class="yc-login-foot">
-          <span id="loginVersionBadge">v0.9.6</span>
+          <span id="loginVersionBadge">v0.9.7</span>
           <span>未登录状态下所有实例与配置接口均严格锁定</span>
         </div>
       </form>
@@ -62,7 +65,7 @@
         <img src="assets/k_51.webp" alt="KurumiFrp" class="yc-brand-avatar" />
         <div class="yc-brand-text">
           <span class="yc-brand-name">KurumiFrp</span>
-          <span id="topVersionBadge" class="yc-brand-ver">v0.9.6</span>
+          <span id="topVersionBadge" class="yc-brand-ver">v0.9.7</span>
         </div>
       </div>
 

@@ -13,7 +13,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,17 +29,18 @@ var distribution = "source"
 
 func main() {
 	var (
-		dataFlag       = flag.String("data", "", "数据与配置文件存储目录（默认保存在软件目录内 data 文件夹）")
-		listenFlag     = flag.String("listen", "", "WebUI 监听地址（例如 127.0.0.1:9000 或 0.0.0.0:9000，默认 auto）")
-		openFlag       = flag.Bool("open", false, "启动后自动在系统默认浏览器中打开 WebUI")
-		headlessFlag   = flag.Bool("headless", false, "后台静默启动（供开机自启使用，不自动弹出浏览器）")
-		stopFlag       = flag.Bool("stop", false, "优雅停止当前正在运行的 KurumiFrp 后台进程")
-		checkRunning   = flag.Bool("check-running", false, "检查后台服务是否正在运行")
-		showToken      = flag.Bool("show-token", false, "输出本地 CLI 维护令牌")
-		pathsFlag      = flag.Bool("paths", false, "以 JSON 输出当前软件目录与数据目录路径")
-		versionFlag    = flag.Bool("version", false, "打印版本号")
-		nativeMaint    = flag.String("native-maintenance", "", "安装包生命周期维护命令 (preflight|preflight-existing|init|stop|finish-stop|purge)")
-		installDirFlag = flag.String("install-dir", "", "安装包目标安装目录")
+		dataFlag        = flag.String("data", "", "数据与配置文件存储目录（默认保存在软件目录内 data 文件夹）")
+		listenFlag      = flag.String("listen", "", "WebUI 监听地址（例如 127.0.0.1:9000 或 0.0.0.0:9000，默认读取面板设置或 auto）")
+		defaultHostFlag = flag.String("default-host", "", "未自定义面板监听地址时的默认监听网卡（如 0.0.0.0）")
+		openFlag        = flag.Bool("open", false, "启动后自动在系统默认浏览器中打开 WebUI")
+		headlessFlag    = flag.Bool("headless", false, "后台静默启动（供开机自启使用，不自动弹出浏览器）")
+		stopFlag        = flag.Bool("stop", false, "优雅停止当前正在运行的 KurumiFrp 后台进程")
+		checkRunning    = flag.Bool("check-running", false, "检查后台服务是否正在运行")
+		showToken       = flag.Bool("show-token", false, "输出本地 CLI 维护令牌")
+		pathsFlag       = flag.Bool("paths", false, "以 JSON 输出当前软件目录与数据目录路径")
+		versionFlag     = flag.Bool("version", false, "打印版本号")
+		nativeMaint     = flag.String("native-maintenance", "", "安装包生命周期维护命令 (preflight|preflight-existing|init|stop|finish-stop|purge)")
+		installDirFlag  = flag.String("install-dir", "", "安装包目标安装目录")
 	)
 	flag.Parse()
 
@@ -54,8 +57,6 @@ func main() {
 		return
 	}
 
-	// On Windows desktop builds, double-clicking kurumi.exe or any shortcut should ALWAYS open the WebUI
-	// unless explicitly launched in background mode via -headless.
 	shouldOpenBrowser := *openFlag || (runtime.GOOS == "windows" && !*headlessFlag)
 
 	dataDir := resolveDataDir(*dataFlag)
@@ -95,16 +96,14 @@ func main() {
 		return
 	}
 
-	// If an instance is already running, immediately open the browser WebUI for the user!
 	if existingAddr, ok := probeExistingServer(dataDir); ok {
 		if shouldOpenBrowser {
 			openWebUIWithTicket(dataDir, existingAddr)
 		}
 		return
 	}
-	// Fallback check: even if dataDir token wasn't readable (e.g. legacy elevated instance), check default loopback ports
 	if shouldOpenBrowser {
-		if fallbackURL, ok := probePublicSessionOnDefaultPorts(); ok {
+		if fallbackURL, ok := probePublicSessionOnDefaultPorts(dataDir); ok {
 			_ = platformOpenURL(fallbackURL)
 			return
 		}
@@ -124,7 +123,7 @@ func main() {
 	}
 	defer app.Close()
 
-	ln, actualAddr, browserBaseURL, err := bindListener(*listenFlag)
+	ln, actualCallbackAddr, browserBaseURL, err := bindInitialListener(*listenFlag, *defaultHostFlag, dataDir)
 	if err != nil {
 		msg := fmt.Sprintf("绑定本地 WebUI 端口失败: %v", err)
 		fmt.Fprintln(os.Stderr, msg)
@@ -133,27 +132,75 @@ func main() {
 		}
 		os.Exit(1)
 	}
-	defer ln.Close()
 
 	_ = os.WriteFile(filepath.Join(dataDir, "listen.addr"), []byte(browserBaseURL+"\n"), 0o600)
 	app.SetRuntimeMeta(ln.Addr().String(), os.Args[1:])
-	app.SetListenAddr(actualAddr)
+	app.SetListenAddr(actualCallbackAddr)
 
-	srv := &http.Server{
-		Handler:           app,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
+	var (
+		srvMu      sync.Mutex
+		activeLn   = ln
+		activeSrv  = newPanelHTTPServer(app)
+		fatalErrCh = make(chan error, 1)
+	)
+
+	startServing := func(s *http.Server, l net.Listener) {
+		go func() {
+			if serveErr := s.Serve(l); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				srvMu.Lock()
+				isCurrent := (s == activeSrv)
+				srvMu.Unlock()
+				if isCurrent {
+					select {
+					case fatalErrCh <- serveErr:
+					default:
+					}
+				}
+			}
+		}()
 	}
 
-	go func() {
-		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutCtx)
-	}()
+	// Register live zero-downtime panel port hot-rebinding callback
+	app.SetPanelRebindHandler(ln.Addr().String(), func(bindHost string, newPort int) (string, string, int, error) {
+		srvMu.Lock()
+		defer srvMu.Unlock()
 
-	fmt.Printf("KurumiFrp v%s WebUI 已启动: %s (数据目录: %s)\n", version.Current, browserBaseURL, dataDir)
+		targetSpec := net.JoinHostPort(bindHost, strconv.Itoa(newPort))
+		newLn, bindErr := net.Listen("tcp", targetSpec)
+		if bindErr != nil {
+			return "", "", 0, bindErr
+		}
+		tcpAddr := newLn.Addr().(*net.TCPAddr)
+		boundHost, _, _ := net.SplitHostPort(tcpAddr.String())
+		boundPort := tcpAddr.Port
+		newBrowserURL := buildLocalBrowserURL(tcpAddr)
+		newCallbackAddr := fmt.Sprintf("127.0.0.1:%d", boundPort)
+
+		newSrv := newPanelHTTPServer(app)
+		oldSrv := activeSrv
+		activeLn = newLn
+		activeSrv = newSrv
+		startServing(newSrv, newLn)
+
+		_ = os.WriteFile(filepath.Join(dataDir, "listen.addr"), []byte(newBrowserURL+"\n"), 0o600)
+		app.SetRuntimeMeta(newLn.Addr().String(), filterListenFromArgs(os.Args[1:]))
+		app.UpdateCallbackAddr(newCallbackAddr)
+
+		// Gracefully retire old HTTP listener after current response completes
+		if oldSrv != nil {
+			go func(retiring *http.Server) {
+				time.Sleep(750 * time.Millisecond)
+				shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = retiring.Shutdown(shutCtx)
+			}(oldSrv)
+		}
+		return newLn.Addr().String(), boundHost, boundPort, nil
+	})
+
+	startServing(activeSrv, activeLn)
+
+	fmt.Printf("KurumiFrp v%s WebUI 已启动: %s (监听: %s, 数据目录: %s)\n", version.Current, browserBaseURL, ln.Addr().String(), dataDir)
 	if shouldOpenBrowser {
 		go func() {
 			time.Sleep(200 * time.Millisecond)
@@ -161,19 +208,58 @@ func main() {
 		}()
 	}
 
-	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		msg := fmt.Sprintf("WebUI 服务异常退出: %v", err)
+	select {
+	case <-ctx.Done():
+		srvMu.Lock()
+		curSrv := activeSrv
+		curLn := activeLn
+		srvMu.Unlock()
+		if curSrv != nil {
+			shutCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			_ = curSrv.Shutdown(shutCtx)
+			cancel()
+		}
+		if curLn != nil {
+			_ = curLn.Close()
+		}
+	case serveErr := <-fatalErrCh:
+		msg := fmt.Sprintf("WebUI 服务异常退出: %v", serveErr)
 		fmt.Fprintln(os.Stderr, msg)
 		if shouldOpenBrowser {
 			platformShowFatalError(msg)
 		}
 		os.Exit(1)
 	}
+
 	if code := app.ExitCode(); code != 0 {
 		app.Close()
-		_ = ln.Close()
 		os.Exit(code)
 	}
+}
+
+func newPanelHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+}
+
+func filterListenFromArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "-listen" || a == "--listen" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "-listen=") || strings.HasPrefix(a, "--listen=") {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 func resolveDataDir(explicit string) string {
@@ -193,7 +279,6 @@ func resolveDataDir(explicit string) string {
 			if ensureDirWritable(preferred) {
 				return preferred
 			}
-			// Fallback if installed into a locked folder without Users write ACL
 			if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
 				fallback := filepath.Join(localAppData, "KurumiFRP", "data")
 				if ensureDirWritable(fallback) {
@@ -226,8 +311,40 @@ func ensureDirWritable(dir string) bool {
 	return true
 }
 
-func bindListener(requested string) (net.Listener, string, string, error) {
+func buildLocalBrowserURL(tcpAddr *net.TCPAddr) string {
+	hostForURL := tcpAddr.IP.String()
+	if tcpAddr.IP.IsUnspecified() || hostForURL == "" {
+		hostForURL = "127.0.0.1"
+	}
+	return fmt.Sprintf("http://%s", net.JoinHostPort(hostForURL, strconv.Itoa(tcpAddr.Port)))
+}
+
+func bindInitialListener(requested, defaultHost, dataDir string) (net.Listener, string, string, error) {
 	req := strings.TrimSpace(requested)
+	panelCfg := manager.LoadPanelSettings(dataDir)
+
+	fallbackHost := strings.TrimSpace(defaultHost)
+	if fallbackHost == "" {
+		if distribution == "linux-system" {
+			fallbackHost = "0.0.0.0"
+		} else {
+			fallbackHost = "127.0.0.1"
+		}
+	}
+
+	// Honor WebUI-saved panel_settings.json when -listen is auto/empty OR legacy systemd default "0.0.0.0:9000"
+	if panelCfg.Customized && panelCfg.Port > 0 && (req == "" || req == "auto" || req == "0.0.0.0:9000") {
+		host := panelCfg.BindHost
+		if host == "" {
+			if req == "0.0.0.0:9000" {
+				host = "0.0.0.0"
+			} else {
+				host = fallbackHost
+			}
+		}
+		req = net.JoinHostPort(host, strconv.Itoa(panelCfg.Port))
+	}
+
 	if req != "" && req != "auto" {
 		ln, err := net.Listen("tcp", req)
 		if err != nil {
@@ -235,27 +352,25 @@ func bindListener(requested string) (net.Listener, string, string, error) {
 		}
 		tcpAddr := ln.Addr().(*net.TCPAddr)
 		callbackAddr := fmt.Sprintf("127.0.0.1:%d", tcpAddr.Port)
-		hostForURL := tcpAddr.IP.String()
-		if tcpAddr.IP.IsUnspecified() || hostForURL == "" {
-			hostForURL = "127.0.0.1"
-		}
-		return ln, callbackAddr, fmt.Sprintf("http://%s", net.JoinHostPort(hostForURL, fmt.Sprintf("%d", tcpAddr.Port))), nil
+		return ln, callbackAddr, buildLocalBrowserURL(tcpAddr), nil
 	}
 
 	for port := 9000; port <= 9020; port++ {
-		addr := fmt.Sprintf("127.0.0.1:%d", port)
+		addr := net.JoinHostPort(fallbackHost, strconv.Itoa(port))
 		ln, err := net.Listen("tcp", addr)
 		if err == nil {
-			return ln, addr, "http://" + addr, nil
+			tcpAddr := ln.Addr().(*net.TCPAddr)
+			cb := fmt.Sprintf("127.0.0.1:%d", tcpAddr.Port)
+			return ln, cb, buildLocalBrowserURL(tcpAddr), nil
 		}
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", net.JoinHostPort(fallbackHost, "0"))
 	if err != nil {
 		return nil, "", "", err
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	return ln, addr, "http://" + addr, nil
+	tcpAddr := ln.Addr().(*net.TCPAddr)
+	cb := fmt.Sprintf("127.0.0.1:%d", tcpAddr.Port)
+	return ln, cb, buildLocalBrowserURL(tcpAddr), nil
 }
 
 func probeExistingServer(dataDir string) (string, bool) {
@@ -277,9 +392,16 @@ func probeExistingServer(dataDir string) (string, bool) {
 	return baseURL, resp.StatusCode == http.StatusOK
 }
 
-func probePublicSessionOnDefaultPorts() (string, bool) {
+func probePublicSessionOnDefaultPorts(dataDir string) (string, bool) {
 	client := &http.Client{Timeout: 400 * time.Millisecond}
-	for port := 9000; port <= 9005; port++ {
+	var ports []int
+	if saved := manager.LoadPanelSettings(dataDir); saved.Port > 0 {
+		ports = append(ports, saved.Port)
+	}
+	for p := 9000; p <= 9005; p++ {
+		ports = append(ports, p)
+	}
+	for _, port := range ports {
 		base := fmt.Sprintf("http://127.0.0.1:%d", port)
 		resp, err := client.Get(base + "/api/session")
 		if err != nil {

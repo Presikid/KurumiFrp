@@ -24,6 +24,7 @@ type App struct {
 	runtime    *RuntimeSupervisor
 	updater    *UpdateManager
 	assets     *AssetPackManager
+	panel      *PanelManager
 	staticFS   http.Handler
 	stateSeq   atomic.Uint64
 	exitCode   atomic.Int32
@@ -66,6 +67,7 @@ func NewApp(dataDir string, onShutdown func()) (*App, error) {
 	app.assets = NewAssetPackManager(dataDir, app.updater, func() {
 		app.stateSeq.Add(1)
 	})
+	app.panel = NewPanelManager(dataDir)
 
 	subFS, err := fs.Sub(web.Files, ".")
 	if err != nil {
@@ -81,10 +83,24 @@ func (a *App) SetListenAddr(addr string) {
 	a.runtime.StartAutoStarts()
 }
 
+// UpdateCallbackAddr updates RuntimeSupervisor's fallback callback address after a live panel port switch.
+func (a *App) UpdateCallbackAddr(addr string) {
+	a.runtime.SetCallbackAddr(addr)
+	a.bumpState()
+}
+
+// SetPanelRebindHandler registers the live WebUI listener rebinding callback from cmd/kurumi/main.go.
+func (a *App) SetPanelRebindHandler(listenAddr string, fn PanelRebindFunc) {
+	a.panel.SetRebindHandler(listenAddr, fn)
+}
+
 // SetRuntimeMeta records the bound TCP listener address and CLI arguments for seamless self-updates.
 func (a *App) SetRuntimeMeta(listenSpec string, origArgs []string) {
 	a.listenSpec = listenSpec
 	a.origArgs = append([]string(nil), origArgs...)
+	if a.panel != nil {
+		a.panel.RecordBoundAddr(listenSpec)
+	}
 }
 
 // Close gracefully stops all running frpc and frps child processes.
@@ -113,6 +129,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 
 	path := r.URL.Path
 
@@ -127,7 +144,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if path == "/launch" && r.Method == http.MethodGet {
 		ticket := r.URL.Query().Get("ticket")
 		if sid, ok := a.auth.RedeemBrowserTicket(ticket); ok {
-			setSessionCookie(w, sid)
+			setSessionCookie(w, r, sid)
 		}
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
@@ -166,7 +183,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, err.Error())
 			return
 		}
-		setSessionCookie(w, sid)
+		setSessionCookie(w, r, sid)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":                 true,
 			"username":           a.auth.Username(),
@@ -254,6 +271,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			"updateProxy":        a.updater.ProxyURL(),
 			"systemProxy":        a.updater.DetectedSystemProxy(),
 			"hdAssets":           a.assets.Status(),
+			"panel":              a.panel.Status(),
 		})
 
 	case "/api/account":
@@ -265,20 +283,51 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			CurrentPassword string `json:"currentPassword"`
 			NewUsername     string `json:"newUsername"`
 			NewPassword     string `json:"newPassword"`
+			ConfirmPassword string `json:"confirmPassword"`
 		}
 		if err := readJSONBody(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := a.auth.UpdateCredentials(req.CurrentPassword, req.NewUsername, req.NewPassword); err != nil {
+		if err := a.auth.UpdateCredentialsConfirmed(req.CurrentPassword, req.NewUsername, req.NewPassword, req.ConfirmPassword); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		clearSessionCookie(w)
 		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":                 true,
 			"username":           a.auth.Username(),
 			"needsPasswordSetup": a.auth.NeedsPasswordSetup(),
+		})
+
+	case "/api/panel/settings":
+		if r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, a.panel.Status())
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		var req struct {
+			Port     int    `json:"port"`
+			BindHost string `json:"bindHost"`
+		}
+		if err := readJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		st, changed, err := a.panel.UpdatePort(req.Port, req.BindHost, a.store, a.runtime)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.bumpState()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":      true,
+			"changed": changed,
+			"panel":   st,
 		})
 
 	// ==================== Bidirectional Live TOML Preview & Parse ====================
@@ -821,6 +870,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		_ = a.runtime.StopInstance(req.ID)
+		a.runtime.ClearInstanceError(req.ID)
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			out := make([]ClientProfile, 0, len(doc.Clients))
 			for _, c := range doc.Clients {
@@ -928,7 +978,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		if updatedCli != nil {
-			_ = a.runtime.ReloadOrRestartClient(*updatedCli)
+			if err := a.runtime.ReloadOrRestartClient(*updatedCli); err != nil {
+				a.bumpState()
+				writeError(w, http.StatusBadRequest, "隧道规则已保存，但热重载预检失败（原运行实例未中断）: "+err.Error())
+				return
+			}
 		}
 		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": req.Tunnel.ID})
@@ -964,7 +1018,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		if updatedCli != nil {
-			_ = a.runtime.ReloadOrRestartClient(*updatedCli)
+			if err := a.runtime.ReloadOrRestartClient(*updatedCli); err != nil {
+				a.bumpState()
+				writeError(w, http.StatusBadRequest, "隧道状态已保存，但热重载预检失败: "+err.Error())
+				return
+			}
 		}
 		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1001,7 +1059,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		if updatedCli != nil {
-			_ = a.runtime.ReloadOrRestartClient(*updatedCli)
+			if err := a.runtime.ReloadOrRestartClient(*updatedCli); err != nil {
+				a.bumpState()
+				writeError(w, http.StatusBadRequest, "隧道已移除，但热重载预检失败: "+err.Error())
+				return
+			}
 		}
 		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -1133,13 +1195,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		prevCB := a.runtime.CallbackAddr()
-		a.runtime.StopAll()
-		if rt, err := NewRuntimeSupervisor(a.dataDir, a.store, func() { a.stateSeq.Add(1) }); err == nil {
-			rt.SetCallbackAddr(prevCB)
-			a.runtime = rt
-			a.updater.runtime = rt
-		}
+		a.runtime.ResetForConfigSwitch()
 		a.runtime.StartAutoStarts()
 		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "config": sanitizeDocForBrowser(doc)})
@@ -1160,13 +1216,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		if req.Activate {
-			prevCB := a.runtime.CallbackAddr()
-			a.runtime.StopAll()
-			if rt, err := NewRuntimeSupervisor(a.dataDir, a.store, func() { a.stateSeq.Add(1) }); err == nil {
-				rt.SetCallbackAddr(prevCB)
-				a.runtime = rt
-				a.updater.runtime = rt
-			}
+			a.runtime.ResetForConfigSwitch()
 			a.runtime.StartAutoStarts()
 		}
 		a.bumpState()
@@ -1461,12 +1511,13 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 	}
 }
 
-func setSessionCookie(w http.ResponseWriter, sid string) {
+func setSessionCookie(w http.ResponseWriter, r *http.Request, sid string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    sid,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   r != nil && r.TLS != nil,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
@@ -1483,16 +1534,36 @@ func clearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
+// sameOriginRequest blocks Cross-Site Request Forgery even when Origin is stripped by no-referrer policies or HTML forms (A02).
 func sameOriginRequest(r *http.Request) bool {
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	if origin == "" {
-		return true
-	}
-	u, err := url.Parse(origin)
-	if err != nil {
+	if sfs := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))); sfs == "cross-site" {
 		return false
 	}
-	return strings.EqualFold(u.Host, r.Host)
+	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
+	if strings.HasPrefix(ct, "application/x-www-form-urlencoded") || strings.HasPrefix(ct, "multipart/form-data") || strings.HasPrefix(ct, "text/plain") {
+		return false
+	}
+	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+		if origin == "null" {
+			return false
+		}
+		u, err := url.Parse(origin)
+		if err != nil || !strings.EqualFold(u.Host, r.Host) {
+			return false
+		}
+		return true
+	}
+	if ref := strings.TrimSpace(r.Header.Get("Referer")); ref != "" {
+		u, err := url.Parse(ref)
+		if err != nil || !strings.EqualFold(u.Host, r.Host) {
+			return false
+		}
+		return true
+	}
+	if r.Header.Get("X-Kurumi-Requested-With") != "" || strings.HasPrefix(ct, "application/json") || r.ContentLength <= 0 {
+		return true
+	}
+	return false
 }
 
 func readJSONBody(r *http.Request, dst any) error {

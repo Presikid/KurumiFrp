@@ -91,6 +91,11 @@ func (rs *RuntimeSupervisor) startLoopbackAgentServer() error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/internal/client-agent/", rs.handleClientAgentHTTP)
+	// A05: Serve frps HTTP plugin webhooks on the persistent loopback agent port so WebUI port changes never interrupt active frps instances!
+	mux.HandleFunc("/internal/frps-plugin/", func(w http.ResponseWriter, r *http.Request) {
+		srvID := strings.TrimPrefix(r.URL.Path, "/internal/frps-plugin/")
+		rs.HandleFRPSPlugin(w, r, srvID)
+	})
 	srv := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -1030,4 +1035,48 @@ func upsertTunnelRule(list *[]TunnelRule, rule TunnelRule) {
 		rule.ID = newShortID("tun")
 	}
 	*list = append(*list, rule)
+}
+
+// terminateBridgesForServer cleans up any visitorBridge processes tied to a stopped/deleted frps server (A06).
+func (rs *RuntimeSupervisor) terminateBridgesForServer(serverID string) {
+	prefix := serverID + "::"
+	rs.bridgeMu.Lock()
+	var victim []*visitorBridge
+	for k, b := range rs.bridges {
+		if strings.HasPrefix(k, prefix) {
+			victim = append(victim, b)
+			delete(rs.bridges, k)
+		}
+	}
+	rs.bridgeMu.Unlock()
+	for _, b := range victim {
+		terminateVisitorBridge(b)
+	}
+}
+
+// reapStaleBridges removes exited or >10m idle visitorBridge subprocesses during periodic polling (A06).
+func (rs *RuntimeSupervisor) reapStaleBridges() {
+	now := time.Now()
+	rs.bridgeMu.Lock()
+	var victim []*visitorBridge
+	for k, b := range rs.bridges {
+		if b == nil {
+			delete(rs.bridges, k)
+			continue
+		}
+		exited := false
+		select {
+		case <-b.done:
+			exited = true
+		default:
+		}
+		if exited || now.Sub(b.lastUsed) > 10*time.Minute {
+			victim = append(victim, b)
+			delete(rs.bridges, k)
+		}
+	}
+	rs.bridgeMu.Unlock()
+	for _, b := range victim {
+		terminateVisitorBridge(b)
+	}
 }

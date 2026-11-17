@@ -780,10 +780,14 @@ func extractFRPMembers(assetName string, archiveBytes []byte) ([]byte, []byte, [
 
 func replaceFileAtomic(tmpPath, dstPath string, perm os.FileMode) error {
 	_ = os.Chmod(tmpPath, perm)
-	if runtime.GOOS == "windows" {
-		_ = os.Remove(dstPath)
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		if runtime.GOOS == "windows" {
+			_ = os.Remove(dstPath)
+			return os.Rename(tmpPath, dstPath)
+		}
+		return err
 	}
-	return os.Rename(tmpPath, dstPath)
+	return nil
 }
 
 // DetectedSystemProxy returns the currently active OS default proxy URL (e.g. Windows WinINET system proxy), if any.

@@ -772,7 +772,7 @@ func downloadAssetOnce(ctx context.Context, client *http.Client, rawURL, destPat
 		}
 	}
 
-	if err := os.Rename(tmpPath, destPath); err != nil {
+	if err := replaceFileAtomic(tmpPath, destPath, 0o600); err != nil {
 		_ = os.Remove(tmpPath)
 		return 0, err
 	}

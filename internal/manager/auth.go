@@ -239,6 +239,26 @@ func (a *AuthManager) Login(clientIP, username, password string) (string, error)
 	return a.createSessionLocked(now)
 }
 
+// UpdateCredentialsConfirmed validates currentPassword, newUsername, newPassword, and confirmPassword (4-field WebUI form).
+func (a *AuthManager) UpdateCredentialsConfirmed(currentPassword, newUsername, newPassword, confirmPassword string) error {
+	if strings.TrimSpace(newUsername) == "" {
+		return errors.New("新用户名不能为空")
+	}
+	if newPassword == "" {
+		return errors.New("新密码不能为空")
+	}
+	if newPassword != confirmPassword {
+		return errors.New("两次输入的新密码不一致，请重新核对")
+	}
+	a.mu.Lock()
+	needOrig := !a.emptyPassword
+	a.mu.Unlock()
+	if needOrig && currentPassword == "" {
+		return errors.New("请输入原密码以验证管理员身份")
+	}
+	return a.UpdateCredentials(currentPassword, newUsername, newPassword)
+}
+
 // UpdateCredentials updates the single administrator's username and/or password after verifying currentPassword.
 // Because Salt and Hash rotate, all existing browser session tokens are immediately invalidated.
 func (a *AuthManager) UpdateCredentials(currentPassword, newUsername, newPassword string) error {
@@ -255,7 +275,7 @@ func (a *AuthManager) UpdateCredentials(currentPassword, newUsername, newPasswor
 
 	passOK, err := verifyPasswordRecord(a.account, currentPassword)
 	if err != nil || !passOK {
-		return errors.New("当前密码校验失败")
+		return errors.New("原密码输入不正确，校验失败")
 	}
 
 	salt := make([]byte, 16)

@@ -195,6 +195,47 @@ func (rs *RuntimeSupervisor) CallbackAddr() string {
 	return v
 }
 
+// AgentPort returns the persistent internal loopback HTTP server port.
+func (rs *RuntimeSupervisor) AgentPort() int {
+	return rs.agentPort
+}
+
+// ResetForConfigSwitch stops all running instances and clears in-memory logs/errors/bridges in-place without replacing the RuntimeSupervisor pointer (A04).
+func (rs *RuntimeSupervisor) ResetForConfigSwitch() {
+	rs.mu.RLock()
+	ids := make([]string, 0, len(rs.procs))
+	for id := range rs.procs {
+		ids = append(ids, id)
+	}
+	rs.mu.RUnlock()
+
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func(pid string) {
+			defer wg.Done()
+			_ = rs.StopInstance(pid)
+		}(id)
+	}
+	wg.Wait()
+
+	rs.bridgeMu.Lock()
+	bridges := make([]*visitorBridge, 0, len(rs.bridges))
+	for _, b := range rs.bridges {
+		bridges = append(bridges, b)
+	}
+	rs.bridges = make(map[string]*visitorBridge)
+	rs.bridgeMu.Unlock()
+	for _, b := range bridges {
+		terminateVisitorBridge(b)
+	}
+
+	rs.mu.Lock()
+	rs.historyLogs = make(map[string]*ringLogBuffer)
+	rs.lastErrors = make(map[string]string)
+	rs.mu.Unlock()
+}
+
 func (rs *RuntimeSupervisor) notifyChange() {
 	if rs.onChange != nil {
 		rs.onChange()
@@ -335,6 +376,9 @@ func (rs *RuntimeSupervisor) StartServer(srv ServerProfile) error {
 	adminPass := randomHex(16)
 	pluginSecret := randomHex(20)
 	cbAddr := rs.CallbackAddr()
+	if rs.agentPort > 0 {
+		cbAddr = fmt.Sprintf("127.0.0.1:%d", rs.agentPort)
+	}
 
 	rendered := RenderServerTOML(srv, ServerRuntimeInjections{
 		Preview:        false,
@@ -623,6 +667,7 @@ func (rs *RuntimeSupervisor) StopInstance(id string) error {
 		delete(rs.procs, id)
 	}
 	rs.mu.Unlock()
+	rs.terminateBridgesForServer(id)
 	rs.notifyChange()
 	return nil
 }
@@ -860,6 +905,7 @@ func (rs *RuntimeSupervisor) pollLoop() {
 }
 
 func (rs *RuntimeSupervisor) pollOnce() {
+	rs.reapStaleBridges()
 	rs.mu.RLock()
 	list := make([]*managedProc, 0, len(rs.procs))
 	for _, p := range rs.procs {
@@ -1261,9 +1307,15 @@ func (rs *RuntimeSupervisor) flushServerTrafficSnapshot(serverID string) {
 	rs.persistTrafficDeltas(serverID, updates)
 }
 
-// ClearInstanceError clears any retained crash error when an instance profile is deleted.
+// ClearInstanceError clears retained crash errors, buffered logs, and runtime TOML artifacts when an instance profile is deleted (A08).
 func (rs *RuntimeSupervisor) ClearInstanceError(id string) {
 	rs.mu.Lock()
 	delete(rs.lastErrors, id)
+	delete(rs.historyLogs, id)
 	rs.mu.Unlock()
+	if strings.TrimSpace(id) != "" && filepath.Base(id) == id {
+		_ = os.Remove(filepath.Join(rs.runtimeDir, id+".toml"))
+		_ = os.Remove(filepath.Join(rs.runtimeDir, id+".staging.toml"))
+		_ = os.Remove(filepath.Join(rs.runtimeDir, id+".toml.staging"))
+	}
 }

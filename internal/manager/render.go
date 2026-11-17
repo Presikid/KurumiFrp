@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +13,8 @@ import (
 )
 
 const internalCtrlProxyPrefix = "__kurumi_ctrl_"
+
+var reGoTemplateEnd = regexp.MustCompile(`^\{\{-?\s*end\s*-?\}\}$`)
 
 // RenderedConfig holds the generated TOML text, process environment variables, and sensitive strings to mask in logs.
 type RenderedConfig struct {
@@ -1259,7 +1262,7 @@ func parseClientTOMLLines(name string, lines []string) *ClientProfile {
 			for i+1 < len(lines) {
 				i++
 				inner := strings.TrimSpace(lines[i])
-				if strings.Contains(inner, "end }}") {
+				if reGoTemplateEnd.MatchString(inner) || strings.Contains(inner, "end }}") {
 					break
 				}
 				if ik, iv, ok := splitTOMLKeyVal(inner); ok {
