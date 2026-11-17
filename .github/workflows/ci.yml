@@ -127,11 +127,18 @@ jobs:
           fi
           (cd dist-native && sha256sum * > SHA256SUMS.txt)
           if [ -s RELEASE_NOTES.md ]; then
+            python3 - "$version" <<'EXTRACT_PY' > /tmp/release_body.md
+import re, sys
+ver = sys.argv[1].strip()
+txt = open("RELEASE_NOTES.md", encoding="utf-8").read()
+m = re.search(rf"(^##\s+KurumiFrp\s+v{re.escape(ver)}\b[\s\S]*?)(?=^##\s+KurumiFrp\s+v\d+\.\d+|\Z)", txt, re.M)
+sys.stdout.write((m.group(1).strip() + "\n") if m else txt.strip() + "\n")
+EXTRACT_PY
             gh release create "$tag" dist-native/* \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "KurumiFrp v$version" \
-              --notes-file RELEASE_NOTES.md
+              --notes-file /tmp/release_body.md
           else
             gh release create "$tag" dist-native/* \
               --repo "$GITHUB_REPOSITORY" \
