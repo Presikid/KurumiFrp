@@ -16,8 +16,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/Presikid/KurumiFrp/web"
 )
 
 func TestSingleUserAuthAndLegacyMigration(t *testing.T) {
@@ -1122,5 +1125,76 @@ remotePort = 6022
 	_, parsedCli, err := ParseTOMLAsProfile("RangeCheck", "frpc", rangeTOML)
 	if err != nil || len(parsedCli.Tunnels) != 2 || parsedCli.Tunnels[1].Name != "after-range-ssh" {
 		t.Fatalf("A08 regression: range parser swallowed trailing proxy: err=%v tunnels=%+v", err, parsedCli.Tunnels)
+	}
+}
+
+func TestV098ConcurrentRebindAndWebUIIntegrity(t *testing.T) {
+	dir := t.TempDir()
+	app, err := NewApp(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+
+	if err := app.store.Update(func(doc *ConfigDocument) error {
+		doc.Servers = append(doc.Servers, ServerProfile{
+			ID:           "srv-quic-chk",
+			Name:         "QUIC测试服务端",
+			BindAddr:     "0.0.0.0",
+			BindPort:     17000,
+			KCPBindPort:  17001,
+			QUICBindPort: 17002,
+		})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var activeMu sync.Mutex
+	boundPort := 19000
+	app.SetPanelRebindHandler("127.0.0.1:19000", func(bindHost string, port int) (string, string, int, error) {
+		activeMu.Lock()
+		defer activeMu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+		boundPort = port
+		spec := fmt.Sprintf("%s:%d", bindHost, port)
+		app.SetRuntimeMeta(spec, []string{"-data", dir})
+		return spec, bindHost, port, nil
+	})
+
+	if _, _, err := app.panel.UpdatePort(17001, "127.0.0.1", app.store, app.runtime); err == nil {
+		t.Fatal("expected KCPBindPort conflict error")
+	}
+	if _, _, err := app.panel.UpdatePort(17002, "127.0.0.1", app.store, app.runtime); err == nil {
+		t.Fatal("expected QUICBindPort conflict error")
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(offset int) {
+			defer wg.Done()
+			target := 19100 + offset
+			if _, _, uErr := app.panel.UpdatePort(target, "127.0.0.1", app.store, app.runtime); uErr != nil {
+				t.Errorf("concurrent UpdatePort(%d) failed: %v", target, uErr)
+			}
+			_, _ = app.getRuntimeMeta()
+			_ = app.panel.Status()
+		}(i)
+	}
+	wg.Wait()
+
+	activeMu.Lock()
+	finalBound := boundPort
+	activeMu.Unlock()
+	if st := app.panel.Status(); st.CurrentPort != finalBound || st.SavedPort != finalBound {
+		t.Fatalf("serialized final port mismatch: status=%+v vs bound=%d", st, finalBound)
+	}
+
+	for _, requiredFile := range []string{"index.html", "style.css", "app.js"} {
+		b, rErr := web.Files.ReadFile(requiredFile)
+		if rErr != nil || len(b) < 512 {
+			t.Fatalf("embedded web/%s missing or truncated: err=%v len=%d", requiredFile, rErr, len(b))
+		}
 	}
 }
