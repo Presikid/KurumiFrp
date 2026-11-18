@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -22,10 +23,6 @@ import (
 	"github.com/Presikid/KurumiFrp/internal/manager"
 	"github.com/Presikid/KurumiFrp/internal/version"
 )
-
-// distribution is set via -ldflags "-X main.distribution=..." during native packaging.
-// Values: "source" (default), "windows-installed", "linux-system".
-var distribution = "source"
 
 func main() {
 	var (
@@ -63,7 +60,7 @@ func main() {
 	if *pathsFlag {
 		exe, _ := os.Executable()
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]string{
-			"distribution": distribution,
+			"distribution": version.Distribution,
 			"executable":   exe,
 			"dataDir":      dataDir,
 		})
@@ -102,7 +99,7 @@ func main() {
 		}
 		return
 	}
-	if shouldOpenBrowser {
+	if shouldOpenBrowser && *dataFlag == "" && *listenFlag == "" {
 		if fallbackURL, ok := probePublicSessionOnDefaultPorts(dataDir); ok {
 			_ = platformOpenURL(fallbackURL)
 			return
@@ -269,12 +266,12 @@ func resolveDataDir(explicit string) string {
 		}
 		return explicit
 	}
-	if distribution == "linux-system" {
+	if version.Distribution == "linux-system" {
 		return "/opt/kurumifrp/data"
 	}
 	if exe, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exe)
-		if distribution == "windows-installed" || dirExists(filepath.Join(exeDir, "bundled")) {
+		if version.Distribution == "windows-installed" || dirExists(filepath.Join(exeDir, "bundled")) {
 			preferred := filepath.Join(exeDir, "data")
 			if ensureDirWritable(preferred) {
 				return preferred
@@ -319,13 +316,51 @@ func buildLocalBrowserURL(tcpAddr *net.TCPAddr) string {
 	return fmt.Sprintf("http://%s", net.JoinHostPort(hostForURL, strconv.Itoa(tcpAddr.Port)))
 }
 
+// CLI maintenance uses numeric addresses directly. In particular, never pass
+// the data directory's bearer token through a proxy or across a redirect.
+var localTransport = &http.Transport{DisableKeepAlives: true}
+
+func localClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport:     localTransport,
+		Timeout:       timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+func validLocalPanelURL(base string) bool {
+	addr, ok := strings.CutPrefix(base, "http://")
+	host, rawPort, err := net.SplitHostPort(addr)
+	if !ok || err != nil {
+		return false
+	}
+	port, err := strconv.ParseUint(rawPort, 10, 16)
+	ip := net.ParseIP(host)
+	if err != nil || port == 0 || ip == nil || ip.IsUnspecified() {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, addr := range addrs {
+		if iface, ok := addr.(*net.IPNet); ok && iface.IP.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func bindInitialListener(requested, defaultHost, dataDir string) (net.Listener, string, string, error) {
 	req := strings.TrimSpace(requested)
 	panelCfg := manager.LoadPanelSettings(dataDir)
 
 	fallbackHost := strings.TrimSpace(defaultHost)
 	if fallbackHost == "" {
-		if distribution == "linux-system" {
+		if version.Distribution == "linux-system" {
 			fallbackHost = "0.0.0.0"
 		} else {
 			fallbackHost = "127.0.0.1"
@@ -373,27 +408,41 @@ func bindInitialListener(requested, defaultHost, dataDir string) (net.Listener, 
 	return ln, cb, buildLocalBrowserURL(tcpAddr), nil
 }
 
-func probeExistingServer(dataDir string) (string, bool) {
+func savedPanelURL(dataDir string) (string, error) {
 	rawAddr, err := os.ReadFile(filepath.Join(dataDir, "listen.addr"))
 	if err != nil {
-		return "", false
+		return "", err
 	}
 	baseURL := strings.TrimSpace(string(rawAddr))
-	if !strings.HasPrefix(baseURL, "http://") {
-		return "", false
+	if !validLocalPanelURL(baseURL) {
+		return "", errors.New("listen.addr 中的地址不是有效的本机面板地址")
 	}
-	client := &http.Client{Timeout: 1200 * time.Millisecond}
+	return baseURL, nil
+}
+
+func checkPanelSession(client *http.Client, baseURL string) error {
 	resp, err := client.Get(baseURL + "/api/session")
 	if err != nil {
-		return "", false
+		return err
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-	return baseURL, resp.StatusCode == http.StatusOK
+	defer resp.Body.Close()
+	var session struct {
+		Version         string
+		DefaultUsername string
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&session) != nil || session.Version == "" || session.DefaultUsername == "" {
+		return fmt.Errorf("本机地址 %s 未返回有效的 KurumiFrp 会话信息 (HTTP %d)", baseURL, resp.StatusCode)
+	}
+	return nil
+}
+
+func probeExistingServer(dataDir string) (string, bool) {
+	base, err := savedPanelURL(dataDir)
+	return base, err == nil && checkPanelSession(localClient(1200*time.Millisecond), base) == nil
 }
 
 func probePublicSessionOnDefaultPorts(dataDir string) (string, bool) {
-	client := &http.Client{Timeout: 400 * time.Millisecond}
+	client := localClient(400 * time.Millisecond)
 	var ports []int
 	if saved := manager.LoadPanelSettings(dataDir); saved.Port > 0 {
 		ports = append(ports, saved.Port)
@@ -403,17 +452,7 @@ func probePublicSessionOnDefaultPorts(dataDir string) (string, bool) {
 	}
 	for _, port := range ports {
 		base := fmt.Sprintf("http://127.0.0.1:%d", port)
-		resp, err := client.Get(base + "/api/session")
-		if err != nil {
-			continue
-		}
-		var body struct {
-			Version         string `json:"version"`
-			DefaultUsername string `json:"defaultUsername"`
-		}
-		err = json.NewDecoder(resp.Body).Decode(&body)
-		resp.Body.Close()
-		if err == nil && resp.StatusCode == http.StatusOK && body.Version != "" && body.DefaultUsername != "" {
+		if checkPanelSession(client, base) == nil {
 			return base, true
 		}
 	}
@@ -421,38 +460,65 @@ func probePublicSessionOnDefaultPorts(dataDir string) (string, bool) {
 }
 
 func stopExistingServer(dataDir string) error {
-	baseURL, ok := probeExistingServer(dataDir)
-	if !ok {
+	baseURL, err := savedPanelURL(dataDir)
+	if errors.Is(err, os.ErrNotExist) {
 		return nil
+	}
+	if err != nil {
+		return err
+	}
+	client := localClient(5 * time.Second)
+	if err := checkPanelSession(client, baseURL); err != nil {
+		if connectionRefused(err) {
+			return nil
+		}
+		return err
 	}
 	tokBytes, err := os.ReadFile(filepath.Join(dataDir, "access.token"))
 	if err != nil {
-		return nil
+		return err
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/quit", nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tokBytes)))
-	if resp, err := client.Do(req); err == nil {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("后台服务拒绝停止 (HTTP %d)", resp.StatusCode)
 	}
 	deadline := time.Now().Add(15 * time.Second)
+	addr := strings.TrimPrefix(baseURL, "http://")
 	for time.Now().Before(deadline) {
-		if _, alive := probeExistingServer(dataDir); !alive {
-			return nil
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err != nil {
+			if connectionRefused(err) {
+				return nil
+			}
+			return err
 		}
+		conn.Close()
 		time.Sleep(250 * time.Millisecond)
 	}
 	return errors.New("等待后台服务退出超时")
 }
 
+func connectionRefused(err error) bool {
+	// Winsock reports WSAECONNREFUSED (10061) for a closed local port.
+	return errors.Is(err, syscall.ECONNREFUSED) || (runtime.GOOS == "windows" && errors.Is(err, syscall.Errno(10061)))
+}
+
 func openWebUIWithTicket(dataDir, baseURL string) {
+	if !validLocalPanelURL(baseURL) {
+		return
+	}
 	targetURL := baseURL
 	if tokBytes, err := os.ReadFile(filepath.Join(dataDir, "access.token")); err == nil {
-		client := &http.Client{Timeout: 2 * time.Second}
+		client := localClient(2 * time.Second)
 		req, err := http.NewRequest(http.MethodPost, baseURL+"/api/browser-ticket", nil)
 		if err == nil {
 			req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tokBytes)))
@@ -460,16 +526,15 @@ func openWebUIWithTicket(dataDir, baseURL string) {
 				var out struct {
 					Ticket string `json:"ticket"`
 				}
-				_ = json.NewDecoder(resp.Body).Decode(&out)
+				if resp.StatusCode == http.StatusOK {
+					_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&out)
+				}
 				resp.Body.Close()
 				if out.Ticket != "" {
-					targetURL = baseURL + "/launch?ticket=" + out.Ticket
+					targetURL = baseURL + "/launch?ticket=" + url.QueryEscape(out.Ticket)
 				}
 			}
 		}
-	}
-	if !strings.HasPrefix(targetURL, "http://127.0.0.1:") && !strings.HasPrefix(targetURL, "http://[::1]:") {
-		return
 	}
 	_ = platformOpenURL(targetURL)
 }
@@ -502,22 +567,21 @@ func handleNativeMaintenance(action, installDir string) error {
 		b, _ := json.MarshalIndent(marker, "", "  ")
 		return os.WriteFile(filepath.Join(dir, "native-install.json"), append(b, '\n'), 0o644)
 	case "stop":
-		_ = stopExistingServer(dataDir)
-		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-			_ = stopExistingServer(filepath.Join(localAppData, "KurumiFRP", "data"))
-		}
-		return nil
+		return stopExistingServer(dataDir)
 	case "finish-stop":
 		return nil
 	case "purge":
-		_ = stopExistingServer(dataDir)
-		_ = os.RemoveAll(dataDir)
-		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-			_ = stopExistingServer(filepath.Join(localAppData, "KurumiFRP", "data"))
-			_ = os.RemoveAll(filepath.Join(localAppData, "KurumiFRP"))
+		if err := stopExistingServer(dataDir); err != nil {
+			return err
 		}
-		_ = os.Remove(filepath.Join(dir, "native-install.json"))
-		return nil
+		if err := os.RemoveAll(dataDir); err != nil {
+			return err
+		}
+		err := os.Remove(filepath.Join(dir, "native-install.json"))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
 	default:
 		return fmt.Errorf("未知维护命令: %s", action)
 	}

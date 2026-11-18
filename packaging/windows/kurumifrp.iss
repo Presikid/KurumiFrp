@@ -10,6 +10,7 @@
 
 [Setup]
 AppId=io.github.Presikid.KurumiFRP
+SetupMutex=Global\io.github.Presikid.KurumiFRP.Setup
 AppName=KurumiFRP
 AppVersion={#AppVersion}
 AppPublisher=Presikid
@@ -44,6 +45,8 @@ chinesesimplified.AutostartTask=开机自动在后台静默启动 KurumiFRP 服�
 english.AutostartTask=Start KurumiFRP background service silently at sign-in
 chinesesimplified.AskCleanPurge=是否同时执行「清洁卸载」，彻底删除软件安装目录内的所有配置文件 (data) 与运行数据？
 english.AskCleanPurge=Perform a Clean Uninstall and remove all configuration files (data) inside the installation folder?
+chinesesimplified.StopFailed=无法确认当前安装的 KurumiFRP 已停止。请关闭该实例后重试。
+english.StopFailed=Setup could not confirm that this KurumiFRP instance has stopped. Please close it and retry.
 
 [Tasks]
 Name: desktopicon; Description: "{cm:DesktopTask}"
@@ -71,12 +74,43 @@ Name: "{commonstartup}\KurumiFRP"; Filename: "{app}\kurumi.exe"; Parameters: "--
 [Run]
 Filename: "{app}\kurumi.exe"; Parameters: "--native-maintenance init --install-dir ""{app}"""; Flags: runhidden waituntilterminated
 Filename: "{app}\kurumi.exe"; Parameters: "--open"; Description: "启动 KurumiFRP 并在浏览器打开时崎狂三 WebUI"; Flags: nowait postinstall skipifsilent runasoriginaluser
-Filename: "{app}\kurumi.exe"; Parameters: "--headless --listen ""{param:LISTENADDR|auto}"""; WorkingDir: "{app}"; Flags: nowait runhidden runasoriginaluser; Check: ShouldRestartHeadless
+Filename: "{app}\kurumi.exe"; Parameters: "--headless --listen ""{param:LISTENADDR|auto}"" {code:DataArgs}"; WorkingDir: "{app}"; Flags: nowait runhidden runasoriginaluser; Check: ShouldRestartHeadless
 
 [Code]
 function ShouldRestartHeadless: Boolean;
 begin
   Result := ExpandConstant('{param:RESTARTDAEMON|0}') = '1';
+end;
+
+function DataArgs(Param: String): String;
+var
+  DataDir: String;
+begin
+  DataDir := ExpandConstant('{param:DATADIR|}');
+  if DataDir = '' then
+    Result := ''
+  else
+    Result := '--data "' + AddBackslash(DataDir) + '."';
+end;
+
+function WaitForExecutable(ExePath: String): Boolean;
+var
+  Attempt: Integer;
+  Probe: TFileStream;
+begin
+  { The listener can close before the daemon finishes stopping its FRP children.
+    Another instance of this executable may also use a different data directory. }
+  Result := False;
+  for Attempt := 1 to 60 do begin
+    try
+      Probe := TFileStream.Create(ExePath, fmOpenReadWrite or fmShareDenyNone);
+      Probe.Free;
+      Result := True;
+      Exit;
+    except
+      Sleep(250);
+    end;
+  end;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -87,29 +121,31 @@ begin
   Result := '';
   ExePath := ExpandConstant('{app}\kurumi.exe');
   if FileExists(ExePath) then begin
-    Exec(ExePath, '--stop', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM kurumi.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if not ExecAsOriginalUser(ExePath, '--stop ' + DataArgs(''), ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)
+        or (ResultCode <> 0) or not WaitForExecutable(ExePath) then
+      Result := ExpandConstant('{cm:StopFailed}');
   end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ResultCode: Integer;
-  AppDir, ExePath, FallbackDataDir: String;
+  AppDir, ExePath: String;
 begin
   AppDir := ExpandConstant('{app}');
   ExePath := AppDir + '\kurumi.exe';
   if CurUninstallStep = usUninstall then begin
-    if FileExists(ExePath) then
-      Exec(ExePath, '--stop', AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM kurumi.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if FileExists(ExePath) then begin
+      if not Exec(ExePath, '--stop ' + DataArgs(''), AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode)
+          or (ResultCode <> 0) or not WaitForExecutable(ExePath) then begin
+        SuppressibleMsgBox(ExpandConstant('{cm:StopFailed}'), mbError, MB_OK, IDOK);
+        Abort;
+      end;
+    end;
   end else if CurUninstallStep = usPostUninstall then begin
     if (not UninstallSilent) and (MsgBox(ExpandConstant('{cm:AskCleanPurge}'), mbConfirmation, MB_YESNO) = IDYES) then begin
       DelTree(AppDir + '\data', True, True, True);
       DelTree(AppDir + '\runtime', True, True, True);
-      FallbackDataDir := ExpandConstant('{localappdata}\KurumiFRP');
-      if DirExists(FallbackDataDir) then
-        DelTree(FallbackDataDir, True, True, True);
       DeleteFile(AppDir + '\native-install.json');
       RemoveDir(AppDir);
     end;

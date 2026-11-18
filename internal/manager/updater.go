@@ -29,6 +29,7 @@ import (
 )
 
 var errFRPUpToDate = errors.New("FRP 核心已是最新版本")
+var errAppUpToDate = errors.New("当前已是最新版本，无需更新")
 
 const maxUpdateArchiveBytes = 160 << 20 // 160 MiB safety ceiling
 
@@ -122,11 +123,12 @@ func (u *UpdateManager) SaveProxyURL(raw string) (string, error) {
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.settings.ProxyURL = norm
-	b, _ := json.MarshalIndent(u.settings, "", "  ")
+	settings := UpdateSettings{ProxyURL: norm}
+	b, _ := json.MarshalIndent(settings, "", "  ")
 	if _, err := writeIfChanged(u.settingsPath, append(b, '\n'), 0o600); err != nil {
 		return "", err
 	}
+	u.settings = settings
 	return norm, nil
 }
 
@@ -291,7 +293,10 @@ func matchAppAsset(assets []ghAsset, ver string, preferSelfUpdateArchive bool) (
 	case "windows":
 		wantNames = []string{fmt.Sprintf("KurumiFRP-%s-Setup.exe", ver)}
 	case "linux":
-		armVariant := detectLinuxARMVariant()
+		armVariant := ""
+		if runtime.GOARCH == "arm" {
+			armVariant = detectLinuxARMVariant()
+		}
 		archMap := map[string]string{
 			"amd64":    "amd64",
 			"arm64":    "arm64",
@@ -315,7 +320,7 @@ func matchAppAsset(assets []ghAsset, ver string, preferSelfUpdateArchive bool) (
 			}
 			debName := fmt.Sprintf("kurumifrp_%s_%s.deb", ver, debArch)
 			if preferSelfUpdateArchive {
-				wantNames = []string{tarName, debName}
+				wantNames = []string{tarName}
 			} else {
 				wantNames = []string{debName, tarName}
 			}
@@ -339,7 +344,7 @@ func frpPlatformSlug() (string, string, bool) {
 		}
 	case "linux":
 		switch runtime.GOARCH {
-		case "amd64", "arm64", "riscv64", "loong64":
+		case "amd64", "arm64", "riscv64", "loong64", "mips", "mipsle", "mips64", "mips64le":
 			return "linux_" + runtime.GOARCH, ".tar.gz", true
 		case "arm":
 			return "linux_" + detectLinuxARMVariant(), ".tar.gz", true
@@ -390,20 +395,29 @@ func (u *UpdateManager) checkFRPRelease(ctx context.Context, client *http.Client
 	st.HasUpdate = !core.FrpcFound || !core.FrpsFound || core.FrpcVersion == "unknown" || core.FrpsVersion == "unknown" || compareSemVer(st.Latest, curVer) > 0
 
 	if supported && latest != "" {
-		wantAsset := fmt.Sprintf("frp_%s_%s%s", latest, slug, ext)
-		for _, a := range rel.Assets {
-			if a.Name == wantAsset && a.BrowserDownloadURL != "" {
-				st.AssetName = a.Name
-				st.AssetURL = a.BrowserDownloadURL
-				st.sha256 = a.sha256
-				break
-			}
-		}
+		a := matchFRPAsset(rel.Assets, latest, slug, ext)
+		st.AssetName, st.AssetURL, st.sha256 = a.Name, a.BrowserDownloadURL, a.sha256
 		if st.AssetURL == "" {
 			st.CanAutoUpdate = false
 		}
 	}
 	return st
+}
+
+func matchFRPAsset(assets []ghAsset, version, platform, ext string) ghAsset {
+	platforms := []string{platform}
+	if platform == "linux_arm_hf" {
+		platforms = append(platforms, "linux_arm") // same fallback as scripts/bundled_frp.py
+	}
+	for _, p := range platforms {
+		want := fmt.Sprintf("frp_%s_%s%s", version, p, ext)
+		for _, a := range assets {
+			if a.Name == want && a.BrowserDownloadURL != "" {
+				return a
+			}
+		}
+	}
+	return ghAsset{}
 }
 
 // ApplyFRPUpdate downloads, SHA-256 verifies, and hot-swaps official frpc + frps into data/bin/ without any UAC popup.
@@ -449,15 +463,15 @@ func (u *UpdateManager) ApplyFRPUpdate(ctx context.Context, proxyOverride *strin
 		return CoreBinaryInfo{}, 0, err
 	}
 
-	swapFn, err := stageCorePair(ctx, filepath.Join(u.dataDir, "bin"), st.Latest, frpcRaw, frpsRaw, licRaw)
+	activate, rollback, err := stageCorePair(ctx, filepath.Join(u.dataDir, "bin"), st.Latest, frpcRaw, frpsRaw, licRaw)
 	if err != nil {
 		return CoreBinaryInfo{}, 0, err
 	}
 	restarted := 0
 	if u.runtime != nil {
-		restarted, err = u.runtime.HotSwapBinaries(swapFn)
+		restarted, err = u.runtime.HotSwapBinaries(activate, rollback)
 	} else {
-		err = swapFn()
+		err = activate()
 	}
 	if err != nil {
 		return LocateBinaries(u.dataDir), restarted, err
@@ -468,11 +482,11 @@ func (u *UpdateManager) ApplyFRPUpdate(ctx context.Context, proxyOverride *strin
 // Stage both executables in the inactive slot, then publish the pair with a
 // single same-directory rename. Even a process exit between writes leaves the
 // previously selected pair intact. The next update reuses the inactive slot.
-func stageCorePair(ctx context.Context, binDir, version string, client, server, license []byte) (func() error, error) {
+func stageCorePair(ctx context.Context, binDir, version string, client, server, license []byte) (activate, rollback func() error, err error) {
 	slots := filepath.Join(binDir, ".kurumi-cores")
 	active, err := readCoreSlot(slots)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	next := "a"
 	if active == "a" {
@@ -485,7 +499,7 @@ func stageCorePair(ctx context.Context, binDir, version string, client, server, 
 	}{{"frpc", client}, {"frps", server}} {
 		exe := filepath.Join(dir, binaryFileName(file.name))
 		if _, err := writeIfChanged(exe, file.content, 0755); err != nil {
-			return nil, fmt.Errorf("写入 %s 失败: %w", file.name, err)
+			return nil, nil, fmt.Errorf("写入 %s 失败: %w", file.name, err)
 		}
 		probe, cancel := context.WithTimeout(ctx, 4*time.Second)
 		cmd := exec.CommandContext(probe, exe, "-v")
@@ -493,24 +507,32 @@ func stageCorePair(ctx context.Context, binDir, version string, client, server, 
 		out, err := cmd.CombinedOutput()
 		cancel()
 		if err != nil {
-			return nil, fmt.Errorf("%s 运行预检失败: %w", file.name, err)
+			return nil, nil, fmt.Errorf("%s 运行预检失败: %w", file.name, err)
 		}
 		if strings.TrimPrefix(strings.TrimSpace(string(out)), "v") != version {
-			return nil, fmt.Errorf("%s 版本预检失败，预期 %s", file.name, version)
+			return nil, nil, fmt.Errorf("%s 版本预检失败，预期 %s", file.name, version)
 		}
 	}
 	if len(license) > 0 {
 		if _, err := writeIfChanged(filepath.Join(dir, "LICENSE"), license, 0644); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return func() error {
-		_, err := writeIfChanged(filepath.Join(slots, "active"), []byte(next+"\n"), 0600)
+	setSlot := func(slot string) error {
+		marker := filepath.Join(slots, "active")
+		var err error
+		if slot == "" {
+			err = os.Remove(marker)
+		} else {
+			_, err = writeIfChanged(marker, []byte(slot+"\n"), 0600)
+		}
 		if err == nil {
 			InvalidateBinaryVersionCache()
 		}
 		return err
-	}, nil
+	}
+	return func() error { return setSlot(next) }, func() error { return setSlot(active) }, nil
+
 }
 
 // ApplyAppUpdate downloads, verifies, and launches a silent self-update for KurumiFrp itself.
@@ -534,7 +556,7 @@ func (u *UpdateManager) ApplyAppUpdate(ctx context.Context, proxyOverride *strin
 		return "", errors.New(st.Error)
 	}
 	if !st.HasUpdate {
-		return st.Current, errors.New("当前已是最新版本，无需更新")
+		return st.Current, errAppUpToDate
 	}
 	if !st.CanAutoUpdate || st.AssetURL == "" || st.sha256 == "" {
 		if st.ManualHint != "" {
@@ -548,60 +570,75 @@ func (u *UpdateManager) ApplyAppUpdate(ctx context.Context, proxyOverride *strin
 		return "", fmt.Errorf("创建临时更新目录失败: %w", err)
 	}
 
-	pkgBytes, err := u.downloadBytes(ctx, client, st.AssetURL, maxUpdateArchiveBytes)
-	if err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("下载新版安装包 (%s) 失败: %w", st.AssetName, err)
-	}
-	got := sha256.Sum256(pkgBytes)
-	if !strings.EqualFold(hex.EncodeToString(got[:]), st.sha256) {
-		_ = os.RemoveAll(tmpDir)
-		return "", errors.New("新版安装包 SHA-256 校验未通过，已中止升级")
-	}
-
 	pkgPath := filepath.Join(tmpDir, st.AssetName)
-	if err := os.WriteFile(pkgPath, pkgBytes, 0o755); err != nil {
+	if err := u.downloadAppPackage(ctx, client, st, pkgPath); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return "", err
 	}
-
-	exePath, _ := os.Executable()
-	if err := executePlatformSelfUpdate(pkgPath, exePath, listenSpec, origArgs, u.onShutdown); err != nil {
+	exePath, err := os.Executable()
+	if err == nil {
+		err = executePlatformSelfUpdate(pkgPath, exePath, u.dataDir, listenSpec, st.Latest, origArgs, u.onShutdown)
+	}
+	if err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return "", err
 	}
 	return st.Latest, nil
 }
 
-func (u *UpdateManager) downloadBytes(ctx context.Context, client *http.Client, rawURL string, maxBytes int64) ([]byte, error) {
-	parsed, err := url.Parse(rawURL)
+func (u *UpdateManager) downloadAppPackage(ctx context.Context, client *http.Client, st ComponentUpdateStatus, dst string) error {
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
 	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	downloadErr := u.downloadTo(ctx, client, st.AssetURL, maxUpdateArchiveBytes, io.MultiWriter(f, h))
+	if err := errors.Join(downloadErr, f.Close()); err != nil {
+		return fmt.Errorf("下载新版安装包 (%s) 失败: %w", st.AssetName, err)
+	}
+	if !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), st.sha256) {
+		return errors.New("新版安装包 SHA-256 校验未通过，已中止升级")
+	}
+	return nil
+}
+
+func (u *UpdateManager) downloadBytes(ctx context.Context, client *http.Client, rawURL string, maxBytes int64) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := u.downloadTo(ctx, client, rawURL, maxBytes, &buf); err != nil {
 		return nil, err
 	}
+	return buf.Bytes(), nil
+}
+
+func (u *UpdateManager) downloadTo(ctx context.Context, client *http.Client, rawURL string, maxBytes int64, dst io.Writer) error {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return err
+	}
 	if err := validateDownloadURL(parsed, u.allowLocal); err != nil {
-		return nil, err
+		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	req.Header.Set("User-Agent", "KurumiFrp/"+version.Current)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
-	if err != nil {
-		return nil, err
+	if resp.ContentLength > maxBytes {
+		return errors.New("下载文件超出安全体积上限")
 	}
-	if int64(len(data)) > maxBytes {
-		return nil, errors.New("下载文件超出安全体积上限")
+	n, err := io.Copy(dst, io.LimitReader(resp.Body, maxBytes+1))
+	if n > maxBytes {
+		return errors.New("下载文件超出安全体积上限")
 	}
-	return data, nil
+	return err
 }
 
 func extractFRPMembers(assetName string, archiveBytes []byte) ([]byte, []byte, []byte, error) {
@@ -621,6 +658,9 @@ func extractFRPMembers(assetName string, archiveBytes []byte) ([]byte, []byte, [
 			base := path.Base(strings.ReplaceAll(f.Name, "\\", "/"))
 			if base != wantFrpc && base != wantFrps && base != "LICENSE" {
 				continue
+			}
+			if f.UncompressedSize64 > maxUpdateArchiveBytes {
+				return nil, nil, nil, fmt.Errorf("压缩包成员 %s 超过大小限制", base)
 			}
 			rc, err := f.Open()
 			if err != nil {
@@ -661,6 +701,9 @@ func extractFRPMembers(assetName string, archiveBytes []byte) ([]byte, []byte, [
 			base := path.Base(hdr.Name)
 			if base != wantFrpc && base != wantFrps && base != "LICENSE" {
 				continue
+			}
+			if hdr.Size > maxUpdateArchiveBytes {
+				return nil, nil, nil, fmt.Errorf("压缩包成员 %s 超过大小限制", base)
 			}
 			b, err := io.ReadAll(io.LimitReader(tr, maxUpdateArchiveBytes))
 			if err != nil {
@@ -750,8 +793,10 @@ func detectLinuxARMVariant() string {
 		return v
 	}
 	// Fallback: inspect ELF e_flags (EF_ARM_ABI_FLOAT_HARD = 0x00000400) on /proc/self/exe
-	if exe, err := os.Executable(); err == nil {
-		if hdr, err := os.ReadFile(exe); err == nil && len(hdr) >= 40 && hdr[0] == 0x7f && hdr[1] == 'E' && hdr[2] == 'L' && hdr[3] == 'F' && hdr[4] == 1 {
+	if f, err := os.Open("/proc/self/exe"); err == nil {
+		defer f.Close()
+		var hdr [40]byte
+		if _, err := io.ReadFull(f, hdr[:]); err == nil && string(hdr[:5]) == "\x7fELF\x01" {
 			// 32-bit little-endian ELF: e_flags at offset 36..40
 			eFlags := uint32(hdr[36]) | uint32(hdr[37])<<8 | uint32(hdr[38])<<16 | uint32(hdr[39])<<24
 			if eFlags&0x00000400 == 0 && eFlags != 0 {

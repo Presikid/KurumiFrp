@@ -5,6 +5,7 @@ package manager
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,35 +22,60 @@ var (
 	updProcRegCloseKey    = updAdvapi32.NewProc("RegCloseKey")
 )
 
-func canPlatformSelfUpdateApp(_ string) (bool, string, string) {
+func canPlatformSelfUpdateApp(exePath string) (bool, string, string) {
+	// Inno records a single installation for our AppId. A copied or renamed
+	// binary must not replace that installation or redirect its uninstall entry.
+	installDir := registeredWindowsInstallDir()
+	if installDir == "" || !strings.EqualFold(filepath.Clean(exePath), filepath.Join(installDir, "kurumi.exe")) {
+		return false, "manual", "当前程序不在 Windows 安装器登记的位置，请从发布页下载安装包手动升级"
+	}
 	return true, "windows-installer", ""
 }
 
-func executePlatformSelfUpdate(pkgPath, currentExePath, listenSpec string, _ []string, _ func(exitCode int)) error {
-	head, err := os.ReadFile(pkgPath)
-	if err != nil || len(head) < 64 || head[0] != 'M' || head[1] != 'Z' {
+func registeredWindowsInstallDir() string {
+	keyName, _ := syscall.UTF16PtrFromString("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\io.github.Presikid.KurumiFRP_is1")
+	var key syscall.Handle
+	if err := syscall.RegOpenKeyEx(syscall.HKEY_LOCAL_MACHINE, keyName, 0, syscall.KEY_QUERY_VALUE|syscall.KEY_WOW64_64KEY, &key); err != nil {
+		return ""
+	}
+	defer syscall.RegCloseKey(key)
+	value, _ := syscall.UTF16PtrFromString("InstallLocation")
+	var dir [32768]uint16
+	size := uint32(len(dir) * 2)
+	var kind uint32
+	if err := syscall.RegQueryValueEx(key, value, nil, &kind, (*byte)(unsafe.Pointer(&dir[0])), &size); err != nil || kind != syscall.REG_SZ {
+		return ""
+	}
+	return syscall.UTF16ToString(dir[:size/2])
+}
+
+func executePlatformSelfUpdate(pkgPath, currentExePath, dataDir, listenSpec, _ string, _ []string, _ func(exitCode int)) error {
+	if ok, _, hint := canPlatformSelfUpdateApp(currentExePath); !ok {
+		return errors.New(hint)
+	}
+	f, err := os.Open(pkgPath)
+	if err != nil {
+		return err
+	}
+	var head [64]byte
+	_, err = io.ReadFull(f, head[:])
+	f.Close()
+	if err != nil || head[0] != 'M' || head[1] != 'Z' {
 		return errors.New("下载的 Windows 安装包文件头校验无效")
 	}
-
-	args := "/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RESTARTDAEMON=1"
+	absData, err := filepath.Abs(dataDir)
+	if err != nil {
+		return err
+	}
+	args := "/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NORESTARTAPPLICATIONS /RESTARTDAEMON=1"
+	args += " " + syscall.EscapeArg("/DIR="+filepath.Dir(currentExePath))
+	args += " " + syscall.EscapeArg("/DATADIR="+absData)
 	if listenSpec != "" {
-		args += " /LISTENADDR=" + listenSpec
+		args += " " + syscall.EscapeArg("/LISTENADDR="+listenSpec)
 	}
-	if currentExePath != "" {
-		exeDir := filepath.Dir(currentExePath)
-		if _, err := os.Stat(filepath.Join(exeDir, "native-install.json")); err == nil {
-			args += fmt.Sprintf(` /DIR="%s"`, exeDir)
-		}
-	}
-
-	// Launch Inno Setup stub via "open" first so SetupLdr preserves the original non-elevated user session for runasoriginaluser;
-	// fall back to "runas" if shell policy requires explicit elevation verb.
-	if err := winShellExec("open", pkgPath, args, filepath.Dir(pkgPath)); err != nil {
-		if err2 := winShellExec("runas", pkgPath, args, filepath.Dir(pkgPath)); err2 != nil {
-			return err2
-		}
-	}
-	return nil
+	// SetupLdr requests elevation itself and retains the original user for
+	// the daemon restart. A declined UAC prompt must not prompt a second time.
+	return winShellExec("open", pkgPath, args, filepath.Dir(pkgPath))
 }
 
 func winShellExec(verbStr, fileStr, paramsStr, dirStr string) error {
@@ -78,7 +104,7 @@ func winShellExec(verbStr, fileStr, paramsStr, dirStr string) error {
 		1, // SW_SHOWNORMAL
 	)
 	if r <= 32 {
-		if r == 5 || r == 1223 {
+		if r == 5 || errors.Is(callErr, syscall.Errno(1223)) {
 			return errors.New("未授予 Windows 管理员权限，已取消安装升级")
 		}
 		return fmt.Errorf("启动静默升级程序失败 (code=%d): %v", r, callErr)

@@ -30,7 +30,8 @@ def build_kurumi(system, arch, dest):
     mode = 'windows-installed' if system == 'windows' else 'linux-system'
     goarch = {'armhf': 'arm'}.get(arch, arch)
     variant = 'arm_hf' if arch == 'armhf' else arch
-    flags = f'-s -w -X main.distribution={mode} -X github.com/Presikid/KurumiFrp/internal/version.BuildVariant={variant}'
+    version_pkg = 'github.com/Presikid/KurumiFrp/internal/version'
+    flags = f'-s -w -X {version_pkg}.Distribution={mode} -X {version_pkg}.BuildVariant={variant}'
     if system == 'windows':
         flags += ' -H=windowsgui'
     env = dict(os.environ, GOOS=system, GOARCH=goarch, GOARM='7', CGO_ENABLED='0', GOFLAGS='')

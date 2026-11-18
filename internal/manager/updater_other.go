@@ -4,56 +4,102 @@ package manager
 
 import (
 	"archive/tar"
-	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/Presikid/KurumiFrp/internal/version"
 )
 
 func canPlatformSelfUpdateApp(exePath string) (bool, string, string) {
 	if runtime.GOOS != "linux" || exePath == "" {
 		return false, "manual", "请前往 GitHub Releases 下载对应系统最新包覆盖升级"
 	}
-	exeDir := filepath.Dir(exePath)
-	probe := filepath.Join(exeDir, ".kurumi-upd-probe")
-	if err := os.WriteFile(probe, []byte("1"), 0o600); err != nil {
-		return false, "linux-package", "当前以受限系统服务账户运行（/opt/kurumifrp 只读），FRP 核心可直接一键热更；本体升级请下载最新 .deb / .rpm 包执行 sudo apt install ./kurumifrp_*.deb"
+	if version.Distribution == "linux-system" {
+		return false, "linux-package", "请通过安装时使用的 .deb 或 .rpm 软件包升级"
 	}
-	_ = os.Remove(probe)
+	probe, err := os.CreateTemp(filepath.Dir(exePath), ".kurumi-upd-probe-*")
+	if err != nil {
+		return false, "linux-package", "程序目录不可写，请通过安装时使用的 .deb 或 .rpm 软件包升级"
+	}
+	probe.Close()
+	os.Remove(probe.Name())
 	return true, "linux-binary", ""
 }
 
-func executePlatformSelfUpdate(pkgPath, currentExePath, _ string, origArgs []string, onRestartShutdown func(exitCode int)) error {
-	if !strings.HasSuffix(pkgPath, ".tar.gz") {
-		return errors.New("当前 Linux 模式需要 .tar.gz 便携更新包")
+func executePlatformSelfUpdate(pkgPath, currentExePath, _, listenSpec, targetVersion string, origArgs []string, onShutdown func(int)) error {
+	if onShutdown == nil {
+		return errors.New("无法在当前运行环境内自动重启")
 	}
-	raw, err := os.ReadFile(pkgPath)
+	if err := installPortableUpdate(pkgPath, currentExePath, targetVersion); err != nil {
+		return err
+	}
+	exitCode := 0
+	execPID := os.Getenv("SYSTEMD_EXEC_PID")
+	if os.Getenv("INVOCATION_ID") != "" && (execPID == strconv.Itoa(os.Getpid()) || execPID == "" && os.Getppid() == 1) {
+		exitCode = 42
+	} else {
+		// The old process can still own listeners and children after Shutdown
+		// starts. Preserve the working directory for relative CLI arguments.
+		args := []string{"-c", shellRelaunch, "kurumi-restart", strconv.Itoa(os.Getpid()), currentExePath}
+		for _, arg := range origArgs {
+			if arg != "-open" && arg != "--open" {
+				args = append(args, arg)
+			}
+		}
+		if listenSpec != "" {
+			args = append(args, "-listen="+listenSpec)
+		}
+		cmd := exec.Command("/bin/sh", args...)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("启动新版程序的重启助手失败: %w", err)
+		}
+		cmd.Process.Release()
+	}
+	os.RemoveAll(filepath.Dir(pkgPath))
+	onShutdown(exitCode)
+	return nil
+}
+
+const shellRelaunch = `while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; shift; exec "$@"`
+
+func installPortableUpdate(pkgPath, exePath, targetVersion string) error {
+	pkg, err := os.Open(pkgPath)
 	if err != nil {
 		return err
 	}
-	gz, err := gzip.NewReader(bytes.NewReader(raw))
+	defer pkg.Close()
+	gz, err := gzip.NewReader(pkg)
 	if err != nil {
-		return fmt.Errorf("解压更新包失败: %w", err)
+		return err
 	}
 	defer gz.Close()
 
-	exeDir := filepath.Dir(currentExePath)
-	bundledDir := filepath.Join(exeDir, "bundled")
-	_ = os.MkdirAll(bundledDir, 0o755)
-
-	var newMainBin []byte
-	bundledFiles := make(map[string][]byte)
-
+	dir := filepath.Dir(exePath)
+	stage, err := os.MkdirTemp(dir, ".kurumi-update-*")
+	if err != nil {
+		return err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			os.RemoveAll(stage)
+		}
+	}()
+	members := map[string]os.FileMode{"kurumifrp": 0755, "bundled/frpc": 0755, "bundled/frps": 0755, "bundled/LICENSE": 0644, "bundled/manifest.json": 0644}
 	tr := tar.NewReader(gz)
+	extracted := 0
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -62,69 +108,84 @@ func executePlatformSelfUpdate(pkgPath, currentExePath, _ string, origArgs []str
 		if err != nil {
 			return err
 		}
-		if hdr.Typeflag != tar.TypeReg {
+		name := strings.TrimPrefix(hdr.Name, "./")
+		mode, wanted := members[name]
+		if !wanted {
 			continue
 		}
-		cleanName := strings.TrimPrefix(hdr.Name, "./")
-		b, err := io.ReadAll(io.LimitReader(tr, maxUpdateArchiveBytes))
+		if hdr.Typeflag != tar.TypeReg || hdr.Size <= 0 || hdr.Size > maxUpdateArchiveBytes {
+			return fmt.Errorf("无效的更新包文件 %s", name)
+		}
+		f, err := os.OpenFile(filepath.Join(stage, filepath.Base(name)), os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 		if err != nil {
 			return err
 		}
-		if cleanName == "kurumifrp" {
-			newMainBin = b
-		} else if strings.HasPrefix(cleanName, "bundled/") {
-			bundledFiles[path.Base(cleanName)] = b
+		_, err = io.Copy(f, tr)
+		if err = errors.Join(err, f.Close()); err != nil {
+			return err
 		}
+		extracted++
 	}
-	if len(newMainBin) == 0 {
-		return errors.New("更新包中未找到 kurumifrp 主程序")
+	if extracted != len(members) {
+		return errors.New("便携更新包缺少主程序或内置组件")
 	}
-
-	tmpExe := filepath.Join(exeDir, ".kurumifrp.new")
-	if err := os.WriteFile(tmpExe, newMainBin, 0o755); err != nil {
+	// Test the new executable on this CPU before changing the installation.
+	next := filepath.Join(stage, "kurumifrp")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, next, "-version").Output()
+	if err != nil {
+		return fmt.Errorf("新版主程序运行预检失败: %w", err)
+	}
+	if strings.TrimSpace(string(out)) != targetVersion {
+		return fmt.Errorf("新版主程序版本与发布标签 %s 不符", targetVersion)
+	}
+	bundled := filepath.Join(dir, "bundled")
+	if err := os.MkdirAll(bundled, 0755); err != nil {
 		return err
 	}
-	for name, content := range bundledFiles {
-		mode := os.FileMode(0o755)
-		if name == "LICENSE" || name == "manifest.json" {
-			mode = 0o644
-		}
-		tmpB := filepath.Join(bundledDir, "."+name+".new")
-		if err := os.WriteFile(tmpB, content, mode); err == nil {
-			_ = os.Rename(tmpB, filepath.Join(bundledDir, name))
-		}
-	}
-	if err := os.Rename(tmpExe, currentExePath); err != nil {
-		_ = os.Remove(tmpExe)
-		return err
-	}
-	_ = os.RemoveAll(filepath.Dir(pkgPath))
-
-	// Restart smoothly: under systemd (INVOCATION_ID set with Restart=always), graceful shutdown triggers automatic systemd restart;
-	// otherwise spawn a detached shell that waits 800ms for port release and execs the updated binary.
-	go func() {
-		time.Sleep(350 * time.Millisecond)
-		if os.Getenv("INVOCATION_ID") == "" {
-			var filtered []string
-			for _, a := range origArgs {
-				if a != "-open" && a != "--open" {
-					filtered = append(filtered, a)
+	// Keep the old files until the main executable is committed. Leave
+	// unrelated local files in bundled/ alone.
+	var installed, backedUp []string
+	commit := func() error {
+		for _, name := range []string{"frpc", "frps", "LICENSE", "manifest.json"} {
+			dst := filepath.Join(bundled, name)
+			if info, err := os.Lstat(dst); err == nil {
+				if !info.Mode().IsRegular() {
+					return fmt.Errorf("内置组件 %s 不是普通文件", name)
 				}
+				backup := filepath.Join(stage, name+".old")
+				if err := os.Link(dst, backup); err != nil {
+					// Filesystems without hard links still support rename-based rollback.
+					if err := os.Rename(dst, backup); err != nil {
+						return err
+					}
+				}
+				backedUp = append(backedUp, name)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
 			}
-			cmdArgs := append([]string{"-c", `sleep 0.8; exec "$0" "$@"`, currentExePath}, filtered...)
-			re := exec.Command("/bin/sh", cmdArgs...)
-			re.Dir = exeDir
-			re.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-			_ = re.Start()
-		}
-		if onRestartShutdown != nil {
-			if os.Getenv("INVOCATION_ID") != "" {
-				onRestartShutdown(42)
-			} else {
-				onRestartShutdown(0)
+			if err := os.Rename(filepath.Join(stage, name), dst); err != nil {
+				return err
 			}
+			installed = append(installed, dst)
 		}
-	}()
+		return os.Rename(next, exePath)
+	}
+	if err := commit(); err != nil {
+		var rollback error
+		for _, dst := range installed {
+			rollback = errors.Join(rollback, os.Remove(dst))
+		}
+		for _, name := range backedUp {
+			rollback = errors.Join(rollback, os.Rename(filepath.Join(stage, name+".old"), filepath.Join(bundled, name)))
+		}
+		if rollback != nil {
+			cleanup = false
+			return fmt.Errorf("升级失败 (%v)，备份保存在 %s: %w", err, stage, rollback)
+		}
+		return err
+	}
 	return nil
 }
 

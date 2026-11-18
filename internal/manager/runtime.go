@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -307,8 +308,8 @@ func (rs *RuntimeSupervisor) recordStartError(id string, err error) {
 }
 
 // HotSwapBinaries temporarily stops running frps/frpc instances so binary files are unlocked on Windows,
-// invokes swapFn to atomically replace binaries, and immediately restarts all previously running instances.
-func (rs *RuntimeSupervisor) HotSwapBinaries(swapFn func() error) (int, error) {
+// invokes swapFn to activate the staged binaries, and restores previously running instances.
+func (rs *RuntimeSupervisor) HotSwapBinaries(swapFn func() error, rollback ...func() error) (int, error) {
 	rs.lifecycleMu.Lock()
 	defer rs.lifecycleMu.Unlock()
 	rs.mu.RLock()
@@ -332,14 +333,43 @@ func (rs *RuntimeSupervisor) HotSwapBinaries(swapFn func() error) (int, error) {
 			stopped[id] = true
 		}
 	}
+	activated := false
 	if len(failures) == 0 {
 		if err := swapFn(); err != nil {
 			failures = append(failures, err)
+		} else {
+			activated = true
 		}
 	}
-	total := len(activeIDs)
-	restarted := 0
 	_, doc := rs.store.Snapshot()
+	restarted, restoreErr := rs.restoreInstances(doc, stopped)
+	if restoreErr != nil {
+		failures = append(failures, restoreErr)
+		if activated && len(rollback) != 0 && rollback[0] != nil {
+			// The slot switch does not touch running executables. Keep healthy
+			// instances alive until the old binaries can verify their configs.
+			if err := rollback[0](); err != nil {
+				failures = append(failures, fmt.Errorf("回退核心版本失败: %w", err))
+			} else {
+				restarted, restoreErr = rs.restoreInstances(doc, stopped)
+				if restoreErr != nil {
+					failures = append(failures, fmt.Errorf("恢复旧版本实例失败: %w", restoreErr))
+				}
+				failures = append(failures, errors.New("已回退到原核心版本"))
+			}
+		}
+	}
+	rs.notifyChange()
+	if len(failures) > 0 {
+		return restarted, fmt.Errorf("原有 %d 个实例，已恢复 %d 个: %w", len(activeIDs), restarted, errors.Join(failures...))
+	}
+	return restarted, nil
+}
+
+func (rs *RuntimeSupervisor) restoreInstances(doc ConfigDocument, ids map[string]bool) (int, error) {
+	pending := maps.Clone(ids)
+	restarted := 0
+	var failures []error
 	restore := func(id string, err error) {
 		if err == nil {
 			err = rs.waitForAdmin(id)
@@ -350,26 +380,22 @@ func (rs *RuntimeSupervisor) HotSwapBinaries(swapFn func() error) (int, error) {
 		} else {
 			restarted++
 		}
-		delete(stopped, id)
+		delete(pending, id)
 	}
 	for _, srv := range doc.Servers {
-		if stopped[srv.ID] {
+		if pending[srv.ID] {
 			restore(srv.ID, rs.startServer(srv))
 		}
 	}
 	for _, cli := range doc.Clients {
-		if stopped[cli.ID] {
+		if pending[cli.ID] {
 			restore(cli.ID, rs.startClient(cli))
 		}
 	}
-	for id := range stopped {
+	for id := range pending {
 		failures = append(failures, fmt.Errorf("无法恢复 %s，活动配置中缺少此实例", id))
 	}
-	rs.notifyChange()
-	if len(failures) > 0 {
-		return restarted, fmt.Errorf("原有 %d 个实例，已恢复 %d 个: %w", total, restarted, errors.Join(failures...))
-	}
-	return restarted, nil
+	return restarted, errors.Join(failures...)
 }
 
 func (rs *RuntimeSupervisor) waitForAdmin(id string) error {
@@ -885,6 +911,10 @@ func (rs *RuntimeSupervisor) Logs(id string) ([]string, *ringLogBuffer) {
 // HandleFRPSPlugin implements the official fatedier/frp HTTP Server Plugin webhook to enforce
 // Connection Dashboard controls AND track connected KurumiFrp client instances for remote management.
 func (rs *RuntimeSupervisor) HandleFRPSPlugin(w http.ResponseWriter, r *http.Request, routeRest string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	serverID := strings.Trim(routeRest, "/")
 	pathToken := ""
 	if slashIdx := strings.IndexByte(serverID, '/'); slashIdx > 0 {
@@ -894,7 +924,7 @@ func (rs *RuntimeSupervisor) HandleFRPSPlugin(w http.ResponseWriter, r *http.Req
 	rs.mu.RLock()
 	proc, ok := rs.procs[serverID]
 	rs.mu.RUnlock()
-	if !ok || proc == nil {
+	if !ok || proc == nil || proc.kind != "frps" || proc.pluginSecret == "" {
 		http.Error(w, "unknown server instance", http.StatusNotFound)
 		return
 	}
@@ -917,17 +947,20 @@ func (rs *RuntimeSupervisor) HandleFRPSPlugin(w http.ResponseWriter, r *http.Req
 		Op      string         `json:"op"`
 		Content map[string]any `json:"content"`
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
+	if err := decodeJSONBody(r, &reqPayload, 1<<20); err != nil || reqPayload.Content == nil ||
+		(op != "" && reqPayload.Op != "" && op != reqPayload.Op) {
 		http.Error(w, "bad body", http.StatusBadRequest)
 		return
 	}
-	_ = json.Unmarshal(body, &reqPayload)
 	if op == "" {
 		op = strings.TrimSpace(reqPayload.Op)
 	}
 	if op == "" {
 		op = stringField(reqPayload.Content, "op")
+	}
+	if op == "" {
+		http.Error(w, "missing plugin operation", http.StatusBadRequest)
+		return
 	}
 
 	rs.recordRemoteClientEvent(serverID, proc, op, reqPayload.Content)
@@ -1079,8 +1112,9 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 	proxyTypes := []string{"tcp", "udp", "http", "https", "stcp", "sudp", "xtcp", "tcpmux"}
 	now := time.Now()
 	discovered := make(map[string]ConnLiveItem)
+	sampledTypes := make(map[string]bool)
 	ctrlStatus := make(map[string]bool)
-	pendingPolicyUpdates := make(map[string][4]int64)
+	var pendingPolicyUpdates []string
 
 	for _, pt := range proxyTypes {
 		url := fmt.Sprintf("http://127.0.0.1:%d/api/proxy/%s", p.adminPort, pt)
@@ -1093,25 +1127,27 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 		if err != nil {
 			continue
 		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			continue
+		}
 		var payload struct {
 			Proxies []struct {
-				Name            string         `json:"name"`
-				TodayTrafficIn  int64          `json:"todayTrafficIn"`
-				TodayTrafficOut int64          `json:"todayTrafficOut"`
-				CurConns        int64          `json:"curConns"`
-				LastStartTime   string         `json:"lastStartTime"`
-				LastCloseTime   string         `json:"lastCloseTime"`
-				Status          string         `json:"status"`
-				ClientVersion   string         `json:"clientVersion"`
-				Conf            map[string]any `json:"conf"`
+				Name            string `json:"name"`
+				TodayTrafficIn  int64  `json:"todayTrafficIn"`
+				TodayTrafficOut int64  `json:"todayTrafficOut"`
+				CurConns        int64  `json:"curConns"`
+				Status          string `json:"status"`
+				ClientVersion   string `json:"clientVersion"`
 			} `json:"proxies"`
 		}
 		err = json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&payload)
 		resp.Body.Close()
-		if err != nil {
+		if err != nil || payload.Proxies == nil {
 			continue
 		}
 
+		sampledTypes[pt] = true
 		p.mu.Lock()
 		for _, item := range payload.Proxies {
 			if item.Name == "" {
@@ -1125,18 +1161,12 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 			if !hasPol {
 				pol = ConnPolicy{ProxyName: item.Name, Enabled: true}
 			}
-			deltaIn := item.TodayTrafficIn - pol.LastRawInBytes
-			if item.TodayTrafficIn < pol.LastRawInBytes {
-				deltaIn = item.TodayTrafficIn
-			}
-			deltaOut := item.TodayTrafficOut - pol.LastRawOutBytes
-			if item.TodayTrafficOut < pol.LastRawOutBytes {
-				deltaOut = item.TodayTrafficOut
-			}
-			totalIn := pol.RecordedInBytes + maxInt64(0, deltaIn)
-			totalOut := pol.RecordedOutBytes + maxInt64(0, deltaOut)
+			deltaIn := trafficDelta(item.TodayTrafficIn, pol.LastRawInBytes)
+			deltaOut := trafficDelta(item.TodayTrafficOut, pol.LastRawOutBytes)
+			totalIn := pol.RecordedInBytes + deltaIn
+			totalOut := pol.RecordedOutBytes + deltaOut
 			if (deltaIn+deltaOut) >= 65536 || item.TodayTrafficIn < pol.LastRawInBytes || item.TodayTrafficOut < pol.LastRawOutBytes {
-				pendingPolicyUpdates[item.Name] = [4]int64{totalIn, totalOut, item.TodayTrafficIn, item.TodayTrafficOut}
+				pendingPolicyUpdates = append(pendingPolicyUpdates, item.Name)
 			}
 
 			var speedIn, speedOut int64
@@ -1198,7 +1228,18 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 		p.mu.Unlock()
 	}
 
+	if len(sampledTypes) == 0 {
+		return false
+	}
 	p.mu.Lock()
+	previousCount := len(p.conns)
+	for name, item := range p.conns {
+		if !sampledTypes[item.ProxyType] {
+			if _, refreshed := discovered[name]; !refreshed {
+				discovered[name] = item
+			}
+		}
+	}
 	p.conns = discovered
 	for _, sess := range p.remoteClients {
 		if online, seen := ctrlStatus[sess.ctrlProxyName]; seen {
@@ -1211,9 +1252,9 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 	}
 	p.mu.Unlock()
 	if len(pendingPolicyUpdates) > 0 {
-		rs.persistTrafficDeltas(p, pendingPolicyUpdates)
+		rs.persistTrafficSamples(p, pendingPolicyUpdates)
 	}
-	return len(discovered) > 0 || len(ctrlStatus) > 0
+	return previousCount > 0 || len(discovered) > 0 || len(ctrlStatus) > 0
 }
 
 func (rs *RuntimeSupervisor) pollClientAdmin(p *managedProc) bool {
@@ -1229,6 +1270,9 @@ func (rs *RuntimeSupervisor) pollClientAdmin(p *managedProc) bool {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
 	var statusMap map[string][]TunnelLiveStatus
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&statusMap); err != nil {
 		return false
@@ -1375,10 +1419,38 @@ func stripANSI(s string) string {
 	return out.String()
 }
 
-func (rs *RuntimeSupervisor) persistTrafficDeltas(p *managedProc, updates map[string][4]int64) error {
+func trafficDelta(raw, previous int64) int64 {
+	if raw < previous {
+		return maxInt64(0, raw) // the daily counter rolled over
+	}
+	return raw - previous
+}
+
+// A policy reset records the current raw counters under the store lock. Rebase
+// each persistence operation on that same checkpoint, including shutdown flushes.
+func (rs *RuntimeSupervisor) persistTrafficSamples(p *managedProc, names []string) error {
 	rs.store.mu.Lock()
 	defer rs.store.mu.Unlock()
-	if p.generation != rs.store.generation {
+	rs.mu.RLock()
+	owner := rs.procs[p.id]
+	rs.mu.RUnlock()
+	if owner != p || p.generation != rs.store.generation {
+		return nil
+	}
+	p.mu.Lock()
+	if names == nil {
+		for name := range p.conns {
+			names = append(names, name)
+		}
+	}
+	updates := make(map[string]proxyRateSample, len(names))
+	for _, name := range names {
+		if sample, ok := p.rateSamples[name]; ok {
+			updates[name] = sample
+		}
+	}
+	p.mu.Unlock()
+	if len(updates) == 0 {
 		return nil
 	}
 	return rs.store.updateLocked(func(doc *ConfigDocument) error {
@@ -1387,15 +1459,15 @@ func (rs *RuntimeSupervisor) persistTrafficDeltas(p *managedProc, updates map[st
 				if doc.Servers[i].ConnPolicies == nil {
 					doc.Servers[i].ConnPolicies = make(map[string]ConnPolicy)
 				}
-				for name, vals := range updates {
+				for name, sample := range updates {
 					pol, ok := doc.Servers[i].ConnPolicies[name]
 					if !ok {
 						pol = ConnPolicy{ProxyName: name, Enabled: true}
 					}
-					pol.RecordedInBytes = vals[0]
-					pol.RecordedOutBytes = vals[1]
-					pol.LastRawInBytes = vals[2]
-					pol.LastRawOutBytes = vals[3]
+					pol.RecordedInBytes += trafficDelta(sample.inBytes, pol.LastRawInBytes)
+					pol.RecordedOutBytes += trafficDelta(sample.outBytes, pol.LastRawOutBytes)
+					pol.LastRawInBytes = sample.inBytes
+					pol.LastRawOutBytes = sample.outBytes
 					doc.Servers[i].ConnPolicies[name] = pol
 				}
 				return nil
@@ -1428,25 +1500,7 @@ func (rs *RuntimeSupervisor) flushServerTrafficSnapshot(serverID string) error {
 	if !ok || p == nil {
 		return nil
 	}
-	p.mu.Lock()
-	liveConns := make(map[string]ConnLiveItem, len(p.conns))
-	for k, v := range p.conns {
-		liveConns[k] = v
-	}
-	samples := make(map[string]proxyRateSample, len(p.rateSamples))
-	for k, v := range p.rateSamples {
-		samples[k] = v
-	}
-	p.mu.Unlock()
-	if len(liveConns) == 0 {
-		return nil
-	}
-	updates := make(map[string][4]int64)
-	for name, c := range liveConns {
-		raw := samples[name]
-		updates[name] = [4]int64{c.TotalInBytes, c.TotalOutBytes, raw.inBytes, raw.outBytes}
-	}
-	return rs.persistTrafficDeltas(p, updates)
+	return rs.persistTrafficSamples(p, nil)
 }
 
 // ClearInstanceError clears retained crash errors, buffered logs, and runtime TOML artifacts when an instance profile is deleted (A08).

@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -77,6 +79,78 @@ func TestWebReleaseCheckAndApply(t *testing.T) {
 	}
 	if latestCalls.Load() != 2 || manifestCalls.Load() != 2 || packageCalls.Load() != applied {
 		t.Fatalf("lookups %d, manifests %d, packages %d", latestCalls.Load(), manifestCalls.Load(), packageCalls.Load())
+	}
+}
+
+func TestUpdateDownloadRejectsInterruptedResponseAndRetriesCleanly(t *testing.T) {
+	const archive = "verified update"
+	var calls atomic.Int32
+	h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(len(archive)))
+		if calls.Add(1) == 1 {
+			fmt.Fprint(w, archive[:3])
+			return
+		}
+		fmt.Fprint(w, archive)
+	}))
+	defer h.Close()
+	u := NewUpdateManager(t.TempDir(), nil, nil)
+	u.allowLocal = true
+	st := ComponentUpdateStatus{AssetName: "release", AssetURL: h.URL, sha256: fmt.Sprintf("%x", sha256.Sum256([]byte(archive)))}
+	if err := u.downloadAppPackage(context.Background(), h.Client(), st, filepath.Join(t.TempDir(), "first")); err == nil {
+		t.Fatal("truncated download accepted")
+	}
+	pkg := filepath.Join(t.TempDir(), "retry")
+	if err := u.downloadAppPackage(context.Background(), h.Client(), st, pkg); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(pkg); err != nil || string(b) != archive {
+		t.Fatalf("retry file: %q %v", b, err)
+	}
+	st.sha256 = strings.Repeat("0", 64)
+	if err := u.downloadAppPackage(context.Background(), h.Client(), st, filepath.Join(t.TempDir(), "wrong")); err == nil {
+		t.Fatal("incorrect digest accepted")
+	}
+}
+
+func TestUpdateProxyPersistenceFailureAndChunkedRequests(t *testing.T) {
+	u := NewUpdateManager(t.TempDir(), nil, nil)
+	if _, err := u.SaveProxyURL("http://127.0.0.1:8080"); err != nil {
+		t.Fatal(err)
+	}
+	u.settingsPath = filepath.Join(u.settingsPath, "impossible")
+	if _, err := u.SaveProxyURL(""); err == nil || u.ProxyURL() != "http://127.0.0.1:8080" {
+		t.Fatal("failed save changed active proxy")
+	}
+	a := &App{updater: u}
+	for _, path := range []string{"/api/update/apply-app", "/api/update/apply-frp"} {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"proxyURL":"ftp://invalid.test"}`))
+		r.ContentLength = -1
+		r.TransferEncoding = []string{"chunked"}
+		w := httptest.NewRecorder()
+		a.handleAPI(w, r, "test")
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "代理协议") {
+			t.Fatalf("chunked %s: %d %s", path, w.Code, w.Body.String())
+		}
+	}
+	for _, body := range []string{`{}{}`, `{}bad`, "{}        "} {
+		if err := decodeJSONBody(httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body)), new(map[string]any), 6); err == nil {
+			t.Fatalf("invalid body accepted: %q", body)
+		}
+	}
+}
+
+func TestFRPARMArchiveMatchesPackager(t *testing.T) {
+	soft := ghAsset{Name: "frp_1.2.3_linux_arm.tar.gz", BrowserDownloadURL: "soft"}
+	hard := ghAsset{Name: "frp_1.2.3_linux_arm_hf.tar.gz", BrowserDownloadURL: "hard"}
+	if got := matchFRPAsset([]ghAsset{soft}, "1.2.3", "linux_arm_hf", ".tar.gz"); got != soft {
+		t.Fatal("fallback", got)
+	}
+	if got := matchFRPAsset([]ghAsset{soft, hard}, "1.2.3", "linux_arm_hf", ".tar.gz"); got != hard {
+		t.Fatal("native", got)
+	}
+	if got := matchFRPAsset([]ghAsset{hard}, "1.2.3", "linux_arm", ".tar.gz"); got.Name != "" {
+		t.Fatal("unsupported hard-float fallback", got)
 	}
 }
 

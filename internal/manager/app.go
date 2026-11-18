@@ -51,7 +51,8 @@ func NewApp(dataDir string, onShutdown func()) (*App, error) {
 		store:      store,
 		onShutdown: onShutdown,
 	}
-	app.stateSeq.Store(1)
+	// An open WebUI can send the old process's ETag after an upgrade.
+	app.stateSeq.Store(uint64(time.Now().UnixNano()))
 
 	rt, err := NewRuntimeSupervisor(dataDir, store, func() {
 		app.stateSeq.Add(1)
@@ -460,7 +461,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		if a.runtime.IsInstanceRunning(saved.ID) {
 			if err := a.runtime.StartServer(saved); err != nil {
 				a.bumpState()
-				writeError(w, http.StatusBadRequest, "配置已写入草稿，但新配置校验或平滑重启失败（原运行实例未中断）: "+err.Error())
+				writeError(w, http.StatusBadRequest, "配置已保存，应用到运行实例失败: "+err.Error())
 				return
 			}
 		}
@@ -501,7 +502,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		if a.runtime.IsInstanceRunning(saved.ID) {
 			if err := a.runtime.StartServer(saved); err != nil {
 				a.bumpState()
-				writeError(w, http.StatusBadRequest, "TOML 新配置校验或平滑重启失败（原运行实例未中断）: "+err.Error())
+				writeError(w, http.StatusBadRequest, "TOML 配置已保存，应用到运行实例失败: "+err.Error())
 				return
 			}
 		}
@@ -555,7 +556,10 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		_ = a.runtime.StopInstance(req.ID)
+		if err := a.runtime.StopInstance(req.ID); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		a.runtime.ClearInstanceError(req.ID)
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			out := make([]ServerProfile, 0, len(doc.Servers))
@@ -879,7 +883,10 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		_ = a.runtime.StopInstance(req.ID)
+		if err := a.runtime.StopInstance(req.ID); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		a.runtime.ClearInstanceError(req.ID)
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			out := make([]ClientProfile, 0, len(doc.Clients))
@@ -1367,6 +1374,10 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxyURL": saved})
 
 	case "/api/update/check":
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
 		var proxyOverride *string
 		if r.Method == http.MethodPost {
 			var req struct {
@@ -1396,11 +1407,9 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		var req struct {
 			ProxyURL *string `json:"proxyURL"`
 		}
-		if r.ContentLength > 0 {
-			if err := readJSONBody(r, &req); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
+		if err := readJSONBody(r, &req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		coreInfo, restarted, err := a.updater.ApplyFRPUpdate(r.Context(), req.ProxyURL)
 		if errors.Is(err, errFRPUpToDate) {
@@ -1426,14 +1435,16 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		var req struct {
 			ProxyURL *string `json:"proxyURL"`
 		}
-		if r.ContentLength > 0 {
-			if err := readJSONBody(r, &req); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
+		if err := readJSONBody(r, &req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		lsSpec, oArgs := a.getRuntimeMeta()
 		targetVer, err := a.updater.ApplyAppUpdate(r.Context(), req.ProxyURL, lsSpec, oArgs)
+		if errors.Is(err, errAppUpToDate) {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "upToDate": true, "targetVersion": targetVer})
+			return
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -1462,11 +1473,9 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			Ref      string  `json:"ref"`
 			PackID   string  `json:"packId"`
 		}
-		if r.ContentLength > 0 {
-			if err := readJSONBody(r, &req); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
+		if err := readJSONBody(r, &req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		st, err := a.assets.StartPull(req.ProxyURL, req.Ref, req.PackID)
 		if err != nil {
@@ -1585,16 +1594,23 @@ func sameOriginRequest(r *http.Request) bool {
 		}
 		return true
 	}
-	if r.Header.Get("X-Kurumi-Requested-With") != "" || strings.HasPrefix(ct, "application/json") || r.ContentLength <= 0 {
+	if r.Header.Get("X-Kurumi-Requested-With") != "" || strings.HasPrefix(ct, "application/json") || r.ContentLength == 0 {
 		return true
 	}
 	return false
 }
 
 func readJSONBody(r *http.Request, dst any) error {
-	dec := json.NewDecoder(io.LimitReader(r.Body, maxConfigBytes))
+	return decodeJSONBody(r, dst, maxConfigBytes)
+}
+
+func decodeJSONBody(r *http.Request, dst any, limit int64) error {
+	dec := json.NewDecoder(http.MaxBytesReader(nil, r.Body, limit))
 	if err := dec.Decode(dst); err != nil {
 		return fmt.Errorf("解析请求 JSON 失败: %w", err)
+	}
+	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
+		return errors.New("JSON 请求包含多余内容或超出大小限制")
 	}
 	return nil
 }

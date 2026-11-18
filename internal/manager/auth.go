@@ -121,7 +121,7 @@ func (a *AuthManager) loadOrInitAccount() error {
 			Hash:     base64.RawStdEncoding.EncodeToString(sum),
 		}
 		a.emptyPassword = true
-		return a.saveAccountLocked()
+		return a.saveAccountLocked(a.account)
 	}
 	var acc adminAccountFile
 	if err := json.Unmarshal(raw, &acc); err != nil {
@@ -134,14 +134,17 @@ func (a *AuthManager) loadOrInitAccount() error {
 	if acc.Version < 2 {
 		acc.Version = 2
 	}
+	emptyOK, err := verifyPasswordRecord(acc, "")
+	if err != nil {
+		return fmt.Errorf("读取 admin-password.json 失败: %w", err)
+	}
 	a.account = acc
-	emptyOK, emptyErr := verifyPasswordRecord(acc, "")
-	a.emptyPassword = (emptyErr == nil && emptyOK)
-	return a.saveAccountLocked()
+	a.emptyPassword = emptyOK
+	return a.saveAccountLocked(a.account)
 }
 
-func (a *AuthManager) saveAccountLocked() error {
-	b, err := json.MarshalIndent(a.account, "", "  ")
+func (a *AuthManager) saveAccountLocked(account adminAccountFile) error {
+	b, err := json.MarshalIndent(account, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -283,15 +286,19 @@ func (a *AuthManager) UpdateCredentials(currentPassword, newUsername, newPasswor
 		return err
 	}
 	sum := pbkdf2SHA256([]byte(newPassword), salt, pbkdf2Iterations, 32)
-	a.account = adminAccountFile{
+	account := adminAccountFile{
 		Version:  2,
 		Username: newUsername,
 		Salt:     base64.RawStdEncoding.EncodeToString(salt),
 		Hash:     base64.RawStdEncoding.EncodeToString(sum),
 	}
+	if err := a.saveAccountLocked(account); err != nil {
+		return err
+	}
+	a.account = account
 	a.emptyPassword = (newPassword == "")
 	a.revoked = make(map[string]time.Time)
-	return a.saveAccountLocked()
+	return nil
 }
 
 // Logout revokes the active session cookie immediately.
@@ -431,7 +438,10 @@ func verifyPasswordRecord(rec adminAccountFile, password string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	got := pbkdf2SHA256([]byte(password), salt, pbkdf2Iterations, len(want))
+	if len(salt) == 0 || len(want) != sha256.Size {
+		return false, errors.New("管理员凭据记录不完整")
+	}
+	got := pbkdf2SHA256([]byte(password), salt, pbkdf2Iterations, sha256.Size)
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }
 

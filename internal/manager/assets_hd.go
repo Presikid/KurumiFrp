@@ -121,6 +121,7 @@ type AssetPackManager struct {
 
 	downloading   bool
 	cancelPull    context.CancelFunc
+	pullDone      chan struct{}
 	progressFiles int
 	progressTotal int
 	progressBytes int64
@@ -238,11 +239,11 @@ func (m *AssetPackManager) loadPersistedState() {
 	m.state = st
 }
 
-func (m *AssetPackManager) saveStateLocked() error {
+func (m *AssetPackManager) saveStateLocked(state persistedHDState) error {
 	if err := os.MkdirAll(m.rootDir, 0o700); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(m.state, "", "  ")
+	b, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -330,10 +331,14 @@ func (m *AssetPackManager) SetPreferHD(prefer bool) (HDAssetStatus, error) {
 		m.mu.Unlock()
 		return m.Status(), errors.New("本地尚未拉取原画质素材包，请先点击「从 GitHub 仓库拉取原画包」")
 	}
-	m.state.PreferHD = prefer
-	m.lastError = ""
-	m.rev++
-	err := m.saveStateLocked()
+	next := m.state
+	next.PreferHD = prefer
+	err := m.saveStateLocked(next)
+	if err == nil {
+		m.state = next
+		m.lastError = ""
+		m.rev++
+	}
 	m.mu.Unlock()
 	if err != nil {
 		return m.Status(), err
@@ -356,26 +361,33 @@ func (m *AssetPackManager) CancelPull() HDAssetStatus {
 // Purge removes locally cached HD original files and reverts cleanly to the lightweight embedded WebP assets.
 func (m *AssetPackManager) Purge() (HDAssetStatus, error) {
 	m.mu.Lock()
-	if m.downloading && m.cancelPull != nil {
+	for m.downloading {
 		m.cancelPull()
+		done := m.pullDone
+		m.mu.Unlock()
+		<-done
+		m.mu.Lock()
 	}
-	packDir := filepath.Join(m.rootDir, sanitizePackID(m.state.PackID))
-	m.state.PreferHD = false
-	m.state.Files = make(map[string]string)
-	m.state.FileSHA256 = make(map[string]string)
-	m.state.Dimensions = make(map[string]string)
-	m.state.TotalBytes = 0
-	m.state.InstalledAt = ""
-	m.lastError = ""
-	m.rev++
-	_ = os.RemoveAll(packDir)
-	err := m.saveStateLocked()
-	m.mu.Unlock()
-	if err != nil {
+	next := persistedHDState{PackID: m.state.PackID, PackVersion: m.state.PackVersion, SourceRef: m.state.SourceRef}
+	if err := m.saveStateLocked(next); err != nil {
+		m.mu.Unlock()
 		return m.Status(), err
 	}
+	m.state = next
+	m.lastError = ""
+	m.progressFiles, m.progressTotal = 0, 0
+	m.progressBytes, m.expectedBytes = 0, 0
+	m.rev++
+	// Include partial downloads from canceled pulls and previously selected packs.
+	entries, err := os.ReadDir(m.rootDir)
+	for _, entry := range entries {
+		if entry.IsDir() && sanitizePackID(entry.Name()) == entry.Name() {
+			err = errors.Join(err, os.RemoveAll(filepath.Join(m.rootDir, entry.Name(), "display")))
+		}
+	}
+	m.mu.Unlock()
 	m.notifyChanged()
-	return m.Status(), nil
+	return m.Status(), err
 }
 
 // ServeIfHD serves the verified original-resolution file from disk when HD mode is active; returns false to fall back to embedded WebP.
@@ -396,15 +408,14 @@ func (m *AssetPackManager) ServeIfHD(w http.ResponseWriter, r *http.Request) boo
 	useHD := (m.state.PreferHD || forceTier == "hd") && len(m.state.Files) > 0
 	fileName := m.state.Files[key]
 	sumHex := m.state.FileSHA256[key]
-	dispDir := m.displayDirLocked()
-	m.mu.RUnlock()
-
 	if !useHD || fileName == "" {
+		m.mu.RUnlock()
 		return false
 	}
 
-	fullPath := filepath.Join(dispDir, filepath.Base(fileName))
+	fullPath := filepath.Join(m.displayDirLocked(), filepath.Base(fileName))
 	f, err := os.Open(fullPath)
+	m.mu.RUnlock()
 	if err != nil {
 		return false
 	}
@@ -448,10 +459,10 @@ func (m *AssetPackManager) StartPull(proxyOverride *string, customRef string, pa
 		return m.Status(), nil
 	}
 	targetPack := sanitizePackID(nonEmptyStr(packID, m.state.PackID))
-	m.state.PackID = targetPack
 	ctx, cancel := context.WithCancel(context.Background())
 	m.downloading = true
 	m.cancelPull = cancel
+	m.pullDone = make(chan struct{})
 	m.progressFiles = 0
 	m.progressTotal = 0
 	m.progressBytes = 0
@@ -472,13 +483,25 @@ func selectHDTargetMeta(entry AssetManifestEntry) AssetFileMeta {
 }
 
 func (m *AssetPackManager) runPullJob(ctx context.Context, proxyStr, customRef, packID string) {
+	var next persistedHDState
 	var finalErr error
 	defer func() {
 		m.mu.Lock()
+		m.cancelPull()
 		m.downloading = false
 		m.cancelPull = nil
+		close(m.pullDone)
 		m.currentAsset = ""
 		if finalErr != nil {
+			// A first, interrupted install can still expose its verified files for
+			// preview, cleanup and resumption. A refresh keeps the installed pack.
+			if len(m.state.Files) == 0 && len(next.Files) != 0 && !next.PreferHD {
+				if err := m.saveStateLocked(next); err == nil {
+					m.state = next
+				} else {
+					finalErr = fmt.Errorf("保存已校验素材状态失败: %w", err)
+				}
+			}
 			if errors.Is(finalErr, context.Canceled) {
 				m.lastError = "已手动取消原画包拉取（已完成校验的图片已保留，下次可断点续传）"
 			} else {
@@ -486,7 +509,6 @@ func (m *AssetPackManager) runPullJob(ctx context.Context, proxyStr, customRef, 
 			}
 		}
 		m.rev++
-		_ = m.saveStateLocked()
 		m.mu.Unlock()
 		m.notifyChanged()
 	}()
@@ -514,7 +536,7 @@ func (m *AssetPackManager) runPullJob(ctx context.Context, proxyStr, customRef, 
 	var fetchErr error
 	for _, ref := range candidateRefs {
 		manifestURL := fmt.Sprintf("%s/%s/assets/material/%s/manifest.json", strings.TrimRight(m.rawBase, "/"), ref, packID)
-		manifest, fetchErr = fetchRemoteAssetManifest(ctx, manifestClient, manifestURL)
+		manifest, fetchErr = m.fetchRemoteAssetManifest(ctx, manifestClient, manifestURL)
 		if fetchErr == nil && len(manifest.Assets) > 0 {
 			resolvedRef = ref
 			break
@@ -523,8 +545,23 @@ func (m *AssetPackManager) runPullJob(ctx context.Context, proxyStr, customRef, 
 	// Merge companion classic pack (webui_v094) when pulling sunburst_dal so both s_* and k_* slots upgrade together
 	if resolvedRef != "" && packID == "sunburst_dal" {
 		compURL := fmt.Sprintf("%s/%s/assets/material/webui_v094/manifest.json", strings.TrimRight(m.rawBase, "/"), resolvedRef)
-		if compMan, cErr := fetchRemoteAssetManifest(ctx, manifestClient, compURL); cErr == nil && len(compMan.Assets) > 0 {
+		if compMan, cErr := m.fetchRemoteAssetManifest(ctx, manifestClient, compURL); cErr == nil && len(compMan.Assets) > 0 {
 			manifest.Assets = append(manifest.Assets, compMan.Assets...)
+		} else {
+			// A missing optional companion must not remove installed classic slots.
+			m.mu.RLock()
+			if m.state.PackID == packID {
+				for key := range m.state.Files {
+					if strings.HasPrefix(key, "k_") {
+						finalErr = errors.New("未能读取经典原画包清单，已保留当前素材包")
+						break
+					}
+				}
+			}
+			m.mu.RUnlock()
+			if finalErr != nil {
+				return
+			}
 		}
 	}
 	if resolvedRef == "" {
@@ -538,6 +575,7 @@ func (m *AssetPackManager) runPullJob(ctx context.Context, proxyStr, customRef, 
 
 	var expectedBytes int64
 	validEntries := make([]AssetManifestEntry, 0, len(manifest.Assets))
+	keys := make(map[string]bool)
 	for _, entry := range manifest.Assets {
 		if !validAssetKeyRe.MatchString(entry.Key) {
 			continue
@@ -546,6 +584,17 @@ func (m *AssetPackManager) runPullJob(ctx context.Context, proxyStr, customRef, 
 		if strings.TrimSpace(meta.Path) == "" {
 			continue
 		}
+		digest, err := hex.DecodeString(strings.TrimSpace(meta.SHA256))
+		if err != nil || len(digest) != sha256.Size {
+			finalErr = fmt.Errorf("原画清单条目 %s 的 SHA-256 无效", entry.Key)
+			return
+		}
+		displayName := entry.Key + path.Ext(meta.Path)
+		if keys[entry.Key] || filepath.Base(displayName) != displayName {
+			finalErr = fmt.Errorf("原画清单条目 %s 的名称无效或重复", entry.Key)
+			return
+		}
+		keys[entry.Key] = true
 		expectedBytes += meta.SizeBytes
 		validEntries = append(validEntries, entry)
 	}
@@ -563,13 +612,13 @@ func (m *AssetPackManager) runPullJob(ctx context.Context, proxyStr, customRef, 
 	m.mu.Lock()
 	m.progressTotal = len(validEntries)
 	m.expectedBytes = expectedBytes
-	m.state.SourceRef = resolvedRef
-	if manifest.PackVersion != "" {
-		m.state.PackVersion = manifest.PackVersion
-	}
 	m.mu.Unlock()
 	m.notifyChanged()
 
+	next = persistedHDState{
+		PackID: packID, PackVersion: manifest.PackVersion, SourceRef: resolvedRef,
+		Files: make(map[string]string), FileSHA256: make(map[string]string), Dimensions: make(map[string]string),
+	}
 	type jobItem struct {
 		entry AssetManifestEntry
 		meta  AssetFileMeta
@@ -599,22 +648,27 @@ func (m *AssetPackManager) runPullJob(ctx context.Context, proxyStr, customRef, 
 				if ext == "" {
 					ext = ".jpg"
 				}
-				localName := jb.entry.Key + ext
-				destPath := filepath.Join(dispDir, localName)
 				wantSHA := strings.ToLower(strings.TrimSpace(jb.meta.SHA256))
+				legacyName := jb.entry.Key + ext
+				// A failed sync must leave the installed manifest's files intact.
+				localName := jb.entry.Key + "-" + wantSHA + ext
+				destPath := filepath.Join(dispDir, localName)
 
 				m.mu.Lock()
 				m.currentAsset = fmt.Sprintf("#%s %s", jb.entry.ID, jb.entry.Title)
 				m.mu.Unlock()
 
-				// Fast-path resume check: skip network download if existing local file already matches SHA-256!
 				if sz, ok := verifyExistingFileSHA256(destPath, wantSHA); ok {
-					m.recordVerifiedAsset(jb.entry, jb.meta, localName, wantSHA, sz)
+					m.recordVerifiedAsset(&next, jb.entry, jb.meta, localName, wantSHA, sz)
+					continue
+				}
+				if sz, ok := verifyExistingFileSHA256(filepath.Join(dispDir, legacyName), wantSHA); ok {
+					m.recordVerifiedAsset(&next, jb.entry, jb.meta, legacyName, wantSHA, sz)
 					continue
 				}
 
 				rawURL := fmt.Sprintf("%s/%s/%s", strings.TrimRight(m.rawBase, "/"), resolvedRef, strings.TrimPrefix(jb.meta.Path, "/"))
-				sz, dlErr := downloadAndVerifyAsset(ctx, fileClient, rawURL, destPath, wantSHA)
+				sz, dlErr := m.downloadAndVerifyAsset(ctx, fileClient, rawURL, destPath, wantSHA)
 				if dlErr != nil {
 					errOnce.Do(func() {
 						finalErr = fmt.Errorf("拉取 #%s (%s) 失败: %w", jb.entry.ID, jb.entry.Title, dlErr)
@@ -622,7 +676,7 @@ func (m *AssetPackManager) runPullJob(ctx context.Context, proxyStr, customRef, 
 					m.CancelPull()
 					return
 				}
-				m.recordVerifiedAsset(jb.entry, jb.meta, localName, wantSHA, sz)
+				m.recordVerifiedAsset(&next, jb.entry, jb.meta, localName, wantSHA, sz)
 			}
 		}()
 	}
@@ -637,57 +691,41 @@ func (m *AssetPackManager) runPullJob(ctx context.Context, proxyStr, customRef, 
 	}
 
 	m.mu.Lock()
-	var sumBytes int64
-	for _, fn := range m.state.Files {
-		if st, err := os.Stat(filepath.Join(dispDir, fn)); err == nil {
-			sumBytes += st.Size()
+	next.PreferHD = true
+	next.InstalledAt = time.Now().UTC().Format(time.RFC3339)
+	if finalErr = m.saveStateLocked(next); finalErr == nil {
+		if m.state.PackID == packID {
+			for key, old := range m.state.Files {
+				if old != next.Files[key] {
+					_ = os.Remove(filepath.Join(dispDir, old))
+				}
+			}
 		}
+		m.state = next
 	}
-	m.state.TotalBytes = sumBytes
-	m.state.PreferHD = true
-	m.state.InstalledAt = time.Now().UTC().Format(time.RFC3339)
-	m.lastError = ""
 	m.mu.Unlock()
 }
 
-func (m *AssetPackManager) recordVerifiedAsset(entry AssetManifestEntry, meta AssetFileMeta, localName, shaHex string, sizeBytes int64) {
+func (m *AssetPackManager) recordVerifiedAsset(next *persistedHDState, entry AssetManifestEntry, meta AssetFileMeta, localName, shaHex string, sizeBytes int64) {
 	m.mu.Lock()
-	if m.state.Files == nil {
-		m.state.Files = make(map[string]string)
-	}
-	if m.state.FileSHA256 == nil {
-		m.state.FileSHA256 = make(map[string]string)
-	}
-	if m.state.Dimensions == nil {
-		m.state.Dimensions = make(map[string]string)
-	}
-	m.state.Files[entry.Key] = localName
-	m.state.FileSHA256[entry.Key] = shaHex
+	next.Files[entry.Key] = localName
+	next.FileSHA256[entry.Key] = shaHex
 	if meta.Width > 0 && meta.Height > 0 {
-		m.state.Dimensions[entry.Key] = fmt.Sprintf("%dx%d", meta.Width, meta.Height)
+		next.Dimensions[entry.Key] = fmt.Sprintf("%dx%d", meta.Width, meta.Height)
 	}
 	m.progressFiles++
 	m.progressBytes += sizeBytes
-	m.state.TotalBytes = m.progressBytes
+	next.TotalBytes += sizeBytes
 	m.mu.Unlock()
 }
 
-func fetchRemoteAssetManifest(ctx context.Context, client *http.Client, manifestURL string) (AssetPackManifest, error) {
+func (m *AssetPackManager) fetchRemoteAssetManifest(ctx context.Context, client *http.Client, manifestURL string) (AssetPackManifest, error) {
 	var out AssetPackManifest
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL, nil)
+	raw, err := m.updater.downloadBytes(ctx, client, manifestURL, 8<<20)
 	if err != nil {
 		return out, err
 	}
-	req.Header.Set("User-Agent", "KurumiFrp-HDAssetPuller/1.0")
-	resp, err := client.Do(req)
-	if err != nil {
-		return out, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return out, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil {
 		return out, err
 	}
 	return out, nil
@@ -700,11 +738,8 @@ func verifyExistingFileSHA256(filePath, wantSHA string) (int64, bool) {
 	}
 	defer f.Close()
 	st, err := f.Stat()
-	if err != nil || st.IsDir() || st.Size() == 0 {
+	if err != nil || st.IsDir() || st.Size() == 0 || st.Size() > maxSingleHDAssetBytes {
 		return 0, false
-	}
-	if wantSHA == "" {
-		return st.Size(), true
 	}
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
@@ -714,13 +749,13 @@ func verifyExistingFileSHA256(filePath, wantSHA string) (int64, bool) {
 	return st.Size(), strings.EqualFold(got, wantSHA)
 }
 
-func downloadAndVerifyAsset(ctx context.Context, client *http.Client, rawURL, destPath, wantSHA string) (int64, error) {
+func (m *AssetPackManager) downloadAndVerifyAsset(ctx context.Context, client *http.Client, rawURL, destPath, wantSHA string) (int64, error) {
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
 		if ctx.Err() != nil {
 			return 0, ctx.Err()
 		}
-		sz, err := downloadAssetOnce(ctx, client, rawURL, destPath, wantSHA)
+		sz, err := m.downloadAssetOnce(ctx, client, rawURL, destPath, wantSHA)
 		if err == nil {
 			return sz, nil
 		}
@@ -734,54 +769,32 @@ func downloadAndVerifyAsset(ctx context.Context, client *http.Client, rawURL, de
 	return 0, lastErr
 }
 
-func downloadAssetOnce(ctx context.Context, client *http.Client, rawURL, destPath, wantSHA string) (int64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+func (m *AssetPackManager) downloadAssetOnce(ctx context.Context, client *http.Client, rawURL, destPath, wantSHA string) (int64, error) {
+	outFile, err := os.CreateTemp(filepath.Dir(destPath), filepath.Base(destPath)+".tmp.*")
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("User-Agent", "KurumiFrp-HDAssetPuller/1.0")
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	tmpPath := fmt.Sprintf("%s.tmp.%d", destPath, time.Now().UnixNano())
-	outFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return 0, err
-	}
+	tmpPath := outFile.Name()
+	defer os.Remove(tmpPath)
 
 	h := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(outFile, h), io.LimitReader(resp.Body, maxSingleHDAssetBytes))
+	copyErr := m.updater.downloadTo(ctx, client, rawURL, maxSingleHDAssetBytes, io.MultiWriter(outFile, h))
+	st, statErr := outFile.Stat()
 	closeErr := outFile.Close()
-	if copyErr != nil {
-		_ = os.Remove(tmpPath)
-		return 0, copyErr
+	if err := errors.Join(copyErr, statErr, closeErr); err != nil {
+		return 0, err
 	}
-	if closeErr != nil {
-		_ = os.Remove(tmpPath)
-		return 0, closeErr
-	}
-	if written == 0 {
-		_ = os.Remove(tmpPath)
+	if st.Size() == 0 {
 		return 0, errors.New("下载内容为空")
 	}
 
-	if wantSHA != "" {
-		gotSHA := hex.EncodeToString(h.Sum(nil))
-		if !strings.EqualFold(gotSHA, wantSHA) {
-			_ = os.Remove(tmpPath)
-			return 0, fmt.Errorf("SHA-256 校验不一致 (期望 %s，实际 %s)", shortHex(wantSHA, 12), shortHex(gotSHA, 12))
-		}
+	gotSHA := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(gotSHA, wantSHA) {
+		return 0, fmt.Errorf("SHA-256 校验不一致 (期望 %s，实际 %s)", shortHex(wantSHA, 12), shortHex(gotSHA, 12))
 	}
 
 	if err := replaceFileAtomic(tmpPath, destPath, 0o600); err != nil {
-		_ = os.Remove(tmpPath)
 		return 0, err
 	}
-	return written, nil
+	return st.Size(), nil
 }

@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -544,33 +543,38 @@ func (rs *RuntimeSupervisor) resolveRemoteAgentEndpoint(serverID, clientID strin
 		return "", nil, errors.New("未找到所属 frps 配置")
 	}
 
-	port, err := rs.ensureVisitorBridge(*srv, sessCopy)
+	port, err := rs.ensureVisitorBridge(*srv, sessCopy, proc)
 	if err != nil {
 		return "", nil, err
 	}
 	return fmt.Sprintf("http://127.0.0.1:%d", port), &sessCopy, nil
 }
 
-func (rs *RuntimeSupervisor) ensureVisitorBridge(srv ServerProfile, sess remoteClientSession) (int, error) {
+func (rs *RuntimeSupervisor) ensureVisitorBridge(srv ServerProfile, sess remoteClientSession, owner *managedProc) (int, error) {
 	key := srv.ID + "::" + sess.clientID
 
 	rs.bridgeMu.Lock()
+	defer rs.bridgeMu.Unlock()
+	rs.mu.RLock()
+	current := rs.procs[srv.ID]
+	rs.mu.RUnlock()
+	if current != owner || current == nil {
+		return 0, errors.New("所属 frps 实例已停止或重启")
+	}
 	if existing, ok := rs.bridges[key]; ok && existing != nil {
 		select {
 		case <-existing.done:
 			delete(rs.bridges, key)
+			_ = os.Remove(existing.cfgPath)
 		default:
 			if existing.ctrlProxy == sess.ctrlProxyName && existing.ctrlSecret == sess.ctrlSecret {
 				existing.lastUsed = time.Now()
-				port := existing.bindPort
-				rs.bridgeMu.Unlock()
-				return port, nil
+				return existing.bindPort, nil
 			}
 			delete(rs.bridges, key)
 			go terminateVisitorBridge(existing)
 		}
 	}
-	rs.bridgeMu.Unlock()
 
 	bins := LocateBinaries(rs.dataDir)
 	if !bins.FrpcFound {
@@ -625,8 +629,14 @@ func (rs *RuntimeSupervisor) ensureVisitorBridge(srv ServerProfile, sess remoteC
 	fmt.Fprintf(&tb, "bindPort = %d\n", bindPort)
 	tb.WriteString("transport.useEncryption = true\n")
 
-	cfgPath := filepath.Join(rs.runtimeDir, fmt.Sprintf("bridge_%s_%s.toml", srv.ID, sess.clientID))
-	if err := os.WriteFile(cfgPath, []byte(tb.String()), 0o600); err != nil {
+	cfg, err := os.CreateTemp(rs.runtimeDir, "bridge_*.toml")
+	if err != nil {
+		return 0, err
+	}
+	cfgPath := cfg.Name()
+	_, writeErr := cfg.WriteString(tb.String())
+	if err := errors.Join(writeErr, cfg.Close()); err != nil {
+		_ = os.Remove(cfgPath)
 		return 0, err
 	}
 
@@ -678,9 +688,7 @@ func (rs *RuntimeSupervisor) ensureVisitorBridge(srv ServerProfile, sess remoteC
 		return 0, errors.New("等待客户端远控通道就绪超时")
 	}
 
-	rs.bridgeMu.Lock()
 	rs.bridges[key] = br
-	rs.bridgeMu.Unlock()
 	return bindPort, nil
 }
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,7 +28,7 @@ type activeMetaFile struct {
 
 // legacyDatabase supports automatic one-time import of existing v0.7/v0.8 state.json tunnels & instances.
 type legacyDatabase struct {
-	State struct {
+	State *struct {
 		Instances []struct {
 			ID            string `json:"id"`
 			Name          string `json:"name"`
@@ -89,7 +90,14 @@ func NewStore(dataDir string) (*Store, error) {
 func (s *Store) initOrLoad() error {
 	var meta activeMetaFile
 	if raw, err := os.ReadFile(s.metaPath); err == nil {
-		_ = json.Unmarshal(raw, &meta)
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			return fmt.Errorf("解析 active_config.json 失败: %w", err)
+		}
+		if sanitizeConfigFileName(meta.ActiveFile) == "" {
+			return errors.New("active_config.json 缺少有效的活动配置文件名")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	target := sanitizeConfigFileName(meta.ActiveFile)
 	if target == "" {
@@ -97,7 +105,10 @@ func (s *Store) initOrLoad() error {
 	}
 	fullPath := filepath.Join(s.configsDir, target)
 	if _, err := os.Stat(fullPath); errors.Is(err, os.ErrNotExist) {
-		entries, _ := os.ReadDir(s.configsDir)
+		entries, err := os.ReadDir(s.configsDir)
+		if err != nil {
+			return err
+		}
 		var existing string
 		for _, e := range entries {
 			if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".json") {
@@ -109,7 +120,10 @@ func (s *Store) initOrLoad() error {
 			target = existing
 			fullPath = filepath.Join(s.configsDir, target)
 		} else {
-			doc := s.tryMigrateLegacyOrDefault()
+			doc, err := s.tryMigrateLegacyOrDefault()
+			if err != nil {
+				return err
+			}
 			normalizeDocument(&doc, doc.Name)
 			s.activeFile = "default.json"
 			s.doc = doc
@@ -131,7 +145,7 @@ func (s *Store) initOrLoad() error {
 	return s.saveMetaLocked(s.activeFile)
 }
 
-func (s *Store) tryMigrateLegacyOrDefault() ConfigDocument {
+func (s *Store) tryMigrateLegacyOrDefault() (ConfigDocument, error) {
 	doc := ConfigDocument{
 		Version: 1,
 		Name:    "默认配置方案",
@@ -141,14 +155,20 @@ func (s *Store) tryMigrateLegacyOrDefault() ConfigDocument {
 	}
 	legacyPath := filepath.Join(s.dataDir, "state.json")
 	raw, err := os.ReadFile(legacyPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return doc, nil
+	}
 	if err != nil {
-		return doc
+		return ConfigDocument{}, err
 	}
 	var leg legacyDatabase
 	if err := json.Unmarshal(raw, &leg); err != nil {
-		return doc
+		return ConfigDocument{}, fmt.Errorf("迁移 state.json 失败: %w", err)
 	}
-	clientMap := make(map[string]*ClientProfile)
+	if leg.State == nil {
+		return ConfigDocument{}, errors.New("迁移 state.json 失败：缺少 state 字段")
+	}
+	clientIndex := make(map[string]int)
 	for _, inst := range leg.State.Instances {
 		if inst.Kind == "frps" {
 			addr := inst.Host
@@ -190,14 +210,15 @@ func (s *Store) tryMigrateLegacyOrDefault() ConfigDocument {
 				Tunnels:    []TunnelRule{},
 			}
 			doc.Clients = append(doc.Clients, cp)
-			clientMap[inst.ID] = &doc.Clients[len(doc.Clients)-1]
+			clientIndex[inst.ID] = len(doc.Clients) - 1
 		}
 	}
 	for _, t := range leg.State.Tunnels {
-		cp, ok := clientMap[t.InstanceID]
+		idx, ok := clientIndex[t.InstanceID]
 		if !ok {
 			continue
 		}
+		cp := &doc.Clients[idx]
 		cp.Tunnels = append(cp.Tunnels, TunnelRule{
 			ID:            nonEmptyID(t.ID, "tun"),
 			Name:          nonEmptyStr(t.Name, "rule"),
@@ -211,11 +232,16 @@ func (s *Store) tryMigrateLegacyOrDefault() ConfigDocument {
 			SubDomain:     t.Subdomain,
 		})
 	}
-	return doc
+	return doc, nil
 }
 
 func readConfigDocument(path string) (ConfigDocument, error) {
-	raw, err := os.ReadFile(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return ConfigDocument{}, err
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, maxConfigBytes+1))
 	if err != nil {
 		return ConfigDocument{}, err
 	}
@@ -294,11 +320,15 @@ func normalizeDocument(doc *ConfigDocument, fallbackName string) {
 func (s *Store) Snapshot() (string, ConfigDocument) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	raw, _ := json.Marshal(s.doc)
+	return s.activeFile, cloneConfigDocument(s.doc)
+}
+
+func cloneConfigDocument(doc ConfigDocument) ConfigDocument {
+	raw, _ := json.Marshal(doc)
 	var cp ConfigDocument
 	_ = json.Unmarshal(raw, &cp)
-	normalizeDocument(&cp, s.doc.Name)
-	return s.activeFile, cp
+	normalizeDocument(&cp, doc.Name)
+	return cp
 }
 
 // Update applies a mutation function to the active ConfigDocument and writes to disk only if changed.
@@ -310,10 +340,7 @@ func (s *Store) Update(fn func(doc *ConfigDocument) error) error {
 }
 
 func (s *Store) updateLocked(fn func(doc *ConfigDocument) error) error {
-	raw, _ := json.Marshal(s.doc)
-	var draft ConfigDocument
-	_ = json.Unmarshal(raw, &draft)
-	normalizeDocument(&draft, s.doc.Name)
+	draft := cloneConfigDocument(s.doc)
 
 	if err := fn(&draft); err != nil {
 		return err
@@ -411,15 +438,12 @@ func (s *Store) SelectOrCreateConfig(fileName, displayName string) (ConfigDocume
 			Servers: []ServerProfile{},
 			Clients: []ClientProfile{},
 		}
-		if err := s.commitDocumentLocked(clean, doc, true); err != nil {
-			return ConfigDocument{}, err
-		}
-		return doc, nil
 	}
-	if err := s.activateLocked(clean, doc); err != nil {
+	// Persist IDs and control credentials generated when opening an older config.
+	if err := s.commitDocumentLocked(clean, doc, true); err != nil {
 		return ConfigDocument{}, err
 	}
-	return doc, nil
+	return cloneConfigDocument(doc), nil
 }
 
 // ImportConfigDocument saves an uploaded ConfigDocument JSON into data/configs/ and activates it.

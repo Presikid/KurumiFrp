@@ -78,9 +78,8 @@ def prepare(platform, target):
     if len(body) != size:
         raise ValueError('official frp archive size mismatch')
     actual_sha256 = hashlib.sha256(body).hexdigest()
-    if digest:
-        if not re.fullmatch(r'sha256:[a-f0-9]{64}', digest) or digest != f'sha256:{actual_sha256}':
-            raise ValueError('official frp archive SHA-256 digest mismatch')
+    if not isinstance(digest, str) or digest != f'sha256:{actual_sha256}':
+        raise ValueError('missing or incorrect official frp archive SHA-256 digest')
 
     names = ['frpc.exe', 'frps.exe', 'LICENSE'] if suffix == '.zip' else ['frpc', 'frps', 'LICENSE']
     extracted = {}

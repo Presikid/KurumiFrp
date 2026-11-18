@@ -961,7 +961,7 @@ func parseServerTOMLLines(name string, lines []string) (*ServerProfile, error) {
 		ConnPolicies: make(map[string]ConnPolicy),
 	}
 
-	var extra []string
+	var extra, dottedExtra []string
 	var allowSpecs []string
 	var curAllowSingle, curAllowStart, curAllowEnd int
 	inAllowPort := false
@@ -1085,7 +1085,11 @@ func parseServerTOMLLines(name string, lines []string) (*ServerProfile, error) {
 		} else if handled {
 			continue
 		}
-		extra = append(extra, line)
+		if section != "" && isKnownServerSection(section) {
+			dottedExtra = append(dottedExtra, fullKey+" = "+v)
+		} else {
+			extra = append(extra, line)
+		}
 	}
 	if err := flushAllow(); err != nil {
 		return nil, err
@@ -1094,7 +1098,7 @@ func parseServerTOMLLines(name string, lines []string) (*ServerProfile, error) {
 	if len(allowSpecs) > 0 {
 		srv.AllowPorts = strings.Join(allowSpecs, ",")
 	}
-	srv.ExtraTOML = strings.TrimSpace(strings.Join(extra, "\n"))
+	srv.ExtraTOML = strings.TrimSpace(strings.Join(append(dottedExtra, extra...), "\n"))
 	return srv, nil
 }
 
@@ -1235,7 +1239,7 @@ func parseClientTOMLLines(name string, lines []string) (*ClientProfile, error) {
 		Tunnels:    []TunnelRule{},
 	}
 
-	var globalExtra []string
+	var globalExtra, dottedExtra []string
 	var curTun *TunnelRule
 	var curExtra []string
 	var curHCHeaderName, curHCHeaderVal string
@@ -1408,10 +1412,14 @@ func parseClientTOMLLines(name string, lines []string) (*ClientProfile, error) {
 		} else if handled {
 			continue
 		}
-		globalExtra = append(globalExtra, line)
+		if section != "" && isKnownClientSection(section) {
+			dottedExtra = append(dottedExtra, fullGlobalKey+" = "+v)
+		} else {
+			globalExtra = append(globalExtra, line)
+		}
 	}
 	flushTun()
-	cli.ExtraTOML = strings.TrimSpace(strings.Join(globalExtra, "\n"))
+	cli.ExtraTOML = strings.TrimSpace(strings.Join(append(dottedExtra, globalExtra...), "\n"))
 	return cli, nil
 }
 
@@ -1468,8 +1476,6 @@ func applyClientGlobalKeyValue(cli *ClientProfile, fullKey, v string) (bool, err
 		cli.NatHoleSTUNServer = unquoteTOML(v)
 	case "udpPacketSize":
 		return true, setTOMLInteger(&cli.UDPPacketSize, fullKey, v)
-	case "featureGates":
-		return true, nil
 	case "virtualNet.address":
 		cli.VirtualNetAddr = unquoteTOML(v)
 	case "log.level":
@@ -1878,14 +1884,14 @@ func foldMultilineTOMLLines(rawLines []string) ([]string, error) {
 	}
 
 	for idx, line := range rawLines {
-		trimmed := strings.TrimSpace(line)
+		cleaned := stripTOMLInlineComment(line)
+		trimmed := strings.TrimSpace(cleaned)
 		if bracketDepth == 0 {
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") || (strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") && !strings.Contains(trimmed, "=")) {
-				out = append(out, line)
+			if trimmed == "" || (strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") && !strings.Contains(trimmed, "=")) {
+				out = append(out, trimmed)
 				continue
 			}
 		}
-		cleaned := stripTOMLInlineComment(line)
 		delta, unclosedQuote, _ := scanLine(cleaned)
 		if unclosedQuote != 0 {
 			return nil, fmt.Errorf("TOML 第 %d 行存在未闭合的字符串引号", idx+1)

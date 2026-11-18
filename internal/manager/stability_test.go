@@ -52,7 +52,7 @@ func TestConfigActivationOwnsTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = rs.persistTrafficDeltas(p, map[string][4]int64{"web": {9000, 0, 9000, 0}}); err != nil {
+	if err = rs.persistTrafficSamples(p, []string{"web"}); err != nil {
 		t.Fatal(err)
 	}
 	active, next := s.Snapshot()
@@ -135,7 +135,7 @@ func TestCorePairActivationAndAlreadyLatest(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	activate, err := stageCorePair(ctx, bin, version, raw, raw, nil)
+	activate, rollback, err := stageCorePair(ctx, bin, version, raw, raw, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestCorePairActivationAndAlreadyLatest(t *testing.T) {
 	if err = os.MkdirAll(filepath.Join(slots, "b", binaryFileName("frps")), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = stageCorePair(ctx, bin, version, raw, raw, nil); err == nil {
+	if _, _, err = stageCorePair(ctx, bin, version, raw, raw, nil); err == nil {
 		t.Fatal("expected inactive slot write failure")
 	}
 	info := LocateBinaries(dir)
@@ -164,6 +164,12 @@ func TestCorePairActivationAndAlreadyLatest(t *testing.T) {
 	_, count, err := u.ApplyFRPUpdate(ctx, nil)
 	if !errors.Is(err, errFRPUpToDate) || count != 0 {
 		t.Fatalf("same-version update: %d %v", count, err)
+	}
+	if err := rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if active, err := readCoreSlot(slots); err != nil || active != "" {
+		t.Fatalf("previous bundled selection not restored: %q %v", active, err)
 	}
 }
 

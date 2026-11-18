@@ -964,6 +964,7 @@
     const res = await apiFetch("/api/state", { headers });
     if (res && res.notModified) return;
 
+    if (res.version && res.version !== STATE.version) STATE.lastUpdateCheck = null;
     STATE.version = res.version || STATE.version;
     STATE.username = res.username || STATE.username;
     STATE.needsPasswordSetup = Boolean(res.needsPasswordSetup);
@@ -4474,7 +4475,9 @@
     function releaseStatus(component) {
       if (!component) return "";
       if (component.error) return `<div style="font-size:12.5px;color:var(--yc-danger);">${esc(component.error)}</div>`;
-      return `<div style="font-size:12.5px;">最新正式版: v${esc(component.latest)}</div>`;
+      const hint = component.hasUpdate && !component.canAutoUpdate
+        ? esc(component.manualHint || "当前平台没有可自动安装的发布包，请查看官方发布页。") : "";
+      return `<div style="font-size:12.5px;">最新正式版: v${esc(component.latest)}</div>${hint ? `<div>${hint}</div>` : ""}`;
     }
     main.innerHTML = `
       ${buildHDAssetPackCardHTML()}
@@ -4503,8 +4506,8 @@
             <input id="updProxyInput" type="text" style="flex:1;min-width:240px;" value="${esc(STATE.updateProxy || "")}" placeholder="如 http://127.0.0.1:2080 或 socks5://127.0.0.1:10808" />
             <button type="button" class="yc-btn yc-btn-outline" id="btnSaveUpdProxy">保存代理</button>
             <button type="button" class="yc-btn yc-btn-primary" id="btnCheckUpdates">检查更新</button>
-            <button type="button" class="yc-btn yc-btn-indigo" id="btnApplyFrpUpdate" ${chk?.frp && !chk.frp.error && !chk.frp.hasUpdate ? "disabled" : ""}>热更新官方 FRP 核心</button>
-            <button type="button" class="yc-btn yc-btn-outline" id="btnApplyAppUpdate">自更新 KurumiFrp</button>
+            <button type="button" class="yc-btn yc-btn-indigo" id="btnApplyFrpUpdate" ${chk?.frp && !chk.frp.error && (!chk.frp.hasUpdate || !chk.frp.canAutoUpdate) ? "disabled" : ""}>热更新官方 FRP 核心</button>
+            <button type="button" class="yc-btn yc-btn-outline" id="btnApplyAppUpdate" ${chk?.app && !chk.app.error && (!chk.app.hasUpdate || !chk.app.canAutoUpdate) ? "disabled" : ""}>自更新 KurumiFrp</button>
           </div>
         </label>
       </div>`;
@@ -4554,7 +4557,7 @@
           method: "POST",
           body: { proxyURL: main.querySelector("#updProxyInput").value }
         });
-        toast(`已启动 v${res.targetVersion} 静默升级，稍后自动重连…`);
+        toast(res.upToDate ? "KurumiFrp 已是最新版本" : `已启动 v${res.targetVersion} 静默升级，稍后自动重连…`);
       } catch (err) {
         toast(err.message, true);
       }
