@@ -276,8 +276,10 @@ func TestABCDECrossInstanceRemoteControlAndP2PScenario(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rtA.StopAll()
+	generationA := storeA.activeGeneration()
 	rtA.mu.Lock()
 	rtA.procs["srv-A"] = &managedProc{
+		generation:    generationA,
 		id:            "srv-A",
 		kind:          "frps",
 		pluginSecret:  "plug-a",
@@ -546,6 +548,11 @@ func TestCompareSemVer(t *testing.T) {
 		{"0.10.0", "0.9.9", 1},
 		{"1.0.0", "0.99.9", 1},
 		{"0.9.0", "0.9.2", -1},
+		{"0.72.0", "0.72.0-rc.1", 1},
+		{"0.72.0-rc.2", "v0.72.0-rc.10", -1},
+		{"0.72.0-rc.1", "0.72.0-rc.1.build", -1},
+		{"0.72.0-10", "0.72.0-alpha", -1},
+		{"0.72.0+local", "0.72.0", 0},
 	}
 	for _, tc := range cases {
 		if got := compareSemVer(tc.a, tc.b); got != tc.want {

@@ -149,7 +149,7 @@ type RuntimeSupervisor struct {
 	store        *Store
 	procs        map[string]*managedProc
 	historyLogs  map[string]*ringLogBuffer
-	lastErrors   map[string]string
+	lastErrors   map[string]instanceError
 	callbackAddr atomic.Value // stores string "127.0.0.1:<port>"
 	onChange     func()
 	stopPollCh   chan struct{}
@@ -160,6 +160,11 @@ type RuntimeSupervisor struct {
 	agentPort int
 	bridgeMu  sync.Mutex
 	bridges   map[string]*visitorBridge
+}
+
+type instanceError struct {
+	generation uint64
+	message    string
 }
 
 // NewRuntimeSupervisor creates the official FRP process supervisor and local loopback agent server.
@@ -174,7 +179,7 @@ func NewRuntimeSupervisor(dataDir string, store *Store, onChange func()) (*Runti
 		store:       store,
 		procs:       make(map[string]*managedProc),
 		historyLogs: make(map[string]*ringLogBuffer),
-		lastErrors:  make(map[string]string),
+		lastErrors:  make(map[string]instanceError),
 		onChange:    onChange,
 		stopPollCh:  make(chan struct{}),
 		httpClient:  &http.Client{Timeout: 2 * time.Second},
@@ -253,7 +258,7 @@ func (rs *RuntimeSupervisor) resetForConfigSwitch(ids []string) error {
 
 	rs.mu.Lock()
 	rs.historyLogs = make(map[string]*ringLogBuffer)
-	rs.lastErrors = make(map[string]string)
+	rs.lastErrors = make(map[string]instanceError)
 	rs.mu.Unlock()
 	return nil
 }
@@ -300,8 +305,9 @@ func (rs *RuntimeSupervisor) scheduleAutoStarts() {
 
 func (rs *RuntimeSupervisor) recordStartError(id string, err error) {
 	if err != nil {
+		failure := instanceError{generation: rs.store.activeGeneration(), message: err.Error()}
 		rs.mu.Lock()
-		rs.lastErrors[id] = err.Error()
+		rs.lastErrors[id] = failure
 		rs.mu.Unlock()
 		rs.notifyChange()
 	}
@@ -781,7 +787,7 @@ func (rs *RuntimeSupervisor) spawnProcess(id, kind, binPath, cfgPath string, ren
 		if cur, exists := rs.procs[id]; exists && cur == proc {
 			delete(rs.procs, id)
 			if exitErrMsg != "" {
-				rs.lastErrors[id] = exitErrMsg
+				rs.lastErrors[id] = instanceError{generation: proc.generation, message: exitErrMsg}
 			}
 		}
 		rs.mu.Unlock()
@@ -837,6 +843,10 @@ func (rs *RuntimeSupervisor) stopInstance(id string) error {
 
 // Views returns live runtime views for all ServerProfiles and ClientProfiles in doc.
 func (rs *RuntimeSupervisor) Views(doc ConfigDocument) map[string]ProcessRuntimeView {
+	return rs.viewsForGeneration(doc, rs.store.activeGeneration())
+}
+
+func (rs *RuntimeSupervisor) viewsForGeneration(doc ConfigDocument, generation uint64) map[string]ProcessRuntimeView {
 	rs.mu.RLock()
 	defer rs.mu.RUnlock()
 
@@ -848,7 +858,7 @@ func (rs *RuntimeSupervisor) Views(doc ConfigDocument) map[string]ProcessRuntime
 			State:       "stopped",
 			Connections: buildMergedConnections(srv, nil),
 		}
-		if p, ok := rs.procs[srv.ID]; ok {
+		if p := rs.procs[srv.ID]; p != nil && p.generation == generation {
 			p.mu.Lock()
 			view.Running = p.state == "running"
 			view.State = p.state
@@ -861,9 +871,9 @@ func (rs *RuntimeSupervisor) Views(doc ConfigDocument) map[string]ProcessRuntime
 			view.Connections = buildMergedConnections(srv, p.conns)
 			view.RemoteClients = buildRemoteClientSummaries(srv.ID, p)
 			p.mu.Unlock()
-		} else if lastErr := rs.lastErrors[srv.ID]; lastErr != "" {
+		} else if lastErr, ok := rs.lastErrors[srv.ID]; ok && lastErr.generation == generation {
 			view.State = "error"
-			view.LastError = lastErr
+			view.LastError = lastErr.message
 		}
 		out[srv.ID] = view
 	}
@@ -874,7 +884,7 @@ func (rs *RuntimeSupervisor) Views(doc ConfigDocument) map[string]ProcessRuntime
 			Kind:  "frpc",
 			State: "stopped",
 		}
-		if p, ok := rs.procs[cli.ID]; ok {
+		if p := rs.procs[cli.ID]; p != nil && p.generation == generation {
 			p.mu.Lock()
 			view.Running = p.state == "running"
 			view.State = p.state
@@ -886,9 +896,9 @@ func (rs *RuntimeSupervisor) Views(doc ConfigDocument) map[string]ProcessRuntime
 			view.AdminPort = p.adminPort
 			view.TunnelStats = append([]TunnelLiveStatus(nil), p.tunnelStats...)
 			p.mu.Unlock()
-		} else if lastErr := rs.lastErrors[cli.ID]; lastErr != "" {
+		} else if lastErr, ok := rs.lastErrors[cli.ID]; ok && lastErr.generation == generation {
 			view.State = "error"
-			view.LastError = lastErr
+			view.LastError = lastErr.message
 		}
 		out[cli.ID] = view
 	}

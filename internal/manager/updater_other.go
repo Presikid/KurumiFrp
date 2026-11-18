@@ -25,6 +25,9 @@ func canPlatformSelfUpdateApp(exePath string) (bool, string, string) {
 	if runtime.GOOS != "linux" || exePath == "" {
 		return false, "manual", "请前往 GitHub Releases 下载对应系统最新包覆盖升级"
 	}
+	if version.Distribution == "docker" {
+		return false, "manual", "请更新 KurumiFrp 镜像并重新创建容器，保留原有数据卷"
+	}
 	if version.Distribution == "linux-system" {
 		return false, "linux-package", "请通过安装时使用的 .deb 或 .rpm 软件包升级"
 	}
@@ -41,10 +44,8 @@ func executePlatformSelfUpdate(pkgPath, currentExePath, _, listenSpec, targetVer
 	if onShutdown == nil {
 		return errors.New("无法在当前运行环境内自动重启")
 	}
-	if err := installPortableUpdate(pkgPath, currentExePath, targetVersion); err != nil {
-		return err
-	}
 	exitCode := 0
+	var restart *exec.Cmd
 	execPID := os.Getenv("SYSTEMD_EXEC_PID")
 	if os.Getenv("INVOCATION_ID") != "" && (execPID == strconv.Itoa(os.Getpid()) || execPID == "" && os.Getppid() == 1) {
 		exitCode = 42
@@ -60,12 +61,11 @@ func executePlatformSelfUpdate(pkgPath, currentExePath, _, listenSpec, targetVer
 		if listenSpec != "" {
 			args = append(args, "-listen="+listenSpec)
 		}
-		cmd := exec.Command("/bin/sh", args...)
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("启动新版程序的重启助手失败: %w", err)
-		}
-		cmd.Process.Release()
+		restart = exec.Command("/bin/sh", args...)
+		restart.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	}
+	if err := installPortableUpdate(pkgPath, currentExePath, targetVersion, restart); err != nil {
+		return err
 	}
 	os.RemoveAll(filepath.Dir(pkgPath))
 	onShutdown(exitCode)
@@ -74,7 +74,7 @@ func executePlatformSelfUpdate(pkgPath, currentExePath, _, listenSpec, targetVer
 
 const shellRelaunch = `while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; shift; exec "$@"`
 
-func installPortableUpdate(pkgPath, exePath, targetVersion string) error {
+func installPortableUpdate(pkgPath, exePath, targetVersion string, restart *exec.Cmd) error {
 	pkg, err := os.Open(pkgPath)
 	if err != nil {
 		return err
@@ -170,7 +170,21 @@ func installPortableUpdate(pkgPath, exePath, targetVersion string) error {
 			}
 			installed = append(installed, dst)
 		}
-		return os.Rename(next, exePath)
+		// The helper waits for this PID to exit. Start it while we can
+		// still roll back bundled files and before switching the executable.
+		if restart == nil {
+			return os.Rename(next, exePath)
+		}
+		if err := restart.Start(); err != nil {
+			return fmt.Errorf("启动新版程序的重启助手失败: %w", err)
+		}
+		if err := os.Rename(next, exePath); err != nil {
+			restart.Process.Kill()
+			restart.Wait()
+			return err
+		}
+		restart.Process.Release()
+		return nil
 	}
 	if err := commit(); err != nil {
 		var rollback error

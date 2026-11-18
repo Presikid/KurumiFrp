@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"cmp"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +18,52 @@ import (
 
 type releaseRepo struct {
 	name, checksumFile string
+}
+
+func compareSemVer(a, b string) int {
+	split := func(v string) ([]string, string) {
+		v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+		v, _, _ = strings.Cut(v, "+")
+		core, pre, _ := strings.Cut(v, "-")
+		numbers := strings.Split(core, ".")
+		for i, part := range numbers {
+			if strings.Trim(part, "0123456789") != "" {
+				return nil, "" // Unrecognized output from a local binary.
+			}
+			numbers[i] = strings.TrimLeft(part, "0")
+		}
+		// Older probes can omit trailing zero components.
+		for len(numbers) > 0 && numbers[len(numbers)-1] == "" {
+			numbers = numbers[:len(numbers)-1]
+		}
+		return numbers, pre
+	}
+	ac, ap := split(a)
+	bc, bp := split(b)
+	if n := slices.CompareFunc(ac, bc, compareVersionIdentifier); n != 0 {
+		return n
+	}
+	if ap == "" || bp == "" {
+		return strings.Compare(bp, ap) // A stable release follows every prerelease.
+	}
+	return slices.CompareFunc(strings.Split(ap, "."), strings.Split(bp, "."), compareVersionIdentifier)
+}
+
+func compareVersionIdentifier(a, b string) int {
+	aNumeric := strings.Trim(a, "0123456789") == ""
+	bNumeric := strings.Trim(b, "0123456789") == ""
+	switch {
+	case aNumeric && !bNumeric:
+		return -1
+	case !aNumeric && bNumeric:
+		return 1
+	case aNumeric && bNumeric:
+		// Compare decimal strings without a machine-sized integer limit.
+		if n := cmp.Compare(len(a), len(b)); n != 0 {
+			return n
+		}
+	}
+	return strings.Compare(a, b)
 }
 
 var (

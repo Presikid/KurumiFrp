@@ -6,7 +6,7 @@ COPY internal ./internal
 COPY web ./web
 COPY scripts/bundled_frp.py ./scripts/bundled_frp.py
 ARG TARGETARCH=amd64
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/kurumifrp ./cmd/kurumi && \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X github.com/Presikid/KurumiFrp/internal/version.Distribution=docker" -o /out/kurumifrp ./cmd/kurumi && \
     python3 -c "import sys; sys.path.insert(0, 'scripts'); import bundled_frp; bundled_frp.prepare('linux_${TARGETARCH}', '/out/bundled')"
 
 FROM debian:bookworm-slim

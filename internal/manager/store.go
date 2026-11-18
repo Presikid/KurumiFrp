@@ -80,6 +80,9 @@ func NewStore(dataDir string) (*Store, error) {
 		dataDir:    dataDir,
 		configsDir: configsDir,
 		metaPath:   filepath.Join(dataDir, "active_config.json"),
+		// Keep open browser tabs distinguishable after a restart. Microseconds
+		// fit exactly in the JSON numbers used by the WebUI.
+		generation: uint64(time.Now().UnixMicro()),
 	}
 	if err := s.initOrLoad(); err != nil {
 		return nil, err
@@ -318,9 +321,14 @@ func normalizeDocument(doc *ConfigDocument, fallbackName string) {
 
 // Snapshot returns a deep copy of the active ConfigDocument and its filename.
 func (s *Store) Snapshot() (string, ConfigDocument) {
+	name, doc, _ := s.snapshotWithGeneration()
+	return name, doc
+}
+
+func (s *Store) snapshotWithGeneration() (string, ConfigDocument, uint64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.activeFile, cloneConfigDocument(s.doc)
+	return s.activeFile, cloneConfigDocument(s.doc), s.generation
 }
 
 func cloneConfigDocument(doc ConfigDocument) ConfigDocument {
@@ -369,7 +377,10 @@ func (s *Store) ListConfigFiles() ([]ConfigFileSummary, error) {
 	s.mu.RLock()
 	active := s.activeFile
 	s.mu.RUnlock()
+	return s.listConfigFiles(active)
+}
 
+func (s *Store) listConfigFiles(active string) ([]ConfigFileSummary, error) {
 	entries, err := os.ReadDir(s.configsDir)
 	if err != nil {
 		return nil, err

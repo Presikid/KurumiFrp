@@ -79,7 +79,7 @@ func TestSwapRollsBackOnlyAfterSuccessfulActivation(t *testing.T) {
 		}
 		done := make(chan struct{})
 		close(done)
-		rs := &RuntimeSupervisor{store: s, procs: map[string]*managedProc{"invalid": {id: "invalid", done: done, state: "running"}}, lastErrors: make(map[string]string)}
+		rs := &RuntimeSupervisor{store: s, procs: map[string]*managedProc{"invalid": {id: "invalid", done: done, state: "running"}}, lastErrors: make(map[string]instanceError)}
 		called := false
 		rollbackErr := errors.New("marker write failed")
 		n, err := rs.HotSwapBinaries(func() error {

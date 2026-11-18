@@ -165,6 +165,12 @@ func TestCorePairActivationAndAlreadyLatest(t *testing.T) {
 	if !errors.Is(err, errFRPUpToDate) || count != 0 {
 		t.Fatalf("same-version update: %d %v", count, err)
 	}
+	t.Setenv("KURUMI_TEST_CORE_VERSION", version+"-rc.1")
+	InvalidateBinaryVersionCache()
+	check := u.checkFRPRelease(ctx, http.DefaultClient, "")
+	if check.Error != "" || check.Current != version+"-rc.1" || !check.HasUpdate {
+		t.Fatalf("installed release candidate did not offer stable %s: %+v", version, check)
+	}
 	if err := rollback(); err != nil {
 		t.Fatal(err)
 	}

@@ -37,12 +37,11 @@ jobs:
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
           go-version: stable
-      - name: Format, Vet, Test & Build Check
-        run: |
-          node --check web/app.js
-          go vet ./...
-          go test -v -race ./...
-          go build -o kurumi-check ./cmd/kurumi
+      - run: node --check web/app.js
+      - run: node --test scripts/web-state.test.cjs
+      - run: go vet ./...
+      - run: go test -v -race ./...
+      - run: go build -o kurumi-check ./cmd/kurumi
 
   package:
     name: Package (${{ matrix.os }})

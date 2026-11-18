@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -258,6 +259,59 @@ func sanitizeDocForBrowser(doc ConfigDocument) ConfigDocument {
 	return doc
 }
 
+// Local mutations read their request before taking the lifecycle lock and release
+// it before sending the response. Both the store edit and its process action
+// therefore belong to one activation, even when two files reuse an instance ID.
+type localConfigResponse struct {
+	http.ResponseWriter
+	release func()
+}
+
+func (w *localConfigResponse) WriteHeader(status int) {
+	w.release()
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *localConfigResponse) Write(data []byte) (int, error) {
+	w.release()
+	return w.ResponseWriter.Write(data)
+}
+
+func readConfigPOST(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return false
+	}
+	if err := readJSONBody(r, dst); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return false
+	}
+	return true
+}
+
+func (a *App) beginLocalConfigChange(w http.ResponseWriter, r *http.Request, dst any) (*localConfigResponse, bool) {
+	expected := a.store.activeGeneration()
+	if !readConfigPOST(w, r, dst) {
+		return nil, false
+	}
+	if header := r.Header.Get("X-Config-Generation"); header != "" {
+		var err error
+		expected, err = strconv.ParseUint(header, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "配置方案版本标识无效")
+			return nil, false
+		}
+	}
+	a.runtime.lifecycleMu.Lock()
+	if expected != a.store.activeGeneration() {
+		a.runtime.lifecycleMu.Unlock()
+		writeError(w, http.StatusConflict, "当前配置方案已变更，请刷新后重试")
+		return nil, false
+	}
+	return &localConfigResponse{w, sync.OnceFunc(a.runtime.lifecycleMu.Unlock)}, true
+}
+
 func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string) {
 	switch r.URL.Path {
 	case "/api/state":
@@ -267,14 +321,15 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
-		activeFile, doc := a.store.Snapshot()
-		files, _ := a.store.ListConfigFiles()
-		views := a.runtime.Views(doc)
+		activeFile, doc, generation := a.store.snapshotWithGeneration()
+		files, _ := a.store.listConfigFiles(activeFile)
+		views := a.runtime.viewsForGeneration(doc, generation)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"version":            version.Current,
 			"username":           username,
 			"needsPasswordSetup": a.auth.NeedsPasswordSetup(),
 			"activeConfigFile":   activeFile,
+			"configGeneration":   generation,
 			"configFiles":        files,
 			"config":             sanitizeDocForBrowser(doc),
 			"runtime":            views,
@@ -413,10 +468,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 	// ==================== Section 1: Server (frps) & Connection Dashboard ====================
 	case "/api/servers/save":
 		var srv ServerProfile
-		if err := readJSONBody(r, &srv); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &srv)
+		if !ok {
 			return
 		}
+		defer w.release()
 		if strings.TrimSpace(srv.Name) == "" {
 			writeError(w, http.StatusBadRequest, "转发端配置名称不能为空")
 			return
@@ -459,7 +515,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		if a.runtime.IsInstanceRunning(saved.ID) {
-			if err := a.runtime.StartServer(saved); err != nil {
+			if err := a.runtime.startServer(saved); err != nil {
 				a.bumpState()
 				writeError(w, http.StatusBadRequest, "配置已保存，应用到运行实例失败: "+err.Error())
 				return
@@ -473,10 +529,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			ID   string `json:"id"`
 			TOML string `json:"toml"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
+		defer w.release()
 		var saved ServerProfile
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			for i := range doc.Servers {
@@ -500,7 +557,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		if a.runtime.IsInstanceRunning(saved.ID) {
-			if err := a.runtime.StartServer(saved); err != nil {
+			if err := a.runtime.startServer(saved); err != nil {
 				a.bumpState()
 				writeError(w, http.StatusBadRequest, "TOML 配置已保存，应用到运行实例失败: "+err.Error())
 				return
@@ -514,10 +571,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		var req struct {
 			ID string `json:"id"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
+		defer w.release()
 		var newID string
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			for _, s := range doc.Servers {
@@ -552,11 +610,12 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		var req struct {
 			ID string `json:"id"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
-		if err := a.runtime.StopInstance(req.ID); err != nil {
+		defer w.release()
+		if err := a.runtime.stopInstance(req.ID); err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -583,10 +642,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			ID     string `json:"id"`
 			Action string `json:"action"` // start, stop, restart
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
+		defer w.release()
 		_, doc := a.store.Snapshot()
 		var target *ServerProfile
 		for i := range doc.Servers {
@@ -602,9 +662,9 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		var err error
 		switch req.Action {
 		case "start", "restart":
-			err = a.runtime.StartServer(*target)
+			err = a.runtime.startServer(*target)
 		case "stop":
-			err = a.runtime.StopInstance(target.ID)
+			err = a.runtime.stopInstance(target.ID)
 		default:
 			err = errors.New("未知控制动作")
 		}
@@ -639,10 +699,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			Note           string `json:"note"`
 			ResetTraffic   bool   `json:"resetTraffic"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
+		defer w.release()
 		req.ProxyName = strings.TrimSpace(req.ProxyName)
 		if req.ProxyName == "" {
 			writeError(w, http.StatusBadRequest, "连接名称不能为空")
@@ -701,10 +762,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			ServerID  string `json:"serverId"`
 			ProxyName string `json:"proxyName"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
+		defer w.release()
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			for i := range doc.Servers {
 				if doc.Servers[i].ID == req.ServerID {
@@ -724,10 +786,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 	// ==================== Section 2: Client (frpc) & Tunnels ====================
 	case "/api/clients/save":
 		var cli ClientProfile
-		if err := readJSONBody(r, &cli); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &cli)
+		if !ok {
 			return
 		}
+		defer w.release()
 		if strings.TrimSpace(cli.Name) == "" {
 			writeError(w, http.StatusBadRequest, "客户端配置名称不能为空")
 			return
@@ -786,7 +849,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := a.runtime.ReloadOrRestartClient(saved); err != nil {
+		if err := a.runtime.reloadOrRestartClient(saved); err != nil {
 			a.bumpState()
 			writeError(w, http.StatusBadRequest, "客户端配置校验或热重载失败: "+err.Error())
 			return
@@ -799,10 +862,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			ID   string `json:"id"`
 			TOML string `json:"toml"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
+		defer w.release()
 		var saved ClientProfile
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			for i := range doc.Clients {
@@ -825,7 +889,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := a.runtime.ReloadOrRestartClient(saved); err != nil {
+		if err := a.runtime.reloadOrRestartClient(saved); err != nil {
 			a.bumpState()
 			writeError(w, http.StatusBadRequest, "TOML 配置校验或热重载失败: "+err.Error())
 			return
@@ -841,10 +905,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		var req struct {
 			ID string `json:"id"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
+		defer w.release()
 		var newID string
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			for _, c := range doc.Clients {
@@ -879,11 +944,12 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		var req struct {
 			ID string `json:"id"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
-		if err := a.runtime.StopInstance(req.ID); err != nil {
+		defer w.release()
+		if err := a.runtime.stopInstance(req.ID); err != nil {
 			writeError(w, http.StatusConflict, err.Error())
 			return
 		}
@@ -910,10 +976,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			ID     string `json:"id"`
 			Action string `json:"action"` // start, stop, restart, reload
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
+		defer w.release()
 		_, doc := a.store.Snapshot()
 		var target *ClientProfile
 		for i := range doc.Clients {
@@ -929,11 +996,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		var err error
 		switch req.Action {
 		case "start", "restart":
-			err = a.runtime.StartClient(*target)
+			err = a.runtime.startClient(*target)
 		case "reload":
-			err = a.runtime.ReloadOrRestartClient(*target)
+			err = a.runtime.reloadOrRestartClient(*target)
 		case "stop":
-			err = a.runtime.StopInstance(target.ID)
+			err = a.runtime.stopInstance(target.ID)
 		default:
 			err = errors.New("未知控制动作")
 		}
@@ -949,10 +1016,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			ClientID string     `json:"clientId"`
 			Tunnel   TunnelRule `json:"tunnel"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
+		defer w.release()
 		req.Tunnel.Name = strings.TrimSpace(req.Tunnel.Name)
 		if req.Tunnel.Name == "" {
 			writeError(w, http.StatusBadRequest, "隧道规则名称不能为空")
@@ -995,7 +1063,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		if updatedCli != nil {
-			if err := a.runtime.ReloadOrRestartClient(*updatedCli); err != nil {
+			if err := a.runtime.reloadOrRestartClient(*updatedCli); err != nil {
 				a.bumpState()
 				writeError(w, http.StatusBadRequest, "隧道规则已保存，但热重载预检失败（原运行实例未中断）: "+err.Error())
 				return
@@ -1010,10 +1078,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			TunnelID string `json:"tunnelId"`
 			Enabled  bool   `json:"enabled"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
+		defer w.release()
 		var updatedCli *ClientProfile
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			for i := range doc.Clients {
@@ -1035,7 +1104,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		if updatedCli != nil {
-			if err := a.runtime.ReloadOrRestartClient(*updatedCli); err != nil {
+			if err := a.runtime.reloadOrRestartClient(*updatedCli); err != nil {
 				a.bumpState()
 				writeError(w, http.StatusBadRequest, "隧道状态已保存，但热重载预检失败: "+err.Error())
 				return
@@ -1049,10 +1118,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			ClientID string `json:"clientId"`
 			TunnelID string `json:"tunnelId"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
+		defer w.release()
 		var updatedCli *ClientProfile
 		err := a.store.Update(func(doc *ConfigDocument) error {
 			for i := range doc.Clients {
@@ -1076,7 +1146,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			return
 		}
 		if updatedCli != nil {
-			if err := a.runtime.ReloadOrRestartClient(*updatedCli); err != nil {
+			if err := a.runtime.reloadOrRestartClient(*updatedCli); err != nil {
 				a.bumpState()
 				writeError(w, http.StatusBadRequest, "隧道已移除，但热重载预检失败: "+err.Error())
 				return
@@ -1203,8 +1273,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			FileName    string `json:"fileName"`
 			DisplayName string `json:"displayName"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		if !readConfigPOST(w, r, &req) {
 			return
 		}
 		var doc ConfigDocument
@@ -1226,8 +1295,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			Content  json.RawMessage `json:"content"`
 			Activate bool            `json:"activate"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		if !readConfigPOST(w, r, &req) {
 			return
 		}
 		var savedFile string
@@ -1261,8 +1329,7 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		var req struct {
 			FileName string `json:"fileName"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		if !readConfigPOST(w, r, &req) {
 			return
 		}
 		if err := a.store.DeleteConfigFile(req.FileName); err != nil {
@@ -1278,10 +1345,11 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			Kind string `json:"kind"` // "frps", "frpc", or "" (auto-detect)
 			TOML string `json:"toml"`
 		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+		w, ok := a.beginLocalConfigChange(w, r, &req)
+		if !ok {
 			return
 		}
+		defer w.release()
 		srv, cli, err := ParseTOMLAsProfile(req.Name, req.Kind, req.TOML)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -1630,39 +1698,4 @@ func maxInt64(a, b int64) int64 {
 		return a
 	}
 	return b
-}
-
-func compareSemVer(a, b string) int {
-	clean := func(s string) []string {
-		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "v"))
-		if idx := strings.IndexAny(s, "-+"); idx >= 0 {
-			s = s[:idx]
-		}
-		return strings.Split(s, ".")
-	}
-	pa := clean(a)
-	pb := clean(b)
-	n := len(pa)
-	if len(pb) > n {
-		n = len(pb)
-	}
-	if n < 3 {
-		n = 3
-	}
-	for i := 0; i < n; i++ {
-		var va, vb int
-		if i < len(pa) {
-			fmt.Sscanf(pa[i], "%d", &va)
-		}
-		if i < len(pb) {
-			fmt.Sscanf(pb[i], "%d", &vb)
-		}
-		if va != vb {
-			if va > vb {
-				return 1
-			}
-			return -1
-		}
-	}
-	return 0
 }

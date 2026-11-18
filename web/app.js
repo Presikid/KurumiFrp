@@ -116,6 +116,7 @@
 
     // Backend data
     activeConfigFile: "default.json",
+    configGeneration: null,
     configFiles: [],
     servers: [],
     clients: [],
@@ -197,6 +198,8 @@
   let homeSlideTimer = null;
   let loginSlideTimer = null;
   let statePollTimer = null;
+  let stateRequest = null;
+  let schemeEpoch = 0;
   let hdPollTimer = null;
   let activeLogES = null;
   let appliedCacheToken = "std-0-1";
@@ -399,13 +402,21 @@
     document.body.removeChild(ta);
   }
 
-  async function apiFetch(path, opts) {
+  async function apiFetch(path, opts, expectedScheme = schemeEpoch) {
     const options = Object.assign({ method: "GET", headers: {} }, opts || {});
+    const generation = STATE.configGeneration;
+    const localWrite = options.method === "POST" && (path.startsWith("/api/servers/") ||
+      path.startsWith("/api/clients/") || path === "/api/configs/import-toml");
+    if (localWrite && expectedScheme !== schemeEpoch) throw new Error("配置方案已切换，原操作已取消");
+    if (localWrite && generation !== null) {
+      options.headers["X-Config-Generation"] = String(generation);
+    }
     if (options.body && typeof options.body === "object" && !(options.body instanceof FormData)) {
       options.headers["Content-Type"] = "application/json";
       options.body = JSON.stringify(options.body);
     }
     const resp = await fetch(path, options);
+    if (options.signal?.aborted) throw options.signal.reason;
     if (resp.status === 401 && path !== "/api/login" && path !== "/api/session") {
       enterLoginGate("登录会话已过期，请重新验证身份");
       throw new Error("未登录或会话已失效");
@@ -419,9 +430,11 @@
       const errMsg = data && typeof data === "object" && data.error ? data.error : "请求失败 (" + resp.status + ")";
       throw new Error(errMsg);
     }
+    if ((localWrite || path === "/api/toml/parse") && expectedScheme !== schemeEpoch) {
+      throw new Error("配置方案已切换，已忽略原方案的操作结果");
+    }
     if (path === "/api/state") {
-      const et = resp.headers.get("ETag");
-      if (et) STATE.etag = et;
+      data.etag = resp.headers.get("ETag") || "";
     }
     return data;
   }
@@ -868,6 +881,7 @@
 
   function enterLoginGate(errMsg) {
     STATE.authenticated = false;
+    if (stateRequest) stateRequest.abort();
     stopLogStream();
     if (statePollTimer) {
       clearInterval(statePollTimer);
@@ -911,6 +925,7 @@
     startHomeCarouselTimer();
     STATE.etag = "";
     await refreshState(true);
+    if (!STATE.authenticated) return;
     if (statePollTimer) clearInterval(statePollTimer);
     statePollTimer = setInterval(() => {
       refreshState(false).catch(() => {});
@@ -956,19 +971,36 @@
   }
 
   async function refreshState(forceRender) {
-    if (!STATE.authenticated) return;
+    if (!STATE.authenticated || (stateRequest && !forceRender)) return;
+    if (stateRequest) stateRequest.abort();
+    const request = new AbortController();
+    stateRequest = request;
     const headers = {};
     if (!forceRender && STATE.etag) {
       headers["If-None-Match"] = STATE.etag;
     }
-    const res = await apiFetch("/api/state", { headers });
-    if (res && res.notModified) return;
+    let res;
+    try {
+      res = await apiFetch("/api/state", { headers, signal: request.signal });
+    } catch (err) {
+      if (request.signal.aborted) return;
+      throw err;
+    } finally {
+      if (stateRequest === request) stateRequest = null;
+    }
+    if (request.signal.aborted || res.notModified) return;
 
+    STATE.etag = res.etag;
     if (res.version && res.version !== STATE.version) STATE.lastUpdateCheck = null;
     STATE.version = res.version || STATE.version;
     STATE.username = res.username || STATE.username;
     STATE.needsPasswordSetup = Boolean(res.needsPasswordSetup);
-    STATE.activeConfigFile = res.activeConfigFile || "default.json";
+    const activeFile = res.activeConfigFile || "default.json";
+    const generation = res.configGeneration ?? null;
+    const schemeChanged = activeFile !== STATE.activeConfigFile ||
+      (STATE.configGeneration !== null && generation !== null && generation !== STATE.configGeneration);
+    STATE.activeConfigFile = activeFile;
+    STATE.configGeneration = generation;
     STATE.configFiles = res.configFiles || [];
     const doc = res.config || { servers: [], clients: [] };
     STATE.servers = doc.servers || [];
@@ -986,22 +1018,53 @@
       syncHDAssetPoll();
     }
 
-    if (!STATE.selectedServerId || !STATE.servers.some((s) => s.id === STATE.selectedServerId)) {
+    const serverRemoved = STATE.selectedServerId && !STATE.servers.some((s) => s.id === STATE.selectedServerId);
+    const clientRemoved = STATE.selectedClientId && !STATE.clients.some((c) => c.id === STATE.selectedClientId);
+    const editorChanged = schemeChanged ||
+      (STATE.activeView === "frps" && STATE.frpsMode === "local" && serverRemoved) ||
+      (STATE.activeView === "frpc" && clientRemoved);
+    if (editorChanged) {
+      stopLogStream();
+      closeModal();
+    }
+    if (schemeChanged) {
+      schemeEpoch++;
+      STATE.frpsMode = "local";
+      STATE.remoteReqSeq++;
+      STATE.remoteTarget = null;
+      STATE.remoteSnapshot = null;
+      STATE.remoteClientDraft = null;
+      STATE.remoteAllowUpstream = false;
+      STATE.lastP2PResult = null;
+    }
+
+    if (schemeChanged || serverRemoved || !STATE.selectedServerId) {
       STATE.selectedServerId = STATE.servers[0] ? STATE.servers[0].id : "";
       STATE.serverDraft = null;
       STATE.serverDraftDirty = false;
+      STATE.srvTomlDirty = false;
+      STATE.srvTomlRaw = "";
     }
-    if (!STATE.selectedClientId || !STATE.clients.some((c) => c.id === STATE.selectedClientId)) {
+    if (schemeChanged || clientRemoved || !STATE.selectedClientId) {
       STATE.selectedClientId = STATE.clients[0] ? STATE.clients[0].id : "";
       STATE.clientDraft = null;
       STATE.clientDraftDirty = false;
+      if (STATE.frpsMode !== "remoteClient") {
+        STATE.cliTomlDirty = false;
+        STATE.cliTomlRaw = "";
+      }
     }
 
-    if (!STATE.serverDraftDirty && !STATE.srvTomlDirty && STATE.selectedServerId) {
+    const renderView = editorChanged || forceRender ||
+      (!isEditingActiveInput() && !STATE.srvTomlDirty && !STATE.cliTomlDirty && $("modalBackdrop").hidden);
+    // Input handlers still own the displayed draft when a background refresh skips rendering.
+    const keepServerDraft = !renderView && STATE.activeView === "frps" && STATE.frpsMode === "local" && STATE.serverDraft;
+    const keepClientDraft = !renderView && STATE.activeView === "frpc" && STATE.clientDraft;
+    if (!keepServerDraft && !STATE.serverDraftDirty && !STATE.srvTomlDirty && STATE.selectedServerId) {
       const s = STATE.servers.find((x) => x.id === STATE.selectedServerId);
       if (s) STATE.serverDraft = deepClone(s);
     }
-    if (!STATE.clientDraftDirty && !STATE.cliTomlDirty && STATE.selectedClientId) {
+    if (!keepClientDraft && !STATE.clientDraftDirty && !STATE.cliTomlDirty && STATE.selectedClientId) {
       const c = STATE.clients.find((x) => x.id === STATE.selectedClientId);
       if (c) STATE.clientDraft = deepClone(c);
     }
@@ -1009,7 +1072,7 @@
     renderTopBar();
     renderHomeMetrics();
 
-    if (forceRender || (!isEditingActiveInput() && !STATE.srvTomlDirty && !STATE.cliTomlDirty && $("modalBackdrop").hidden)) {
+    if (renderView) {
       renderActiveView();
     }
   }
@@ -1341,8 +1404,9 @@
     main.querySelectorAll("[data-srv-ctrl]").forEach((b) => {
       b.addEventListener("click", async () => {
         try {
+          const scheme = schemeEpoch;
           if (STATE.serverDraftDirty) await saveCurrentServerDraft(true);
-          await apiFetch("/api/servers/control", { method: "POST", body: { id: srv.id, action: b.dataset.srvCtrl } });
+          await apiFetch("/api/servers/control", { method: "POST", body: { id: srv.id, action: b.dataset.srvCtrl } }, scheme);
           toast("已执行 FRPS 动作：" + b.dataset.srvCtrl);
           await refreshState(true);
         } catch (err) {
@@ -1891,7 +1955,9 @@
     container.querySelector("#srvTomlParseBtn").addEventListener("click", async () => {
       try {
         const raw = container.querySelector("#srvTomlTextarea").value;
+        const unchanged = watchServerDraft(srv);
         const out = await apiFetch("/api/toml/parse", { method: "POST", body: { kind: "frps", prevServer: srv, toml: raw } });
+        if (!unchanged()) return;
         STATE.serverDraft = out.server;
         STATE.serverDraftDirty = true;
         STATE.srvTomlDirty = false;
@@ -1905,29 +1971,49 @@
     container.querySelector("#srvTomlSaveBtn").addEventListener("click", async () => {
       try {
         const raw = container.querySelector("#srvTomlTextarea").value;
+        const unchanged = watchServerDraft(srv);
         const out = await apiFetch("/api/servers/save-toml", { method: "POST", body: { id: srv.id, toml: raw } });
+        if (!unchanged()) return await refreshState(false);
         STATE.serverDraft = out.server;
         STATE.serverDraftDirty = false;
         STATE.srvTomlDirty = false;
         STATE.srvTomlRaw = "";
         toast("已保存并应用 frps.toml 配置");
-        await refreshState(true);
+        if (STATE.activeView === "frps") renderFrpsWorkspace();
+        await refreshState(STATE.activeView === "frps");
       } catch (err) {
         toast(err.message, true);
       }
     });
   }
 
+  function watchEditorDraft(draft, tomlPrefix, isCurrent) {
+    const rawKey = tomlPrefix + "TomlRaw";
+    const dirtyKey = tomlPrefix + "TomlDirty";
+    const raw = STATE[rawKey];
+    const dirty = STATE[dirtyKey];
+    const form = JSON.stringify(draft);
+    return () => isCurrent() && raw === STATE[rawKey] && dirty === STATE[dirtyKey] && form === JSON.stringify(draft);
+  }
+
+  function watchServerDraft(srv) {
+    return watchEditorDraft(srv, "srv", () =>
+      STATE.frpsMode === "local" && STATE.serverDraft === srv && STATE.selectedServerId === srv.id);
+  }
+
   async function saveCurrentServerDraft(silent) {
-    if (!STATE.serverDraft) return;
+    const srv = STATE.serverDraft;
+    if (!srv) return;
     try {
-      const out = await apiFetch("/api/servers/save", { method: "POST", body: STATE.serverDraft });
+      const unchanged = watchServerDraft(srv);
+      const out = await apiFetch("/api/servers/save", { method: "POST", body: srv });
+      if (!unchanged()) return await refreshState(false);
       STATE.selectedServerId = out.id;
       STATE.serverDraftDirty = false;
       STATE.srvTomlDirty = false;
       STATE.srvTomlRaw = "";
       if (!silent) toast("FRPS 服务端配置已保存");
-      await refreshState(true);
+      await refreshState(STATE.activeView === "frps");
     } catch (err) {
       toast(err.message, true);
       throw err;
@@ -2315,10 +2401,27 @@
     const sub = main.querySelector("#remoteSubBody");
     const boundSrvId = (snap.summary && snap.summary.serverId) || STATE.remoteTarget.serverId;
     const boundCliId = (snap.profile && snap.profile.id) || STATE.remoteTarget.clientId;
+    const target = STATE.remoteTarget;
+    const watchDraft = () => watchEditorDraft(cli, "cli", () =>
+      STATE.activeView === "frps" && STATE.frpsMode === "remoteClient" &&
+      STATE.remoteTarget === target && STATE.remoteClientDraft === cli);
+    const finishSave = async (res, unchanged, message) => {
+      toast(message);
+      if (!unchanged()) return refreshState(false);
+      STATE.remoteClientDraft = deepClone(res.profile);
+      snap.profile = deepClone(res.profile);
+      snap.toml = res.toml;
+      STATE.cliTomlDirty = false;
+      STATE.cliTomlRaw = "";
+      renderRemoteClientPane(main);
+      await refreshState(true);
+    };
     const remoteCallbacks = {
       isRemote: true,
+      watchDraft,
       runtimeView: snap.runtime || {},
       onSaveClient: async (updatedCli) => {
+        const unchanged = watchDraft();
         const res = await apiFetch("/api/remote/client/save", {
           method: "POST",
           body: {
@@ -2328,17 +2431,10 @@
             allowUpstreamChange: STATE.remoteAllowUpstream
           }
         });
-        if (STATE.remoteTarget && STATE.remoteTarget.clientId === boundCliId) {
-          STATE.remoteClientDraft = deepClone(res.profile);
-          STATE.remoteSnapshot.profile = deepClone(res.profile);
-          STATE.remoteSnapshot.toml = res.toml;
-          STATE.cliTomlDirty = false;
-          STATE.cliTomlRaw = "";
-        }
-        toast("已通过连接远控下发并热重载远端客户端配置！");
-        await refreshState(true);
+        await finishSave(res, unchanged, "已通过连接远控下发并热重载远端客户端配置！");
       },
       onSaveClientTOML: async (rawToml) => {
+        const unchanged = watchDraft();
         const res = await apiFetch("/api/remote/client/save-toml", {
           method: "POST",
           body: {
@@ -2348,15 +2444,7 @@
             allowUpstreamChange: STATE.remoteAllowUpstream
           }
         });
-        if (STATE.remoteTarget && STATE.remoteTarget.clientId === boundCliId) {
-          STATE.remoteClientDraft = deepClone(res.profile);
-          STATE.remoteSnapshot.profile = deepClone(res.profile);
-          STATE.remoteSnapshot.toml = res.toml;
-          STATE.cliTomlDirty = false;
-          STATE.cliTomlRaw = "";
-        }
-        toast("已向远端客户端下发 frpc.toml 并完成热重载！");
-        await refreshState(true);
+        await finishSave(res, unchanged, "已向远端客户端下发 frpc.toml 并完成热重载！");
       }
     };
 
@@ -2520,8 +2608,9 @@
     main.querySelectorAll("[data-cli-ctrl]").forEach((b) => {
       b.addEventListener("click", async () => {
         try {
+          const scheme = schemeEpoch;
           if (STATE.clientDraftDirty) await saveLocalClientProfile(cli, true);
-          await apiFetch("/api/clients/control", { method: "POST", body: { id: cli.id, action: b.dataset.cliCtrl } });
+          await apiFetch("/api/clients/control", { method: "POST", body: { id: cli.id, action: b.dataset.cliCtrl } }, scheme);
           toast("已执行客户端动作: " + b.dataset.cliCtrl);
           await refreshState(true);
         } catch (err) {
@@ -2567,16 +2656,20 @@
 
     const localCallbacks = {
       isRemote: false,
+      watchDraft: () => watchLocalClientDraft(cli),
       runtimeView: rt,
-      onSaveClient: async (updatedCli) => {
-        await saveLocalClientProfile(updatedCli, false);
-      },
+      onSaveClient: (updatedCli, clearToml) => saveLocalClientProfile(updatedCli, false, clearToml),
       onSaveClientTOML: async (rawToml) => {
+        const unchanged = watchLocalClientDraft(cli);
         const out = await apiFetch("/api/clients/save-toml", { method: "POST", body: { id: cli.id, toml: rawToml } });
+        if (!unchanged()) return refreshState(false);
         STATE.clientDraft = deepClone(out.client);
         STATE.clientDraftDirty = false;
+        STATE.cliTomlDirty = false;
+        STATE.cliTomlRaw = "";
         toast("已保存并热重载 frpc.toml！");
-        await refreshState(true);
+        if (STATE.activeView === "frpc") renderFrpcWorkspace();
+        await refreshState(STATE.activeView === "frpc");
       }
     };
 
@@ -2590,13 +2683,25 @@
     }
   }
 
-  async function saveLocalClientProfile(cliObj, silent) {
+  function watchLocalClientDraft(cli) {
+    return watchEditorDraft(cli, "cli", () =>
+      STATE.clientDraft === cli && STATE.selectedClientId === cli.id &&
+      !(STATE.activeView === "frps" && STATE.frpsMode === "remoteClient"));
+  }
+
+  async function saveLocalClientProfile(cliObj, silent, clearToml) {
     try {
+      const unchanged = watchLocalClientDraft(cliObj);
       const out = await apiFetch("/api/clients/save", { method: "POST", body: cliObj });
+      if (!unchanged()) return await refreshState(false);
       STATE.selectedClientId = out.id;
       STATE.clientDraftDirty = false;
+      if (clearToml) {
+        STATE.cliTomlDirty = false;
+        STATE.cliTomlRaw = "";
+      }
       if (!silent) toast("FRPC 客户端配置已保存并自动同步热重载");
-      await refreshState(true);
+      await refreshState(STATE.activeView === "frpc");
     } catch (err) {
       toast(err.message, true);
       throw err;
@@ -3279,7 +3384,8 @@
         });
       }
 
-      dlg.querySelector("#tmSaveBtn").addEventListener("click", async () => {
+      const saveBtn = dlg.querySelector("#tmSaveBtn");
+      saveBtn.addEventListener("click", async () => {
         collectModalIntoDraft();
         if (!tunDraft.name) {
           toast("请填写隧道规则名称", true);
@@ -3304,7 +3410,7 @@
 
         try {
           await ctxCallbacks.onSaveClient(cli);
-          closeModal();
+          if (saveBtn.isConnected) closeModal();
         } catch (err) {
           cli.tunnels = backupTunnels;
           toast(err.message || "保存隧道规则失败", true);
@@ -3666,9 +3772,7 @@
 
     container.querySelector("#cliStudioSaveFormBtn").addEventListener("click", async () => {
       try {
-        await ctxCallbacks.onSaveClient(cli);
-        STATE.cliTomlDirty = false;
-        STATE.cliTomlRaw = "";
+        await ctxCallbacks.onSaveClient(cli, true);
       } catch (err) {
         toast(err.message || "保存客户端配置失败", true);
       }
@@ -3679,8 +3783,11 @@
     container.querySelector("#cliTomlParseBtn").addEventListener("click", async () => {
       try {
         const raw = container.querySelector("#cliTomlTextarea").value;
+        const unchanged = ctxCallbacks.watchDraft();
         const out = await apiFetch("/api/toml/parse", { method: "POST", body: { kind: "frpc", prevClient: cli, toml: raw } });
+        if (!unchanged()) return;
         Object.assign(cli, out.client);
+        if (!ctxCallbacks.isRemote) STATE.clientDraftDirty = true;
         STATE.cliTomlDirty = false;
         STATE.cliTomlRaw = "";
         toast("已将 frpc.toml 反向解析同步回 UI 表单与隧道列表");
@@ -3693,8 +3800,6 @@
       try {
         const raw = container.querySelector("#cliTomlTextarea").value;
         await ctxCallbacks.onSaveClientTOML(raw);
-        STATE.cliTomlDirty = false;
-        STATE.cliTomlRaw = "";
       } catch (err) {
         toast(err.message || "保存 frpc.toml 失败", true);
       }

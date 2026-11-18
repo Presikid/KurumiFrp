@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bufio"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +22,16 @@ func TestNativeLinuxInstallKeepsPackageManagerOwnership(t *testing.T) {
 	version.Distribution = "linux-system"
 	if can, mode, _ := canPlatformSelfUpdateApp(filepath.Join(t.TempDir(), "kurumifrp")); can || mode != "linux-package" {
 		t.Fatal("native installation in writable directory offered portable update")
+	}
+}
+
+func TestDockerInstallUsesImageUpdates(t *testing.T) {
+	old := version.Distribution
+	defer func() { version.Distribution = old }()
+	version.Distribution = "docker"
+	can, mode, hint := canPlatformSelfUpdateApp(filepath.Join(t.TempDir(), "kurumifrp"))
+	if can || mode != "manual" || hint == "" {
+		t.Fatalf("writable container offered binary replacement: %t %s %q", can, mode, hint)
 	}
 }
 
@@ -71,7 +82,7 @@ func TestPortableUpdateRestoresPreviousFiles(t *testing.T) {
 		}
 	}
 	for _, version := range []string{"wrong-version", "1.2.3"} {
-		if err := installPortableUpdate(pkg, exe, version); err == nil {
+		if err := installPortableUpdate(pkg, exe, version, nil); err == nil {
 			t.Fatal("accepted failed upgrade", version)
 		}
 		for _, p := range []string{exe, filepath.Join(bundled, "frpc"), filepath.Join(bundled, "custom")} {
@@ -138,4 +149,44 @@ func TestPortableRestartWaitsForExit(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("new process failed to restart in %s with its original arguments", cwd)
+}
+
+func TestPortableUpdateRestoresFilesWhenRestartHelperIsMissing(t *testing.T) {
+	dir := t.TempDir()
+	pkg := portableFixture(t, dir)
+	exe := filepath.Join(dir, "kurumifrp")
+	if err := os.Mkdir(filepath.Join(dir, "bundled"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	files := []string{"kurumifrp", "bundled/frpc", "bundled/frps", "bundled/LICENSE", "bundled/manifest.json"}
+	for _, name := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("old "+name), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	helper := exec.Command(filepath.Join(dir, "missing-shell"))
+	if err := installPortableUpdate(pkg, exe, "1.2.3", helper); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing restart helper error, got %v", err)
+	}
+	for _, name := range files {
+		if data, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(data) != "old "+name {
+			t.Fatalf("%s changed after restart helper failed: %q %v", name, data, err)
+		}
+	}
+}
+
+func TestPortableUpdateReapsRestartHelperWhenExecutableSwitchFails(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "kurumifrp")
+	// A directory at the destination makes the last rename fail.
+	if err := os.Mkdir(exe, 0755); err != nil {
+		t.Fatal(err)
+	}
+	helper := exec.Command("sleep", "30")
+	if err := installPortableUpdate(portableFixture(t, dir), exe, "1.2.3", helper); err == nil {
+		t.Fatal("expected the executable replacement to fail")
+	}
+	if helper.ProcessState == nil || helper.ProcessState.Success() {
+		t.Fatalf("restart helper was not stopped and reaped: %v", helper.ProcessState)
+	}
 }
