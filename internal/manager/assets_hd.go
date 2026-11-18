@@ -330,10 +330,15 @@ func (m *AssetPackManager) SetPreferHD(prefer bool) (HDAssetStatus, error) {
 		m.mu.Unlock()
 		return m.Status(), errors.New("本地尚未拉取原画质素材包，请先点击「从 GitHub 仓库拉取原画包」")
 	}
+	prev := m.state.PreferHD
 	m.state.PreferHD = prefer
-	m.lastError = ""
-	m.rev++
 	err := m.saveStateLocked()
+	if err != nil {
+		m.state.PreferHD = prev
+	} else {
+		m.lastError = ""
+		m.rev++
+	}
 	m.mu.Unlock()
 	if err != nil {
 		return m.Status(), err
@@ -397,14 +402,13 @@ func (m *AssetPackManager) ServeIfHD(w http.ResponseWriter, r *http.Request) boo
 	fileName := m.state.Files[key]
 	sumHex := m.state.FileSHA256[key]
 	dispDir := m.displayDirLocked()
-	m.mu.RUnlock()
-
 	if !useHD || fileName == "" {
+		m.mu.RUnlock()
 		return false
 	}
-
 	fullPath := filepath.Join(dispDir, filepath.Base(fileName))
 	f, err := os.Open(fullPath)
+	m.mu.RUnlock()
 	if err != nil {
 		return false
 	}

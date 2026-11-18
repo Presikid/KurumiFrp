@@ -71,7 +71,7 @@ Name: "{commonstartup}\KurumiFRP"; Filename: "{app}\kurumi.exe"; Parameters: "--
 [Run]
 Filename: "{app}\kurumi.exe"; Parameters: "--native-maintenance init --install-dir ""{app}"""; Flags: runhidden waituntilterminated
 Filename: "{app}\kurumi.exe"; Parameters: "--open"; Description: "启动 KurumiFRP 并在浏览器打开时崎狂三 WebUI"; Flags: nowait postinstall skipifsilent runasoriginaluser
-Filename: "{app}\kurumi.exe"; Parameters: "--headless --listen ""{param:LISTENADDR|auto}"""; WorkingDir: "{app}"; Flags: nowait runhidden runasoriginaluser; Check: ShouldRestartHeadless
+Filename: "{app}\kurumi.exe"; Parameters: "--headless --listen ""{param:LISTENADDR|auto}"" {code:DataArgs}"; WorkingDir: "{app}"; Flags: nowait runhidden runasoriginaluser; Check: ShouldRestartHeadless
 
 [Code]
 function ShouldRestartHeadless: Boolean;
@@ -79,16 +79,51 @@ begin
   Result := ExpandConstant('{param:RESTARTDAEMON|0}') = '1';
 end;
 
+function DataArgs(Param: String): String;
+var
+  DataDir: String;
+begin
+  DataDir := Trim(ExpandConstant('{param:DATADIR|}'));
+  if DataDir = '' then
+    Result := ''
+  else
+    Result := '--data "' + AddBackslash(DataDir) + '."';
+end;
+
+function WaitForExecutable(const ExePath: String): Boolean;
+var
+  I: Integer;
+  Stream: TFileStream;
+begin
+  Result := True;
+  for I := 1 to 60 do begin
+    if not FileExists(ExePath) then
+      Exit;
+    try
+      Stream := TFileStream.Create(ExePath, fmOpenReadWrite or fmShareDenyNone);
+      Stream.Free;
+      Exit;
+    except
+      Sleep(250);
+    end;
+  end;
+  Result := False;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
-  ExePath: String;
+  ExePath, StopParams: String;
 begin
   Result := '';
   ExePath := ExpandConstant('{app}\kurumi.exe');
   if FileExists(ExePath) then begin
-    Exec(ExePath, '--stop', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM kurumi.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    StopParams := '--stop';
+    if DataArgs('') <> '' then
+      StopParams := StopParams + ' ' + DataArgs('');
+    ExecAsOriginalUser(ExePath, StopParams, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if not WaitForExecutable(ExePath) then
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM kurumi.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
 

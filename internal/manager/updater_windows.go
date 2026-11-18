@@ -5,6 +5,7 @@ package manager
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,15 +26,24 @@ func canPlatformSelfUpdateApp(_ string) (bool, string, string) {
 	return true, "windows-installer", ""
 }
 
-func executePlatformSelfUpdate(pkgPath, currentExePath, listenSpec string, _ []string, _ func(exitCode int)) error {
-	head, err := os.ReadFile(pkgPath)
-	if err != nil || len(head) < 64 || head[0] != 'M' || head[1] != 'Z' {
+func executePlatformSelfUpdate(pkgPath, currentExePath, dataDir, listenSpec string, _ []string, _ func(exitCode int)) error {
+	f, err := os.Open(pkgPath)
+	if err != nil {
+		return errors.New("打开下载的 Windows 安装包失败")
+	}
+	var head [64]byte
+	_, rErr := io.ReadFull(f, head[:])
+	_ = f.Close()
+	if rErr != nil || head[0] != 'M' || head[1] != 'Z' {
 		return errors.New("下载的 Windows 安装包文件头校验无效")
 	}
 
-	args := "/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RESTARTDAEMON=1"
-	if listenSpec != "" {
-		args += " /LISTENADDR=" + listenSpec
+	args := "/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NORESTARTAPPLICATIONS /RESTARTDAEMON=1"
+	if strings.TrimSpace(listenSpec) != "" {
+		args += fmt.Sprintf(` /LISTENADDR="%s"`, strings.TrimSpace(listenSpec))
+	}
+	if strings.TrimSpace(dataDir) != "" {
+		args += fmt.Sprintf(` /DATADIR="%s"`, strings.TrimSpace(dataDir))
 	}
 	if currentExePath != "" {
 		exeDir := filepath.Dir(currentExePath)
@@ -42,14 +52,7 @@ func executePlatformSelfUpdate(pkgPath, currentExePath, listenSpec string, _ []s
 		}
 	}
 
-	// Launch Inno Setup stub via "open" first so SetupLdr preserves the original non-elevated user session for runasoriginaluser;
-	// fall back to "runas" if shell policy requires explicit elevation verb.
-	if err := winShellExec("open", pkgPath, args, filepath.Dir(pkgPath)); err != nil {
-		if err2 := winShellExec("runas", pkgPath, args, filepath.Dir(pkgPath)); err2 != nil {
-			return err2
-		}
-	}
-	return nil
+	return winShellExec("open", pkgPath, args, filepath.Dir(pkgPath))
 }
 
 func winShellExec(verbStr, fileStr, paramsStr, dirStr string) error {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -102,7 +103,7 @@ func main() {
 		}
 		return
 	}
-	if shouldOpenBrowser {
+	if shouldOpenBrowser && *dataFlag == "" && *listenFlag == "" {
 		if fallbackURL, ok := probePublicSessionOnDefaultPorts(dataDir); ok {
 			_ = platformOpenURL(fallbackURL)
 			return
@@ -373,23 +374,69 @@ func bindInitialListener(requested, defaultHost, dataDir string) (net.Listener, 
 	return ln, cb, buildLocalBrowserURL(tcpAddr), nil
 }
 
+func newLocalLoopbackClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: &http.Transport{DisableKeepAlives: true},
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func isValidLocalPanelURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "http" || u.User != nil || u.Path != "" && u.Path != "/" {
+		return false
+	}
+	host, portStr, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		return false
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsUnspecified() {
+		return false
+	}
+	if ip.IsLoopback() {
+		return true
+	}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if ipNet, ok := a.(*net.IPNet); ok && ipNet.IP.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func probeExistingServer(dataDir string) (string, bool) {
 	rawAddr, err := os.ReadFile(filepath.Join(dataDir, "listen.addr"))
 	if err != nil {
 		return "", false
 	}
-	baseURL := strings.TrimSpace(string(rawAddr))
-	if !strings.HasPrefix(baseURL, "http://") {
+	baseURL := strings.TrimRight(strings.TrimSpace(string(rawAddr)), "/")
+	if !isValidLocalPanelURL(baseURL) {
 		return "", false
 	}
-	client := &http.Client{Timeout: 1200 * time.Millisecond}
+	client := newLocalLoopbackClient(1200 * time.Millisecond)
 	resp, err := client.Get(baseURL + "/api/session")
 	if err != nil {
 		return "", false
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
+	var body struct {
+		Version         string `json:"version"`
+		DefaultUsername string `json:"defaultUsername"`
+	}
+	decErr := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&body)
 	resp.Body.Close()
-	return baseURL, resp.StatusCode == http.StatusOK
+	return baseURL, resp.StatusCode == http.StatusOK && decErr == nil && body.Version != "" && body.DefaultUsername != ""
 }
 
 func probePublicSessionOnDefaultPorts(dataDir string) (string, bool) {
@@ -427,9 +474,9 @@ func stopExistingServer(dataDir string) error {
 	}
 	tokBytes, err := os.ReadFile(filepath.Join(dataDir, "access.token"))
 	if err != nil {
-		return nil
+		return fmt.Errorf("读取本地维护令牌失败: %w", err)
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newLocalLoopbackClient(5 * time.Second)
 	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/quit", nil)
 	if err != nil {
 		return err
@@ -450,9 +497,13 @@ func stopExistingServer(dataDir string) error {
 }
 
 func openWebUIWithTicket(dataDir, baseURL string) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if !isValidLocalPanelURL(baseURL) {
+		return
+	}
 	targetURL := baseURL
 	if tokBytes, err := os.ReadFile(filepath.Join(dataDir, "access.token")); err == nil {
-		client := &http.Client{Timeout: 2 * time.Second}
+		client := newLocalLoopbackClient(2 * time.Second)
 		req, err := http.NewRequest(http.MethodPost, baseURL+"/api/browser-ticket", nil)
 		if err == nil {
 			req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tokBytes)))
@@ -467,9 +518,6 @@ func openWebUIWithTicket(dataDir, baseURL string) {
 				}
 			}
 		}
-	}
-	if !strings.HasPrefix(targetURL, "http://127.0.0.1:") && !strings.HasPrefix(targetURL, "http://[::1]:") {
-		return
 	}
 	_ = platformOpenURL(targetURL)
 }

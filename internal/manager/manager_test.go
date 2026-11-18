@@ -657,23 +657,20 @@ func TestStatelessSessionAndFRPAutoUpdate(t *testing.T) {
 	var srvURL string
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/repos/fatedier/frp/releases/latest":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"tag_name": "v0.99.0",
-				"html_url": srvURL + "/rel",
-				"assets": []map[string]any{
-					{"name": assetName, "size": len(archiveBytes), "browser_download_url": srvURL + "/dl/" + assetName},
-					{"name": "frp_sha256_checksums.txt", "size": 100, "browser_download_url": srvURL + "/dl/checksums.txt"},
-				},
-			})
-		case "/repos/Presikid/KurumiFrp/releases":
-			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"tag_name": "v0.9.4", "html_url": srvURL + "/app"},
-			})
-		case "/dl/checksums.txt":
+		case "/fatedier/frp/releases/latest":
+			http.Redirect(w, r, srvURL+"/fatedier/frp/releases/tag/v0.99.0", http.StatusFound)
+		case "/fatedier/frp/releases/tag/v0.99.0":
+			w.WriteHeader(http.StatusOK)
+		case "/fatedier/frp/releases/download/v0.99.0/frp_sha256_checksums.txt":
 			_, _ = w.Write([]byte(sumHex + "  " + assetName + "\n"))
-		case "/dl/" + assetName:
+		case "/fatedier/frp/releases/download/v0.99.0/" + assetName:
 			_, _ = w.Write(archiveBytes)
+		case "/Presikid/KurumiFrp/releases/latest":
+			http.Redirect(w, r, srvURL+"/Presikid/KurumiFrp/releases/tag/v0.9.10", http.StatusFound)
+		case "/Presikid/KurumiFrp/releases/tag/v0.9.10":
+			w.WriteHeader(http.StatusOK)
+		case "/Presikid/KurumiFrp/releases/download/v0.9.10/SHA256SUMS.txt":
+			_, _ = w.Write([]byte(sumHex + "  KurumiFRP-0.9.10-linux-amd64.tar.gz\n"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -692,7 +689,7 @@ func TestStatelessSessionAndFRPAutoUpdate(t *testing.T) {
 	defer rt.StopAll()
 
 	um := NewUpdateManager(dir, rt, nil)
-	um.apiBase = ts.URL
+	um.webBase = ts.URL
 	um.allowLocal = true
 
 	coreInfo, _, err := um.ApplyFRPUpdate(context.Background(), nil)

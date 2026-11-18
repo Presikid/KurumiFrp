@@ -23,16 +23,25 @@ func canPlatformSelfUpdateApp(exePath string) (bool, string, string) {
 	if runtime.GOOS != "linux" || exePath == "" {
 		return false, "manual", "请前往 GitHub Releases 下载对应系统最新包覆盖升级"
 	}
-	exeDir := filepath.Dir(exePath)
-	probe := filepath.Join(exeDir, ".kurumi-upd-probe")
-	if err := os.WriteFile(probe, []byte("1"), 0o600); err != nil {
-		return false, "linux-package", "当前以受限系统服务账户运行（/opt/kurumifrp 只读），FRP 核心可直接一键热更；本体升级请下载最新 .deb / .rpm 包执行 sudo apt install ./kurumifrp_*.deb"
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return false, "manual", "当前运行于容器环境，请拉取最新 Docker 镜像并重建容器完成升级"
 	}
-	_ = os.Remove(probe)
+	cleanExe := filepath.Clean(exePath)
+	if strings.HasPrefix(cleanExe, "/opt/kurumifrp/") || strings.HasPrefix(cleanExe, "/usr/") {
+		return false, "linux-package", "当前为系统软件包安装（DEB/RPM），FRP 核心可直接热更新；软件本体请使用 apt/dnf 安装最新 .deb 或 .rpm 包"
+	}
+	exeDir := filepath.Dir(cleanExe)
+	probe, err := os.CreateTemp(exeDir, ".kurumi-upd-probe-*")
+	if err != nil {
+		return false, "linux-package", "当前运行目录只读，FRP 核心可直接一键热更；本体升级请使用包管理器或有写权限的账户执行"
+	}
+	probeName := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(probeName)
 	return true, "linux-binary", ""
 }
 
-func executePlatformSelfUpdate(pkgPath, currentExePath, _ string, origArgs []string, onRestartShutdown func(exitCode int)) error {
+func executePlatformSelfUpdate(pkgPath, currentExePath, _ string, _ string, origArgs []string, onShutdown func(exitCode int)) error {
 	if !strings.HasSuffix(pkgPath, ".tar.gz") {
 		return errors.New("当前 Linux 模式需要 .tar.gz 便携更新包")
 	}
@@ -80,49 +89,92 @@ func executePlatformSelfUpdate(pkgPath, currentExePath, _ string, origArgs []str
 		return errors.New("更新包中未找到 kurumifrp 主程序")
 	}
 
-	tmpExe := filepath.Join(exeDir, ".kurumifrp.new")
+	tmpExe := filepath.Join(exeDir, fmt.Sprintf(".kurumifrp.new.%d", os.Getpid()))
 	if err := os.WriteFile(tmpExe, newMainBin, 0o755); err != nil {
 		return err
 	}
+	if out, vErr := exec.Command(tmpExe, "-version").CombinedOutput(); vErr != nil || len(bytes.TrimSpace(out)) == 0 {
+		_ = os.Remove(tmpExe)
+		return fmt.Errorf("新版主程序在当前系统架构下自检失败: %v", vErr)
+	}
+
+	type bundledBackup struct {
+		existed bool
+		data    []byte
+		mode    os.FileMode
+	}
+	backups := make(map[string]bundledBackup, len(bundledFiles))
+	restoreBundled := func() {
+		for name, bk := range backups {
+			dst := filepath.Join(bundledDir, name)
+			if bk.existed {
+				_ = os.WriteFile(dst, bk.data, bk.mode)
+			} else {
+				_ = os.Remove(dst)
+			}
+		}
+	}
+
 	for name, content := range bundledFiles {
+		dst := filepath.Join(bundledDir, name)
+		if st, sErr := os.Stat(dst); sErr == nil {
+			oldBytes, _ := os.ReadFile(dst)
+			backups[name] = bundledBackup{existed: true, data: oldBytes, mode: st.Mode()}
+		} else {
+			backups[name] = bundledBackup{existed: false}
+		}
 		mode := os.FileMode(0o755)
 		if name == "LICENSE" || name == "manifest.json" {
 			mode = 0o644
 		}
-		tmpB := filepath.Join(bundledDir, "."+name+".new")
-		if err := os.WriteFile(tmpB, content, mode); err == nil {
-			_ = os.Rename(tmpB, filepath.Join(bundledDir, name))
+		tmpB := filepath.Join(bundledDir, fmt.Sprintf(".%s.new.%d", name, os.Getpid()))
+		if err := os.WriteFile(tmpB, content, mode); err != nil {
+			_ = os.Remove(tmpExe)
+			restoreBundled()
+			return err
+		}
+		if err := os.Rename(tmpB, dst); err != nil {
+			_ = os.Remove(tmpB)
+			_ = os.Remove(tmpExe)
+			restoreBundled()
+			return err
 		}
 	}
+
+	var restartCmd *exec.Cmd
+	if os.Getenv("INVOCATION_ID") == "" {
+		var filtered []string
+		for _, a := range origArgs {
+			if a != "-open" && a != "--open" {
+				filtered = append(filtered, a)
+			}
+		}
+		waitScript := `pid="$1"; shift; i=0; while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 75 ]; do sleep 0.2; i=$((i+1)); done; exec "$@"`
+		cmdArgs := append([]string{"-c", waitScript, "sh", fmt.Sprintf("%d", os.Getpid()), currentExePath}, filtered...)
+		restartCmd = exec.Command("/bin/sh", cmdArgs...)
+		restartCmd.Dir = exeDir
+		restartCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := restartCmd.Start(); err != nil {
+			_ = os.Remove(tmpExe)
+			restoreBundled()
+			return fmt.Errorf("启动便携版重启守护进程失败: %w", err)
+		}
+	}
+
 	if err := os.Rename(tmpExe, currentExePath); err != nil {
 		_ = os.Remove(tmpExe)
+		restoreBundled()
+		if restartCmd != nil && restartCmd.Process != nil {
+			_ = restartCmd.Process.Kill()
+		}
 		return err
 	}
 	_ = os.RemoveAll(filepath.Dir(pkgPath))
 
-	// Restart smoothly: under systemd (INVOCATION_ID set with Restart=always), graceful shutdown triggers automatic systemd restart;
-	// otherwise spawn a detached shell that waits 800ms for port release and execs the updated binary.
 	go func() {
-		time.Sleep(350 * time.Millisecond)
-		if os.Getenv("INVOCATION_ID") == "" {
-			var filtered []string
-			for _, a := range origArgs {
-				if a != "-open" && a != "--open" {
-					filtered = append(filtered, a)
-				}
-			}
-			cmdArgs := append([]string{"-c", `sleep 0.8; exec "$0" "$@"`, currentExePath}, filtered...)
-			re := exec.Command("/bin/sh", cmdArgs...)
-			re.Dir = exeDir
-			re.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-			_ = re.Start()
-		}
-		if onRestartShutdown != nil {
-			if os.Getenv("INVOCATION_ID") != "" {
-				onRestartShutdown(42)
-			} else {
-				onRestartShutdown(0)
-			}
+		time.Sleep(300 * time.Millisecond)
+		if onShutdown != nil {
+			onShutdown(0)
 		}
 	}()
 	return nil

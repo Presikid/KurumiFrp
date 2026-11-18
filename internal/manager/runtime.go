@@ -140,6 +140,7 @@ type managedProc struct {
 
 // RuntimeSupervisor manages official frps & frpc child processes, Connection Dashboard polling, and Remote Instance Bridges.
 type RuntimeSupervisor struct {
+	lifecycleMu  sync.Mutex
 	mu           sync.RWMutex
 	dataDir      string
 	runtimeDir   string
@@ -261,7 +262,10 @@ func (rs *RuntimeSupervisor) StartAutoStarts() {
 
 // HotSwapBinaries temporarily stops running frps/frpc instances so binary files are unlocked on Windows,
 // invokes swapFn to atomically replace binaries, and immediately restarts all previously running instances.
-func (rs *RuntimeSupervisor) HotSwapBinaries(swapFn func() error) (int, error) {
+func (rs *RuntimeSupervisor) HotSwapBinaries(swapFn func() error, rollback ...func() error) (int, error) {
+	rs.lifecycleMu.Lock()
+	defer rs.lifecycleMu.Unlock()
+
 	rs.mu.RLock()
 	activeIDs := make(map[string]bool, len(rs.procs))
 	for id, p := range rs.procs {
@@ -274,49 +278,114 @@ func (rs *RuntimeSupervisor) HotSwapBinaries(swapFn func() error) (int, error) {
 	}
 	rs.mu.RUnlock()
 
+	var stopErrMu sync.Mutex
+	var stopErr error
 	var wg sync.WaitGroup
 	for id := range activeIDs {
 		wg.Add(1)
 		go func(instanceID string) {
 			defer wg.Done()
-			_ = rs.StopInstance(instanceID)
+			if err := rs.StopInstance(instanceID); err != nil {
+				stopErrMu.Lock()
+				if stopErr == nil {
+					stopErr = err
+				}
+				stopErrMu.Unlock()
+			}
 		}(id)
 	}
 	wg.Wait()
 
-	if err := swapFn(); err != nil {
-		_, doc := rs.store.Snapshot()
-		for _, srv := range doc.Servers {
-			if activeIDs[srv.ID] {
-				_ = rs.StartServer(srv)
-			}
-		}
-		for _, cli := range doc.Clients {
-			if activeIDs[cli.ID] {
-				_ = rs.StartClient(cli)
-			}
-		}
-		return 0, err
+	_, doc := rs.store.Snapshot()
+	if stopErr != nil {
+		restarted, _ := rs.restoreSelectedInstances(doc, activeIDs)
+		return restarted, stopErr
 	}
 
-	restarted := 0
-	_, doc := rs.store.Snapshot()
-	for _, srv := range doc.Servers {
-		if activeIDs[srv.ID] {
-			if err := rs.StartServer(srv); err == nil {
-				restarted++
-			}
-		}
+	if err := swapFn(); err != nil {
+		restarted, _ := rs.restoreSelectedInstances(doc, activeIDs)
+		return restarted, err
 	}
-	for _, cli := range doc.Clients {
-		if activeIDs[cli.ID] {
-			if err := rs.StartClient(cli); err == nil {
-				restarted++
-			}
+
+	restarted, restoreErr := rs.restoreSelectedInstances(doc, activeIDs)
+	if restoreErr != nil && len(rollback) > 0 && rollback[0] != nil {
+		if rbErr := rollback[0](); rbErr == nil {
+			rbRestarted, _ := rs.restoreSelectedInstances(doc, activeIDs)
+			rs.notifyChange()
+			return rbRestarted, fmt.Errorf("%w（已自动回退到原核心版本）", restoreErr)
 		}
 	}
 	rs.notifyChange()
-	return restarted, nil
+	return restarted, restoreErr
+}
+
+func (rs *RuntimeSupervisor) restoreSelectedInstances(doc ConfigDocument, activeIDs map[string]bool) (int, error) {
+	restarted := 0
+	var firstErr error
+	for _, srv := range doc.Servers {
+		if !activeIDs[srv.ID] {
+			continue
+		}
+		if err := rs.StartServer(srv); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if err := rs.waitInstanceAdminReady(srv.ID, 2500*time.Millisecond); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		restarted++
+	}
+	for _, cli := range doc.Clients {
+		if !activeIDs[cli.ID] {
+			continue
+		}
+		if err := rs.StartClient(cli); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if err := rs.waitInstanceAdminReady(cli.ID, 2500*time.Millisecond); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		restarted++
+	}
+	return restarted, firstErr
+}
+
+func (rs *RuntimeSupervisor) waitInstanceAdminReady(id string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		rs.mu.RLock()
+		p := rs.procs[id]
+		rs.mu.RUnlock()
+		if p == nil {
+			return fmt.Errorf("实例 %s 未在运行中", id)
+		}
+		select {
+		case <-p.done:
+			return fmt.Errorf("实例 %s 启动后异常退出", id)
+		default:
+		}
+		if p.adminPort <= 0 {
+			return nil
+		}
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", p.adminPort), 150*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		time.Sleep(60 * time.Millisecond)
+	}
+	return nil
 }
 
 // StopAll gracefully terminates all running frps and frpc child processes and internal visitor bridges.
@@ -943,17 +1012,22 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 	now := time.Now()
 	discovered := make(map[string]ConnLiveItem)
 	ctrlStatus := make(map[string]bool)
-	pendingPolicyUpdates := make(map[string][4]int64)
+	sampledTypes := make(map[string]bool, len(proxyTypes))
+	pendingSamples := make(map[string]proxyRateSample)
 
 	for _, pt := range proxyTypes {
-		url := fmt.Sprintf("http://127.0.0.1:%d/api/proxy/%s", p.adminPort, pt)
-		req, err := http.NewRequest(http.MethodGet, url, nil)
+		reqURL := fmt.Sprintf("http://127.0.0.1:%d/api/proxy/%s", p.adminPort, pt)
+		req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 		if err != nil {
 			continue
 		}
 		req.SetBasicAuth(p.adminUser, p.adminPass)
 		resp, err := rs.httpClient.Do(req)
 		if err != nil {
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
 			continue
 		}
 		var payload struct {
@@ -971,9 +1045,10 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 		}
 		err = json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&payload)
 		resp.Body.Close()
-		if err != nil {
+		if err != nil || payload.Proxies == nil {
 			continue
 		}
+		sampledTypes[pt] = true
 
 		p.mu.Lock()
 		for _, item := range payload.Proxies {
@@ -988,18 +1063,17 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 			if !hasPol {
 				pol = ConnPolicy{ProxyName: item.Name, Enabled: true}
 			}
-			deltaIn := item.TodayTrafficIn - pol.LastRawInBytes
-			if item.TodayTrafficIn < pol.LastRawInBytes {
-				deltaIn = item.TodayTrafficIn
+			deltaIn := trafficDelta(item.TodayTrafficIn, pol.LastRawInBytes)
+			deltaOut := trafficDelta(item.TodayTrafficOut, pol.LastRawOutBytes)
+			totalIn := pol.RecordedInBytes + deltaIn
+			totalOut := pol.RecordedOutBytes + deltaOut
+			sample := proxyRateSample{
+				inBytes:  item.TodayTrafficIn,
+				outBytes: item.TodayTrafficOut,
+				at:       now,
 			}
-			deltaOut := item.TodayTrafficOut - pol.LastRawOutBytes
-			if item.TodayTrafficOut < pol.LastRawOutBytes {
-				deltaOut = item.TodayTrafficOut
-			}
-			totalIn := pol.RecordedInBytes + maxInt64(0, deltaIn)
-			totalOut := pol.RecordedOutBytes + maxInt64(0, deltaOut)
 			if (deltaIn+deltaOut) >= 65536 || item.TodayTrafficIn < pol.LastRawInBytes || item.TodayTrafficOut < pol.LastRawOutBytes {
-				pendingPolicyUpdates[item.Name] = [4]int64{totalIn, totalOut, item.TodayTrafficIn, item.TodayTrafficOut}
+				pendingSamples[item.Name] = sample
 			}
 
 			var speedIn, speedOut int64
@@ -1014,11 +1088,7 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 					}
 				}
 			}
-			p.rateSamples[item.Name] = proxyRateSample{
-				inBytes:  item.TodayTrafficIn,
-				outBytes: item.TodayTrafficOut,
-				at:       now,
-			}
+			p.rateSamples[item.Name] = sample
 
 			status := item.Status
 			blockReason := ""
@@ -1061,7 +1131,19 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 		p.mu.Unlock()
 	}
 
+	if len(sampledTypes) == 0 {
+		return false
+	}
+
 	p.mu.Lock()
+	prevCount := len(p.conns)
+	for name, oldItem := range p.conns {
+		if !sampledTypes[oldItem.ProxyType] {
+			if _, exists := discovered[name]; !exists {
+				discovered[name] = oldItem
+			}
+		}
+	}
 	p.conns = discovered
 	for _, sess := range p.remoteClients {
 		if online, seen := ctrlStatus[sess.ctrlProxyName]; seen {
@@ -1073,15 +1155,15 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 		}
 	}
 	p.mu.Unlock()
-	if len(pendingPolicyUpdates) > 0 {
-		rs.persistTrafficDeltas(srv.ID, pendingPolicyUpdates)
+	if len(pendingSamples) > 0 {
+		rs.persistTrafficSamples(srv.ID, p, pendingSamples)
 	}
-	return len(discovered) > 0 || len(ctrlStatus) > 0
+	return prevCount > 0 || len(discovered) > 0 || len(ctrlStatus) > 0
 }
 
 func (rs *RuntimeSupervisor) pollClientAdmin(p *managedProc) bool {
-	url := fmt.Sprintf("http://127.0.0.1:%d/api/status", p.adminPort)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	reqURL := fmt.Sprintf("http://127.0.0.1:%d/api/status", p.adminPort)
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
 		return false
 	}
@@ -1091,6 +1173,9 @@ func (rs *RuntimeSupervisor) pollClientAdmin(p *managedProc) bool {
 		return false
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
 
 	var statusMap map[string][]TunnelLiveStatus
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&statusMap); err != nil {
@@ -1238,22 +1323,38 @@ func stripANSI(s string) string {
 	return out.String()
 }
 
-func (rs *RuntimeSupervisor) persistTrafficDeltas(serverID string, updates map[string][4]int64) {
+func trafficDelta(raw, previous int64) int64 {
+	if raw < previous {
+		return maxInt64(0, raw)
+	}
+	return raw - previous
+}
+
+func (rs *RuntimeSupervisor) persistTrafficSamples(serverID string, owner *managedProc, samples map[string]proxyRateSample) {
+	if len(samples) == 0 {
+		return
+	}
+	rs.mu.RLock()
+	currentOwner := rs.procs[serverID]
+	rs.mu.RUnlock()
+	if owner != nil && currentOwner != owner {
+		return
+	}
 	_ = rs.store.Update(func(doc *ConfigDocument) error {
 		for i := range doc.Servers {
 			if doc.Servers[i].ID == serverID {
 				if doc.Servers[i].ConnPolicies == nil {
 					doc.Servers[i].ConnPolicies = make(map[string]ConnPolicy)
 				}
-				for name, vals := range updates {
+				for name, sample := range samples {
 					pol, ok := doc.Servers[i].ConnPolicies[name]
 					if !ok {
 						pol = ConnPolicy{ProxyName: name, Enabled: true}
 					}
-					pol.RecordedInBytes = vals[0]
-					pol.RecordedOutBytes = vals[1]
-					pol.LastRawInBytes = vals[2]
-					pol.LastRawOutBytes = vals[3]
+					pol.RecordedInBytes += trafficDelta(sample.inBytes, pol.LastRawInBytes)
+					pol.RecordedOutBytes += trafficDelta(sample.outBytes, pol.LastRawOutBytes)
+					pol.LastRawInBytes = sample.inBytes
+					pol.LastRawOutBytes = sample.outBytes
 					doc.Servers[i].ConnPolicies[name] = pol
 				}
 				return nil
@@ -1287,24 +1388,14 @@ func (rs *RuntimeSupervisor) flushServerTrafficSnapshot(serverID string) {
 		return
 	}
 	p.mu.Lock()
-	liveConns := make(map[string]ConnLiveItem, len(p.conns))
-	for k, v := range p.conns {
-		liveConns[k] = v
-	}
-	samples := make(map[string]proxyRateSample, len(p.rateSamples))
-	for k, v := range p.rateSamples {
-		samples[k] = v
+	samples := make(map[string]proxyRateSample, len(p.conns))
+	for name := range p.conns {
+		if s, ok := p.rateSamples[name]; ok {
+			samples[name] = s
+		}
 	}
 	p.mu.Unlock()
-	if len(liveConns) == 0 {
-		return
-	}
-	updates := make(map[string][4]int64)
-	for name, c := range liveConns {
-		raw := samples[name]
-		updates[name] = [4]int64{c.TotalInBytes, c.TotalOutBytes, raw.inBytes, raw.outBytes}
-	}
-	rs.persistTrafficDeltas(serverID, updates)
+	rs.persistTrafficSamples(serverID, p, samples)
 }
 
 // ClearInstanceError clears retained crash errors, buffered logs, and runtime TOML artifacts when an instance profile is deleted (A08).

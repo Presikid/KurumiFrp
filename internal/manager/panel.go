@@ -201,7 +201,7 @@ func (pm *PanelManager) UpdatePort(newPort int, rawBindHost string, store *Store
 	}
 
 	pm.mu.Lock()
-	pm.settings = PanelSettings{
+	nextSettings := PanelSettings{
 		Port:       actualPort,
 		BindHost:   actualHost,
 		Customized: true,
@@ -212,8 +212,11 @@ func (pm *PanelManager) UpdatePort(newPort int, rawBindHost string, store *Store
 		pm.currentHost = actualHost
 		pm.currentPort = actualPort
 	}
-	b, _ := json.MarshalIndent(pm.settings, "", "  ")
+	b, _ := json.MarshalIndent(nextSettings, "", "  ")
 	_, saveErr := writeIfChanged(pm.settingsPath, append(b, '\n'), 0o600)
+	if saveErr == nil {
+		pm.settings = nextSettings
+	}
 	pm.mu.Unlock()
 
 	if saveErr != nil {

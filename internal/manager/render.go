@@ -1204,7 +1204,7 @@ func parseClientTOMLLines(name string, lines []string) *ClientProfile {
 		Tunnels:    []TunnelRule{},
 	}
 
-	var globalExtra []string
+	var globalExtra, dottedExtra []string
 	var curTun *TunnelRule
 	var curExtra []string
 	var curHCHeaderName, curHCHeaderVal string
@@ -1368,10 +1368,14 @@ func parseClientTOMLLines(name string, lines []string) *ClientProfile {
 		if applyClientGlobalKeyValue(cli, fullGlobalKey, v) {
 			continue
 		}
-		globalExtra = append(globalExtra, line)
+		if section != "" && isKnownClientSection(section) {
+			dottedExtra = append(dottedExtra, fullGlobalKey+" = "+v)
+		} else {
+			globalExtra = append(globalExtra, line)
+		}
 	}
 	flushTun()
-	cli.ExtraTOML = strings.TrimSpace(strings.Join(globalExtra, "\n"))
+	cli.ExtraTOML = strings.TrimSpace(strings.Join(append(dottedExtra, globalExtra...), "\n"))
 	return cli
 }
 
@@ -1428,8 +1432,6 @@ func applyClientGlobalKeyValue(cli *ClientProfile, fullKey, v string) bool {
 		cli.NatHoleSTUNServer = unquoteTOML(v)
 	case "udpPacketSize":
 		cli.UDPPacketSize, _ = strconv.ParseInt(v, 10, 64)
-	case "featureGates":
-		return true
 	case "virtualNet.address":
 		cli.VirtualNetAddr = unquoteTOML(v)
 	case "log.level":
@@ -1838,14 +1840,19 @@ func foldMultilineTOMLLines(rawLines []string) ([]string, error) {
 	}
 
 	for idx, line := range rawLines {
-		trimmed := strings.TrimSpace(line)
+		rawTrim := strings.TrimSpace(line)
+		if bracketDepth == 0 && (rawTrim == "" || strings.HasPrefix(rawTrim, "#")) {
+			out = append(out, rawTrim)
+			continue
+		}
+		cleaned := stripTOMLInlineComment(line)
+		trimmed := strings.TrimSpace(cleaned)
 		if bracketDepth == 0 {
-			if trimmed == "" || strings.HasPrefix(trimmed, "#") || (strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") && !strings.Contains(trimmed, "=")) {
-				out = append(out, line)
+			if trimmed == "" || (strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") && !strings.Contains(trimmed, "=")) {
+				out = append(out, trimmed)
 				continue
 			}
 		}
-		cleaned := stripTOMLInlineComment(line)
 		delta, unclosedQuote, _ := scanLine(cleaned)
 		if unclosedQuote != 0 {
 			return nil, fmt.Errorf("TOML 第 %d 行存在未闭合的字符串引号", idx+1)
