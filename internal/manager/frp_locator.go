@@ -3,6 +3,8 @@ package manager
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,6 +41,21 @@ func binaryFileName(base string) string {
 	return base
 }
 
+func readCoreSlot(slots string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(slots, "active"))
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	slot := strings.TrimSpace(string(raw))
+	if slot != "a" && slot != "b" {
+		return "", fmt.Errorf("核心版本目录标记无效")
+	}
+	return slot, nil
+}
+
 // LocateBinaries resolves bundled or hot-updated official frpc and frps executables.
 // If both data/bin and bundled exist, it prefers whichever holds the newer SemVer so future Setup.exe upgrades never get shadowed by an older data/bin.
 func LocateBinaries(dataDir string) CoreBinaryInfo {
@@ -46,20 +63,23 @@ func LocateBinaries(dataDir string) CoreBinaryInfo {
 	exeDir := filepath.Dir(exePath)
 
 	dataBinDir := filepath.Join(dataDir, "bin")
+	slots := filepath.Join(dataBinDir, ".kurumi-cores")
+	managedDir := ""
+	if slot, err := readCoreSlot(slots); err == nil && slot != "" {
+		managedDir = filepath.Join(slots, slot)
+	}
 	exeBundledDir := filepath.Join(exeDir, "bundled")
 	cwdBundledDir := filepath.Join(".", "bundled")
 
-	frpcPath, frpcVer, frpcSource, frpcFound := resolveBestBinary(binaryFileName("frpc"), dataBinDir, exeBundledDir, cwdBundledDir)
-	frpsPath, frpsVer, frpsSource, frpsFound := resolveBestBinary(binaryFileName("frps"), dataBinDir, exeBundledDir, cwdBundledDir)
+	frpcPath, frpcVer, frpcSource, frpcFound := resolveBestBinary(binaryFileName("frpc"), managedDir, dataBinDir, exeBundledDir, cwdBundledDir)
+	frpsPath, frpsVer, frpsSource, frpsFound := resolveBestBinary(binaryFileName("frps"), managedDir, dataBinDir, exeBundledDir, cwdBundledDir)
 
 	activeDir := exeBundledDir
 	source := frpsSource
 	if source == "" {
 		source = frpcSource
 	}
-	if source == "data-bin" {
-		activeDir = dataBinDir
-	} else if frpsPath != "" {
+	if frpsPath != "" {
 		activeDir = filepath.Dir(frpsPath)
 	} else if frpcPath != "" {
 		activeDir = filepath.Dir(frpcPath)
@@ -77,26 +97,29 @@ func LocateBinaries(dataDir string) CoreBinaryInfo {
 	}
 }
 
-func resolveBestBinary(fileName, dataBinDir, exeBundledDir, cwdBundledDir string) (string, string, string, bool) {
-	dataPath, hasData := statFile(filepath.Join(dataBinDir, fileName))
-	bundPath, hasBund := statFile(filepath.Join(exeBundledDir, fileName))
-	if !hasBund {
-		bundPath, hasBund = statFile(filepath.Join(cwdBundledDir, fileName))
-	}
-
-	if hasData && hasBund {
-		dVer := probeBinaryVersion(dataPath)
-		bVer := probeBinaryVersion(bundPath)
-		if bVer != "unknown" && dVer != "unknown" && compareSemVer(bVer, dVer) > 0 {
-			return bundPath, bVer, "bundled", true
+func resolveBestBinary(fileName, managedDir, dataBinDir, exeBundledDir, cwdBundledDir string) (string, string, string, bool) {
+	var selected, version, source string
+	consider := func(dir, kind string) bool {
+		if dir == "" {
+			return false
 		}
-		return dataPath, dVer, "data-bin", true
+		p, ok := statFile(filepath.Join(dir, fileName))
+		if !ok {
+			return false
+		}
+		ver := probeBinaryVersion(p)
+		if selected == "" || (ver != "unknown" && (version == "unknown" || compareSemVer(ver, version) > 0)) {
+			selected, version, source = p, ver, kind
+		}
+		return true
 	}
-	if hasData {
-		return dataPath, probeBinaryVersion(dataPath), "data-bin", true
+	consider(managedDir, "data-bin")
+	consider(dataBinDir, "data-bin")
+	if !consider(exeBundledDir, "bundled") {
+		consider(cwdBundledDir, "bundled")
 	}
-	if hasBund {
-		return bundPath, probeBinaryVersion(bundPath), "bundled", true
+	if selected != "" {
+		return selected, version, source, true
 	}
 	if p, err := exec.LookPath(fileName); err == nil {
 		return p, probeBinaryVersion(p), "path", true

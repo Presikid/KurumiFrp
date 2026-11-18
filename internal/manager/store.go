@@ -65,6 +65,7 @@ type Store struct {
 	configsDir string
 	metaPath   string
 	activeFile string
+	generation uint64
 	doc        ConfigDocument
 }
 
@@ -115,7 +116,7 @@ func (s *Store) initOrLoad() error {
 			if err := s.saveActiveLocked(); err != nil {
 				return err
 			}
-			return s.saveMetaLocked()
+			return s.saveMetaLocked(s.activeFile)
 		}
 	}
 	doc, err := readConfigDocument(fullPath)
@@ -124,8 +125,10 @@ func (s *Store) initOrLoad() error {
 	}
 	s.activeFile = target
 	s.doc = doc
-	_ = s.saveActiveLocked()
-	return s.saveMetaLocked()
+	if err := s.saveActiveLocked(); err != nil {
+		return err
+	}
+	return s.saveMetaLocked(s.activeFile)
 }
 
 func (s *Store) tryMigrateLegacyOrDefault() ConfigDocument {
@@ -303,6 +306,10 @@ func (s *Store) Update(fn func(doc *ConfigDocument) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.updateLocked(fn)
+}
+
+func (s *Store) updateLocked(fn func(doc *ConfigDocument) error) error {
 	raw, _ := json.Marshal(s.doc)
 	var draft ConfigDocument
 	_ = json.Unmarshal(raw, &draft)
@@ -319,7 +326,7 @@ func (s *Store) Update(fn func(doc *ConfigDocument) error) error {
 	if err != nil {
 		return err
 	}
-	if len(b) > maxConfigBytes {
+	if len(b)+1 > maxConfigBytes {
 		return errors.New("配置内容超过 32 MiB 上限")
 	}
 	full := filepath.Join(s.configsDir, s.activeFile)
@@ -390,6 +397,8 @@ func (s *Store) SelectOrCreateConfig(fileName, displayName string) (ConfigDocume
 			return ConfigDocument{}, err
 		}
 		doc = loaded
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return ConfigDocument{}, err
 	} else {
 		name := strings.TrimSpace(displayName)
 		if name == "" {
@@ -402,17 +411,12 @@ func (s *Store) SelectOrCreateConfig(fileName, displayName string) (ConfigDocume
 			Servers: []ServerProfile{},
 			Clients: []ClientProfile{},
 		}
-		b, err := json.MarshalIndent(doc, "", "  ")
-		if err != nil {
+		if err := s.commitDocumentLocked(clean, doc, true); err != nil {
 			return ConfigDocument{}, err
 		}
-		if _, err := writeIfChanged(full, append(b, '\n'), 0o600); err != nil {
-			return ConfigDocument{}, err
-		}
+		return doc, nil
 	}
-	s.activeFile = clean
-	s.doc = doc
-	if err := s.saveMetaLocked(); err != nil {
+	if err := s.activateLocked(clean, doc); err != nil {
 		return ConfigDocument{}, err
 	}
 	return doc, nil
@@ -434,28 +438,74 @@ func (s *Store) ImportConfigDocument(fileName string, raw []byte, activate bool)
 	normalizeDocument(&doc, strings.TrimSuffix(clean, ".json"))
 	doc.Updated = time.Now().UTC().Format(time.RFC3339)
 
-	b, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return "", err
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if !activate && sameConfigFileName(clean, s.activeFile) {
 		return "", errors.New("不能在不激活状态下覆盖当前正在使用的配置文件，请勾选立即启用或更改导入文件名")
 	}
-	full := filepath.Join(s.configsDir, clean)
-	if _, err := writeIfChanged(full, append(b, '\n'), 0o600); err != nil {
+	if err := s.commitDocumentLocked(clean, doc, activate); err != nil {
 		return "", err
 	}
-	if activate {
-		s.activeFile = clean
-		s.doc = doc
-		if err := s.saveMetaLocked(); err != nil {
-			return "", err
+	return clean, nil
+}
+
+// If activating a different document fails, restore the previous version of the
+// target as well. The active filename and document change together under s.mu.
+func (s *Store) commitDocumentLocked(name string, doc ConfigDocument, activate bool) error {
+	raw, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+	if len(raw) > maxConfigBytes {
+		return errors.New("配置内容超过 32 MiB 上限")
+	}
+	target := filepath.Join(s.configsDir, name)
+	same := sameConfigFileName(s.activeFile, name)
+	var previous []byte
+	var existed bool
+	if activate && !same {
+		previous, err = os.ReadFile(target)
+		existed = err == nil
+		if !existed && !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
 	}
-	return clean, nil
+	if _, err = writeIfChanged(target, raw, 0600); err != nil {
+		return err
+	}
+	if !activate {
+		return nil
+	}
+	if err = s.activateLocked(name, doc); err != nil {
+		var undo error
+		if existed {
+			_, undo = writeIfChanged(target, previous, 0600)
+		} else {
+			undo = os.Remove(target)
+		}
+		return errors.Join(err, undo)
+	}
+	return nil
+}
+
+func (s *Store) activateLocked(name string, doc ConfigDocument) error {
+	if !sameConfigFileName(s.activeFile, name) {
+		if err := s.saveMetaLocked(name); err != nil {
+			return err
+		}
+	}
+	s.activeFile = name
+	s.doc = doc
+	s.generation++
+	return nil
+}
+
+func (s *Store) activeGeneration() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.generation
 }
 
 // DeleteConfigFile deletes a non-active configuration file from data/configs/.
@@ -481,7 +531,7 @@ func (s *Store) saveActiveLocked() error {
 	if err != nil {
 		return err
 	}
-	if len(b) > maxConfigBytes {
+	if len(b)+1 > maxConfigBytes {
 		return errors.New("配置内容超过 32 MiB 上限")
 	}
 	full := filepath.Join(s.configsDir, s.activeFile)
@@ -489,8 +539,8 @@ func (s *Store) saveActiveLocked() error {
 	return err
 }
 
-func (s *Store) saveMetaLocked() error {
-	b, err := json.MarshalIndent(activeMetaFile{ActiveFile: s.activeFile}, "", "  ")
+func (s *Store) saveMetaLocked(file string) error {
+	b, err := json.MarshalIndent(activeMetaFile{ActiveFile: file}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -544,12 +594,7 @@ func writeIfChanged(path string, data []byte, perm os.FileMode) (bool, error) {
 		return false, err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		if runtime.GOOS == "windows" {
-			_ = os.Remove(path)
-			if err2 := os.Rename(tmpPath, path); err2 == nil {
-				return true, nil
-			}
-		}
+
 		_ = os.Remove(tmpPath)
 		return false, err
 	}

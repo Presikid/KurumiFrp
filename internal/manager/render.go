@@ -939,17 +939,20 @@ func ParseTOMLAsProfile(name, kind, raw string) (*ServerProfile, *ClientProfile,
 
 	isServer := kind == "frps" || (kind == "" && (strings.Contains(normalized, "bindPort") || strings.Contains(normalized, "vhostHTTPPort")) && !strings.Contains(normalized, "serverAddr"))
 	if isServer {
-		srv := parseServerTOMLLines(name, lines)
+		srv, err := parseServerTOMLLines(name, lines)
+		if err != nil {
+			return nil, nil, err
+		}
 		if _, err := ValidateAllowPortsSpec(srv.AllowPorts); err != nil {
 			return nil, nil, err
 		}
 		return srv, nil, nil
 	}
-	cli := parseClientTOMLLines(name, lines)
-	return nil, cli, nil
+	cli, err := parseClientTOMLLines(name, lines)
+	return nil, cli, err
 }
 
-func parseServerTOMLLines(name string, lines []string) *ServerProfile {
+func parseServerTOMLLines(name string, lines []string) (*ServerProfile, error) {
 	srv := &ServerProfile{
 		ID:           newShortID("srv"),
 		Name:         nonEmptyStr(name, "导入转发端配置"),
@@ -962,21 +965,24 @@ func parseServerTOMLLines(name string, lines []string) *ServerProfile {
 	var allowSpecs []string
 	var curAllowSingle, curAllowStart, curAllowEnd int
 	inAllowPort := false
-	flushAllow := func() {
+	flushAllow := func() error {
 		if !inAllowPort {
-			return
+			return nil
 		}
-		if curAllowSingle > 0 {
+		if curAllowSingle > 0 && curAllowStart == 0 && curAllowEnd == 0 {
 			allowSpecs = append(allowSpecs, strconv.Itoa(curAllowSingle))
-		} else if curAllowStart > 0 && curAllowEnd >= curAllowStart {
+		} else if curAllowSingle == 0 && curAllowStart > 0 && curAllowEnd >= curAllowStart {
 			if curAllowStart == curAllowEnd {
 				allowSpecs = append(allowSpecs, strconv.Itoa(curAllowStart))
 			} else {
 				allowSpecs = append(allowSpecs, fmt.Sprintf("%d-%d", curAllowStart, curAllowEnd))
 			}
+		} else {
+			return errors.New("allowPorts 需要有效的单端口或起止范围")
 		}
 		curAllowSingle, curAllowStart, curAllowEnd = 0, 0, 0
 		inAllowPort = false
+		return nil
 	}
 
 	var curPlugin *HTTPPluginSpec
@@ -996,7 +1002,9 @@ func parseServerTOMLLines(name string, lines []string) *ServerProfile {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "[[") && strings.HasSuffix(trimmed, "]]") {
-			flushAllow()
+			if err := flushAllow(); err != nil {
+				return nil, err
+			}
 			flushPlugin()
 			arrName := strings.TrimSpace(trimmed[2 : len(trimmed)-2])
 			switch arrName {
@@ -1013,7 +1021,9 @@ func parseServerTOMLLines(name string, lines []string) *ServerProfile {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			flushAllow()
+			if err := flushAllow(); err != nil {
+				return nil, err
+			}
 			flushPlugin()
 			sec := strings.TrimSpace(trimmed[1 : len(trimmed)-1])
 			section = sec
@@ -1032,11 +1042,17 @@ func parseServerTOMLLines(name string, lines []string) *ServerProfile {
 		if section == "[[allowPorts]]" {
 			switch k {
 			case "single":
-				curAllowSingle, _ = strconv.Atoi(v)
+				if err := setTOMLInteger(&curAllowSingle, "allowPorts."+k, v); err != nil {
+					return nil, err
+				}
 			case "start":
-				curAllowStart, _ = strconv.Atoi(v)
+				if err := setTOMLInteger(&curAllowStart, "allowPorts."+k, v); err != nil {
+					return nil, err
+				}
 			case "end":
-				curAllowEnd, _ = strconv.Atoi(v)
+				if err := setTOMLInteger(&curAllowEnd, "allowPorts."+k, v); err != nil {
+					return nil, err
+				}
 			}
 			continue
 		}
@@ -1064,18 +1080,22 @@ func parseServerTOMLLines(name string, lines []string) *ServerProfile {
 		if section != "" {
 			fullKey = section + "." + k
 		}
-		if applyServerKeyValue(srv, fullKey, v) {
+		if handled, err := applyServerKeyValue(srv, fullKey, v); err != nil {
+			return nil, err
+		} else if handled {
 			continue
 		}
 		extra = append(extra, line)
 	}
-	flushAllow()
+	if err := flushAllow(); err != nil {
+		return nil, err
+	}
 	flushPlugin()
 	if len(allowSpecs) > 0 {
 		srv.AllowPorts = strings.Join(allowSpecs, ",")
 	}
 	srv.ExtraTOML = strings.TrimSpace(strings.Join(extra, "\n"))
-	return srv
+	return srv, nil
 }
 
 func isKnownServerSection(sec string) bool {
@@ -1088,26 +1108,37 @@ func isKnownServerSection(sec string) bool {
 	return false
 }
 
-func applyServerKeyValue(srv *ServerProfile, fullKey, v string) bool {
+var tomlIntegerLiteral = regexp.MustCompile(`^(?:[+-]?(?:0|[1-9](?:_?[0-9])*)|0x[0-9A-Fa-f](?:_?[0-9A-Fa-f])*|0o[0-7](?:_?[0-7])*|0b[01](?:_?[01])*)$`)
+
+func setTOMLInteger[T int | int64](dst *T, key, value string) error {
+	n, err := strconv.ParseInt(value, 0, 64)
+	if err != nil || !tomlIntegerLiteral.MatchString(value) || int64(T(n)) != n {
+		return fmt.Errorf("TOML 字段 %s 的整数值无效: %q", key, value)
+	}
+	*dst = T(n)
+	return nil
+}
+
+func applyServerKeyValue(srv *ServerProfile, fullKey, v string) (bool, error) {
 	switch fullKey {
 	case "bindAddr":
 		srv.BindAddr = unquoteTOML(v)
 	case "bindPort":
-		srv.BindPort, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&srv.BindPort, fullKey, v)
 	case "kcpBindPort":
-		srv.KCPBindPort, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&srv.KCPBindPort, fullKey, v)
 	case "quicBindPort":
-		srv.QUICBindPort, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&srv.QUICBindPort, fullKey, v)
 	case "proxyBindAddr":
 		srv.ProxyBindAddr = unquoteTOML(v)
 	case "vhostHTTPPort":
-		srv.VhostHTTPPort, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&srv.VhostHTTPPort, fullKey, v)
 	case "vhostHTTPSPort":
-		srv.VhostHTTPSPort, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&srv.VhostHTTPSPort, fullKey, v)
 	case "vhostHTTPTimeout":
-		srv.VhostHTTPTimeout, _ = strconv.ParseInt(v, 10, 64)
+		return true, setTOMLInteger(&srv.VhostHTTPTimeout, fullKey, v)
 	case "tcpmuxHTTPConnectPort":
-		srv.TCPMuxHTTPConnectPort, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&srv.TCPMuxHTTPConnectPort, fullKey, v)
 	case "tcpmuxPassthrough":
 		srv.TCPMuxPassthrough = v == "true"
 	case "subDomainHost":
@@ -1115,39 +1146,39 @@ func applyServerKeyValue(srv *ServerProfile, fullKey, v string) bool {
 	case "custom404Page":
 		srv.Custom404Page = unquoteTOML(v)
 	case "maxPortsPerClient":
-		srv.MaxPortsPerClient, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&srv.MaxPortsPerClient, fullKey, v)
 	case "userConnTimeout":
-		srv.UserConnTimeout, _ = strconv.ParseInt(v, 10, 64)
+		return true, setTOMLInteger(&srv.UserConnTimeout, fullKey, v)
 	case "udpPacketSize":
-		srv.UDPPacketSize, _ = strconv.ParseInt(v, 10, 64)
+		return true, setTOMLInteger(&srv.UDPPacketSize, fullKey, v)
 	case "natholeAnalysisDataReserveHours":
-		srv.NatHoleAnalysisDataReserveHours, _ = strconv.ParseInt(v, 10, 64)
+		return true, setTOMLInteger(&srv.NatHoleAnalysisDataReserveHours, fullKey, v)
 	case "detailedErrorsToClient":
 		bv := v == "true"
 		srv.DetailedErrorsToClient = &bv
 	case "log.level":
 		srv.LogLevel = unquoteTOML(v)
 	case "log.maxDays":
-		srv.LogMaxDays, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&srv.LogMaxDays, fullKey, v)
 	case "log.disablePrintColor":
 		srv.DisablePrintColor = v == "true"
 	case "transport.maxPoolCount":
-		srv.MaxPoolCount, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&srv.MaxPoolCount, fullKey, v)
 	case "transport.tcpMux":
 		bv := v == "true"
 		srv.TCPMux = &bv
 	case "transport.tcpMuxKeepaliveInterval":
-		srv.TCPMuxKeepaliveInterval, _ = strconv.ParseInt(v, 10, 64)
+		return true, setTOMLInteger(&srv.TCPMuxKeepaliveInterval, fullKey, v)
 	case "transport.tcpKeepalive":
-		srv.TCPKeepalive, _ = strconv.ParseInt(v, 10, 64)
+		return true, setTOMLInteger(&srv.TCPKeepalive, fullKey, v)
 	case "transport.heartbeatTimeout":
-		srv.HeartbeatTimeout, _ = strconv.ParseInt(v, 10, 64)
+		return true, setTOMLInteger(&srv.HeartbeatTimeout, fullKey, v)
 	case "transport.quic.keepalivePeriod":
-		srv.QUICKeepalivePeriod, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&srv.QUICKeepalivePeriod, fullKey, v)
 	case "transport.quic.maxIdleTimeout":
-		srv.QUICMaxIdleTimeout, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&srv.QUICMaxIdleTimeout, fullKey, v)
 	case "transport.quic.maxIncomingStreams":
-		srv.QUICMaxIncomingStreams, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&srv.QUICMaxIncomingStreams, fullKey, v)
 	case "transport.tls.force":
 		srv.TLSForce = v == "true"
 	case "transport.tls.certFile":
@@ -1157,7 +1188,7 @@ func applyServerKeyValue(srv *ServerProfile, fullKey, v string) bool {
 	case "transport.tls.trustedCaFile":
 		srv.TLSTrustedCaFile = unquoteTOML(v)
 	case "sshTunnelGateway.bindPort":
-		srv.SSHGatewayBindPort, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&srv.SSHGatewayBindPort, fullKey, v)
 	case "sshTunnelGateway.privateKeyFile":
 		srv.SSHPrivateKeyFile = unquoteTOML(v)
 	case "sshTunnelGateway.autoGenPrivateKeyPath":
@@ -1185,12 +1216,12 @@ func applyServerKeyValue(srv *ServerProfile, fullKey, v string) bool {
 	case "webServer.addr", "webServer.port", "webServer.user", "webServer.password":
 		// Managed internally by KurumiFrp loopback dashboard
 	default:
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
-func parseClientTOMLLines(name string, lines []string) *ClientProfile {
+func parseClientTOMLLines(name string, lines []string) (*ClientProfile, error) {
 	cli := &ClientProfile{
 		ID:         newShortID("cli"),
 		Name:       nonEmptyStr(name, "导入客户端配置"),
@@ -1279,7 +1310,12 @@ func parseClientTOMLLines(name string, lines []string) *ClientProfile {
 					case "localIP":
 						rt.LocalIP = unquoteTOML(iv)
 					default:
-						applyTunnelKeyValue(&rt, ik, iv)
+						if (ik == "localPort" || ik == "remotePort") && strings.Contains(iv, "{{") {
+							continue
+						}
+						if _, err := applyTunnelKeyValue(&rt, ik, iv); err != nil {
+							return nil, err
+						}
 					}
 				}
 			}
@@ -1350,7 +1386,9 @@ func parseClientTOMLLines(name string, lines []string) *ClientProfile {
 			if tunSubSection != "" {
 				fullKey = tunSubSection + "." + k
 			}
-			if applyTunnelKeyValue(curTun, fullKey, v) {
+			if handled, err := applyTunnelKeyValue(curTun, fullKey, v); err != nil {
+				return nil, err
+			} else if handled {
 				continue
 			}
 			if tunSubSection != "" {
@@ -1365,14 +1403,16 @@ func parseClientTOMLLines(name string, lines []string) *ClientProfile {
 		if section != "" && !strings.HasPrefix(section, "[[") {
 			fullGlobalKey = section + "." + k
 		}
-		if applyClientGlobalKeyValue(cli, fullGlobalKey, v) {
+		if handled, err := applyClientGlobalKeyValue(cli, fullGlobalKey, v); err != nil {
+			return nil, err
+		} else if handled {
 			continue
 		}
 		globalExtra = append(globalExtra, line)
 	}
 	flushTun()
 	cli.ExtraTOML = strings.TrimSpace(strings.Join(globalExtra, "\n"))
-	return cli
+	return cli, nil
 }
 
 func isKnownClientSection(sec string) bool {
@@ -1385,21 +1425,21 @@ func isKnownClientSection(sec string) bool {
 	return strings.HasPrefix(sec, "auth.oidc.additionalEndpointParams")
 }
 
-func applyClientGlobalKeyValue(cli *ClientProfile, fullKey, v string) bool {
+func applyClientGlobalKeyValue(cli *ClientProfile, fullKey, v string) (bool, error) {
 	if strings.HasPrefix(fullKey, "metadatas.") {
 		mk := unquoteTOML(strings.TrimPrefix(fullKey, "metadatas."))
 		if strings.HasPrefix(mk, "kurumi_") {
-			return true
+			return true, nil
 		}
 		if mk == "client_id" {
 			cli.ClientID = unquoteTOML(v)
-			return true
+			return true, nil
 		}
 		if cli.Metadatas == nil {
 			cli.Metadatas = make(map[string]string)
 		}
 		cli.Metadatas[mk] = unquoteTOML(v)
-		return true
+		return true, nil
 	}
 	if strings.HasPrefix(fullKey, "auth.oidc.additionalEndpointParams.") {
 		pk := unquoteTOML(strings.TrimPrefix(fullKey, "auth.oidc.additionalEndpointParams."))
@@ -1407,13 +1447,13 @@ func applyClientGlobalKeyValue(cli *ClientProfile, fullKey, v string) bool {
 			cli.OIDCAdditionalParams = make(map[string]string)
 		}
 		cli.OIDCAdditionalParams[pk] = unquoteTOML(v)
-		return true
+		return true, nil
 	}
 	switch fullKey {
 	case "serverAddr":
 		cli.ServerAddr = unquoteTOML(v)
 	case "serverPort":
-		cli.ServerPort, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&cli.ServerPort, fullKey, v)
 	case "user":
 		cli.User = unquoteTOML(v)
 	case "loginFailExit":
@@ -1427,25 +1467,25 @@ func applyClientGlobalKeyValue(cli *ClientProfile, fullKey, v string) bool {
 	case "natHoleStunServer":
 		cli.NatHoleSTUNServer = unquoteTOML(v)
 	case "udpPacketSize":
-		cli.UDPPacketSize, _ = strconv.ParseInt(v, 10, 64)
+		return true, setTOMLInteger(&cli.UDPPacketSize, fullKey, v)
 	case "featureGates":
-		return true
+		return true, nil
 	case "virtualNet.address":
 		cli.VirtualNetAddr = unquoteTOML(v)
 	case "log.level":
 		cli.LogLevel = unquoteTOML(v)
 	case "log.maxDays":
-		cli.LogMaxDays, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&cli.LogMaxDays, fullKey, v)
 	case "log.disablePrintColor":
 		cli.DisablePrintColor = v == "true"
 	case "transport.protocol":
 		cli.Protocol = unquoteTOML(v)
 	case "transport.poolCount":
-		cli.PoolCount, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&cli.PoolCount, fullKey, v)
 	case "transport.dialServerTimeout":
-		cli.DialServerTimeout, _ = strconv.ParseInt(v, 10, 64)
+		return true, setTOMLInteger(&cli.DialServerTimeout, fullKey, v)
 	case "transport.dialServerKeepAlive":
-		cli.DialServerKeepAlive, _ = strconv.ParseInt(v, 10, 64)
+		return true, setTOMLInteger(&cli.DialServerKeepAlive, fullKey, v)
 	case "transport.connectServerLocalIP", "connectServerLocalIP":
 		cli.ConnectServerLocalIP = unquoteTOML(v)
 	case "transport.proxyURL", "proxyURL":
@@ -1454,17 +1494,17 @@ func applyClientGlobalKeyValue(cli *ClientProfile, fullKey, v string) bool {
 		bv := v == "true"
 		cli.TCPMux = &bv
 	case "transport.tcpMuxKeepaliveInterval":
-		cli.TCPMuxKeepaliveInterval, _ = strconv.ParseInt(v, 10, 64)
+		return true, setTOMLInteger(&cli.TCPMuxKeepaliveInterval, fullKey, v)
 	case "transport.heartbeatInterval":
-		cli.HeartbeatInterval, _ = strconv.ParseInt(v, 10, 64)
+		return true, setTOMLInteger(&cli.HeartbeatInterval, fullKey, v)
 	case "transport.heartbeatTimeout":
-		cli.HeartbeatTimeout, _ = strconv.ParseInt(v, 10, 64)
+		return true, setTOMLInteger(&cli.HeartbeatTimeout, fullKey, v)
 	case "transport.quic.keepalivePeriod":
-		cli.QUICKeepalivePeriod, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&cli.QUICKeepalivePeriod, fullKey, v)
 	case "transport.quic.maxIdleTimeout":
-		cli.QUICMaxIdleTimeout, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&cli.QUICMaxIdleTimeout, fullKey, v)
 	case "transport.quic.maxIncomingStreams":
-		cli.QUICMaxIncomingStreams, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&cli.QUICMaxIncomingStreams, fullKey, v)
 	case "transport.tls.enable":
 		cli.TLSEnable = v == "true"
 	case "transport.tls.disableCustomTLSFirstByte":
@@ -1498,19 +1538,19 @@ func applyClientGlobalKeyValue(cli *ClientProfile, fullKey, v string) bool {
 		cli.OIDCTokenEndpointURL = unquoteTOML(v)
 	case "webServer.addr", "webServer.port", "webServer.user", "webServer.password":
 	default:
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
-func applyTunnelKeyValue(tun *TunnelRule, fullKey, v string) bool {
+func applyTunnelKeyValue(tun *TunnelRule, fullKey, v string) (bool, error) {
 	if strings.HasPrefix(fullKey, "metadatas.") {
 		mk := unquoteTOML(strings.TrimPrefix(fullKey, "metadatas."))
 		if tun.Metadatas == nil {
 			tun.Metadatas = make(map[string]string)
 		}
 		tun.Metadatas[mk] = unquoteTOML(v)
-		return true
+		return true, nil
 	}
 	if strings.HasPrefix(fullKey, "annotations.") {
 		ak := unquoteTOML(strings.TrimPrefix(fullKey, "annotations."))
@@ -1518,7 +1558,7 @@ func applyTunnelKeyValue(tun *TunnelRule, fullKey, v string) bool {
 			tun.Annotations = make(map[string]string)
 		}
 		tun.Annotations[ak] = unquoteTOML(v)
-		return true
+		return true, nil
 	}
 	if strings.HasPrefix(fullKey, "requestHeaders.set.") {
 		hk := unquoteTOML(strings.TrimPrefix(fullKey, "requestHeaders.set."))
@@ -1526,7 +1566,7 @@ func applyTunnelKeyValue(tun *TunnelRule, fullKey, v string) bool {
 			tun.RequestHeaders = make(map[string]string)
 		}
 		tun.RequestHeaders[hk] = unquoteTOML(v)
-		return true
+		return true, nil
 	}
 	if strings.HasPrefix(fullKey, "responseHeaders.set.") {
 		hk := unquoteTOML(strings.TrimPrefix(fullKey, "responseHeaders.set."))
@@ -1534,7 +1574,7 @@ func applyTunnelKeyValue(tun *TunnelRule, fullKey, v string) bool {
 			tun.ResponseHeaders = make(map[string]string)
 		}
 		tun.ResponseHeaders[hk] = unquoteTOML(v)
-		return true
+		return true, nil
 	}
 	if strings.HasPrefix(fullKey, "plugin.requestHeaders.set.") {
 		hk := unquoteTOML(strings.TrimPrefix(fullKey, "plugin.requestHeaders.set."))
@@ -1542,7 +1582,7 @@ func applyTunnelKeyValue(tun *TunnelRule, fullKey, v string) bool {
 			tun.PluginHeaders = make(map[string]string)
 		}
 		tun.PluginHeaders[hk] = unquoteTOML(v)
-		return true
+		return true, nil
 	}
 
 	switch fullKey {
@@ -1555,9 +1595,9 @@ func applyTunnelKeyValue(tun *TunnelRule, fullKey, v string) bool {
 	case "localIP", "bindAddr":
 		tun.LocalIP = unquoteTOML(v)
 	case "localPort", "bindPort":
-		tun.LocalPort, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&tun.LocalPort, fullKey, v)
 	case "remotePort":
-		tun.RemotePort, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&tun.RemotePort, fullKey, v)
 	case "customDomains":
 		tun.CustomDomains = parseTOMLStringArray(v)
 	case "subdomain":
@@ -1587,13 +1627,13 @@ func applyTunnelKeyValue(tun *TunnelRule, fullKey, v string) bool {
 	case "keepTunnelOpen":
 		tun.KeepTunnelOpen = v == "true"
 	case "maxRetriesAnHour":
-		tun.MaxRetriesAnHour, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&tun.MaxRetriesAnHour, fullKey, v)
 	case "minRetryInterval":
-		tun.MinRetryInterval, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&tun.MinRetryInterval, fullKey, v)
 	case "fallbackTo":
 		tun.FallbackTo = unquoteTOML(v)
 	case "fallbackTimeoutMs":
-		tun.FallbackTimeoutMs, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&tun.FallbackTimeoutMs, fullKey, v)
 	case "transport.useEncryption":
 		tun.UseEncryption = v == "true"
 	case "transport.useCompression":
@@ -1622,11 +1662,11 @@ func applyTunnelKeyValue(tun *TunnelRule, fullKey, v string) bool {
 	case "healthCheck.type":
 		tun.HealthCheckType = unquoteTOML(v)
 	case "healthCheck.timeoutSeconds":
-		tun.HealthCheckTimeoutSeconds, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&tun.HealthCheckTimeoutSeconds, fullKey, v)
 	case "healthCheck.maxFailed":
-		tun.HealthCheckMaxFailed, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&tun.HealthCheckMaxFailed, fullKey, v)
 	case "healthCheck.intervalSeconds":
-		tun.HealthCheckIntervalSeconds, _ = strconv.Atoi(v)
+		return true, setTOMLInteger(&tun.HealthCheckIntervalSeconds, fullKey, v)
 	case "healthCheck.path":
 		tun.HealthCheckPath = unquoteTOML(v)
 	case "plugin.type":
@@ -1651,9 +1691,9 @@ func applyTunnelKeyValue(tun *TunnelRule, fullKey, v string) bool {
 		bv := v == "true"
 		tun.PluginEnableHTTP2 = &bv
 	default:
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
 func extractRangePairArgs(line string) (string, string) {

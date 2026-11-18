@@ -1200,13 +1200,16 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		doc, err := a.store.SelectOrCreateConfig(req.FileName, req.DisplayName)
+		var doc ConfigDocument
+		err := a.runtime.switchConfig(func() error {
+			var err error
+			doc, err = a.store.SelectOrCreateConfig(req.FileName, req.DisplayName)
+			return err
+		})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		a.runtime.ResetForConfigSwitch()
-		a.runtime.StartAutoStarts()
 		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "config": sanitizeDocForBrowser(doc)})
 
@@ -1220,14 +1223,21 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		savedFile, err := a.store.ImportConfigDocument(req.FileName, req.Content, req.Activate)
+		var savedFile string
+		var err error
+		save := func() error {
+			var saveErr error
+			savedFile, saveErr = a.store.ImportConfigDocument(req.FileName, req.Content, req.Activate)
+			return saveErr
+		}
+		if req.Activate {
+			err = a.runtime.switchConfig(save)
+		} else {
+			err = save()
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
-		}
-		if req.Activate {
-			a.runtime.ResetForConfigSwitch()
-			a.runtime.StartAutoStarts()
 		}
 		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "fileName": savedFile})
@@ -1393,6 +1403,10 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			}
 		}
 		coreInfo, restarted, err := a.updater.ApplyFRPUpdate(r.Context(), req.ProxyURL)
+		if errors.Is(err, errFRPUpToDate) {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "upToDate": true, "core": coreInfo, "restarted": 0})
+			return
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

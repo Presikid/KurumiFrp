@@ -654,32 +654,23 @@ func TestStatelessSessionAndFRPAutoUpdate(t *testing.T) {
 	sum := sha256.Sum256(archiveBytes)
 	sumHex := hex.EncodeToString(sum[:])
 
-	var srvURL string
+	const releases = "/fatedier/frp/releases"
+	const tag = "v0.99.0"
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/repos/fatedier/frp/releases/latest":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"tag_name": "v0.99.0",
-				"html_url": srvURL + "/rel",
-				"assets": []map[string]any{
-					{"name": assetName, "size": len(archiveBytes), "browser_download_url": srvURL + "/dl/" + assetName},
-					{"name": "frp_sha256_checksums.txt", "size": 100, "browser_download_url": srvURL + "/dl/checksums.txt"},
-				},
-			})
-		case "/repos/Presikid/KurumiFrp/releases":
-			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"tag_name": "v0.9.4", "html_url": srvURL + "/app"},
-			})
-		case "/dl/checksums.txt":
+		case releases + "/latest":
+			http.Redirect(w, r, releases+"/tag/"+tag, http.StatusFound)
+		case releases + "/tag/" + tag:
+			w.WriteHeader(http.StatusOK)
+		case releases + "/download/" + tag + "/frp_sha256_checksums.txt":
 			_, _ = w.Write([]byte(sumHex + "  " + assetName + "\n"))
-		case "/dl/" + assetName:
+		case releases + "/download/" + tag + "/" + assetName:
 			_, _ = w.Write(archiveBytes)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer ts.Close()
-	srvURL = ts.URL
 
 	store, err := NewStore(dir)
 	if err != nil {
@@ -692,7 +683,7 @@ func TestStatelessSessionAndFRPAutoUpdate(t *testing.T) {
 	defer rt.StopAll()
 
 	um := NewUpdateManager(dir, rt, nil)
-	um.apiBase = ts.URL
+	um.webBase = ts.URL
 	um.allowLocal = true
 
 	coreInfo, _, err := um.ApplyFRPUpdate(context.Background(), nil)

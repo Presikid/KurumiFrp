@@ -106,7 +106,7 @@
     authenticated: false,
     username: "admin",
     needsPasswordSetup: false,
-    version: "0.9.9",
+    version: "0.9.10",
     etag: "",
     activeView: "home", // home | frps | frpc | topology | system
     slideIdx: 0,
@@ -921,7 +921,7 @@
     updateLoginWallpaper();
     try {
       const sess = await apiFetch("/api/session");
-      STATE.version = sess.version || "0.9.9";
+      STATE.version = sess.version || "0.9.10";
       if (sess.assetCacheToken) {
         STATE.hdAssets.cacheToken = sess.assetCacheToken;
         STATE.hdAssets.activeTier = sess.activeAssetTier || "embedded";
@@ -4471,6 +4471,11 @@
   function renderSystemUpdatesPane(main) {
     const core = STATE.core || {};
     const chk = STATE.lastUpdateCheck;
+    function releaseStatus(component) {
+      if (!component) return "";
+      if (component.error) return `<div style="font-size:12.5px;color:var(--yc-danger);">${esc(component.error)}</div>`;
+      return `<div style="font-size:12.5px;">最新正式版: v${esc(component.latest)}</div>`;
+    }
     main.innerHTML = `
       ${buildHDAssetPackCardHTML()}
 
@@ -4480,12 +4485,15 @@
           <div style="padding:14px;border-radius:10px;background:#faf9fe;border:1px solid var(--yc-border);">
             <div style="font-size:12px;color:var(--yc-muted);">KurumiFrp 当前版本</div>
             <div style="font-size:20px;font-weight:700;margin:4px 0;">v${esc(STATE.version)}</div>
-            ${chk && chk.app ? `<div style="font-size:12.5px;color:${chk.app.hasUpdate ? "var(--yc-rose)" : "var(--yc-ok)"};">最新构建: v${esc(chk.app.latest)} ${chk.app.error ? "· " + esc(chk.app.error) : ""}</div>` : ""}
+            ${releaseStatus(chk?.app)}
+            <a href="https://github.com/Presikid/KurumiFrp/releases/latest" target="_blank" rel="noopener noreferrer">KurumiFrp 官方发布页</a>
           </div>
           <div style="padding:14px;border-radius:10px;background:#faf9fe;border:1px solid var(--yc-border);">
             <div style="font-size:12px;color:var(--yc-muted);">上游官方 fatedier/frp 核心</div>
             <div style="font-size:20px;font-weight:700;margin:4px 0;">frps ${esc(core.frpsVersion || "未检测")} / frpc ${esc(core.frpcVersion || "未检测")}</div>
             <div style="font-size:12px;color:var(--yc-muted);">来源: <code>${esc(core.coreSource || "bundled")}</code></div>
+            ${releaseStatus(chk?.frp)}
+            <a href="https://github.com/fatedier/frp/releases/latest" target="_blank" rel="noopener noreferrer">FRP 官方发布页</a>
           </div>
         </div>
 
@@ -4495,7 +4503,7 @@
             <input id="updProxyInput" type="text" style="flex:1;min-width:240px;" value="${esc(STATE.updateProxy || "")}" placeholder="如 http://127.0.0.1:2080 或 socks5://127.0.0.1:10808" />
             <button type="button" class="yc-btn yc-btn-outline" id="btnSaveUpdProxy">保存代理</button>
             <button type="button" class="yc-btn yc-btn-primary" id="btnCheckUpdates">检查更新</button>
-            <button type="button" class="yc-btn yc-btn-indigo" id="btnApplyFrpUpdate">热更新官方 FRP 核心</button>
+            <button type="button" class="yc-btn yc-btn-indigo" id="btnApplyFrpUpdate" ${chk?.frp && !chk.frp.error && !chk.frp.hasUpdate ? "disabled" : ""}>热更新官方 FRP 核心</button>
             <button type="button" class="yc-btn yc-btn-outline" id="btnApplyAppUpdate">自更新 KurumiFrp</button>
           </div>
         </label>
@@ -4519,7 +4527,8 @@
           method: "POST",
           body: { proxyURL: main.querySelector("#updProxyInput").value }
         });
-        toast("版本检查完成");
+        const failed = STATE.lastUpdateCheck.app?.error || STATE.lastUpdateCheck.frp?.error;
+        toast(failed ? "更新检查遇到问题，详见组件状态" : "版本检查完成", Boolean(failed));
         renderSystemUpdatesPane(main);
       } catch (err) {
         toast(err.message, true);
@@ -4532,7 +4541,8 @@
           method: "POST",
           body: { proxyURL: main.querySelector("#updProxyInput").value }
         });
-        toast(`官方 FRP 核心热替换成功，已自动恢复 ${res.restarted || 0} 个运行实例！`);
+        STATE.lastUpdateCheck = null;
+        toast(res.upToDate ? "FRP 核心已是最新版本" : `官方 FRP 核心热替换成功，已自动恢复 ${res.restarted || 0} 个运行实例！`);
         await refreshState(true);
       } catch (err) {
         toast(err.message, true);

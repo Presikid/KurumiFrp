@@ -115,6 +115,7 @@ type proxyRateSample struct {
 }
 
 type managedProc struct {
+	generation   uint64
 	id           string
 	kind         string // "frps" or "frpc"
 	cfgPath      string
@@ -140,6 +141,7 @@ type managedProc struct {
 
 // RuntimeSupervisor manages official frps & frpc child processes, Connection Dashboard polling, and Remote Instance Bridges.
 type RuntimeSupervisor struct {
+	lifecycleMu  sync.Mutex // serialize process ownership across configuration switches and core updates
 	mu           sync.RWMutex
 	dataDir      string
 	runtimeDir   string
@@ -200,25 +202,43 @@ func (rs *RuntimeSupervisor) AgentPort() int {
 	return rs.agentPort
 }
 
-// ResetForConfigSwitch stops all running instances and clears in-memory logs/errors/bridges in-place without replacing the RuntimeSupervisor pointer (A04).
-func (rs *RuntimeSupervisor) ResetForConfigSwitch() {
+// switchConfig settles the last sample while the old file is active. A failed
+// activation leaves its running instances intact. Late polls carry their original generation.
+func (rs *RuntimeSupervisor) switchConfig(activate func() error) error {
+	rs.lifecycleMu.Lock()
+	defer rs.lifecycleMu.Unlock()
 	rs.mu.RLock()
 	ids := make([]string, 0, len(rs.procs))
 	for id := range rs.procs {
 		ids = append(ids, id)
 	}
 	rs.mu.RUnlock()
-
-	var wg sync.WaitGroup
 	for _, id := range ids {
-		wg.Add(1)
-		go func(pid string) {
-			defer wg.Done()
-			_ = rs.StopInstance(pid)
-		}(id)
+		if err := rs.flushServerTrafficSnapshot(id); err != nil {
+			return err
+		}
 	}
-	wg.Wait()
+	if err := activate(); err != nil {
+		return err
+	}
+	if err := rs.resetForConfigSwitch(ids); err != nil {
+		rs.notifyChange()
+		return fmt.Errorf("新方案已启用，但停止旧实例失败: %w", err)
+	}
+	rs.scheduleAutoStarts()
+	return nil
+}
 
+func (rs *RuntimeSupervisor) resetForConfigSwitch(ids []string) error {
+	var stopErrors []error
+	for _, id := range ids {
+		if err := rs.stopInstance(id); err != nil {
+			stopErrors = append(stopErrors, err)
+		}
+	}
+	if err := errors.Join(stopErrors...); err != nil {
+		return err
+	}
 	rs.bridgeMu.Lock()
 	bridges := make([]*visitorBridge, 0, len(rs.bridges))
 	for _, b := range rs.bridges {
@@ -234,6 +254,7 @@ func (rs *RuntimeSupervisor) ResetForConfigSwitch() {
 	rs.historyLogs = make(map[string]*ringLogBuffer)
 	rs.lastErrors = make(map[string]string)
 	rs.mu.Unlock()
+	return nil
 }
 
 func (rs *RuntimeSupervisor) notifyChange() {
@@ -244,24 +265,52 @@ func (rs *RuntimeSupervisor) notifyChange() {
 
 // StartAutoStarts launches all ServerProfiles and ClientProfiles configured with AutoStart: true.
 func (rs *RuntimeSupervisor) StartAutoStarts() {
-	_, doc := rs.store.Snapshot()
-	for _, srv := range doc.Servers {
-		if srv.AutoStart {
-			srvCopy := srv
-			go func() { _ = rs.StartServer(srvCopy) }()
+	rs.lifecycleMu.Lock()
+	defer rs.lifecycleMu.Unlock()
+	rs.scheduleAutoStarts()
+}
+
+func (rs *RuntimeSupervisor) scheduleAutoStarts() {
+	generation := rs.store.activeGeneration()
+	go func() {
+		rs.lifecycleMu.Lock()
+		defer rs.lifecycleMu.Unlock()
+		if generation != rs.store.activeGeneration() {
+			return
 		}
-	}
-	for _, cli := range doc.Clients {
-		if cli.AutoStart {
-			cliCopy := cli
-			go func() { _ = rs.StartClient(cliCopy) }()
+		select {
+		case <-rs.stopPollCh:
+			return
+		default:
 		}
+		_, doc := rs.store.Snapshot()
+		for _, srv := range doc.Servers {
+			if srv.AutoStart {
+				rs.recordStartError(srv.ID, rs.startServer(srv))
+			}
+		}
+		for _, cli := range doc.Clients {
+			if cli.AutoStart {
+				rs.recordStartError(cli.ID, rs.startClient(cli))
+			}
+		}
+	}()
+}
+
+func (rs *RuntimeSupervisor) recordStartError(id string, err error) {
+	if err != nil {
+		rs.mu.Lock()
+		rs.lastErrors[id] = err.Error()
+		rs.mu.Unlock()
+		rs.notifyChange()
 	}
 }
 
 // HotSwapBinaries temporarily stops running frps/frpc instances so binary files are unlocked on Windows,
 // invokes swapFn to atomically replace binaries, and immediately restarts all previously running instances.
 func (rs *RuntimeSupervisor) HotSwapBinaries(swapFn func() error) (int, error) {
+	rs.lifecycleMu.Lock()
+	defer rs.lifecycleMu.Unlock()
 	rs.mu.RLock()
 	activeIDs := make(map[string]bool, len(rs.procs))
 	for id, p := range rs.procs {
@@ -274,53 +323,102 @@ func (rs *RuntimeSupervisor) HotSwapBinaries(swapFn func() error) (int, error) {
 	}
 	rs.mu.RUnlock()
 
-	var wg sync.WaitGroup
+	var failures []error
+	stopped := make(map[string]bool)
 	for id := range activeIDs {
-		wg.Add(1)
-		go func(instanceID string) {
-			defer wg.Done()
-			_ = rs.StopInstance(instanceID)
-		}(id)
-	}
-	wg.Wait()
-
-	if err := swapFn(); err != nil {
-		_, doc := rs.store.Snapshot()
-		for _, srv := range doc.Servers {
-			if activeIDs[srv.ID] {
-				_ = rs.StartServer(srv)
-			}
+		if err := rs.stopInstance(id); err != nil {
+			failures = append(failures, fmt.Errorf("停止 %s: %w", id, err))
+		} else {
+			stopped[id] = true
 		}
-		for _, cli := range doc.Clients {
-			if activeIDs[cli.ID] {
-				_ = rs.StartClient(cli)
-			}
-		}
-		return 0, err
 	}
-
+	if len(failures) == 0 {
+		if err := swapFn(); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	total := len(activeIDs)
 	restarted := 0
 	_, doc := rs.store.Snapshot()
+	restore := func(id string, err error) {
+		if err == nil {
+			err = rs.waitForAdmin(id)
+		}
+		if err != nil {
+			rs.recordStartError(id, err)
+			failures = append(failures, fmt.Errorf("恢复 %s: %w", id, err))
+		} else {
+			restarted++
+		}
+		delete(stopped, id)
+	}
 	for _, srv := range doc.Servers {
-		if activeIDs[srv.ID] {
-			if err := rs.StartServer(srv); err == nil {
-				restarted++
-			}
+		if stopped[srv.ID] {
+			restore(srv.ID, rs.startServer(srv))
 		}
 	}
 	for _, cli := range doc.Clients {
-		if activeIDs[cli.ID] {
-			if err := rs.StartClient(cli); err == nil {
-				restarted++
-			}
+		if stopped[cli.ID] {
+			restore(cli.ID, rs.startClient(cli))
 		}
 	}
+	for id := range stopped {
+		failures = append(failures, fmt.Errorf("无法恢复 %s，活动配置中缺少此实例", id))
+	}
 	rs.notifyChange()
+	if len(failures) > 0 {
+		return restarted, fmt.Errorf("原有 %d 个实例，已恢复 %d 个: %w", total, restarted, errors.Join(failures...))
+	}
 	return restarted, nil
+}
+
+func (rs *RuntimeSupervisor) waitForAdmin(id string) error {
+	rs.mu.RLock()
+	p := rs.procs[id]
+	rs.mu.RUnlock()
+	if p == nil {
+		return errors.New("核心进程已退出")
+	}
+	suffix := "/api/status"
+	if p.kind == "frps" {
+		suffix = "/api/serverinfo"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d%s", p.adminPort, suffix), nil)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(p.adminUser, p.adminPass)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		resp, err := rs.httpClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				select {
+				case <-p.done:
+					return errors.New("核心进程已退出")
+				default:
+					return nil
+				}
+			}
+		}
+		select {
+		case <-p.done:
+			return errors.New("核心进程已退出")
+		case <-ctx.Done():
+			return errors.New("核心管理端口未就绪")
+		case <-ticker.C:
+		}
+	}
 }
 
 // StopAll gracefully terminates all running frps and frpc child processes and internal visitor bridges.
 func (rs *RuntimeSupervisor) StopAll() {
+	rs.lifecycleMu.Lock()
+	defer rs.lifecycleMu.Unlock()
 	select {
 	case <-rs.stopPollCh:
 	default:
@@ -338,7 +436,7 @@ func (rs *RuntimeSupervisor) StopAll() {
 		wg.Add(1)
 		go func(pid string) {
 			defer wg.Done()
-			_ = rs.StopInstance(pid)
+			_ = rs.stopInstance(pid)
 		}(id)
 	}
 	wg.Wait()
@@ -361,6 +459,17 @@ func (rs *RuntimeSupervisor) IsInstanceRunning(id string) bool {
 // StartServer pre-verifies new configuration on a staging file BEFORE stopping any live frps instance (F04),
 // and injects pluginSecret as a clean REST path segment to avoid double-'?' query truncation (F01).
 func (rs *RuntimeSupervisor) StartServer(srv ServerProfile) error {
+	rs.lifecycleMu.Lock()
+	defer rs.lifecycleMu.Unlock()
+	return rs.startServer(srv)
+}
+
+func (rs *RuntimeSupervisor) startServer(srv ServerProfile) error {
+	select {
+	case <-rs.stopPollCh:
+		return errors.New("服务正在关闭")
+	default:
+	}
 	if _, err := ValidateAllowPortsSpec(srv.AllowPorts); err != nil {
 		return err
 	}
@@ -399,8 +508,9 @@ func (rs *RuntimeSupervisor) StartServer(srv ServerProfile) error {
 	}
 
 	// Pre-verification passed: flush traffic counters & stop old instance before swapping live config
-	rs.flushServerTrafficSnapshot(srv.ID)
-	_ = rs.StopInstance(srv.ID)
+	if err := rs.stopInstance(srv.ID); err != nil {
+		return err
+	}
 
 	cfgPath := filepath.Join(rs.runtimeDir, srv.ID+".toml")
 	if err := replaceFileAtomic(stagingPath, cfgPath, 0o600); err != nil {
@@ -413,6 +523,17 @@ func (rs *RuntimeSupervisor) StartServer(srv ServerProfile) error {
 
 // StartClient pre-verifies new configuration on a staging file BEFORE stopping any live frpc instance.
 func (rs *RuntimeSupervisor) StartClient(cli ClientProfile) error {
+	rs.lifecycleMu.Lock()
+	defer rs.lifecycleMu.Unlock()
+	return rs.startClient(cli)
+}
+
+func (rs *RuntimeSupervisor) startClient(cli ClientProfile) error {
+	select {
+	case <-rs.stopPollCh:
+		return errors.New("服务正在关闭")
+	default:
+	}
 	bins := LocateBinaries(rs.dataDir)
 	if !bins.FrpcFound {
 		return errors.New("未找到内置 frpc 核心程序，请确认安装包完整或将官方 frpc 放入 data/bin 目录")
@@ -445,7 +566,9 @@ func (rs *RuntimeSupervisor) StartClient(cli ClientProfile) error {
 		return err
 	}
 
-	_ = rs.StopInstance(cli.ID)
+	if err := rs.stopInstance(cli.ID); err != nil {
+		return err
+	}
 
 	cfgPath := filepath.Join(rs.runtimeDir, cli.ID+".toml")
 	if err := replaceFileAtomic(stagingPath, cfgPath, 0o600); err != nil {
@@ -459,6 +582,12 @@ func (rs *RuntimeSupervisor) StartClient(cli ClientProfile) error {
 // ReloadOrRestartClient uses official frpc /api/reload ONLY when common non-proxy settings AND secret env slice are unchanged (F02, F03);
 // otherwise it gracefully restarts the subprocess after pre-verification.
 func (rs *RuntimeSupervisor) ReloadOrRestartClient(cli ClientProfile) error {
+	rs.lifecycleMu.Lock()
+	defer rs.lifecycleMu.Unlock()
+	return rs.reloadOrRestartClient(cli)
+}
+
+func (rs *RuntimeSupervisor) reloadOrRestartClient(cli ClientProfile) error {
 	rs.mu.RLock()
 	p, running := rs.procs[cli.ID]
 	rs.mu.RUnlock()
@@ -477,7 +606,7 @@ func (rs *RuntimeSupervisor) ReloadOrRestartClient(cli ClientProfile) error {
 
 	newSig := clientCommonSignature(cli)
 	if oldSig != newSig {
-		return rs.StartClient(cli)
+		return rs.startClient(cli)
 	}
 
 	bins := LocateBinaries(rs.dataDir)
@@ -497,7 +626,7 @@ func (rs *RuntimeSupervisor) ReloadOrRestartClient(cli ClientProfile) error {
 		AgentToken: cli.AgentToken,
 	})
 	if !equalStringSlices(oldEnv, rendered.Env) {
-		return rs.StartClient(cli)
+		return rs.startClient(cli)
 	}
 
 	stagingPath := cfgPath + ".staging"
@@ -527,7 +656,7 @@ func (rs *RuntimeSupervisor) ReloadOrRestartClient(cli ClientProfile) error {
 			}
 		}
 	}
-	return rs.StartClient(cli)
+	return rs.startClient(cli)
 }
 
 func clientCommonSignature(cli ClientProfile) string {
@@ -575,6 +704,7 @@ func (rs *RuntimeSupervisor) spawnProcess(id, kind, binPath, cfgPath string, ren
 	}
 
 	proc := &managedProc{
+		generation:    rs.store.activeGeneration(),
 		id:            id,
 		kind:          kind,
 		cfgPath:       cfgPath,
@@ -637,6 +767,12 @@ func (rs *RuntimeSupervisor) spawnProcess(id, kind, binPath, cfgPath string, ren
 
 // StopInstance stops a running frps or frpc instance outside the global mutex so UI requests never hang.
 func (rs *RuntimeSupervisor) StopInstance(id string) error {
+	rs.lifecycleMu.Lock()
+	defer rs.lifecycleMu.Unlock()
+	return rs.stopInstance(id)
+}
+
+func (rs *RuntimeSupervisor) stopInstance(id string) error {
 	rs.flushServerTrafficSnapshot(id)
 	rs.mu.Lock()
 	delete(rs.lastErrors, id)
@@ -659,6 +795,7 @@ func (rs *RuntimeSupervisor) StopInstance(id string) error {
 		select {
 		case <-p.done:
 		case <-time.After(1 * time.Second):
+			return fmt.Errorf("等待实例 %s 退出超时", id)
 		}
 	}
 
@@ -1074,7 +1211,7 @@ func (rs *RuntimeSupervisor) pollServerAdmin(p *managedProc, srv ServerProfile) 
 	}
 	p.mu.Unlock()
 	if len(pendingPolicyUpdates) > 0 {
-		rs.persistTrafficDeltas(srv.ID, pendingPolicyUpdates)
+		rs.persistTrafficDeltas(p, pendingPolicyUpdates)
 	}
 	return len(discovered) > 0 || len(ctrlStatus) > 0
 }
@@ -1238,10 +1375,15 @@ func stripANSI(s string) string {
 	return out.String()
 }
 
-func (rs *RuntimeSupervisor) persistTrafficDeltas(serverID string, updates map[string][4]int64) {
-	_ = rs.store.Update(func(doc *ConfigDocument) error {
+func (rs *RuntimeSupervisor) persistTrafficDeltas(p *managedProc, updates map[string][4]int64) error {
+	rs.store.mu.Lock()
+	defer rs.store.mu.Unlock()
+	if p.generation != rs.store.generation {
+		return nil
+	}
+	return rs.store.updateLocked(func(doc *ConfigDocument) error {
 		for i := range doc.Servers {
-			if doc.Servers[i].ID == serverID {
+			if doc.Servers[i].ID == p.id {
 				if doc.Servers[i].ConnPolicies == nil {
 					doc.Servers[i].ConnPolicies = make(map[string]ConnPolicy)
 				}
@@ -1279,12 +1421,12 @@ func (rs *RuntimeSupervisor) CurrentProxyRawTraffic(serverID, proxyName string) 
 	return 0, 0
 }
 
-func (rs *RuntimeSupervisor) flushServerTrafficSnapshot(serverID string) {
+func (rs *RuntimeSupervisor) flushServerTrafficSnapshot(serverID string) error {
 	rs.mu.RLock()
 	p, ok := rs.procs[serverID]
 	rs.mu.RUnlock()
 	if !ok || p == nil {
-		return
+		return nil
 	}
 	p.mu.Lock()
 	liveConns := make(map[string]ConnLiveItem, len(p.conns))
@@ -1297,14 +1439,14 @@ func (rs *RuntimeSupervisor) flushServerTrafficSnapshot(serverID string) {
 	}
 	p.mu.Unlock()
 	if len(liveConns) == 0 {
-		return
+		return nil
 	}
 	updates := make(map[string][4]int64)
 	for name, c := range liveConns {
 		raw := samples[name]
 		updates[name] = [4]int64{c.TotalInBytes, c.TotalOutBytes, raw.inBytes, raw.outBytes}
 	}
-	rs.persistTrafficDeltas(serverID, updates)
+	return rs.persistTrafficDeltas(p, updates)
 }
 
 // ClearInstanceError clears retained crash errors, buffered logs, and runtime TOML artifacts when an instance profile is deleted (A08).
