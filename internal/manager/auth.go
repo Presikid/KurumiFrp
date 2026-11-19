@@ -282,16 +282,24 @@ func (a *AuthManager) UpdateCredentials(currentPassword, newUsername, newPasswor
 	if _, err := rand.Read(salt); err != nil {
 		return err
 	}
-	sum := pbkdf2SHA256([]byte(newPassword), salt, pbkdf2Iterations, 32)
-	a.account = adminAccountFile{
+	sum := pbkdf2SHA256([]byte(newPassword), salt, pbkdf2Iterations, sha256.Size)
+	nextAcc := adminAccountFile{
 		Version:  2,
 		Username: newUsername,
 		Salt:     base64.RawStdEncoding.EncodeToString(salt),
 		Hash:     base64.RawStdEncoding.EncodeToString(sum),
 	}
+	b, err := json.MarshalIndent(nextAcc, "", "  ")
+	if err != nil {
+		return err
+	}
+	if _, err := writeIfChanged(a.accountPath, append(b, '\n'), 0o600); err != nil {
+		return err
+	}
+	a.account = nextAcc
 	a.emptyPassword = (newPassword == "")
 	a.revoked = make(map[string]time.Time)
-	return a.saveAccountLocked()
+	return nil
 }
 
 // Logout revokes the active session cookie immediately.
@@ -431,7 +439,10 @@ func verifyPasswordRecord(rec adminAccountFile, password string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	got := pbkdf2SHA256([]byte(password), salt, pbkdf2Iterations, len(want))
+	if len(salt) == 0 || len(want) != sha256.Size {
+		return false, errors.New("管理员凭据记录不完整")
+	}
+	got := pbkdf2SHA256([]byte(password), salt, pbkdf2Iterations, sha256.Size)
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }
 

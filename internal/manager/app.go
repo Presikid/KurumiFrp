@@ -1386,13 +1386,15 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		var req struct {
 			ProxyURL *string `json:"proxyURL"`
 		}
-		if r.ContentLength > 0 {
-			if err := readJSONBody(r, &req); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
+		if err := readOptionalJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		coreInfo, restarted, err := a.updater.ApplyFRPUpdate(r.Context(), req.ProxyURL)
+		if errors.Is(err, errFRPUpToDate) {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "upToDate": true, "core": coreInfo, "restarted": 0})
+			return
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -1412,14 +1414,16 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		var req struct {
 			ProxyURL *string `json:"proxyURL"`
 		}
-		if r.ContentLength > 0 {
-			if err := readJSONBody(r, &req); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
+		if err := readOptionalJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		lsSpec, oArgs := a.getRuntimeMeta()
 		targetVer, err := a.updater.ApplyAppUpdate(r.Context(), req.ProxyURL, lsSpec, oArgs)
+		if errors.Is(err, errAppUpToDate) {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "upToDate": true, "restarting": false, "targetVersion": targetVer})
+			return
+		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -1448,11 +1452,9 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 			Ref      string  `json:"ref"`
 			PackID   string  `json:"packId"`
 		}
-		if r.ContentLength > 0 {
-			if err := readJSONBody(r, &req); err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
+		if err := readOptionalJSONBody(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		st, err := a.assets.StartPull(req.ProxyURL, req.Ref, req.PackID)
 		if err != nil {
@@ -1571,16 +1573,43 @@ func sameOriginRequest(r *http.Request) bool {
 		}
 		return true
 	}
-	if r.Header.Get("X-Kurumi-Requested-With") != "" || strings.HasPrefix(ct, "application/json") || r.ContentLength <= 0 {
+	if r.Header.Get("X-Kurumi-Requested-With") != "" || strings.HasPrefix(ct, "application/json") || r.ContentLength == 0 {
 		return true
 	}
 	return false
 }
 
 func readJSONBody(r *http.Request, dst any) error {
-	dec := json.NewDecoder(io.LimitReader(r.Body, maxConfigBytes))
+	if r.Body == nil {
+		return errors.New("请求体为空")
+	}
+	reader := http.MaxBytesReader(nil, r.Body, maxConfigBytes)
+	defer reader.Close()
+	dec := json.NewDecoder(reader)
 	if err := dec.Decode(dst); err != nil {
 		return fmt.Errorf("解析请求 JSON 失败: %w", err)
+	}
+	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
+		return errors.New("JSON 请求包含多余内容或超出大小限制")
+	}
+	return nil
+}
+
+func readOptionalJSONBody(r *http.Request, dst any) error {
+	if r.Body == nil || r.ContentLength == 0 {
+		return nil
+	}
+	reader := http.MaxBytesReader(nil, r.Body, maxConfigBytes)
+	defer reader.Close()
+	dec := json.NewDecoder(reader)
+	if err := dec.Decode(dst); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return fmt.Errorf("解析请求 JSON 失败: %w", err)
+	}
+	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
+		return errors.New("JSON 请求包含多余内容或超出大小限制")
 	}
 	return nil
 }
@@ -1600,39 +1629,4 @@ func maxInt64(a, b int64) int64 {
 		return a
 	}
 	return b
-}
-
-func compareSemVer(a, b string) int {
-	clean := func(s string) []string {
-		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), "v"))
-		if idx := strings.IndexAny(s, "-+"); idx >= 0 {
-			s = s[:idx]
-		}
-		return strings.Split(s, ".")
-	}
-	pa := clean(a)
-	pb := clean(b)
-	n := len(pa)
-	if len(pb) > n {
-		n = len(pb)
-	}
-	if n < 3 {
-		n = 3
-	}
-	for i := 0; i < n; i++ {
-		var va, vb int
-		if i < len(pa) {
-			fmt.Sscanf(pa[i], "%d", &va)
-		}
-		if i < len(pb) {
-			fmt.Sscanf(pb[i], "%d", &vb)
-		}
-		if va != vb {
-			if va > vb {
-				return 1
-			}
-			return -1
-		}
-	}
-	return 0
 }

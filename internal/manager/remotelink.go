@@ -544,20 +544,23 @@ func (rs *RuntimeSupervisor) resolveRemoteAgentEndpoint(serverID, clientID strin
 		return "", nil, errors.New("未找到所属 frps 配置")
 	}
 
-	port, err := rs.ensureVisitorBridge(*srv, sessCopy)
+	port, err := rs.ensureVisitorBridge(*srv, sessCopy, proc)
 	if err != nil {
 		return "", nil, err
 	}
 	return fmt.Sprintf("http://127.0.0.1:%d", port), &sessCopy, nil
 }
 
-func (rs *RuntimeSupervisor) ensureVisitorBridge(srv ServerProfile, sess remoteClientSession) (int, error) {
+func (rs *RuntimeSupervisor) ensureVisitorBridge(srv ServerProfile, sess remoteClientSession, owner *managedProc) (int, error) {
 	key := srv.ID + "::" + sess.clientID
 
 	rs.bridgeMu.Lock()
 	if existing, ok := rs.bridges[key]; ok && existing != nil {
 		select {
 		case <-existing.done:
+			if existing.cfgPath != "" {
+				_ = os.Remove(existing.cfgPath)
+			}
 			delete(rs.bridges, key)
 		default:
 			if existing.ctrlProxy == sess.ctrlProxyName && existing.ctrlSecret == sess.ctrlSecret {
@@ -678,7 +681,32 @@ func (rs *RuntimeSupervisor) ensureVisitorBridge(srv ServerProfile, sess remoteC
 		return 0, errors.New("等待客户端远控通道就绪超时")
 	}
 
+	rs.mu.RLock()
+	ownerAlive := (owner == nil || rs.procs[srv.ID] == owner)
+	rs.mu.RUnlock()
+	if !ownerAlive {
+		terminateVisitorBridge(br)
+		return 0, errors.New("所属服务端实例已停止，已取消远控桥接")
+	}
+
 	rs.bridgeMu.Lock()
+	if existing, ok := rs.bridges[key]; ok && existing != nil {
+		select {
+		case <-existing.done:
+			if existing.cfgPath != "" {
+				_ = os.Remove(existing.cfgPath)
+			}
+		default:
+			if existing.ctrlProxy == sess.ctrlProxyName && existing.ctrlSecret == sess.ctrlSecret {
+				existing.lastUsed = time.Now()
+				p := existing.bindPort
+				rs.bridgeMu.Unlock()
+				terminateVisitorBridge(br)
+				return p, nil
+			}
+			go terminateVisitorBridge(existing)
+		}
+	}
 	rs.bridges[key] = br
 	rs.bridgeMu.Unlock()
 	return bindPort, nil

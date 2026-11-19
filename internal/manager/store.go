@@ -145,7 +145,7 @@ func (s *Store) tryMigrateLegacyOrDefault() ConfigDocument {
 	if err := json.Unmarshal(raw, &leg); err != nil {
 		return doc
 	}
-	clientMap := make(map[string]*ClientProfile)
+	clientIndex := make(map[string]int)
 	for _, inst := range leg.State.Instances {
 		if inst.Kind == "frps" {
 			addr := inst.Host
@@ -187,14 +187,15 @@ func (s *Store) tryMigrateLegacyOrDefault() ConfigDocument {
 				Tunnels:    []TunnelRule{},
 			}
 			doc.Clients = append(doc.Clients, cp)
-			clientMap[inst.ID] = &doc.Clients[len(doc.Clients)-1]
+			clientIndex[inst.ID] = len(doc.Clients) - 1
 		}
 	}
 	for _, t := range leg.State.Tunnels {
-		cp, ok := clientMap[t.InstanceID]
+		idx, ok := clientIndex[t.InstanceID]
 		if !ok {
 			continue
 		}
+		cp := &doc.Clients[idx]
 		cp.Tunnels = append(cp.Tunnels, TunnelRule{
 			ID:            nonEmptyID(t.ID, "tun"),
 			Name:          nonEmptyStr(t.Name, "rule"),
@@ -524,32 +525,27 @@ func writeIfChanged(path string, data []byte, perm os.FileMode) (bool, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return false, err
 	}
-	tmpPath := fmt.Sprintf("%s.tmp.%s", path, randomTokenHex(4))
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	tmpFile, err := os.CreateTemp(dir, ".kurumi-tmp-*")
 	if err != nil {
 		return false, err
 	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
 		_ = os.Remove(tmpPath)
 		return false, err
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
 		_ = os.Remove(tmpPath)
 		return false, err
 	}
-	if err := f.Close(); err != nil {
+	if err := tmpFile.Close(); err != nil {
 		_ = os.Remove(tmpPath)
 		return false, err
 	}
+	_ = os.Chmod(tmpPath, perm)
 	if err := os.Rename(tmpPath, path); err != nil {
-		if runtime.GOOS == "windows" {
-			_ = os.Remove(path)
-			if err2 := os.Rename(tmpPath, path); err2 == nil {
-				return true, nil
-			}
-		}
 		_ = os.Remove(tmpPath)
 		return false, err
 	}

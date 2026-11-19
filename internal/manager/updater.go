@@ -30,7 +30,7 @@ import (
 
 const (
 	maxUpdateArchiveBytes = 160 << 20 // 160 MiB safety ceiling
-	defaultGitHubAPIBase  = "https://api.github.com"
+	defaultGitHubWebBase  = "https://github.com"
 )
 
 // UpdateSettings stores optional proxy configuration in data/update_settings.json.
@@ -51,6 +51,7 @@ type ComponentUpdateStatus struct {
 	ReleaseURL    string `json:"releaseURL"`
 	ManualHint    string `json:"manualHint,omitempty"`
 	Error         string `json:"error,omitempty"`
+	sha256        string
 }
 
 // CombinedUpdateCheck is returned by /api/update/check.
@@ -69,8 +70,9 @@ type ghRelease struct {
 
 type ghAsset struct {
 	Name               string `json:"name"`
-	Size               int64  `json:"size"`
+	Size               int64  `json:"size,omitempty"`
 	BrowserDownloadURL string `json:"browser_download_url"`
+	sha256             string
 }
 
 // UpdateManager coordinates version checks, official FRP hot-updates, and KurumiFrp self-updates.
@@ -82,7 +84,8 @@ type UpdateManager struct {
 	settings     UpdateSettings
 	runtime      *RuntimeSupervisor
 	onShutdown   func(exitCode int)
-	apiBase      string
+	webBase      string
+	releases     map[releaseRepo]cachedRelease
 	allowLocal   bool // enabled only in unit tests for 127.0.0.1 httptest servers
 }
 
@@ -93,7 +96,8 @@ func NewUpdateManager(dataDir string, rt *RuntimeSupervisor, onShutdown func(exi
 		settingsPath: filepath.Join(dataDir, "update_settings.json"),
 		runtime:      rt,
 		onShutdown:   onShutdown,
-		apiBase:      defaultGitHubAPIBase,
+		webBase:      defaultGitHubWebBase,
+		releases:     make(map[releaseRepo]cachedRelease),
 	}
 	if raw, err := os.ReadFile(um.settingsPath); err == nil {
 		var s UpdateSettings
@@ -121,11 +125,12 @@ func (u *UpdateManager) SaveProxyURL(raw string) (string, error) {
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	u.settings.ProxyURL = norm
-	b, _ := json.MarshalIndent(u.settings, "", "  ")
+	next := UpdateSettings{ProxyURL: norm}
+	b, _ := json.MarshalIndent(next, "", "  ")
 	if _, err := writeIfChanged(u.settingsPath, append(b, '\n'), 0o600); err != nil {
 		return "", err
 	}
+	u.settings = next
 	return norm, nil
 }
 
@@ -208,7 +213,6 @@ func validateDownloadURL(u *url.URL, allowLocal bool) error {
 	}
 	allowed := map[string]bool{
 		"github.com":                           true,
-		"api.github.com":                       true,
 		"raw.githubusercontent.com":            true,
 		"objects.githubusercontent.com":        true,
 		"release-assets.githubusercontent.com": true,
@@ -226,7 +230,7 @@ func (u *UpdateManager) CheckAll(ctx context.Context, proxyOverride *string) (Co
 	if err != nil {
 		return CombinedUpdateCheck{}, err
 	}
-	client, err := u.httpClient(proxyStr, 10*time.Second)
+	client, err := u.httpClient(proxyStr, 15*time.Second)
 	if err != nil {
 		return CombinedUpdateCheck{}, err
 	}
@@ -236,11 +240,11 @@ func (u *UpdateManager) CheckAll(ctx context.Context, proxyOverride *string) (Co
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		appStatus, _ = u.checkAppRelease(ctx, client)
+		appStatus, _ = u.checkAppRelease(ctx, client, proxyStr)
 	}()
 	go func() {
 		defer wg.Done()
-		frpStatus, _ = u.checkFRPRelease(ctx, client)
+		frpStatus, _ = u.checkFRPRelease(ctx, client, proxyStr)
 	}()
 	wg.Wait()
 
@@ -251,7 +255,7 @@ func (u *UpdateManager) CheckAll(ctx context.Context, proxyOverride *string) (Co
 	}, nil
 }
 
-func (u *UpdateManager) checkAppRelease(ctx context.Context, client *http.Client) (ComponentUpdateStatus, *ghRelease) {
+func (u *UpdateManager) checkAppRelease(ctx context.Context, client *http.Client, proxyStr string) (ComponentUpdateStatus, *ghRelease) {
 	exePath, _ := os.Executable()
 	canSelf, mode, hint := canPlatformSelfUpdateApp(exePath)
 	st := ComponentUpdateStatus{
@@ -263,55 +267,27 @@ func (u *UpdateManager) checkAppRelease(ctx context.Context, client *http.Client
 		ManualHint:    hint,
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(u.apiBase, "/")+"/repos/Presikid/KurumiFrp/releases?per_page=5", nil)
+	rel, err := u.latestRelease(ctx, client, proxyStr, appRepo)
 	if err != nil {
-		st.Error = err.Error()
-		return st, nil
-	}
-	req.Header.Set("User-Agent", "KurumiFrp/"+version.Current)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := client.Do(req)
-	if err != nil {
-		st.Error = "连接 GitHub 失败（可填写下方本地代理后重试）"
-		return st, nil
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		st.Error = fmt.Sprintf("GitHub API 返回状态码 %d", resp.StatusCode)
+		st.Error = fmt.Sprintf("查询最新版本失败（可配置代理后重试）: %v", err)
 		return st, nil
 	}
 
-	var rels []ghRelease
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&rels); err != nil {
-		st.Error = "解析版本信息失败"
-		return st, nil
-	}
-
-	var chosen *ghRelease
-	for i := range rels {
-		if !rels[i].Draft && rels[i].TagName != "" {
-			chosen = &rels[i]
-			break
-		}
-	}
-	if chosen == nil {
-		return st, nil
-	}
-
-	st.Latest = strings.TrimPrefix(chosen.TagName, "v")
-	if chosen.HTMLURL != "" {
-		st.ReleaseURL = chosen.HTMLURL
+	st.Latest = strings.TrimPrefix(rel.TagName, "v")
+	if rel.HTMLURL != "" {
+		st.ReleaseURL = rel.HTMLURL
 	}
 	st.HasUpdate = compareSemVer(st.Latest, st.Current) > 0
 
-	if asset, ok := matchAppAsset(chosen.Assets, st.Latest, canSelf); ok {
+	if asset, ok := matchAppAsset(rel.Assets, st.Latest, canSelf); ok {
 		st.AssetName = asset.Name
 		st.AssetURL = asset.BrowserDownloadURL
 		st.AssetSize = asset.Size
+		st.sha256 = asset.sha256
 	} else {
 		st.CanAutoUpdate = false
 	}
-	return st, chosen
+	return st, &rel
 }
 
 func matchAppAsset(assets []ghAsset, ver string, preferSelfUpdateArchive bool) (ghAsset, bool) {
@@ -320,7 +296,10 @@ func matchAppAsset(assets []ghAsset, ver string, preferSelfUpdateArchive bool) (
 	case "windows":
 		wantNames = []string{fmt.Sprintf("KurumiFRP-%s-Setup.exe", ver)}
 	case "linux":
-		armVariant := detectLinuxARMVariant()
+		armVariant := "arm64"
+		if runtime.GOARCH == "arm" {
+			armVariant = detectLinuxARMVariant()
+		}
 		archMap := map[string]string{
 			"amd64":    "amd64",
 			"arm64":    "arm64",
@@ -344,7 +323,7 @@ func matchAppAsset(assets []ghAsset, ver string, preferSelfUpdateArchive bool) (
 			}
 			debName := fmt.Sprintf("kurumifrp_%s_%s.deb", ver, debArch)
 			if preferSelfUpdateArchive {
-				wantNames = []string{tarName, debName}
+				wantNames = []string{tarName}
 			} else {
 				wantNames = []string{debName, tarName}
 			}
@@ -368,7 +347,7 @@ func frpPlatformSlug() (string, string, bool) {
 		}
 	case "linux":
 		switch runtime.GOARCH {
-		case "amd64", "arm64", "riscv64", "loong64":
+		case "amd64", "arm64", "riscv64", "loong64", "mips", "mipsle", "mips64", "mips64le":
 			return "linux_" + runtime.GOARCH, ".tar.gz", true
 		case "arm":
 			return "linux_" + detectLinuxARMVariant(), ".tar.gz", true
@@ -381,7 +360,7 @@ func frpPlatformSlug() (string, string, bool) {
 	return "", "", false
 }
 
-func (u *UpdateManager) checkFRPRelease(ctx context.Context, client *http.Client) (ComponentUpdateStatus, *ghRelease) {
+func (u *UpdateManager) checkFRPRelease(ctx context.Context, client *http.Client, proxyStr string) (ComponentUpdateStatus, *ghRelease) {
 	core := LocateBinaries(u.dataDir)
 	curVer := core.FrpsVersion
 	if curVer == "" || curVer == "unknown" {
@@ -403,27 +382,9 @@ func (u *UpdateManager) checkFRPRelease(ctx context.Context, client *http.Client
 		ReleaseURL:    "https://github.com/fatedier/frp/releases",
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(u.apiBase, "/")+"/repos/fatedier/frp/releases/latest", nil)
+	rel, err := u.latestRelease(ctx, client, proxyStr, frpRepo)
 	if err != nil {
-		st.Error = err.Error()
-		return st, nil
-	}
-	req.Header.Set("User-Agent", "KurumiFrp/"+version.Current)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := client.Do(req)
-	if err != nil {
-		st.Error = "查询上游 fatedier/frp 版本失败（可配置代理后重试）"
-		return st, nil
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		st.Error = fmt.Sprintf("上游 API 返回状态码 %d", resp.StatusCode)
-		return st, nil
-	}
-
-	var rel ghRelease
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&rel); err != nil {
-		st.Error = "解析上游 FRP 版本信息失败"
+		st.Error = fmt.Sprintf("查询上游 fatedier/frp 版本失败（可配置代理后重试）: %v", err)
 		return st, nil
 	}
 
@@ -443,6 +404,7 @@ func (u *UpdateManager) checkFRPRelease(ctx context.Context, client *http.Client
 				st.AssetName = a.Name
 				st.AssetURL = a.BrowserDownloadURL
 				st.AssetSize = a.Size
+				st.sha256 = a.sha256
 				break
 			}
 		}
@@ -469,45 +431,26 @@ func (u *UpdateManager) ApplyFRPUpdate(ctx context.Context, proxyOverride *strin
 		return CoreBinaryInfo{}, 0, err
 	}
 
-	st, rel := u.checkFRPRelease(ctx, client)
+	st, rel := u.checkFRPRelease(ctx, client, proxyStr)
 	if st.Error != "" {
 		return CoreBinaryInfo{}, 0, errors.New(st.Error)
 	}
-	if !st.CanAutoUpdate || st.AssetURL == "" || rel == nil {
-		return CoreBinaryInfo{}, 0, errors.New("当前系统架构暂不支持自动拉取上游 FRP 二进制包")
+	if !st.HasUpdate {
+		return LocateBinaries(u.dataDir), 0, errFRPUpToDate
+	}
+	if !st.CanAutoUpdate || st.AssetURL == "" || st.sha256 == "" || rel == nil {
+		return CoreBinaryInfo{}, 0, errors.New("当前系统架构暂不支持自动拉取上游 FRP 二进制包或缺少校验摘要")
 	}
 
-	// 1. Download and parse official frp_sha256_checksums.txt
-	var checksumURL string
-	for _, a := range rel.Assets {
-		if a.Name == "frp_sha256_checksums.txt" {
-			checksumURL = a.BrowserDownloadURL
-			break
-		}
-	}
-	if checksumURL == "" {
-		return CoreBinaryInfo{}, 0, errors.New("上游发布缺少官方 frp_sha256_checksums.txt 校验文件，出于安全考虑已中止")
-	}
-	sumBytes, err := u.downloadBytes(ctx, client, checksumURL, 2<<20)
-	if err != nil {
-		return CoreBinaryInfo{}, 0, fmt.Errorf("下载官方 SHA-256 校验表失败: %w", err)
-	}
-	expectedHash, ok := findSHA256ForAsset(string(sumBytes), st.AssetName)
-	if !ok {
-		return CoreBinaryInfo{}, 0, fmt.Errorf("未在官方校验表中找到 %s 的 SHA-256 记录", st.AssetName)
-	}
-
-	// 2. Download archive and verify exact SHA-256 before touching disk binaries
 	archiveBytes, err := u.downloadBytes(ctx, client, st.AssetURL, maxUpdateArchiveBytes)
 	if err != nil {
 		return CoreBinaryInfo{}, 0, fmt.Errorf("下载官方 FRP 压缩包失败: %w", err)
 	}
 	actualSum := sha256.Sum256(archiveBytes)
-	if !strings.EqualFold(hex.EncodeToString(actualSum[:]), expectedHash) {
+	if !strings.EqualFold(hex.EncodeToString(actualSum[:]), st.sha256) {
 		return CoreBinaryInfo{}, 0, errors.New("官方 FRP 压缩包 SHA-256 校验不一致，已拒绝安装")
 	}
 
-	// 3. Extract frpc, frps, and LICENSE in memory and stage .new files inside data/bin/
 	frpcRaw, frpsRaw, licRaw, err := extractFRPMembers(st.AssetName, archiveBytes)
 	if err != nil {
 		return CoreBinaryInfo{}, 0, err
@@ -520,6 +463,8 @@ func (u *UpdateManager) ApplyFRPUpdate(ctx context.Context, proxyOverride *strin
 
 	frpcName := binaryFileName("frpc")
 	frpsName := binaryFileName("frps")
+	frpcDst := filepath.Join(binDir, frpcName)
+	frpsDst := filepath.Join(binDir, frpsName)
 	frpcTmp := filepath.Join(binDir, frpcName+".new")
 	frpsTmp := filepath.Join(binDir, frpsName+".new")
 	defer func() {
@@ -534,7 +479,6 @@ func (u *UpdateManager) ApplyFRPUpdate(ctx context.Context, proxyOverride *strin
 		return CoreBinaryInfo{}, 0, err
 	}
 
-	// Smoke-check staged binary execution before stopping any live tunnels
 	smokeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	smokeCmd := exec.CommandContext(smokeCtx, frpcTmp, "-v")
 	childprocess.Configure(smokeCmd)
@@ -544,14 +488,20 @@ func (u *UpdateManager) ApplyFRPUpdate(ctx context.Context, proxyOverride *strin
 		return CoreBinaryInfo{}, 0, fmt.Errorf("新下载的 FRP 核心无法在当前系统运行: %v", smokeErr)
 	}
 
-	// 4. Unlock active child processes, atomically swap binaries, clear cache, and restart active tunnels
+	// Capture simple in-memory backup of existing data/bin/{frpc,frps} for clean in-place rollback
+	prevFrpc, hadPrevFrpc := readOptionalFile(frpcDst)
+	prevFrps, hadPrevFrps := readOptionalFile(frpsDst)
+
 	swapFn := func() error {
-		frpcDst := filepath.Join(binDir, frpcName)
-		frpsDst := filepath.Join(binDir, frpsName)
 		if err := replaceFileAtomic(frpcTmp, frpcDst, 0o755); err != nil {
 			return fmt.Errorf("替换 %s 失败: %w", frpcName, err)
 		}
 		if err := replaceFileAtomic(frpsTmp, frpsDst, 0o755); err != nil {
+			if hadPrevFrpc {
+				_ = os.WriteFile(frpcDst, prevFrpc, 0o755)
+			} else {
+				_ = os.Remove(frpcDst)
+			}
 			return fmt.Errorf("替换 %s 失败: %w", frpsName, err)
 		}
 		if len(licRaw) > 0 {
@@ -561,16 +511,41 @@ func (u *UpdateManager) ApplyFRPUpdate(ctx context.Context, proxyOverride *strin
 		return nil
 	}
 
+	rollbackFn := func() error {
+		var rbErr error
+		if hadPrevFrpc {
+			if e := os.WriteFile(frpcDst, prevFrpc, 0o755); e != nil {
+				rbErr = e
+			}
+		} else {
+			_ = os.Remove(frpcDst)
+		}
+		if hadPrevFrps {
+			if e := os.WriteFile(frpsDst, prevFrps, 0o755); e != nil && rbErr == nil {
+				rbErr = e
+			}
+		} else {
+			_ = os.Remove(frpsDst)
+		}
+		InvalidateBinaryVersionCache()
+		return rbErr
+	}
+
 	restarted := 0
 	if u.runtime != nil {
-		restarted, err = u.runtime.HotSwapBinaries(swapFn)
+		restarted, err = u.runtime.HotSwapBinaries(swapFn, rollbackFn)
 	} else {
 		err = swapFn()
 	}
+	return LocateBinaries(u.dataDir), restarted, err
+}
+
+func readOptionalFile(p string) ([]byte, bool) {
+	b, err := os.ReadFile(p)
 	if err != nil {
-		return CoreBinaryInfo{}, 0, err
+		return nil, false
 	}
-	return LocateBinaries(u.dataDir), restarted, nil
+	return b, true
 }
 
 // ApplyAppUpdate downloads, verifies, and launches a silent self-update for KurumiFrp itself.
@@ -589,29 +564,18 @@ func (u *UpdateManager) ApplyAppUpdate(ctx context.Context, proxyOverride *strin
 		return "", err
 	}
 
-	st, rel := u.checkAppRelease(ctx, client)
+	st, rel := u.checkAppRelease(ctx, client, proxyStr)
 	if st.Error != "" {
 		return "", errors.New(st.Error)
 	}
 	if !st.HasUpdate {
-		return st.Current, errors.New("当前已是最新版本，无需更新")
+		return st.Current, errAppUpToDate
 	}
-	if !st.CanAutoUpdate || st.AssetURL == "" || rel == nil {
+	if !st.CanAutoUpdate || st.AssetURL == "" || st.sha256 == "" || rel == nil {
 		if st.ManualHint != "" {
 			return "", errors.New(st.ManualHint)
 		}
 		return "", errors.New("当前安装环境暂不支持自动覆盖升级，请点击发布页链接手动下载")
-	}
-
-	// Optional SHA256SUMS.txt verification (published automatically from v0.9.1 onward)
-	var expectedHash string
-	for _, a := range rel.Assets {
-		if strings.EqualFold(a.Name, "SHA256SUMS.txt") && a.BrowserDownloadURL != "" {
-			if sumRaw, sumErr := u.downloadBytes(ctx, client, a.BrowserDownloadURL, 1<<20); sumErr == nil {
-				expectedHash, _ = findSHA256ForAsset(string(sumRaw), st.AssetName)
-			}
-			break
-		}
 	}
 
 	tmpDir, err := os.MkdirTemp("", "kurumifrp-update-*")
@@ -624,16 +588,10 @@ func (u *UpdateManager) ApplyAppUpdate(ctx context.Context, proxyOverride *strin
 		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("下载新版安装包 (%s) 失败: %w", st.AssetName, err)
 	}
-	if st.AssetSize > 0 && int64(len(pkgBytes)) != st.AssetSize {
+	got := sha256.Sum256(pkgBytes)
+	if !strings.EqualFold(hex.EncodeToString(got[:]), st.sha256) {
 		_ = os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("安装包字节大小不完整（预期 %d，实际 %d）", st.AssetSize, len(pkgBytes))
-	}
-	if expectedHash != "" {
-		got := sha256.Sum256(pkgBytes)
-		if !strings.EqualFold(hex.EncodeToString(got[:]), expectedHash) {
-			_ = os.RemoveAll(tmpDir)
-			return "", errors.New("新版安装包 SHA-256 校验未通过，已中止升级")
-		}
+		return "", errors.New("新版安装包 SHA-256 校验未通过，已中止升级")
 	}
 
 	pkgPath := filepath.Join(tmpDir, st.AssetName)
@@ -643,7 +601,7 @@ func (u *UpdateManager) ApplyAppUpdate(ctx context.Context, proxyOverride *strin
 	}
 
 	exePath, _ := os.Executable()
-	if err := executePlatformSelfUpdate(pkgPath, exePath, listenSpec, origArgs, u.onShutdown); err != nil {
+	if err := executePlatformSelfUpdate(pkgPath, exePath, u.dataDir, listenSpec, origArgs, u.onShutdown); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return "", err
 	}
@@ -671,12 +629,18 @@ func (u *UpdateManager) downloadBytes(ctx context.Context, client *http.Client, 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
+	if resp.ContentLength > maxBytes {
+		return nil, errors.New("下载文件超出安全体积上限")
+	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return nil, err
 	}
 	if int64(len(data)) > maxBytes {
 		return nil, errors.New("下载文件超出安全体积上限")
+	}
+	if resp.ContentLength >= 0 && int64(len(data)) != resp.ContentLength {
+		return nil, io.ErrUnexpectedEOF
 	}
 	return data, nil
 }
