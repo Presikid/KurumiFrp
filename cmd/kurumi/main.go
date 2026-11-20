@@ -37,7 +37,6 @@ func main() {
 		headlessFlag    = flag.Bool("headless", false, "后台静默启动（供开机自启使用，不自动弹出浏览器）")
 		stopFlag        = flag.Bool("stop", false, "优雅停止当前正在运行的 KurumiFrp 后台进程")
 		checkRunning    = flag.Bool("check-running", false, "检查后台服务是否正在运行")
-		showToken       = flag.Bool("show-token", false, "输出本地 CLI 维护令牌")
 		pathsFlag       = flag.Bool("paths", false, "以 JSON 输出当前软件目录与数据目录路径")
 		versionFlag     = flag.Bool("version", false, "打印版本号")
 		nativeMaint     = flag.String("native-maintenance", "", "安装包生命周期维护命令 (preflight|preflight-existing|init|stop|finish-stop|purge)")
@@ -71,16 +70,6 @@ func main() {
 		return
 	}
 
-	if *showToken {
-		raw, err := os.ReadFile(filepath.Join(dataDir, "access.token"))
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		fmt.Println(strings.TrimSpace(string(raw)))
-		return
-	}
-
 	if *checkRunning {
 		if addr, ok := probeExistingServer(dataDir); ok {
 			fmt.Println(addr)
@@ -99,15 +88,9 @@ func main() {
 
 	if existingAddr, ok := probeExistingServer(dataDir); ok {
 		if shouldOpenBrowser {
-			openWebUIWithTicket(dataDir, existingAddr)
+			openLocalWebUI(existingAddr)
 		}
 		return
-	}
-	if shouldOpenBrowser && *dataFlag == "" && *listenFlag == "" {
-		if fallbackURL, ok := probePublicSessionOnDefaultPorts(dataDir); ok {
-			_ = platformOpenURL(fallbackURL)
-			return
-		}
 	}
 
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -205,7 +188,7 @@ func main() {
 	if shouldOpenBrowser {
 		go func() {
 			time.Sleep(200 * time.Millisecond)
-			openWebUIWithTicket(dataDir, browserBaseURL)
+			openLocalWebUI(browserBaseURL)
 		}()
 	}
 
@@ -439,34 +422,6 @@ func probeExistingServer(dataDir string) (string, bool) {
 	return baseURL, resp.StatusCode == http.StatusOK && decErr == nil && body.Version != "" && body.DefaultUsername != ""
 }
 
-func probePublicSessionOnDefaultPorts(dataDir string) (string, bool) {
-	client := &http.Client{Timeout: 400 * time.Millisecond}
-	var ports []int
-	if saved := manager.LoadPanelSettings(dataDir); saved.Port > 0 {
-		ports = append(ports, saved.Port)
-	}
-	for p := 9000; p <= 9005; p++ {
-		ports = append(ports, p)
-	}
-	for _, port := range ports {
-		base := fmt.Sprintf("http://127.0.0.1:%d", port)
-		resp, err := client.Get(base + "/api/session")
-		if err != nil {
-			continue
-		}
-		var body struct {
-			Version         string `json:"version"`
-			DefaultUsername string `json:"defaultUsername"`
-		}
-		err = json.NewDecoder(resp.Body).Decode(&body)
-		resp.Body.Close()
-		if err == nil && resp.StatusCode == http.StatusOK && body.Version != "" && body.DefaultUsername != "" {
-			return base, true
-		}
-	}
-	return "", false
-}
-
 func stopExistingServer(dataDir string) error {
 	baseURL, ok := probeExistingServer(dataDir)
 	if !ok {
@@ -496,30 +451,12 @@ func stopExistingServer(dataDir string) error {
 	return errors.New("等待后台服务退出超时")
 }
 
-func openWebUIWithTicket(dataDir, baseURL string) {
+func openLocalWebUI(baseURL string) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if !isValidLocalPanelURL(baseURL) {
 		return
 	}
-	targetURL := baseURL
-	if tokBytes, err := os.ReadFile(filepath.Join(dataDir, "access.token")); err == nil {
-		client := newLocalLoopbackClient(2 * time.Second)
-		req, err := http.NewRequest(http.MethodPost, baseURL+"/api/browser-ticket", nil)
-		if err == nil {
-			req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(tokBytes)))
-			if resp, err := client.Do(req); err == nil {
-				var out struct {
-					Ticket string `json:"ticket"`
-				}
-				_ = json.NewDecoder(resp.Body).Decode(&out)
-				resp.Body.Close()
-				if out.Ticket != "" {
-					targetURL = baseURL + "/launch?ticket=" + out.Ticket
-				}
-			}
-		}
-	}
-	_ = platformOpenURL(targetURL)
+	_ = platformOpenURL(baseURL)
 }
 
 func handleNativeMaintenance(action, installDir string) error {

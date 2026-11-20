@@ -25,13 +25,6 @@ var (
 	binVerCache = make(map[string]cachedBinVer)
 )
 
-// InvalidateBinaryVersionCache clears cached frpc/frps version strings after hot-updating binaries.
-func InvalidateBinaryVersionCache() {
-	binVerMu.Lock()
-	binVerCache = make(map[string]cachedBinVer)
-	binVerMu.Unlock()
-}
-
 func binaryFileName(base string) string {
 	if runtime.GOOS == "windows" {
 		return base + ".exe"

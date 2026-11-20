@@ -149,7 +149,7 @@ func NewAssetPackManager(dataDir string, updater *UpdateManager, onStateChange f
 		state: persistedHDState{
 			PreferHD:    false,
 			PackID:      defaultHDAssetPackID,
-			PackVersion: "0.9.9",
+			PackVersion: "0.9.11",
 			SourceRef:   "main",
 			Files:       make(map[string]string),
 			FileSHA256:  make(map[string]string),
@@ -306,7 +306,7 @@ func (m *AssetPackManager) Status() HDAssetStatus {
 		InstalledBytes: m.state.TotalBytes,
 		EmbeddedBytes:  m.embeddedBytes,
 		PackID:         packID,
-		PackVersion:    nonEmptyStr(m.state.PackVersion, "0.9.9"),
+		PackVersion:    nonEmptyStr(m.state.PackVersion, "0.9.11"),
 		SourceRepo:     defaultGitHubRepoSlug,
 		SourcePath:     "assets/material/" + packID,
 		SourceRef:      nonEmptyStr(m.state.SourceRef, "main"),
@@ -510,7 +510,7 @@ func (m *AssetPackManager) runPullJob(ctx context.Context, proxyStr, customRef, 
 	if customRef != "" {
 		candidateRefs = []string{customRef}
 	} else {
-		candidateRefs = []string{"main", "feat/v0.9.9-sunburst-dal-pack", "feat/v0.9.4-webui-remote-control"}
+		candidateRefs = []string{"main"}
 	}
 
 	var manifest AssetPackManifest

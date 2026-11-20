@@ -150,16 +150,6 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. One-time local browser launch ticket (--open)
-	if path == "/launch" && r.Method == http.MethodGet {
-		ticket := r.URL.Query().Get("ticket")
-		if sid, ok := a.auth.RedeemBrowserTicket(ticket); ok {
-			setSessionCookie(w, r, sid)
-		}
-		http.Redirect(w, r, "/", http.StatusFound)
-		return
-	}
-
 	// 3. Public session check & login/logout endpoints
 	if path == "/api/session" && r.Method == http.MethodGet {
 		user, ok := a.auth.Authenticated(r)
@@ -206,20 +196,6 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.auth.Logout(r)
 		clearSessionCookie(w)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-		return
-	}
-
-	if path == "/api/browser-ticket" && r.Method == http.MethodPost {
-		if !a.auth.VerifyLocalToken(r) {
-			writeError(w, http.StatusUnauthorized, "unauthorized")
-			return
-		}
-		ticket, err := a.auth.IssueBrowserTicket()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ticket": ticket})
 		return
 	}
 
@@ -341,32 +317,6 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		})
 
 	// ==================== Bidirectional Live TOML Preview & Parse ====================
-	case "/api/toml/preview":
-		if r.Method != http.MethodPost {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
-		var req struct {
-			Kind   string         `json:"kind"`
-			Mask   bool           `json:"mask"`
-			Server *ServerProfile `json:"server,omitempty"`
-			Client *ClientProfile `json:"client,omitempty"`
-		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if req.Kind == "frps" && req.Server != nil {
-			res := RenderServerTOML(*req.Server, ServerRuntimeInjections{Preview: true, MaskSecrets: req.Mask})
-			writeJSON(w, http.StatusOK, map[string]any{"toml": res.TOML})
-			return
-		}
-		if req.Client != nil {
-			res := RenderClientTOML(*req.Client, ClientRuntimeInjections{Preview: true, MaskSecrets: req.Mask})
-			writeJSON(w, http.StatusOK, map[string]any{"toml": res.TOML})
-			return
-		}
-		writeError(w, http.StatusBadRequest, "缺少要预览的实例数据")
 
 	case "/api/toml/parse":
 		if r.Method != http.MethodPost {
@@ -611,19 +561,6 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 
-	case "/api/servers/toml":
-		id := r.URL.Query().Get("id")
-		mask := r.URL.Query().Get("mask") == "1"
-		_, doc := a.store.Snapshot()
-		for _, s := range doc.Servers {
-			if s.ID == id {
-				rendered := RenderServerTOML(s, ServerRuntimeInjections{Preview: true, MaskSecrets: mask})
-				writeJSON(w, http.StatusOK, map[string]any{"name": s.Name, "toml": rendered.TOML})
-				return
-			}
-		}
-		writeError(w, http.StatusNotFound, "未找到该转发端配置")
-
 	case "/api/servers/conn-policy":
 		var req struct {
 			ServerID       string `json:"serverId"`
@@ -688,31 +625,6 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		}
 		if !req.Enabled {
 			a.runtime.CloseOfflineProxies(req.ServerID)
-		}
-		a.bumpState()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-
-	case "/api/servers/conn-delete":
-		var req struct {
-			ServerID  string `json:"serverId"`
-			ProxyName string `json:"proxyName"`
-		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		err := a.store.Update(func(doc *ConfigDocument) error {
-			for i := range doc.Servers {
-				if doc.Servers[i].ID == req.ServerID {
-					delete(doc.Servers[i].ConnPolicies, req.ProxyName)
-					return nil
-				}
-			}
-			return errors.New("未找到对应转发端配置")
-		})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
 		}
 		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -936,160 +848,6 @@ func (a *App) handleAPI(w http.ResponseWriter, r *http.Request, username string)
 		}
 		a.bumpState()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-
-	case "/api/clients/tunnel-save":
-		var req struct {
-			ClientID string     `json:"clientId"`
-			Tunnel   TunnelRule `json:"tunnel"`
-		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		req.Tunnel.Name = strings.TrimSpace(req.Tunnel.Name)
-		if req.Tunnel.Name == "" {
-			writeError(w, http.StatusBadRequest, "隧道规则名称不能为空")
-			return
-		}
-		var updatedCli *ClientProfile
-		err := a.store.Update(func(doc *ConfigDocument) error {
-			for i := range doc.Clients {
-				if doc.Clients[i].ID == req.ClientID {
-					for _, existing := range doc.Clients[i].Tunnels {
-						if existing.Name == req.Tunnel.Name && existing.ID != req.Tunnel.ID {
-							return fmt.Errorf("同一客户端内已存在同名规则 %q", req.Tunnel.Name)
-						}
-					}
-					if req.Tunnel.ID == "" {
-						req.Tunnel.ID = newShortID("tun")
-						doc.Clients[i].Tunnels = append(doc.Clients[i].Tunnels, req.Tunnel)
-					} else {
-						replaced := false
-						for j := range doc.Clients[i].Tunnels {
-							if doc.Clients[i].Tunnels[j].ID == req.Tunnel.ID {
-								doc.Clients[i].Tunnels[j] = req.Tunnel
-								replaced = true
-								break
-							}
-						}
-						if !replaced {
-							doc.Clients[i].Tunnels = append(doc.Clients[i].Tunnels, req.Tunnel)
-						}
-					}
-					cp := doc.Clients[i]
-					updatedCli = &cp
-					return nil
-				}
-			}
-			return errors.New("未找到所属客户端配置")
-		})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if updatedCli != nil {
-			if err := a.runtime.ReloadOrRestartClient(*updatedCli); err != nil {
-				a.bumpState()
-				writeError(w, http.StatusBadRequest, "隧道规则已保存，但热重载预检失败（原运行实例未中断）: "+err.Error())
-				return
-			}
-		}
-		a.bumpState()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": req.Tunnel.ID})
-
-	case "/api/clients/tunnel-toggle":
-		var req struct {
-			ClientID string `json:"clientId"`
-			TunnelID string `json:"tunnelId"`
-			Enabled  bool   `json:"enabled"`
-		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		var updatedCli *ClientProfile
-		err := a.store.Update(func(doc *ConfigDocument) error {
-			for i := range doc.Clients {
-				if doc.Clients[i].ID == req.ClientID {
-					for j := range doc.Clients[i].Tunnels {
-						if doc.Clients[i].Tunnels[j].ID == req.TunnelID {
-							doc.Clients[i].Tunnels[j].Enabled = req.Enabled
-							cp := doc.Clients[i]
-							updatedCli = &cp
-							return nil
-						}
-					}
-				}
-			}
-			return errors.New("未找到对应隧道规则")
-		})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if updatedCli != nil {
-			if err := a.runtime.ReloadOrRestartClient(*updatedCli); err != nil {
-				a.bumpState()
-				writeError(w, http.StatusBadRequest, "隧道状态已保存，但热重载预检失败: "+err.Error())
-				return
-			}
-		}
-		a.bumpState()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-
-	case "/api/clients/tunnel-delete":
-		var req struct {
-			ClientID string `json:"clientId"`
-			TunnelID string `json:"tunnelId"`
-		}
-		if err := readJSONBody(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		var updatedCli *ClientProfile
-		err := a.store.Update(func(doc *ConfigDocument) error {
-			for i := range doc.Clients {
-				if doc.Clients[i].ID == req.ClientID {
-					out := make([]TunnelRule, 0, len(doc.Clients[i].Tunnels))
-					for _, t := range doc.Clients[i].Tunnels {
-						if t.ID != req.TunnelID {
-							out = append(out, t)
-						}
-					}
-					doc.Clients[i].Tunnels = out
-					cp := doc.Clients[i]
-					updatedCli = &cp
-					return nil
-				}
-			}
-			return errors.New("未找到所属客户端配置")
-		})
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if updatedCli != nil {
-			if err := a.runtime.ReloadOrRestartClient(*updatedCli); err != nil {
-				a.bumpState()
-				writeError(w, http.StatusBadRequest, "隧道已移除，但热重载预检失败: "+err.Error())
-				return
-			}
-		}
-		a.bumpState()
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-
-	case "/api/clients/toml":
-		id := r.URL.Query().Get("id")
-		mask := r.URL.Query().Get("mask") == "1"
-		_, doc := a.store.Snapshot()
-		for _, c := range doc.Clients {
-			if c.ID == id {
-				rendered := RenderClientTOML(c, ClientRuntimeInjections{Preview: true, MaskSecrets: mask})
-				writeJSON(w, http.StatusOK, map[string]any{"name": c.Name, "toml": rendered.TOML})
-				return
-			}
-		}
-		writeError(w, http.StatusNotFound, "未找到该客户端配置")
 
 	// ==================== Section 2B: Connection-Based Remote Client Control & P2P ====================
 	case "/api/remote/client":

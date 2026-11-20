@@ -106,7 +106,7 @@
     authenticated: false,
     username: "admin",
     needsPasswordSetup: false,
-    version: "0.9.9",
+    version: "0.9.11",
     etag: "",
     activeView: "home", // home | frps | frpc | topology | system
     slideIdx: 0,
@@ -186,7 +186,7 @@
     openClientAccs: { c1: true, c2: false, c3: true, c4: false, c5: false },
 
     // Topology & P2P
-    topologyTab: "mesh", // "mesh" | "p2pWizard" | "scenarios"
+    topologyTab: "mesh", // "mesh" | "p2pWizard"
     lastP2PResult: null,
 
     // System & Gallery
@@ -921,7 +921,7 @@
     updateLoginWallpaper();
     try {
       const sess = await apiFetch("/api/session");
-      STATE.version = sess.version || "0.9.9";
+      STATE.version = sess.version || "0.9.11";
       if (sess.assetCacheToken) {
         STATE.hdAssets.cacheToken = sess.assetCacheToken;
         STATE.hdAssets.activeTier = sess.activeAssetTier || "embedded";
@@ -3724,13 +3724,6 @@
               <div class="yc-dir-sub">跨无公网客户端一键打洞</div>
             </div>
           </button>
-          <button type="button" class="yc-dir-item${STATE.topologyTab === "scenarios" ? " is-active" : ""}" data-topo-tab="scenarios">
-            <img src="assets/k_43.webp" alt="" class="yc-dir-thumb" />
-            <div class="yc-dir-meta">
-              <div class="yc-dir-title">03 · A/B/C/D/E 组网指南</div>
-              <div class="yc-dir-sub">多节点连接权限模型参考</div>
-            </div>
-          </button>
         </div>
       </div>`;
 
@@ -3741,12 +3734,11 @@
       });
     });
 
-    if (STATE.topologyTab === "mesh") {
-      renderTopologyMeshPane(main);
-    } else if (STATE.topologyTab === "p2pWizard") {
+    if (STATE.topologyTab === "p2pWizard") {
       renderP2PWizardPane(main);
     } else {
-      renderScenariosGuidePane(main);
+      STATE.topologyTab = "mesh";
+      renderTopologyMeshPane(main);
     }
   }
 
@@ -4029,56 +4021,6 @@
     }
   }
 
-  function renderScenariosGuidePane(main) {
-    main.innerHTML = `
-      <div class="yc-card">
-        <h3 style="margin:0 0 14px;font-family:var(--yc-serif);font-size:21px;">经典五节点实战拓扑模型 (A / B / C / D / E)</h3>
-        <div class="yc-table-wrap">
-          <table class="yc-table">
-            <thead>
-              <tr>
-                <th>主机角色</th>
-                <th>网络条件</th>
-                <th>本地运行实例</th>
-                <th>基于连接的控制与协同方式</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><strong>云服务器 A</strong></td>
-                <td>拥有公网 IP</td>
-                <td><code>frps</code> 实例 A</td>
-                <td>作为核心中枢，可直接在 A 的 WebUI 中远控所有连上 A 的客户端实例（B、C、D 的 frpc、E）。</td>
-              </tr>
-              <tr>
-                <td><strong>学校电脑 B</strong></td>
-                <td>校园网无公网 IP</td>
-                <td><code>frpc</code> 实例 B → 连 A</td>
-                <td>放学回家访问 A 的 WebUI，直接远控 B 的配置新增 <code>7777 → 9999</code> TCP 映射并热重载。</td>
-              </tr>
-              <tr>
-                <td><strong>家里电脑 C</strong></td>
-                <td>家宽 NAT 无公网 IP</td>
-                <td><code>frpc</code> 实例 C → 连 A</td>
-                <td>可通过 A 的 WebUI 远控 C 暴露 <code>xtcp</code> 服务，与朋友电脑 E 达成 P2P 直连。</td>
-              </tr>
-              <tr>
-                <td><strong>公司电脑 D</strong></td>
-                <td>拥有公网 IP</td>
-                <td>同时建有 <code>frps</code> D 与 <code>frpc</code> D (连 A)</td>
-                <td>D 的 <code>frpc</code> 将 <code>6768</code> UDP 映射到 A 的 <code>10000</code>；A 仅能控制 D 连过来的这一个 <code>frpc</code> 实例，D 自己的 <code>frps</code> 完全独立服务其他下游用户。</td>
-              </tr>
-              <tr>
-                <td><strong>朋友电脑 E</strong></td>
-                <td>家宽 NAT 无公网 IP</td>
-                <td><code>frpc</code> 实例 E → 连 A</td>
-                <td>E 用户在本地访问 E 的 WebUI 仅能控制 E 自己的配置，填入与 C 配对的 <code>xtcp</code> Visitor 即可与 C 完成打洞直连。</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>`;
-  }
 
   // ==================== 7. View 5: SYSTEM, Hot-Update & 35 Curated Gallery ====================
   function renderSystemWorkspace() {

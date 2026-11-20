@@ -45,10 +45,6 @@ type loginAttempt struct {
 	lastAttempt time.Time
 }
 
-type browserTicket struct {
-	expires time.Time
-}
-
 // AuthManager manages single-user username+password authentication, local CLI token, and restart-resilient HMAC sessions.
 type AuthManager struct {
 	mu            sync.Mutex
@@ -59,7 +55,6 @@ type AuthManager struct {
 	emptyPassword bool
 	revoked       map[string]time.Time
 	attempts      map[string]loginAttempt
-	tickets       map[string]browserTicket
 }
 
 // NewAuthManager initializes or migrates the single-user credential file and local control token.
@@ -72,7 +67,6 @@ func NewAuthManager(dataDir string) (*AuthManager, error) {
 		tokenPath:   filepath.Join(dataDir, "access.token"),
 		revoked:     make(map[string]time.Time),
 		attempts:    make(map[string]loginAttempt),
-		tickets:     make(map[string]browserTicket),
 	}
 	tok, err := loadOrCreateToken(am.tokenPath)
 	if err != nil {
@@ -319,42 +313,6 @@ func (a *AuthManager) Logout(r *http.Request) {
 	}
 	a.revoked[c.Value] = now.Add(sessionTTL)
 	a.mu.Unlock()
-}
-
-// IssueBrowserTicket creates a short-lived one-time ticket for --open local browser launch.
-func (a *AuthManager) IssueBrowserTicket() (string, error) {
-	buf := make([]byte, 24)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	ticket := hex.EncodeToString(buf)
-	now := time.Now()
-	a.mu.Lock()
-	for k, v := range a.tickets {
-		if now.After(v.expires) {
-			delete(a.tickets, k)
-		}
-	}
-	a.tickets[ticket] = browserTicket{expires: now.Add(30 * time.Second)}
-	a.mu.Unlock()
-	return ticket, nil
-}
-
-// RedeemBrowserTicket exchanges a valid one-time ticket for a session token.
-func (a *AuthManager) RedeemBrowserTicket(ticket string) (string, bool) {
-	now := time.Now()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	t, ok := a.tickets[ticket]
-	delete(a.tickets, ticket)
-	if !ok || now.After(t.expires) {
-		return "", false
-	}
-	tok, err := a.createSessionLocked(now)
-	if err != nil {
-		return "", false
-	}
-	return tok, true
 }
 
 func (a *AuthManager) createSessionLocked(now time.Time) (string, error) {

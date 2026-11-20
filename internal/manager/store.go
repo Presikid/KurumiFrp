@@ -25,39 +25,6 @@ type activeMetaFile struct {
 	ActiveFile string `json:"activeFile"`
 }
 
-// legacyDatabase supports automatic one-time import of existing v0.7/v0.8 state.json tunnels & instances.
-type legacyDatabase struct {
-	State struct {
-		Instances []struct {
-			ID            string `json:"id"`
-			Name          string `json:"name"`
-			Kind          string `json:"kind"`
-			Host          string `json:"host"`
-			Port          int    `json:"port"`
-			HTTPPort      int    `json:"httpPort"`
-			HTTPSPort     int    `json:"httpsPort"`
-			Token         string `json:"token"`
-			AutoStart     bool   `json:"autoStart"`
-			User          string `json:"user"`
-			KCPBindPort   int    `json:"kcpBindPort"`
-			QUICBindPort  int    `json:"quicBindPort"`
-			SubDomainHost string `json:"subDomainHost"`
-		} `json:"instances"`
-		Tunnels []struct {
-			ID         string   `json:"id"`
-			InstanceID string   `json:"instanceId"`
-			Name       string   `json:"name"`
-			Type       string   `json:"type"`
-			Enabled    bool     `json:"enabled"`
-			LocalHost  string   `json:"localHost"`
-			LocalPort  int      `json:"localPort"`
-			RemotePort int      `json:"remotePort"`
-			Domains    []string `json:"domains"`
-			Subdomain  string   `json:"subdomain"`
-		} `json:"tunnels"`
-	} `json:"state"`
-}
-
 // Store manages self-contained configuration files inside <dataDir>/configs/*.json.
 type Store struct {
 	mu         sync.RWMutex
@@ -108,7 +75,7 @@ func (s *Store) initOrLoad() error {
 			target = existing
 			fullPath = filepath.Join(s.configsDir, target)
 		} else {
-			doc := s.tryMigrateLegacyOrDefault()
+			doc := defaultConfigDocument()
 			normalizeDocument(&doc, doc.Name)
 			s.activeFile = "default.json"
 			s.doc = doc
@@ -128,88 +95,14 @@ func (s *Store) initOrLoad() error {
 	return s.saveMetaLocked()
 }
 
-func (s *Store) tryMigrateLegacyOrDefault() ConfigDocument {
-	doc := ConfigDocument{
+func defaultConfigDocument() ConfigDocument {
+	return ConfigDocument{
 		Version: 1,
 		Name:    "默认配置方案",
 		Updated: time.Now().UTC().Format(time.RFC3339),
 		Servers: []ServerProfile{},
 		Clients: []ClientProfile{},
 	}
-	legacyPath := filepath.Join(s.dataDir, "state.json")
-	raw, err := os.ReadFile(legacyPath)
-	if err != nil {
-		return doc
-	}
-	var leg legacyDatabase
-	if err := json.Unmarshal(raw, &leg); err != nil {
-		return doc
-	}
-	clientIndex := make(map[string]int)
-	for _, inst := range leg.State.Instances {
-		if inst.Kind == "frps" {
-			addr := inst.Host
-			if addr == "" {
-				addr = "0.0.0.0"
-			}
-			port := inst.Port
-			if port <= 0 {
-				port = 7000
-			}
-			doc.Servers = append(doc.Servers, ServerProfile{
-				ID:             nonEmptyID(inst.ID, "srv"),
-				Name:           nonEmptyStr(inst.Name, "服务端配置"),
-				AutoStart:      inst.AutoStart,
-				BindAddr:       addr,
-				BindPort:       port,
-				VhostHTTPPort:  inst.HTTPPort,
-				VhostHTTPSPort: inst.HTTPSPort,
-				KCPBindPort:    inst.KCPBindPort,
-				QUICBindPort:   inst.QUICBindPort,
-				SubDomainHost:  inst.SubDomainHost,
-				AuthToken:      inst.Token,
-				ConnPolicies:   make(map[string]ConnPolicy),
-			})
-		} else {
-			port := inst.Port
-			if port <= 0 {
-				port = 7000
-			}
-			cp := ClientProfile{
-				ID:         nonEmptyID(inst.ID, "cli"),
-				Name:       nonEmptyStr(inst.Name, "客户端配置"),
-				AutoStart:  inst.AutoStart,
-				ServerAddr: nonEmptyStr(inst.Host, "127.0.0.1"),
-				ServerPort: port,
-				User:       inst.User,
-				AuthToken:  inst.Token,
-				Protocol:   "tcp",
-				Tunnels:    []TunnelRule{},
-			}
-			doc.Clients = append(doc.Clients, cp)
-			clientIndex[inst.ID] = len(doc.Clients) - 1
-		}
-	}
-	for _, t := range leg.State.Tunnels {
-		idx, ok := clientIndex[t.InstanceID]
-		if !ok {
-			continue
-		}
-		cp := &doc.Clients[idx]
-		cp.Tunnels = append(cp.Tunnels, TunnelRule{
-			ID:            nonEmptyID(t.ID, "tun"),
-			Name:          nonEmptyStr(t.Name, "rule"),
-			Mode:          "proxy",
-			Type:          nonEmptyStr(t.Type, "tcp"),
-			Enabled:       t.Enabled,
-			LocalIP:       nonEmptyStr(t.LocalHost, "127.0.0.1"),
-			LocalPort:     t.LocalPort,
-			RemotePort:    t.RemotePort,
-			CustomDomains: t.Domains,
-			SubDomain:     t.Subdomain,
-		})
-	}
-	return doc
 }
 
 func readConfigDocument(path string) (ConfigDocument, error) {
