@@ -11,22 +11,13 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Presikid/KurumiFrp/internal/version"
 )
 
-const releaseCacheTTL = 5 * time.Minute
-
 type releaseRepo struct {
 	name         string
 	checksumFile string
-}
-
-type cachedRelease struct {
-	release   ghRelease
-	proxyURL  string
-	fetchedAt time.Time
 }
 
 var (
@@ -37,34 +28,9 @@ var (
 	errFRPUpToDate   = errors.New("官方 FRP 核心已是最新版本，无需更新")
 )
 
-// latestRelease resolves the latest stable release via GitHub web redirect + SHA-256 manifest,
-// completely avoiding api.github.com anonymous 60 req/hr HTTP 403 rate limits.
-func (u *UpdateManager) latestRelease(ctx context.Context, client *http.Client, proxyStr string, repo releaseRepo) (ghRelease, error) {
-	now := time.Now()
-	u.mu.Lock()
-	if cached, ok := u.releases[repo]; ok && cached.proxyURL == proxyStr && now.Sub(cached.fetchedAt) < releaseCacheTTL {
-		rel := cached.release
-		u.mu.Unlock()
-		return rel, nil
-	}
-	u.mu.Unlock()
-
-	rel, err := u.webRelease(ctx, client, repo)
-	if err != nil {
-		return ghRelease{}, err
-	}
-
-	u.mu.Lock()
-	if u.releases == nil {
-		u.releases = make(map[releaseRepo]cachedRelease)
-	}
-	u.releases[repo] = cachedRelease{
-		release:   rel,
-		proxyURL:  proxyStr,
-		fetchedAt: time.Now(),
-	}
-	u.mu.Unlock()
-	return rel, nil
+// latestRelease queries GitHub Releases redirect + SHA-256 manifest live on every check without local TTL caching.
+func (u *UpdateManager) latestRelease(ctx context.Context, client *http.Client, repo releaseRepo) (ghRelease, error) {
+	return u.webRelease(ctx, client, repo)
 }
 
 func (u *UpdateManager) webRelease(ctx context.Context, client *http.Client, repo releaseRepo) (ghRelease, error) {

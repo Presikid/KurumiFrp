@@ -85,7 +85,6 @@ type UpdateManager struct {
 	runtime      *RuntimeSupervisor
 	onShutdown   func(exitCode int)
 	webBase      string
-	releases     map[releaseRepo]cachedRelease
 	allowLocal   bool // enabled only in unit tests for 127.0.0.1 httptest servers
 }
 
@@ -97,7 +96,6 @@ func NewUpdateManager(dataDir string, rt *RuntimeSupervisor, onShutdown func(exi
 		runtime:      rt,
 		onShutdown:   onShutdown,
 		webBase:      defaultGitHubWebBase,
-		releases:     make(map[releaseRepo]cachedRelease),
 	}
 	if raw, err := os.ReadFile(um.settingsPath); err == nil {
 		var s UpdateSettings
@@ -240,11 +238,11 @@ func (u *UpdateManager) CheckAll(ctx context.Context, proxyOverride *string) (Co
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		appStatus, _ = u.checkAppRelease(ctx, client, proxyStr)
+		appStatus, _ = u.checkAppRelease(ctx, client)
 	}()
 	go func() {
 		defer wg.Done()
-		frpStatus, _ = u.checkFRPRelease(ctx, client, proxyStr)
+		frpStatus, _ = u.checkFRPRelease(ctx, client)
 	}()
 	wg.Wait()
 
@@ -255,7 +253,7 @@ func (u *UpdateManager) CheckAll(ctx context.Context, proxyOverride *string) (Co
 	}, nil
 }
 
-func (u *UpdateManager) checkAppRelease(ctx context.Context, client *http.Client, proxyStr string) (ComponentUpdateStatus, *ghRelease) {
+func (u *UpdateManager) checkAppRelease(ctx context.Context, client *http.Client) (ComponentUpdateStatus, *ghRelease) {
 	exePath, _ := os.Executable()
 	canSelf, mode, hint := canPlatformSelfUpdateApp(exePath)
 	st := ComponentUpdateStatus{
@@ -267,7 +265,7 @@ func (u *UpdateManager) checkAppRelease(ctx context.Context, client *http.Client
 		ManualHint:    hint,
 	}
 
-	rel, err := u.latestRelease(ctx, client, proxyStr, appRepo)
+	rel, err := u.latestRelease(ctx, client, appRepo)
 	if err != nil {
 		st.Error = fmt.Sprintf("查询最新版本失败（可配置代理后重试）: %v", err)
 		return st, nil
@@ -360,7 +358,7 @@ func frpPlatformSlug() (string, string, bool) {
 	return "", "", false
 }
 
-func (u *UpdateManager) checkFRPRelease(ctx context.Context, client *http.Client, proxyStr string) (ComponentUpdateStatus, *ghRelease) {
+func (u *UpdateManager) checkFRPRelease(ctx context.Context, client *http.Client) (ComponentUpdateStatus, *ghRelease) {
 	core := LocateBinaries(u.dataDir)
 	curVer := core.FrpsVersion
 	if curVer == "" || curVer == "unknown" {
@@ -382,7 +380,7 @@ func (u *UpdateManager) checkFRPRelease(ctx context.Context, client *http.Client
 		ReleaseURL:    "https://github.com/fatedier/frp/releases",
 	}
 
-	rel, err := u.latestRelease(ctx, client, proxyStr, frpRepo)
+	rel, err := u.latestRelease(ctx, client, frpRepo)
 	if err != nil {
 		st.Error = fmt.Sprintf("查询上游 fatedier/frp 版本失败（可配置代理后重试）: %v", err)
 		return st, nil
@@ -431,7 +429,7 @@ func (u *UpdateManager) ApplyFRPUpdate(ctx context.Context, proxyOverride *strin
 		return CoreBinaryInfo{}, 0, err
 	}
 
-	st, rel := u.checkFRPRelease(ctx, client, proxyStr)
+	st, rel := u.checkFRPRelease(ctx, client)
 	if st.Error != "" {
 		return CoreBinaryInfo{}, 0, errors.New(st.Error)
 	}
@@ -507,7 +505,6 @@ func (u *UpdateManager) ApplyFRPUpdate(ctx context.Context, proxyOverride *strin
 		if len(licRaw) > 0 {
 			_ = os.WriteFile(filepath.Join(binDir, "LICENSE"), licRaw, 0o644)
 		}
-		InvalidateBinaryVersionCache()
 		return nil
 	}
 
@@ -527,7 +524,6 @@ func (u *UpdateManager) ApplyFRPUpdate(ctx context.Context, proxyOverride *strin
 		} else {
 			_ = os.Remove(frpsDst)
 		}
-		InvalidateBinaryVersionCache()
 		return rbErr
 	}
 
@@ -564,7 +560,7 @@ func (u *UpdateManager) ApplyAppUpdate(ctx context.Context, proxyOverride *strin
 		return "", err
 	}
 
-	st, rel := u.checkAppRelease(ctx, client, proxyStr)
+	st, rel := u.checkAppRelease(ctx, client)
 	if st.Error != "" {
 		return "", errors.New(st.Error)
 	}
@@ -643,24 +639,6 @@ func (u *UpdateManager) downloadBytes(ctx context.Context, client *http.Client, 
 		return nil, io.ErrUnexpectedEOF
 	}
 	return data, nil
-}
-
-func findSHA256ForAsset(checksumsText, assetName string) (string, bool) {
-	for _, line := range strings.Split(checksumsText, "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) < 2 {
-			continue
-		}
-		digest := strings.TrimSpace(fields[0])
-		target := strings.TrimPrefix(strings.TrimSpace(fields[len(fields)-1]), "*")
-		target = path.Base(strings.ReplaceAll(target, "\\", "/"))
-		if len(digest) == 64 && target == assetName {
-			if _, err := hex.DecodeString(digest); err == nil {
-				return strings.ToLower(digest), true
-			}
-		}
-	}
-	return "", false
 }
 
 func extractFRPMembers(assetName string, archiveBytes []byte) ([]byte, []byte, []byte, error) {
